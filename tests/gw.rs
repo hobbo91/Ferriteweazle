@@ -8,6 +8,7 @@ use ferriteweazle::engine::{Engine, Origin};
 use ferriteweazle::form::Output;
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::progress::Status;
+use ferriteweazle::schema::Port;
 use ferriteweazle::service::{Load, Service};
 use ferriteweazle::{App, Page, Settings};
 use std::path::{Path, PathBuf};
@@ -198,6 +199,7 @@ fn a_question_from_gw_waits_for_an_answer() {
 type Window = egui_kittest::Harness<'static, Option<App>>;
 
 /// The app's window on `engine`, stepped until gw has described itself.
+/// It sees no Greaseweazle, whatever is plugged in.
 fn window(engine: &Engine, settings: Settings) -> Window {
     let settings = Settings {
         engine: Some(engine.python.clone()),
@@ -207,8 +209,12 @@ fn window(engine: &Engine, settings: Settings) -> Window {
         .with_size(egui::vec2(1240.0, 780.0))
         .build_ui_state(
             move |ui, app: &mut Option<App>| {
-                app.get_or_insert_with(|| App::with_settings(ui.ctx(), settings.clone()))
-                    .show(ui);
+                app.get_or_insert_with(|| {
+                    let mut app = App::with_settings(ui.ctx(), settings.clone());
+                    app.pin_ports(Vec::new());
+                    app
+                })
+                .show(ui);
             },
             None,
         );
@@ -295,23 +301,88 @@ fn a_job_that_would_replace_a_file_asks_first() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// The run button, not the sidebar's entry of the same name.
-fn read_button(w: &Window) -> egui_kittest::Node<'_> {
-    w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Read disk")
+/// The page's run button, not the sidebar's entry of the same name.
+fn run_button<'w>(w: &'w Window, label: &'w str) -> egui_kittest::Node<'w> {
+    w.get_all_by_role_and_label(egui::accesskit::Role::Button, label)
         .last()
-        .expect("a Read disk button")
+        .expect("a run button")
+}
+
+fn read_button(w: &Window) -> egui_kittest::Node<'_> {
+    run_button(w, "Read disk")
+}
+
+fn app_mut(w: &mut Window) -> &mut App {
+    w.state_mut()
+        .as_mut()
+        .expect("the first frame made the app")
+}
+
+/// A Greaseweazle as gw lists it, on a made-up port.
+fn greaseweazle() -> Port {
+    Port {
+        device: "/dev/cu.usbmodem14201".into(),
+        name: Some("Greaseweazle".into()),
+        serial: Some("GW0123456789ABCDEF".into()),
+        score: 20,
+    }
 }
 
 #[test]
-fn reading_waits_for_a_format_and_image_type() {
+fn reading_waits_for_a_format_an_image_type_and_a_greaseweazle() {
     let Some(engine) = engine() else { return };
     let mut w = window(&engine, Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run_steps(2);
     assert!(read_button(&w).accesskit_node().is_disabled());
     choose_format(&mut w, "amiga.amigados");
     assert!(
         !read_button(&w).accesskit_node().is_disabled(),
         "a format picks its image type, so the read can start"
     );
+    app_mut(&mut w).pin_ports(Vec::new());
+    w.run_steps(2);
+    assert!(read_button(&w).accesskit_node().is_disabled());
+    read_button(&w).hover();
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("Connect a Greaseweazle.").is_some()
+    });
+}
+
+#[test]
+fn a_device_page_stays_open_when_the_greaseweazle_goes_and_its_job_runs_on() {
+    let Some(engine) = engine() else { return };
+    let settings = Settings {
+        page: Page::Command("erase".into()),
+        ..Settings::default()
+    };
+    let mut w = window(&engine, settings);
+    let greyed = |w: &Window| run_button(w, "Erase disk").accesskit_node().is_disabled();
+    assert!(greyed(&w));
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run_steps(2);
+    assert!(!greyed(&w));
+    app_mut(&mut w).pin_ports(Vec::new());
+    w.run_steps(2);
+    assert_eq!(app_mut(&mut w).settings.page, Page::Command("erase".into()));
+    assert!(greyed(&w));
+
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    app_mut(&mut w).settings.page = Page::Command("seek".into());
+    // `seek 90` waits on gw's question, so the job runs until it is stopped.
+    app_mut(&mut w).tool = Some(start(&engine, "seek", &["seek", "90"]));
+    until(&mut w, "gw's question", |app| {
+        app.tool.as_ref().is_some_and(|j| j.question.is_some())
+    });
+    app_mut(&mut w).pin_ports(Vec::new());
+    w.run_steps(2);
+    assert!(app_mut(&mut w).tool.as_ref().unwrap().running());
+    let stop = w.get_by_role_and_label(egui::accesskit::Role::Button, "Stop");
+    assert!(!stop.accesskit_node().is_disabled());
+    app_mut(&mut w).tool.as_mut().unwrap().stop();
+    until(&mut w, "the job to stop", |app| {
+        app.tool.as_ref().is_some_and(|j| !j.running())
+    });
 }
 
 /// The sidebar's entries, Settings first.
@@ -345,6 +416,27 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     });
     w.run_steps(2);
     assert_eq!(entries(&w), before);
+}
+
+#[test]
+fn a_restarted_gw_keeps_the_greaseweazle_until_it_has_looked() {
+    let Some(engine) = engine() else { return };
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    let mut w = window(&engine, settings);
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run_steps(2);
+    w.get_by_label("Restart").click();
+    w.run_steps(2);
+    assert!(app_mut(&mut w).schema().is_none(), "gw restarts");
+    assert!(w.query_by_label("Disconnected").is_none());
+    let erase = w
+        .get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
+        .next()
+        .expect("the sidebar entry");
+    assert!(!erase.accesskit_node().is_disabled());
 }
 
 #[test]
@@ -798,6 +890,10 @@ fn a_broken_disk_definitions_file_stops_the_page_and_says_why() {
     values.set("diskdefs", bad.to_string_lossy());
     let mut w = window(&engine, settings);
     choose_format(&mut w, "amiga.amigados");
+    // The format's details move the rows below down as they arrive.
+    until_shown(&mut w, "the format's details", |w| {
+        w.query_by_label_contains("880\u{a0}KB").is_some()
+    });
     w.get_by_label_contains("Advanced options").click();
     until_shown(&mut w, "gw's objection", |w| {
         w.query_by_label_contains("bad.cfg, line 2").is_some()

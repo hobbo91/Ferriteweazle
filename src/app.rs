@@ -69,6 +69,12 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
     ("erase", "Everything on the disk will be lost."),
 ];
 
+/// Pages that open with no device, so their settings can be made ready.
+const PREPARED: &[&str] = &["read", "write"];
+
+/// Why a command that uses the device cannot run.
+const NO_DEVICE: &str = "Connect a Greaseweazle.";
+
 /// Commands the status pane shows. Others show their results under their page.
 const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", DETECT];
 
@@ -265,6 +271,8 @@ impl App {
     fn connect(&mut self, ctx: &egui::Context) {
         self.schema = None;
         self.engine = Engine::find(self.settings.engine.as_deref());
+        // A new gw finds the same device, so the window keeps it meanwhile.
+        let ports = self.service.known_ports().to_vec();
         self.service = match (&self.engine, &self.settings.engine) {
             (Some(engine), _) => Service::start(engine, repaint(ctx)),
             (None, Some(path)) => Service::offline(Err(format!(
@@ -275,6 +283,13 @@ impl App {
                 "Ferriteweazle could not find Greaseweazle. Choose your gw in Settings.".into(),
             )),
         };
+        self.service.seed_ports(ports);
+    }
+
+    /// Shows these ports as the connected devices, whatever gw finds: for
+    /// tests and pictures of the window.
+    pub fn pin_ports(&mut self, ports: Vec<Port>) {
+        self.service.pin_ports(ports);
     }
 
     /// gw's command line, once the engine has described it.
@@ -412,6 +427,11 @@ impl App {
     fn found_port(&mut self) -> Option<&Port> {
         self.service.ports();
         chosen_port(self.service.known_ports(), &self.settings.device)
+    }
+
+    /// Whether the sidebar shows a Greaseweazle, as last listed.
+    fn connected(&self) -> bool {
+        chosen_port(self.service.known_ports(), &self.settings.device).is_some()
     }
 
     /// Runs `gw info` for the device card, when nothing else is using the device.
@@ -561,6 +581,7 @@ impl App {
         ui.add_space(CARD_DROP);
         self.device_card(ui);
         ui.add_space(12.0);
+        let connected = self.connected();
         let list = egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
@@ -572,7 +593,12 @@ impl App {
                     ui.add_space(1.0);
                     for name in names {
                         let here = matches!(&self.settings.page, Page::Command(n) if n == name);
-                        if nav_item(ui, &title(name), None, here).clicked() {
+                        let shut = !connected
+                            && !PREPARED.contains(&name)
+                            && self.listed.as_deref().is_some_and(|s| uses_device(s, name));
+                        let item =
+                            ui.add_enabled_ui(!shut, |ui| nav_item(ui, &title(name), None, here));
+                        if item.inner.on_disabled_hover_text(NO_DEVICE).clicked() {
                             self.settings.page = Page::Command(name.to_owned());
                         }
                     }
@@ -872,7 +898,14 @@ impl App {
             }))
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, cmd));
-        let busy = self.running().is_some();
+        let cannot_detect = if self.running().is_some() {
+            Some("Wait for the job that is running.")
+        } else if name == "read" && !self.connected() {
+            // It reads the disk in the drive.
+            Some(NO_DEVICE)
+        } else {
+            None
+        };
         let action = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -887,7 +920,7 @@ impl App {
                         values,
                         outputs: &mut self.settings.outputs,
                         service: &mut self.service,
-                        busy,
+                        cannot_detect,
                     }
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
@@ -1053,8 +1086,11 @@ impl App {
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
+            // The page's own settings first: they can be made ready with no device.
+            let no_device = uses_device(schema, &cmd.name) && !self.connected();
             self.diskdefs_fault(values)
                 .or_else(|| form::blocked(schema, cmd, values, &self.settings.outputs))
+                .or(no_device.then_some(NO_DEVICE))
                 .map(str::to_owned)
         }
     }
@@ -2046,6 +2082,13 @@ fn device_table(ui: &mut Ui, info: &DeviceInfo, p: &Palette) {
         });
 }
 
+/// Whether a command acts on the Greaseweazle: gw gives each such one --device.
+fn uses_device(schema: &Schema, command: &str) -> bool {
+    schema
+        .command(command)
+        .is_some_and(|c| c.arg("device").is_some())
+}
+
 /// The sidebar's sections and the commands this gw has in each: none
 /// until a gw has described itself.
 fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
@@ -2280,8 +2323,9 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
             p.dim,
         );
     }
+    let enabled = ui.is_enabled();
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, text)
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, selected, text)
     });
     response
 }

@@ -76,6 +76,8 @@ pub struct Service {
     ports: Load<Vec<Port>>,
     ports_asked: Instant,
     last_ports: Vec<Port>,
+    /// The devices are set by `pin_ports`, and gw is no longer asked.
+    pinned: bool,
     /// By path and the time the file last changed, so an edit is checked again.
     diskdefs: HashMap<(String, Option<SystemTime>), Load<DiskDefs>>,
     infos: HashMap<(String, String), Load<FormatInfo>>,
@@ -107,6 +109,7 @@ impl Service {
             ports,
             ports_asked: Instant::now(),
             last_ports: Vec::new(),
+            pinned: false,
             diskdefs: HashMap::new(),
             infos: HashMap::new(),
             checks: HashMap::new(),
@@ -148,10 +151,24 @@ impl Service {
 
     /// Asks for the list of devices now, not when it is next due.
     pub fn refresh_ports(&mut self) {
-        if !matches!(self.ports, Load::Waiting(_)) {
+        if !self.pinned && !matches!(self.ports, Load::Waiting(_)) {
             self.ports = Load::Waiting(call(&self.requests, json!({"op": "ports"})));
             self.ports_asked = Instant::now();
         }
+    }
+
+    /// The devices to show until gw first lists them.
+    pub fn seed_ports(&mut self, ports: Vec<Port>) {
+        self.last_ports = ports;
+    }
+
+    /// Lists these devices from now on, and no longer asks gw: a window
+    /// with a made-up Greaseweazle, for tests and pictures.
+    pub fn pin_ports(&mut self, ports: Vec<Port>) {
+        // Drops a reply on its way, which would replace them.
+        self.ports = Load::Ready(Vec::new());
+        self.last_ports = ports;
+        self.pinned = true;
     }
 
     /// gw's own format names.

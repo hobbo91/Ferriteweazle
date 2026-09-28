@@ -242,8 +242,8 @@ pub struct Form<'a> {
     pub values: &'a mut Values,
     pub outputs: &'a mut BTreeMap<String, Output>,
     pub service: &'a mut Service,
-    /// A job is running, so nothing may start another.
-    pub busy: bool,
+    /// Why Detect cannot start now, if it cannot.
+    pub cannot_detect: Option<&'a str>,
 }
 
 /// Something the form asks of the app.
@@ -562,9 +562,9 @@ impl<'a> Form<'a> {
                     let detect = egui::Button::new("Detect")
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
                     if ui
-                        .add_enabled(!self.busy, detect)
+                        .add_enabled(self.cannot_detect.is_none(), detect)
                         .own_tip("Find the disk format and image type.")
-                        .on_disabled_hover_text("Wait for the job that is running.")
+                        .on_disabled_hover_text(self.cannot_detect.unwrap_or_default())
                         .clicked()
                     {
                         action = Some(Action::Detect);
