@@ -247,8 +247,10 @@ pub struct SessionLog {
     lines: Vec<String>,
     /// Line numbers of the headings, counted from the session's first line.
     heads: Vec<usize>,
-    /// Lines dropped from the start to keep within LOG_LINES.
+    /// Lines gone from the start: dropped to keep within LOG_LINES, or cleared.
     dropped: usize,
+    /// Lines were dropped to keep within LOG_LINES since the log was last cleared.
+    trimmed: bool,
     /// The job the last lines are from, by its heading's line number.
     last: Option<usize>,
 }
@@ -258,8 +260,17 @@ impl SessionLog {
         &self.lines
     }
 
-    pub fn dropped(&self) -> usize {
-        self.dropped
+    pub fn trimmed(&self) -> bool {
+        self.trimmed
+    }
+
+    /// Empties the log. A job still running goes on under its heading again.
+    pub fn clear(&mut self) {
+        self.dropped += self.lines.len();
+        self.lines.clear();
+        self.heads.clear();
+        self.last = None;
+        self.trimmed = false;
     }
 
     /// Whether `lines()[index]` heads a job.
@@ -319,6 +330,7 @@ impl SessionLog {
         if over > 0 {
             self.lines.drain(..over);
             self.dropped += over;
+            self.trimmed = true;
             self.heads.retain(|&h| h >= self.dropped);
         }
     }
@@ -376,14 +388,37 @@ mod tests {
         let mut second = job("read");
         log.begin("gw read b.img".into(), &mut second);
         assert_eq!(log.lines().len(), LOG_LINES);
-        assert_eq!(log.dropped(), 5, "the first heading and four lines");
-        assert_eq!(log.lines()[0], "T4");
+        assert!(log.trimmed());
+        assert_eq!(
+            log.lines()[0],
+            "T4",
+            "the first heading and four lines went"
+        );
         let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
         assert_eq!(
             heads,
             [LOG_LINES - 1],
             "the first heading went with its lines, and did not come back"
         );
+    }
+
+    #[test]
+    fn clearing_the_log_empties_it_and_a_running_job_goes_on_under_its_heading() {
+        let mut log = SessionLog::default();
+        let mut first = job("read");
+        log.begin("gw read a.img".into(), &mut first);
+        first.log = (0..LOG_LINES).map(|i| format!("T{i}")).collect();
+        log.follow(&mut first);
+        assert!(log.trimmed());
+        log.clear();
+        assert!(log.lines().is_empty() && !log.trimmed());
+        first.log.push("T last".into());
+        log.end(&mut first, "Done in 9:00.".into());
+        assert_eq!(
+            log.lines(),
+            ["gw read a.img (continued)", "T last", "Done in 9:00."]
+        );
+        assert!(log.is_head(0) && !log.is_head(1));
     }
 
     #[test]

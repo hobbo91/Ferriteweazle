@@ -29,13 +29,20 @@ fn schema() -> Schema {
 }
 
 /// The app offline, run until it settles, with `disk` as its last disk job.
-fn build(
+fn build(builder: HarnessBuilder<Option<App>>, settings: Settings, disk: Option<Job>) -> Window {
+    let mut w = start(builder, settings, disk);
+    w.run();
+    w
+}
+
+/// The app offline after its first frame, with `disk` as its last disk job.
+fn start(
     builder: HarnessBuilder<Option<App>>,
     settings: Settings,
     mut disk: Option<Job>,
 ) -> Window {
     let schema = schema();
-    let mut w = builder.build_ui_state(
+    builder.build_ui_state(
         move |ui, app| {
             app.get_or_insert_with(|| {
                 let mut app = App::offline(ui.ctx(), settings.clone(), Ok(schema.clone()));
@@ -45,9 +52,7 @@ fn build(
             .show(ui);
         },
         None,
-    );
-    w.run();
-    w
+    )
 }
 
 fn window_at(size: egui::Vec2, settings: Settings) -> Window {
@@ -564,6 +569,219 @@ fn the_log_and_the_command_line_share_a_drawer_across_the_page_and_the_status_pa
     w.get_by_label("Read disk").click();
     w.run();
     w.get_by_label("Command line");
+}
+
+/// The window at its first size with a read done, a frame every 60th of a
+/// second, after its first frame, with egui's animations on as in the app.
+fn smooth(settings: Settings) -> Window {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let w = start(builder, settings, Some(Job::replay("read", DAMAGED)));
+    // egui's own default: kittest turns animations off.
+    w.ctx.all_styles_mut(|s| s.animation_time = 0.2);
+    w
+}
+
+/// The tops of the page's run button and the map's legend. A sliding drawer
+/// is only painted where it goes, so the page above it shows where it is.
+fn edges(w: &Window) -> [f32; 2] {
+    let run = w
+        .get_all_by_role_and_label(Role::Button, "Read disk")
+        .last()
+        .unwrap();
+    [
+        run.rect().top(),
+        w.get_by_label_contains("Good ").rect().top(),
+    ]
+}
+
+/// Clicks `drawer`'s button and returns the edges of each frame after.
+fn toggle(w: &mut Window, drawer: &str) -> Vec<[f32; 2]> {
+    w.get_by_role_and_label(Role::Button, drawer).click();
+    (0..20)
+        .map(|_| {
+            w.step();
+            edges(w)
+        })
+        .collect()
+}
+
+/// Whether the run button moves one way over several frames and ends at `to`.
+fn slides(frames: &[[f32; 2]], from: f32, to: f32) -> bool {
+    let tops: Vec<f32> = frames.iter().map(|f| f[0]).collect();
+    let steps = tops.windows(2).filter(|p| p[0] != p[1]).count();
+    let one_way = tops.windows(2).all(|p| (p[1] - p[0]) * (to - from) >= 0.0);
+    one_way && steps >= 5 && tops[0] != to && tops.last() == Some(&to) && from != to
+}
+
+#[test]
+fn a_drawer_slides_open_and_shut_and_the_map_stays_where_it_fits() {
+    let mut w = smooth(chosen());
+    w.run();
+    let [closed, legend] = edges(&w);
+    let opening = toggle(&mut w, "Log");
+    let open = opening.last().unwrap()[0];
+    assert!(
+        slides(&opening, closed, open),
+        "{closed} to {open}: {opening:?}"
+    );
+    assert!(
+        opening.iter().all(|f| f[1] == legend),
+        "the map moved: {opening:?}"
+    );
+    assert_eq!(w.run(), 1, "the window keeps drawing");
+
+    let shutting = toggle(&mut w, "Log");
+    assert!(
+        slides(&shutting, open, closed),
+        "{open} to {closed}: {shutting:?}"
+    );
+    assert!(
+        shutting.iter().all(|f| f[1] == legend),
+        "the map moved: {shutting:?}"
+    );
+    assert_eq!(w.run(), 1, "the window keeps drawing");
+}
+
+#[test]
+fn a_window_that_opens_with_a_drawer_or_switches_drawers_does_not_slide_one() {
+    let mut w = smooth(Settings {
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    });
+    w.step();
+    let cli = edges(&w);
+    w.run();
+    assert_eq!(edges(&w), cli, "the drawer slid as the window opened");
+    w.get_by_role_and_label(Role::Button, "Log").click();
+    w.step();
+    w.step();
+    assert!(
+        w.query_by_label("Command line").is_none(),
+        "the command line slid out"
+    );
+    assert_eq!(edges(&w), cli, "the log slid in");
+    w.run();
+    assert_eq!(w.run(), 1, "the window keeps drawing");
+}
+
+/// Drags the log's top edge up by `by` points and lets the window settle.
+fn drag_log(w: &mut Window, by: f32) {
+    let heading = w.get_by_role_and_label(Role::Label, "Log").rect();
+    // The drawer's top edge, above its heading by the frame's margin.
+    let edge = egui::pos2(heading.center().x + 200.0, heading.top() - 12.0);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    w.event(egui::Event::PointerMoved(edge));
+    w.step();
+    w.event(button(edge, true));
+    w.step();
+    for i in 1..=10 {
+        let at = edge - egui::vec2(0.0, by * i as f32 / 10.0);
+        w.event(egui::Event::PointerMoved(at));
+        w.step();
+    }
+    w.event(button(edge - egui::vec2(0.0, by), false));
+    w.run();
+}
+
+#[test]
+fn a_log_dragged_taller_stays_that_tall_and_the_map_shrinks_only_when_it_must() {
+    let mut w = smooth(Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    });
+    w.run();
+    let [open, legend] = edges(&w);
+    // Less than the room the map leaves below it at this size.
+    drag_log(&mut w, 20.0);
+    let [taller, map] = edges(&w);
+    assert!(taller < open - 5.0, "{open} to {taller}");
+    assert_eq!(map, legend, "the map shrank with room to spare");
+    let settled: Vec<[f32; 2]> = (0..20)
+        .map(|_| {
+            w.step();
+            edges(&w)
+        })
+        .collect();
+    assert!(
+        settled.iter().all(|f| f[0] == taller),
+        "it slid back: {settled:?}"
+    );
+
+    drag_log(&mut w, 400.0);
+    let [tallest, map] = edges(&w);
+    assert!(tallest < taller && map < legend, "{tallest}, map at {map}");
+    let drawer = w.get_by_role_and_label(Role::Label, "Log").rect().top();
+    let legend = w.get_by_label_contains("Good ").rect();
+    assert!(
+        legend.bottom() < drawer,
+        "the legend at {legend:?}, the drawer at {drawer}"
+    );
+}
+
+#[test]
+fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() {
+    let mut job = Job::replay("read", DAMAGED);
+    job.progress.error = Some("The drive did not answer. ".repeat(6));
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    };
+    let mut w = start(builder, settings, Some(job));
+    w.run();
+    let chip = w.get_by_label_contains("Done ·").rect();
+    drag_log(&mut w, 400.0);
+    let drawer = w.get_by_role_and_label(Role::Label, "Log").rect().top();
+    let legend = w.get_by_label_contains("Good ").rect();
+    assert!(legend.bottom() > drawer, "nothing to scroll: {legend:?}");
+    let moved = w.get_by_label_contains("Done ·").rect();
+    assert_eq!(
+        moved.right(),
+        chip.right(),
+        "the rows narrowed for the scroll bar"
+    );
+
+    w.event(egui::Event::PointerMoved(moved.center()));
+    w.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    w.run();
+    let scrolled = w.get_by_label_contains("Good ").rect();
+    assert!(scrolled.top() < legend.top(), "the pane did not scroll");
+}
+
+#[test]
+fn clear_empties_the_log() {
+    let mut w = window(Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    let mut job = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw read x.img".into(), &mut job);
+    log.end(&mut job, "Done in 0:01.".into());
+    w.run();
+    w.get_by_label("Done in 0:01.");
+    w.get_by_role_and_label(Role::Button, "Clear").click();
+    w.run();
+    assert!(w.query_by_label("Done in 0:01.").is_none());
+    w.get_by_label("gw's output appears here.");
+    let clear = w.get_by_role_and_label(Role::Button, "Clear");
+    assert!(clear.accesskit_node().is_disabled(), "nothing to clear");
 }
 
 #[test]

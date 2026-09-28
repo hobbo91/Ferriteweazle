@@ -27,13 +27,14 @@ const TITLE: f32 = 20.0;
 const SIDE_GAP: f32 = 28.0;
 
 /// Draws the map as tall as `budget` points (legend included) where the width
-/// allows, and never taller than the pane. `job` keys the squares' fade-in, so
-/// each fills once per job.
+/// allows, and no taller than `room`, the pane's height below its top. `job`
+/// keys the squares' fade-in, so each fills once per job.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
     job: impl std::hash::Hash + std::fmt::Debug,
     budget: f32,
+    room: f32,
 ) {
     let (cyls, heads) = progress.layout();
     let (Some(&first), Some(&last)) = (cyls.first(), cyls.last()) else {
@@ -47,8 +48,7 @@ pub fn show(
     let sides = heads.len().max(1) as f32;
     let rows = last / ROW - first / ROW + 1;
     let width = ui.available_width();
-    // The map fits the pane both ways, so the pane never scrolls.
-    let room = ui.available_height() - LEGEND;
+    let room = room - LEGEND;
     let wanted = (budget - LEGEND).min(room);
     let cell_in = |across: bool, height: f32, share: f32| {
         let (columns, stacked) = if across { (sides, 1.0) } else { (1.0, sides) };

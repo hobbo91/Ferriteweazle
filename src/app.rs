@@ -98,14 +98,16 @@ const FADE_TIME: f32 = 0.25;
 const FADE_STEP: f32 = 1.0 / 30.0;
 /// Frames to wait for the old theme's screenshot before changing at once.
 const FADE_WAIT: u32 = 8;
-/// The log's height apart from its lines: its heading row and frame.
-const LOG_HEADING: f32 = 58.0;
 /// One line of the log.
 const LOG_LINE: f32 = 18.0;
 /// The drawer's height, margins included: the command line's, and the log's at first.
 const DRAWER: f32 = 124.0;
 /// Height the log leaves the page above it, however far it is dragged.
 const LOG_ROOM: f32 = 260.0;
+/// How long a drawer takes to slide open or shut, in seconds.
+const DRAWER_TIME: f32 = 0.2;
+/// The status pane's strip for its scroll bar, taken from its right margin.
+const STATUS_BAR: i8 = 10;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Page {
@@ -241,6 +243,8 @@ pub struct App {
     auto_info: bool,
     logo: Option<egui::TextureHandle>,
     fade: Fade,
+    /// The drawer open when the drawers were last drawn.
+    drawn: Option<Drawer>,
 }
 
 impl App {
@@ -283,6 +287,7 @@ impl App {
             auto_info: false,
             logo: None,
             fade: Fade::default(),
+            drawn: None,
         }
     }
 
@@ -352,10 +357,14 @@ impl App {
                     .show(ui, |ui| self.settings_page(ui));
             }
             Page::Command(name) => {
-                // Added first, so it spans the page and the status pane.
-                if let Some(drawer) = self.settings.drawer {
-                    self.drawer(ui, &name, drawer);
-                }
+                let status_frame = Frame::new().fill(p.bg).inner_margin(Margin {
+                    right: 18 - STATUS_BAR,
+                    ..Margin::same(18)
+                });
+                // The status pane's height with no drawer open.
+                let tall = ui.available_height() - status_frame.total_margin().sum().y;
+                // Added first, so they span the page and the status pane.
+                self.drawers(ui, &name);
                 // The page takes up to its form's full width and the status
                 // pane the rest, down to STATUS_MIN.
                 let widest = (ui.available_width() - PAGE_MIN).max(STATUS_MIN);
@@ -364,8 +373,8 @@ impl App {
                 egui::Panel::right("status")
                     .resizable(false)
                     .exact_size(status.min(1100.0))
-                    .frame(Frame::new().fill(p.bg).inner_margin(Margin::same(18)))
-                    .show(ui, |ui| self.status(ui, &name));
+                    .frame(status_frame)
+                    .show(ui, |ui| self.status(ui, &name, tall));
                 egui::CentralPanel::default()
                     .frame(page)
                     .show(ui, |ui| self.page(ui, &name));
@@ -1327,11 +1336,29 @@ impl App {
     }
 
     /// The disk's status: what is happening now, or last happened, to a disk.
-    fn status(&mut self, ui: &mut Ui, page: &str) {
+    /// The job and its map. `tall` is the pane's height with no drawer open:
+    /// the map keeps the size that gives it while a drawer leaves it room.
+    fn status(&mut self, ui: &mut Ui, page: &str, tall: f32) {
+        let full = ui.available_height();
+        // The rows keep one width, clear of the strip the scroll bar floats in.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(ui.available_width() - f32::from(STATUS_BAR));
+                self.status_rows(ui, page, tall, full)
+            });
+    }
+
+    fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
         let blank = self.blank_map(page);
-        let (top, full) = (ui.cursor().top(), ui.available_height());
-        let budget = |ui: &Ui| full * MAP_SHARE - (ui.cursor().top() - top);
+        let top = ui.cursor().top();
+        // Below the cursor: the map's share of the pane with no drawer open,
+        // so opening one leaves the map be while it fits, and the room there is.
+        let room = |ui: &Ui| {
+            let used = ui.cursor().top() - top;
+            (tall * MAP_SHARE - used, full - used)
+        };
         // The job's state keeps to the top right, leaving the rows below to its name.
         egui::Sides::new().shrink_left().truncate().show(
             ui,
@@ -1347,7 +1374,8 @@ impl App {
         let Some(job) = &self.disk else {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
-            diskmap::show(ui, &blank, "blank", budget(ui));
+            let (budget, room) = room(ui);
+            diskmap::show(ui, &blank, "blank", budget, room);
             return;
         };
         // These rows wrap, so the job shows in full.
@@ -1384,9 +1412,10 @@ impl App {
                 });
         }
         ui.add_space(8.0);
+        let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, "blank", budget(ui)),
-            false => diskmap::show(ui, &job.progress, job.started, budget(ui)),
+            true => diskmap::show(ui, &blank, "blank", budget, room),
+            false => diskmap::show(ui, &job.progress, job.started, budget, room),
         }
     }
 
@@ -1406,8 +1435,9 @@ impl App {
         Progress::blank(cyls, heads)
     }
 
-    /// The drawer under the page and the status pane: the command line or the log.
-    fn drawer(&mut self, ui: &mut Ui, page: &str, drawer: Drawer) {
+    /// The drawers under the page and the status pane: the command line and
+    /// the log. A drawer slides open and shut; going from one to the other does not.
+    fn drawers(&mut self, ui: &mut Ui, page: &str) {
         let p = theme::palette(ui);
         let frame = Frame::new().fill(p.bg).inner_margin(Margin {
             left: 28,
@@ -1415,31 +1445,46 @@ impl App {
             top: 12,
             bottom: 14,
         });
-        match drawer {
-            Drawer::Cli => {
-                egui::Panel::bottom("cli")
-                    .frame(frame)
-                    .resizable(false)
-                    .exact_size(DRAWER)
-                    .show(ui, |ui| self.cli(ui, page));
-            }
-            Drawer::Log => {
-                // As tall as the command line at first; drag its edge for more.
-                let tallest = (ui.available_height() - LOG_ROOM).max(DRAWER);
-                egui::Panel::bottom("log")
-                    .frame(frame)
-                    .resizable(true)
-                    .default_size(DRAWER)
-                    .size_range(DRAWER..=tallest)
-                    .show(ui, |ui| {
-                        let log = &self.log;
-                        let note = (log.dropped() > 0).then_some("Older lines were dropped.");
-                        // Exactly the room there is, or the drawer grows to fit.
-                        let height = (ui.available_height() - LOG_HEADING).max(LOG_LINE);
-                        let lines = log.lines();
-                        output(ui, "Log", note, lines, |i| log.is_head(i), p, height);
-                    });
-            }
+        let open = self.settings.drawer;
+        let switched = self.drawn.is_some() && open.is_some() && self.drawn != open;
+        self.drawn = open;
+        for (drawer, id) in [(Drawer::Cli, "cli"), (Drawer::Log, "log")] {
+            // Runs the slide egui's Panel keys by this id, so it takes DRAWER_TIME,
+            // or no time going straight from one drawer to the other.
+            let slide = Id::new(id).with("animation");
+            let time = if switched { 0.0 } else { DRAWER_TIME };
+            ui.ctx()
+                .animate_bool_with_time(slide, open == Some(drawer), time);
+        }
+        let mut cli = open == Some(Drawer::Cli);
+        egui::Panel::bottom("cli")
+            .frame(frame)
+            .resizable(false)
+            .exact_size(DRAWER)
+            .show_collapsible(ui, &mut cli, |ui| self.cli(ui, page));
+        // As tall as the command line at first; drag its edge for more.
+        let tallest = (ui.available_height() - LOG_ROOM).max(DRAWER);
+        let mut log = open == Some(Drawer::Log);
+        let mut clear = false;
+        egui::Panel::bottom("log")
+            .frame(frame)
+            .resizable(true)
+            .drag_to_open(false)
+            .default_size(DRAWER)
+            .size_range(DRAWER..=tallest)
+            .show_collapsible(ui, &mut log, |ui| {
+                let log = &self.log;
+                let note = log.trimmed().then_some("Older lines were dropped.");
+                let lines = log.lines();
+                let heads = |i| log.is_head(i);
+                clear = output(ui, "Log", note, lines, heads, p, f32::INFINITY, true);
+            });
+        if clear {
+            self.log.clear();
+        }
+        // Dragging the log's edge below its least height shuts it.
+        if open == Some(Drawer::Log) && !log {
+            self.settings.drawer = None;
         }
     }
 
@@ -2320,12 +2365,15 @@ fn result(ui: &mut Ui, job: &Job) {
     {
         device_table(ui, &info, p);
     } else {
-        output(ui, "Output", None, &job.log, |_| false, p, 260.0);
+        output(ui, "Output", None, &job.log, |_| false, p, 260.0, false);
     }
 }
 
 /// gw's output: a scrolling log of this height, with a note beside its
 /// heading, and Copy and Save. `head` picks the lines that head a job.
+/// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
+/// `height` tall or as tall as the room left. True when Clear was pressed.
+#[allow(clippy::too_many_arguments)]
 fn output(
     ui: &mut Ui,
     heading: &str,
@@ -2334,7 +2382,9 @@ fn output(
     head: impl Fn(usize) -> bool,
     p: &Palette,
     height: f32,
-) {
+    clearable: bool,
+) -> bool {
+    let mut clear = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).strong());
         if let Some(note) = note {
@@ -2351,36 +2401,45 @@ fn output(
             if copy.on_hover_text("Copy gw's output.").clicked() {
                 ui.ctx().copy_text(log.join("\n"));
             }
+            if clearable {
+                let button = ui.add_enabled(!log.is_empty(), egui::Button::new("Clear"));
+                clear = button.on_hover_text("Clear the log.").clicked();
+            }
         });
     });
-    Frame::new()
+    let frame = Frame::new()
         .fill(p.card)
         .stroke(Stroke::new(1.0, p.line))
         .corner_radius(8)
-        .inner_margin(8)
-        .show(ui, |ui| {
-            if log.is_empty() {
-                ui.set_min_size(vec2(ui.available_width(), height.min(80.0)));
-                ui.label(RichText::new("gw's output appears here.").weak());
-                return;
-            }
-            let row = ui.text_style_height(&TextStyle::Monospace);
-            egui::ScrollArea::both()
-                .id_salt("log")
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .max_height(height)
-                .min_scrolled_height(height)
-                .show_rows(ui, row, log.len(), |ui, rows| {
-                    for i in rows {
-                        let text = match head(i) {
-                            true => RichText::new(&log[i]).monospace().color(p.accent),
-                            false => log_line(&log[i], p),
-                        };
-                        ui.add(egui::Label::new(text).extend());
-                    }
-                });
-        });
+        .inner_margin(8);
+    // Exactly the room left: a drawer a little taller than its contents
+    // would shrink to them, frame by frame.
+    let room = ui.available_height() - frame.total_margin().sum().y;
+    let height = height.min(room).max(LOG_LINE);
+    frame.show(ui, |ui| {
+        if log.is_empty() {
+            ui.set_min_size(vec2(ui.available_width(), height.min(80.0)));
+            ui.label(RichText::new("gw's output appears here.").weak());
+            return;
+        }
+        let row = ui.text_style_height(&TextStyle::Monospace);
+        egui::ScrollArea::both()
+            .id_salt("log")
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .max_height(height)
+            .min_scrolled_height(height)
+            .show_rows(ui, row, log.len(), |ui, rows| {
+                for i in rows {
+                    let text = match head(i) {
+                        true => RichText::new(&log[i]).monospace().color(p.accent),
+                        false => log_line(&log[i], p),
+                    };
+                    ui.add(egui::Label::new(text).extend());
+                }
+            });
+    });
+    clear
 }
 
 /// The port chosen while it is connected, else the best Greaseweazle.
