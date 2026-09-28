@@ -1315,3 +1315,28 @@ fn the_log_says_when_it_has_dropped_its_oldest_lines() {
     w.get_by_label("Older lines were dropped.");
     w.get_by_label("Done in 1:00.");
 }
+
+#[test]
+fn a_log_dragged_to_its_tallest_never_pushes_the_page_over_the_run_bar() {
+    let mut w = smooth(Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    });
+    w.run();
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    drag_log(&mut w, 600.0);
+    w.run();
+    let run = w
+        .get_all_by_role_and_label(Role::Button, "Read disk")
+        .last()
+        .unwrap()
+        .rect();
+    let status = w.get_by_label("Disk status").rect();
+    let page = w
+        .get_all_by_role(Role::ScrollBar)
+        .map(|b| b.rect())
+        .find(|r| r.top() < run.top() && r.right() < status.left())
+        .expect("the page scrolls");
+    assert!(page.bottom() <= run.top(), "{page:?} over {run:?}");
+}

@@ -1035,18 +1035,7 @@ impl App {
             ui.label(format!("gw {} has no {name} command.", schema.version));
             return;
         };
-        // Everything above and in the form ends where its fields do.
         let width = form::form_width(ui);
-        ui.scope(|ui| {
-            ui.set_max_width(width);
-            ui.horizontal(|ui| {
-                ui.heading(title(name));
-                right(ui, |ui| self.presets_menu(ui, name));
-            });
-            ui.label(RichText::new(form::sentence(&cmd.about)).weak());
-            self.notice_bar(ui, name);
-        });
-        ui.add_space(14.0);
         egui::Panel::bottom("run-bar")
             .frame(Frame::new().inner_margin(Margin {
                 left: 0,
@@ -1057,13 +1046,23 @@ impl App {
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, cmd));
         let cannot_detect = self.cannot_detect(name);
+        // Everything above the run bar scrolls, in no more than the room left,
+        // so a tall drawer never pushes the page over the bar.
         let action = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
+            .min_scrolled_height(0.0)
             .show(ui, |ui| {
                 // A column of its own: the scroll area fills the page, the form does not.
                 let column = Layout::top_down(Align::Min);
                 ui.allocate_ui_with_layout(vec2(width, 0.0), column, |ui| {
                     ui.set_max_width(width);
+                    ui.horizontal(|ui| {
+                        ui.heading(title(name));
+                        right(ui, |ui| self.presets_menu(ui, name));
+                    });
+                    ui.label(RichText::new(form::sentence(&cmd.about)).weak());
+                    self.notice_bar(ui, name);
+                    ui.add_space(14.0);
                     let values = self.settings.values.entry(name.to_owned()).or_default();
                     let action = Form {
                         schema: &schema,
