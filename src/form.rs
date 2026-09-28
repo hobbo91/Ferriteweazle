@@ -506,12 +506,17 @@ impl<'a> Form<'a> {
         }
     }
 
-    /// The format to decode with: the one chosen, or the input image's own.
-    fn effective_format(&self) -> Option<String> {
-        match self.values.get("format") {
-            "" => input_format(self.schema, self.cmd, self.values),
-            chosen => Some(chosen.to_owned()),
-        }
+    fn effective_format(&mut self) -> Option<String> {
+        effective_format(self.service, self.schema, self.cmd, self.values)
+    }
+
+    /// gw's objection to the input, where it would find the format in the file.
+    fn input_fault(&mut self) -> Option<String> {
+        let path = input_file(self.cmd, self.values);
+        self.schema.image(path).filter(|(_, i)| i.finds_format)?;
+        let e = self.service.image_format(path).error()?;
+        let file = Path::new(path).file_name()?.to_string_lossy();
+        Some(sentence(&e.replace(path, &file)))
     }
 
     /// What gw says of a format, read with the disk definitions it needs.
@@ -585,6 +590,8 @@ impl<'a> Form<'a> {
                     }
                     Load::Waiting(_) => {}
                 }
+            } else if let Some(e) = self.input_fault() {
+                ui.label(RichText::new(e).small().color(theme::palette(ui).bad));
             }
         });
         if let Some(f) = chosen {
@@ -1055,6 +1062,7 @@ pub fn blocked(
     cmd: &Command,
     values: &Values,
     outputs: &BTreeMap<String, Output>,
+    service: &Service,
 ) -> Option<&'static str> {
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
@@ -1068,7 +1076,7 @@ pub fn blocked(
         // Flux saved as flux needs no format.
         if !(flux && FLUX.contains(&out.ext.as_str()))
             && values.get("format").is_empty()
-            && input_format(schema, cmd, values).is_none()
+            && input_format(schema, cmd, values, service).is_none()
         {
             return Some(if flux {
                 "Choose a disk format first, or press Detect."
@@ -1136,13 +1144,38 @@ fn flux_source(cmd: &Command, values: &Values) -> bool {
         || extension(input_file(cmd, values)).is_some_and(|e| FLUX.contains(&e.as_str()))
 }
 
-/// The format the input image names for itself, such as an .adf's.
-fn input_format(schema: &Schema, cmd: &Command, values: &Values) -> Option<String> {
-    schema
-        .image(input_file(cmd, values))?
-        .1
-        .default_format
-        .clone()
+/// The format to decode with: the one chosen, or the input image's own.
+/// Asks gw about an input it finds the format in, if it has not yet.
+pub fn effective_format(
+    service: &mut Service,
+    schema: &Schema,
+    cmd: &Command,
+    values: &Values,
+) -> Option<String> {
+    match values.get("format") {
+        "" => {
+            let path = input_file(cmd, values);
+            if schema.image(path).is_some_and(|(_, i)| i.finds_format) {
+                service.image_format(path);
+            }
+            input_format(schema, cmd, values, service)
+        }
+        chosen => Some(chosen.to_owned()),
+    }
+}
+
+/// The format gw takes from the input image: its type's own, such as an
+/// .adf's, else one gw has found in the file, such as an .nsi's.
+fn input_format(
+    schema: &Schema,
+    cmd: &Command,
+    values: &Values,
+    service: &Service,
+) -> Option<String> {
+    let path = input_file(cmd, values);
+    let (_, image) = schema.image(path)?;
+    let found = || service.known_image_format(path).map(str::to_owned);
+    image.default_format.clone().or_else(found)
 }
 
 /// A tooltip of a widget's own, in a row that has one: the row's then stays hidden.
