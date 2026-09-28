@@ -8,7 +8,7 @@
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use ferriteweazle::form::Output;
+use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, Outcome};
 use ferriteweazle::schema::Port;
 use ferriteweazle::{App, Page, Settings};
@@ -290,6 +290,26 @@ fn screens() {
                 .expect("a format picker")
                 .click();
         });
+        let games = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens-games");
+        std::fs::create_dir_all(games).unwrap();
+        for d in 1..=12 {
+            std::fs::write(format!("{games}/Game_Disk{d}.scp"), "").unwrap();
+        }
+        for page in ["write", "convert"] {
+            let mut batch = settings(page, theme);
+            let values = batch.values.entry(page.into()).or_default();
+            values.set(form::BATCH, "on");
+            values.set(form::BATCH_FOLDER, games);
+            values.set("format", "amiga.amigados");
+            if page == "convert" {
+                let out = batch.outputs.entry("convert/out_file".into()).or_default();
+                out.beside_input = false;
+                out.ext = ".adf".into();
+                out.folder = "/Users/you/Documents/Ferriteweazle/Images".into();
+                out.prefix = "Backup_".into();
+            }
+            render(&format!("{page}-batch"), theme, batch, None, |_| {});
+        }
         for (name, job) in [
             ("read", Some(read_job())),
             ("convert", Some(Job::replay("convert", DAMAGED))),

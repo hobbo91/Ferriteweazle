@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::marker::PhantomData;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
@@ -84,6 +85,8 @@ pub struct Service {
     image_formats: HashMap<(String, Option<SystemTime>), Load<Option<String>>>,
     infos: HashMap<(String, String), Load<FormatInfo>>,
     checks: HashMap<(String, String, String), Load<Option<String>>>,
+    /// The files in a folder, keyed as `diskdefs` by the folder's last change.
+    folders: HashMap<(String, Option<SystemTime>), Vec<PathBuf>>,
 }
 
 impl Service {
@@ -116,6 +119,7 @@ impl Service {
             image_formats: HashMap::new(),
             infos: HashMap::new(),
             checks: HashMap::new(),
+            folders: HashMap::new(),
         }
     }
 
@@ -240,6 +244,31 @@ impl Service {
     pub fn image_fault(&self, path: &str) -> Option<&str> {
         let load = self.image_formats.get(&(path.to_owned(), modified(path)))?;
         load.error()
+    }
+
+    /// The files in `folder`, listed again when it changes.
+    pub fn folder(&mut self, folder: &str) -> &[PathBuf] {
+        let key = (folder.to_owned(), modified(folder));
+        if !self.folders.contains_key(&key) {
+            self.folders.retain(|(f, _), _| f != folder);
+            let files = std::fs::read_dir(folder).map_or_else(
+                |_| Vec::new(),
+                |dir| {
+                    dir.flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.is_file())
+                        .collect()
+                },
+            );
+            self.folders.insert(key.clone(), files);
+        }
+        &self.folders[&key]
+    }
+
+    /// As `folder`, from the last listing.
+    pub fn known_folder(&self, folder: &str) -> &[PathBuf] {
+        let key = (folder.to_owned(), modified(folder));
+        self.folders.get(&key).map_or(&[], Vec::as_slice)
     }
 
     pub fn format_info(&mut self, diskdefs: &str, name: &str) -> &Load<FormatInfo> {

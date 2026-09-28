@@ -9,7 +9,7 @@ use eframe::egui::{
     self, Color32, CornerRadius, PopupCloseBehavior, RichText, Sense, TextEdit, Ui, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,16 @@ const FILE_TYPES: &[(&str, &str, &str, &[&str])] =
 
 /// The update page's firmware source, kept with its settings. Not a gw argument.
 pub const FIRMWARE: &str = "firmware";
+
+/// A page's batch settings, kept with its values. Not gw arguments.
+pub const BATCH: &str = "batch";
+pub const BATCH_FOLDER: &str = "batch_folder";
+/// The one image type a batch takes, empty for every type gw reads.
+pub const BATCH_TYPE: &str = "batch_type";
+
+/// Commands that take a folder of images one at a time, and the argument
+/// each image goes to.
+pub const BATCHES: &[(&str, &str)] = &[("write", "file"), ("convert", "in_file")];
 
 /// Where gw update takes the firmware from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,7 +396,13 @@ impl<'a> Form<'a> {
         }
         let blocker = self.blocker(a);
         ui.data_mut(|d| d.remove_temp::<bool>(own_tip_id()));
-        let (name, (field, action)) = row(ui, &label(a), |ui| {
+        // "File" would name one of its own choices.
+        let batchable = BATCHES.contains(&(self.cmd.name.as_str(), a.dest.as_str()));
+        let text = match (batchable, a.dest.as_str()) {
+            (true, "file") => "Image".to_owned(),
+            _ => label(a),
+        };
+        let (name, (field, action)) = row(ui, &text, |ui| {
             let r = ui.add_enabled_ui(blocker.is_none(), |ui| self.field(ui, a));
             (r.response, r.inner)
         });
@@ -939,7 +955,115 @@ impl<'a> Form<'a> {
     }
 
     /// A file to read, with the image type it has and any options that type takes.
+    /// The image a page takes; on Write and Convert, or a folder of them.
     fn input(&mut self, ui: &mut Ui, a: &Arg) {
+        let batchable = BATCHES.contains(&(self.cmd.name.as_str(), a.dest.as_str()));
+        ui.vertical(|ui| {
+            if batchable {
+                self.source(ui, a);
+            }
+            match batchable && self.values.on(BATCH) {
+                true => self.folder(ui, a),
+                false => self.image(ui, a),
+            }
+        });
+    }
+
+    fn source(&mut self, ui: &mut Ui, a: &Arg) {
+        let batch = self.values.on(BATCH);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (on, name, tip) in [
+                (false, "File", "One image."),
+                (
+                    true,
+                    "Folder",
+                    "Every image in a folder, one after another in name order.",
+                ),
+            ] {
+                if ui
+                    .selectable_label(batch == on, name)
+                    .own_tip(tip)
+                    .clicked()
+                    && batch != on
+                {
+                    let file = split_opts(self.values.get(&a.dest)).0.to_owned();
+                    if on && !self.values.on(BATCH_FOLDER) {
+                        let parent = Path::new(&file).parent().map(Path::as_os_str);
+                        self.values.set(BATCH_FOLDER, lossy(parent));
+                    }
+                    // The folder's first image is no choice of a file.
+                    self.values.set(&a.dest, "");
+                    self.values.set(BATCH, if on { ON } else { "" });
+                }
+            }
+        });
+    }
+
+    /// A folder of images. Its first stands for them all on the page: the
+    /// format, Detect and the command line go by it.
+    fn folder(&mut self, ui: &mut Ui, a: &Arg) {
+        let mut folder = self.values.get(BATCH_FOLDER).to_owned();
+        ui.horizontal(|ui| {
+            let edit = edit(&mut folder)
+                .hint_text("Required")
+                .desired_width(beside_button(ui, BROWSE_BUTTON));
+            ui.add(edit);
+            if browse_button(ui)
+                .own_tip("Choose a folder of images.")
+                .clicked()
+                && let Some(f) = rfd::FileDialog::new().set_directory(&folder).pick_folder()
+            {
+                folder = f.to_string_lossy().into_owned();
+            }
+        });
+        self.values.set(BATCH_FOLDER, folder.as_str());
+        let files = self.service.folder(&folder).to_vec();
+        let mut only = self.values.get(BATCH_TYPE).to_owned();
+        let taken = batch_images(self.schema, &files, &only);
+        if !folder.is_empty() {
+            let schema = self.schema;
+            let name =
+                |e: &str| image_name(e, schema.images.get(e).map_or("", |i| i.name.as_str()));
+            let types: BTreeSet<String> = batch_images(schema, &files, "")
+                .iter()
+                .filter_map(|p| extension(&p.to_string_lossy()))
+                .collect();
+            ui.horizontal(|ui| {
+                let shown = match only.as_str() {
+                    "" => "Every type".to_owned(),
+                    e => name(e),
+                };
+                egui::ComboBox::from_id_salt(("batch type", &self.cmd.name))
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut only, String::new(), "Every type");
+                        for e in &types {
+                            ui.selectable_value(&mut only, e.clone(), name(e));
+                        }
+                    })
+                    .response
+                    .own_tip("Which of the folder's images to take.");
+                let p = theme::palette(ui);
+                let text = match taken.is_empty() {
+                    true => RichText::new("No images gw can read.").color(p.bad),
+                    false => RichText::new(listing(&taken)).weak(),
+                };
+                ui.add(egui::Label::new(text.small()).truncate());
+            });
+        }
+        self.values.set(BATCH_TYPE, only);
+        let first = taken
+            .first()
+            .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
+        if self.values.get(&a.dest) != first {
+            self.values.set(&a.dest, first);
+            // The run button above was drawn with the old image.
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn image(&mut self, ui: &mut Ui, a: &Arg) {
         let (path, mut opts) = split_opts(self.values.get(&a.dest));
         let mut path = path.to_owned();
         let mut changed = false;
@@ -993,6 +1117,15 @@ impl<'a> Form<'a> {
         let schema = self.schema;
         let input = input_file(self.cmd, self.values).to_owned();
         let has_input = self.cmd.arg("in_file").is_some();
+        let batch = has_input && self.values.on(BATCH);
+        let images = match batch {
+            true => batch_images(
+                schema,
+                self.service.known_folder(self.values.get(BATCH_FOLDER)),
+                self.values.get(BATCH_TYPE),
+            ),
+            false => Vec::new(),
+        };
         let out = self
             .outputs
             .entry(output_key(&self.cmd.name, &a.dest))
@@ -1045,41 +1178,62 @@ impl<'a> Form<'a> {
         ui.label(RichText::new("Save to").small().strong().color(p.dim));
         if has_input {
             // Beside the input, an image of the input's own type would replace it.
-            let clash = extension(&input).is_some_and(|e| e.eq_ignore_ascii_case(&out.ext));
+            let clash =
+                !batch && extension(&input).is_some_and(|e| e.eq_ignore_ascii_case(&out.ext));
             out.beside_input &= !clash;
+            let (text, tip) = match batch {
+                true => (
+                    "Next to each input",
+                    "Save each image in its input's folder.",
+                ),
+                false => (
+                    "Next to the input file",
+                    "Save the image in the input's folder, under its name.",
+                ),
+            };
             row(ui, "Save", |ui| {
-                ui.add_enabled_ui(!clash, |ui| {
-                    checkbox(ui, &mut out.beside_input, "Next to the input file")
-                })
-                .response
-                .on_disabled_hover_text("It would have the input's name and replace it.")
+                ui.add_enabled_ui(!clash, |ui| checkbox(ui, &mut out.beside_input, text))
+                    .response
+                    .on_disabled_hover_text("It would have the input's name and replace it.")
             })
             .0
-            .on_hover_text("Save the image in the input's folder, under its name.");
+            .on_hover_text(tip);
         }
         let beside = has_input && out.beside_input;
-        if beside && !input.is_empty() {
+        if beside && !batch && !input.is_empty() {
             let input = Path::new(&input);
             out.folder = lossy(input.parent().map(Path::as_os_str));
             out.name = lossy(input.file_stem());
-        } else if !beside {
-            let (name, _) = row(ui, "Folder", |ui| {
-                ui.horizontal(|ui| {
-                    let width = beside_button(ui, BROWSE_BUTTON);
-                    ui.add(edit(&mut out.folder).desired_width(width))
-                        .on_hover_text("Where the image is saved.");
-                    if browse_button(ui)
-                        .on_hover_text("Choose a folder.")
-                        .clicked()
-                        && let Some(f) = rfd::FileDialog::new()
-                            .set_directory(&out.folder)
-                            .pick_folder()
-                    {
-                        out.folder = f.to_string_lossy().into_owned();
-                    }
+        }
+        if batch {
+            if !beside {
+                folder_row(ui, &mut out.folder);
+            }
+            for (label, text, tip) in [
+                (
+                    "Prefix",
+                    &mut out.prefix,
+                    "Text before each input's name, such as Backup_.",
+                ),
+                (
+                    "Suffix",
+                    &mut out.suffix,
+                    "Text after each input's name, such as _copy.",
+                ),
+            ] {
+                let (name, _) = row(ui, label, |ui| {
+                    ui.add(
+                        edit(text)
+                            .char_limit(NAME_LIMIT)
+                            .hint_text("None")
+                            .desired_width(SHORT_FIELD),
+                    )
+                    .on_hover_text(tip);
                 });
-            });
-            name.on_hover_text("Where the image is saved.");
+                name.on_hover_text(tip);
+            }
+        } else if !beside {
+            folder_row(ui, &mut out.folder);
             let (name, _) = row(ui, "Name", |ui| {
                 ui.add(
                     edit(&mut out.name)
@@ -1092,16 +1246,29 @@ impl<'a> Form<'a> {
             name.on_hover_text("The image's file name, without its type.");
         }
 
-        let value = out.value(1);
+        let value = match (batch, images.first()) {
+            (true, Some(first)) => out.batch_value(first),
+            (true, None) => String::new(),
+            (false, _) => out.value(1),
+        };
         if !value.is_empty() {
             row(ui, "", |ui| {
-                let shown = RichText::new(out.preview())
-                    .monospace()
-                    .small()
-                    .color(p.dim);
-                ui.label(shown);
-                if !input.is_empty() && Path::new(&input) == out.path(1) {
-                    ui.label(RichText::new(REPLACES_INPUT).small().color(p.bad));
+                let preview = match batch {
+                    true => out.batch_preview(&images),
+                    false => out.preview(),
+                };
+                ui.label(RichText::new(preview).monospace().small().color(p.dim));
+                let replaces = match batch {
+                    true => images.iter().any(|i| out.batch_path(i) == *i),
+                    false => !input.is_empty() && Path::new(&input) == out.path(1),
+                };
+                if replaces {
+                    let text = if batch {
+                        REPLACES_INPUTS
+                    } else {
+                        REPLACES_INPUT
+                    };
+                    ui.label(RichText::new(text).small().color(p.bad));
                 }
             });
         }
@@ -1177,6 +1344,9 @@ const TYPE_TIP: &str = "The kind of file to make. A disk format picks one.";
 
 const REPLACES_INPUT: &str = "This is the input file. Choose another type or name.";
 
+const REPLACES_INPUTS: &str =
+    "An image would replace its input. Choose another type, folder, prefix or suffix.";
+
 /// The most disks one session reads.
 pub const MAX_DISKS: u32 = 99;
 
@@ -1208,13 +1378,29 @@ pub fn blocked(
     {
         return Some("gw cannot read this image. See Disk format.");
     }
+    let batch = batch_input(cmd, values);
+    if let Some(dest) = batch
+        && values.get(dest).is_empty()
+    {
+        return Some(match values.get(BATCH_FOLDER) {
+            "" => "Choose a folder of images first.",
+            _ => "The folder has no images gw can read.",
+        });
+    }
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
             return Some(NO_OUTPUT);
         };
-        if out.value(1).is_empty() {
+        if batch.is_none() && out.value(1).is_empty() {
             return Some(NO_OUTPUT);
+        }
+        if batch.is_some() {
+            let files = service.known_folder(values.get(BATCH_FOLDER));
+            let images = batch_images(schema, files, values.get(BATCH_TYPE));
+            if images.iter().any(|i| out.batch_path(i) == *i) {
+                return Some(REPLACES_INPUTS);
+            }
         }
         let flux = flux_source(cmd, values);
         // Flux saved as flux needs no format.
@@ -1232,6 +1418,97 @@ pub fn blocked(
     let path = |dest: &str| split_opts(values.get(dest)).0;
     let same = cmd.arg("in_file").is_some() && !path("in_file").is_empty();
     (same && path("in_file") == path("out_file")).then_some(REPLACES_INPUT)
+}
+
+/// Where a new image is saved.
+fn folder_row(ui: &mut Ui, folder: &mut String) {
+    let (name, _) = row(ui, "Folder", |ui| {
+        ui.horizontal(|ui| {
+            let width = beside_button(ui, BROWSE_BUTTON);
+            ui.add(edit(folder).desired_width(width))
+                .on_hover_text("Where the image is saved.");
+            if browse_button(ui)
+                .on_hover_text("Choose a folder.")
+                .clicked()
+                && let Some(f) = rfd::FileDialog::new().set_directory(&*folder).pick_folder()
+            {
+                *folder = f.to_string_lossy().into_owned();
+            }
+        });
+    });
+    name.on_hover_text("Where the image is saved.");
+}
+
+/// The argument a page's folder of images goes to, one image a run, when
+/// its batch is on.
+pub fn batch_input(cmd: &Command, values: &Values) -> Option<&'static str> {
+    let (_, dest) = BATCHES.iter().find(|(c, _)| *c == cmd.name)?;
+    values.on(BATCH).then_some(*dest)
+}
+
+/// The images among `files` gw reads, or those of type `only`, in name order.
+pub fn batch_images(schema: &Schema, files: &[PathBuf], only: &str) -> Vec<PathBuf> {
+    let mut images: Vec<PathBuf> = files
+        .iter()
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .filter(|p| {
+            schema
+                .image(&p.to_string_lossy())
+                .is_some_and(|(e, _)| only.is_empty() || e == only)
+        })
+        .cloned()
+        .collect();
+    images.sort_by(|a, b| natural(&a.to_string_lossy(), &b.to_string_lossy()));
+    images
+}
+
+/// Orders names with their numbers as numbers: Disk2 before Disk10.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::Equal;
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        let order = match (a.peek(), b.peek()) {
+            (None, None) => return Equal,
+            (x, y)
+                if x.is_some_and(char::is_ascii_digit) && y.is_some_and(char::is_ascii_digit) =>
+            {
+                let number = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let digits: String =
+                        std::iter::from_fn(|| it.next_if(char::is_ascii_digit)).collect();
+                    digits.trim_start_matches('0').to_owned()
+                };
+                let (m, n) = (number(&mut a), number(&mut b));
+                m.len().cmp(&n.len()).then_with(|| m.cmp(&n))
+            }
+            (x, y) => {
+                let order = x
+                    .map(|c| c.to_ascii_lowercase())
+                    .cmp(&y.map(|c| c.to_ascii_lowercase()));
+                a.next();
+                b.next();
+                order
+            }
+        };
+        if order != Equal {
+            return order;
+        }
+    }
+}
+
+/// "12 images: Disk1.scp, Disk2.scp … Disk12.scp"
+fn listing(images: &[PathBuf]) -> String {
+    let name = |p: &PathBuf| lossy(p.file_name());
+    let names = match images {
+        [a, b, .., z] if images.len() > 3 => format!("{}, {} … {}", name(a), name(b), name(z)),
+        _ => images.iter().map(name).collect::<Vec<_>>().join(", "),
+    };
+    match images.len() {
+        1 => format!("1 image: {names}"),
+        n => format!("{n} images: {names}"),
+    }
 }
 
 /// Chooses a disk format, and the image type that suits it.
@@ -1773,6 +2050,9 @@ pub struct Output {
     pub opts: BTreeMap<String, String>,
     /// Take the folder and name from the input file, when there is one.
     pub beside_input: bool,
+    /// Around each input's name in a batch: `Backup_Disk1_copy`.
+    pub prefix: String,
+    pub suffix: String,
 }
 
 impl Default for Output {
@@ -1786,6 +2066,8 @@ impl Default for Output {
             ext: String::new(),
             opts: BTreeMap::new(),
             beside_input: false,
+            prefix: String::new(),
+            suffix: String::new(),
         }
     }
 }
@@ -1836,6 +2118,40 @@ impl Output {
             return String::new();
         }
         join_opts(&self.path(disk).to_string_lossy(), &self.opts)
+    }
+
+    /// The file a batch makes from `input`: its name between the prefix and
+    /// the suffix, in the input's folder when beside it.
+    pub fn batch_path(&self, input: &Path) -> PathBuf {
+        let folder = match self.beside_input {
+            true => input.parent().unwrap_or(Path::new("")),
+            false => Path::new(&self.folder),
+        };
+        let (prefix, suffix) = (self.prefix.trim(), self.suffix.trim());
+        let stem = lossy(input.file_stem());
+        folder.join(format!("{prefix}{stem}{suffix}{}", self.ext))
+    }
+
+    /// As `value`, for the image a batch makes from `input`.
+    pub fn batch_value(&self, input: &Path) -> String {
+        match self.ext.is_empty() {
+            true => String::new(),
+            false => join_opts(&self.batch_path(input).to_string_lossy(), &self.opts),
+        }
+    }
+
+    /// The first file a batch makes, and the last.
+    fn batch_preview(&self, images: &[PathBuf]) -> String {
+        let path = |i: &PathBuf| self.batch_path(i);
+        match images {
+            [] => String::new(),
+            [one] => path(one).to_string_lossy().into_owned(),
+            [first, .., last] => format!(
+                "{} … {}",
+                path(first).to_string_lossy(),
+                lossy(path(last).file_name())
+            ),
+        }
     }
 
     /// The first file, and the last when there are several.
@@ -2043,6 +2359,95 @@ mod tests {
 
     fn schema() -> Schema {
         serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+    }
+
+    #[test]
+    fn a_batch_takes_the_images_gw_reads_in_name_order() {
+        let s = schema();
+        let names = [
+            "Disk10.adf",
+            "Disk2.adf",
+            "disk1.ADF",
+            ".Disk0.adf",
+            "notes.txt",
+            "Disk3.scp",
+        ];
+        let files: Vec<PathBuf> = names.iter().map(|n| Path::new("/f").join(n)).collect();
+        let taken = |only| -> Vec<String> {
+            let images = batch_images(&s, &files, only);
+            images.iter().map(|p| lossy(p.file_name())).collect()
+        };
+        assert_eq!(
+            taken(""),
+            ["disk1.ADF", "Disk2.adf", "Disk3.scp", "Disk10.adf"]
+        );
+        assert_eq!(taken(".adf"), ["disk1.ADF", "Disk2.adf", "Disk10.adf"]);
+        let images = batch_images(&s, &files, "");
+        assert_eq!(
+            listing(&images),
+            "4 images: disk1.ADF, Disk2.adf … Disk10.adf"
+        );
+        assert_eq!(listing(&images[..1]), "1 image: disk1.ADF");
+    }
+
+    #[test]
+    fn a_batch_names_each_image_after_its_input() {
+        let mut out = Output {
+            folder: "/out".into(),
+            ext: ".hfe".into(),
+            ..Output::default()
+        };
+        let input = Path::new("/in/Game_Disk1.scp");
+        assert_eq!(
+            out.batch_path(input),
+            Path::new("/out").join("Game_Disk1.hfe")
+        );
+        out.prefix = "Backup_".into();
+        out.suffix = " _copy ".into();
+        let named = "Backup_Game_Disk1_copy.hfe";
+        assert_eq!(out.batch_path(input), Path::new("/out").join(named));
+        out.beside_input = true;
+        assert_eq!(out.batch_path(input), Path::new("/in").join(named));
+    }
+
+    #[test]
+    fn a_batch_needs_a_folder_of_images_and_outputs_that_spare_them() {
+        let s = schema();
+        let convert = s.command("convert").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut v = Values::default();
+        v.set(BATCH, ON);
+        let none = BTreeMap::new();
+        let reason = |v: &Values, service: &Service, outputs: &BTreeMap<String, Output>| {
+            blocked(&s, convert, v, outputs, service)
+        };
+        assert_eq!(
+            reason(&v, &service, &none),
+            Some("Choose a folder of images first.")
+        );
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        v.set(BATCH_FOLDER, dir.to_string_lossy());
+        service.folder(&dir.to_string_lossy());
+        assert_eq!(
+            reason(&v, &service, &none),
+            Some("The folder has no images gw can read.")
+        );
+
+        std::fs::write(dir.join("Game.img"), [0u8; 512]).unwrap();
+        service.folder(&dir.to_string_lossy());
+        v.set("in_file", dir.join("Game.img").to_string_lossy());
+        v.set("format", "ibm.360");
+        let out = Output {
+            folder: dir.to_string_lossy().into_owned(),
+            ext: ".img".into(),
+            ..Output::default()
+        };
+        let mut outputs = BTreeMap::from([(output_key("convert", "out_file"), out)]);
+        assert_eq!(reason(&v, &service, &outputs), Some(REPLACES_INPUTS));
+        outputs.get_mut("convert/out_file").unwrap().suffix = "_copy".into();
+        assert_eq!(reason(&v, &service, &outputs), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

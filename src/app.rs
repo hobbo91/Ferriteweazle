@@ -163,22 +163,27 @@ pub enum Drawer {
 }
 
 enum Dialog {
+    /// A disk job, or the first of a session of `disks`.
     Confirm {
         command: String,
         args: Vec<String>,
+        disks: usize,
     },
-    /// Files a job would replace, and the job's runs, one per disk.
+    /// Files a job would replace, and the job's runs.
     Overwrite {
         files: Vec<PathBuf>,
         command: String,
-        runs: Vec<Vec<String>>,
+        runs: Runs,
     },
     /// Between the disks of a session.
     NextDisk {
+        command: String,
         disk: usize,
         total: usize,
         /// The disk before failed.
         failed: bool,
+        /// The image the next disk gets, when writing.
+        image: Option<String>,
     },
     SavePreset {
         command: String,
@@ -215,10 +220,23 @@ enum RuleInstall {
 /// What a dialog's button does, once the dialog has let go of the app.
 type Action = Box<dyn FnOnce(&mut App)>;
 
-/// Disks read one after another: gw's arguments for each, and the next.
+/// Runs of one command one after another: disks read or written, which wait
+/// for the next disk, or images converted.
 struct Session {
-    runs: Vec<Vec<String>>,
+    command: String,
+    runs: Runs,
     next: usize,
+    /// The runs that failed, from 0.
+    failed: Vec<usize>,
+}
+
+/// A page's gw runs, one per disk or image: the arguments, each run's
+/// image for a batch, and the files they make.
+#[derive(Clone, Default)]
+struct Runs {
+    args: Vec<Vec<String>>,
+    images: Vec<String>,
+    makes: Vec<PathBuf>,
 }
 
 /// The command line drawer's text, and why it does not parse.
@@ -738,20 +756,25 @@ impl App {
             "update" => self.probed = None,
             _ => {}
         }
-        if command == "read"
-            && let Some(session) = &self.session
-        {
-            let total = session.runs.len();
+        if let Some(session) = self.session.as_mut().filter(|s| s.command == command) {
+            let failed = outcome == Some(Outcome::Failed);
+            if failed {
+                session.failed.push(session.next - 1);
+            }
+            let more = session.next < session.runs.args.len();
             match outcome {
                 Some(Outcome::Stopped) => self.session = None,
-                _ if session.next < total => {
+                _ if more && command == "convert" => self.next_disk(ctx),
+                _ if more => {
                     self.dialog = Some(Dialog::NextDisk {
                         disk: session.next + 1,
-                        total,
-                        failed: outcome == Some(Outcome::Failed),
+                        total: session.runs.args.len(),
+                        failed,
+                        image: session.runs.images.get(session.next).cloned(),
+                        command: command.clone(),
                     });
                 }
-                _ => self.session = None,
+                _ => self.end_session(),
             }
         }
         if self.settings.sound {
@@ -1288,10 +1311,16 @@ impl App {
                             .outputs
                             .get(&form::output_key("read", "file"))
                             .is_some_and(|o| o.disks > 1);
-                    let label = if several {
-                        "Read disks"
-                    } else {
-                        run_label(&cmd.name)
+                    let batch = self
+                        .settings
+                        .values
+                        .get(&cmd.name)
+                        .is_some_and(|v| form::batch_input(cmd, v).is_some());
+                    let label = match (several, batch, cmd.name.as_str()) {
+                        (true, _, _) => "Read disks",
+                        (_, true, "write") => "Write disks",
+                        (_, true, _) => "Convert images",
+                        _ => run_label(&cmd.name),
                     };
                     let run = ui.add_enabled(why.is_none(), big_button(label, p.accent, p));
                     match &why {
@@ -1337,6 +1366,7 @@ impl App {
         let missing: Vec<String> = command::missing(cmd, values)
             .filter_map(|d| cmd.arg(d))
             .filter(|a| !form::GLOBAL.contains(&a.dest.as_str()) && !output(&a.dest))
+            .filter(|a| form::batch_input(cmd, values) != Some(a.dest.as_str()))
             .map(|a| form::label(a).to_lowercase())
             .collect();
         let Some(schema) = self.schema.as_deref() else {
@@ -1388,8 +1418,16 @@ impl App {
     /// Runs the page, naming first any files it would replace.
     fn start(&mut self, ctx: &egui::Context, cmd: &Command) {
         let values = self.values_for(cmd);
-        let (runs, files) = runs(cmd, values, &self.settings.outputs, |v| self.argv(cmd, v));
-        let files: Vec<PathBuf> = files.into_iter().filter(|f| f.exists()).collect();
+        let images = match (form::batch_input(cmd, &values), self.schema.as_deref()) {
+            (Some(_), Some(schema)) => {
+                let files = self.service.known_folder(values.get(form::BATCH_FOLDER));
+                form::batch_images(schema, files, values.get(form::BATCH_TYPE))
+            }
+            _ => Vec::new(),
+        };
+        let outputs = &self.settings.outputs;
+        let runs = runs(cmd, values, outputs, &images, |v| self.argv(cmd, v));
+        let files: Vec<PathBuf> = runs.makes.iter().filter(|f| f.exists()).cloned().collect();
         if files.is_empty() {
             self.begin(ctx, &cmd.name, runs);
         } else {
@@ -1401,37 +1439,86 @@ impl App {
         }
     }
 
-    fn begin(&mut self, ctx: &egui::Context, command: &str, mut runs: Vec<Vec<String>>) {
-        if runs.len() > 1 {
-            self.session = Some(Session { runs, next: 0 });
-            self.next_disk(ctx);
-        } else if let Some(args) = runs.pop() {
+    fn begin(&mut self, ctx: &egui::Context, command: &str, mut runs: Runs) {
+        let disks = runs.args.len();
+        if disks > 1 {
+            let first = runs.args[0].clone();
+            self.session = Some(Session {
+                command: command.to_owned(),
+                runs,
+                next: 0,
+                failed: Vec::new(),
+            });
+            match destructive(command) {
+                true => {
+                    self.dialog = Some(Dialog::Confirm {
+                        command: command.to_owned(),
+                        args: first,
+                        disks,
+                    });
+                }
+                false => self.next_disk(ctx),
+            }
+        } else if let Some(args) = runs.args.pop() {
             self.confirm_or_run(ctx, command, args);
         }
     }
 
-    /// Reads the session's next disk.
+    /// Starts the session's next run.
     fn next_disk(&mut self, ctx: &egui::Context) {
         let Some(session) = &mut self.session else {
             return;
         };
-        let Some(args) = session.runs.get(session.next).cloned() else {
+        let Some(args) = session.runs.args.get(session.next).cloned() else {
             self.session = None;
             return;
         };
         session.next += 1;
-        let part = (session.next, session.runs.len());
-        self.run(ctx, "read", args);
+        let part = (session.next, session.runs.args.len());
+        let command = session.command.clone();
+        self.run(ctx, &command, args);
         if let Some(job) = &mut self.disk {
             job.part = Some(part);
         }
     }
 
+    /// Ends the session, saying on its page how it went.
+    fn end_session(&mut self) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        let total = session.runs.args.len();
+        let (verb, noun) = match session.command.as_str() {
+            "convert" => ("Converted", "images"),
+            "write" => ("Wrote", "disks"),
+            _ => ("Read", "disks"),
+        };
+        let done = session.next - session.failed.len();
+        let mut note = format!("{verb} {done} of {total} {noun}.");
+        if !session.failed.is_empty() {
+            let name = |&i: &usize| {
+                session
+                    .runs
+                    .images
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("disk {}", i + 1))
+            };
+            let mut names: Vec<String> = session.failed.iter().take(4).map(name).collect();
+            if session.failed.len() > 4 {
+                names.push(format!("and {} more", session.failed.len() - 4));
+            }
+            note += &format!(" Failed: {}. The Log says why.", names.join(", "));
+        }
+        self.notices.insert(session.command, note);
+    }
+
     fn confirm_or_run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
-        if DESTRUCTIVE.iter().any(|(c, _)| *c == command) {
+        if destructive(command) {
             self.dialog = Some(Dialog::Confirm {
                 command: command.to_owned(),
                 args,
+                disks: 1,
             });
         } else {
             self.run(ctx, command, args);
@@ -1440,25 +1527,11 @@ impl App {
 
     fn run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
         let Some(engine) = &self.engine else { return };
-        // The image the job writes. A read's is its last argument, one per disk.
-        let output = match command {
-            "read" => args
-                .last()
-                .map(|a| PathBuf::from(a.split("::").next().unwrap_or(a))),
-            _ => form::OUTPUTS
-                .iter()
-                .filter(|(c, _)| *c == command)
-                .find_map(|(_, dest)| {
-                    self.settings
-                        .values
-                        .get(command)?
-                        .get(dest)
-                        .split("::")
-                        .next()
-                        .map(PathBuf::from)
-                })
-                .filter(|p| !p.as_os_str().is_empty()),
-        };
+        // The image the job writes: gw's last argument, one per disk or image.
+        let output = args
+            .last()
+            .filter(|_| form::OUTPUTS.iter().any(|(c, _)| *c == command))
+            .map(|a| PathBuf::from(a.split("::").next().unwrap_or(a)));
         if let Some(folder) = output.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(folder);
         }
@@ -2034,7 +2107,11 @@ impl App {
         let response = egui::Modal::new(Id::new("dialog")).show(ctx, |ui| {
             ui.set_width(width);
             match &mut dialog {
-                Dialog::Confirm { command, args } => {
+                Dialog::Confirm {
+                    command,
+                    args,
+                    disks,
+                } => {
                     let drive = if self.settings.drive.is_empty() {
                         "A"
                     } else {
@@ -2042,22 +2119,33 @@ impl App {
                     };
                     let verb = title(command);
                     let verb = verb.split(' ').next().unwrap_or_default();
-                    dialog_heading(ui, &format!("{verb} the disk in drive {drive}?"));
+                    let disks = *disks;
+                    let heading = match disks {
+                        1 => format!("{verb} the disk in drive {drive}?"),
+                        n => format!("{verb} {n} disks in drive {drive}?"),
+                    };
+                    dialog_heading(ui, &heading);
                     let why = DESTRUCTIVE
                         .iter()
                         .find(|(c, _)| c == command)
                         .map_or("", |(_, w)| *w);
                     ui.label(why);
+                    if disks > 1 {
+                        ui.label("It asks for each disk in turn.");
+                    }
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
-                        if ui
-                            .add(dialog_button(run_label(command), p.bad, p))
-                            .clicked()
-                        {
+                        let text = match disks {
+                            1 => run_label(command).to_owned(),
+                            _ => format!("{} 1", run_label(command)),
+                        };
+                        if ui.add(dialog_button(&text, p.bad, p)).clicked() {
                             let (ctx, command, args) = (ctx.clone(), command.clone(), args.clone());
-                            action =
-                                Some(Box::new(move |app: &mut App| app.run(&ctx, &command, args)));
+                            action = Some(match disks {
+                                1 => Box::new(move |app: &mut App| app.run(&ctx, &command, args)),
+                                _ => Box::new(move |app: &mut App| app.next_disk(&ctx)),
+                            });
                             close = true;
                         }
                         if ui.add(dialog_plain("Cancel")).clicked() {
@@ -2103,32 +2191,40 @@ impl App {
                     });
                 }
                 Dialog::NextDisk {
+                    command,
                     disk,
                     total,
                     failed,
+                    image,
                 } => {
                     dialog_heading(ui, &format!("Insert disk {disk} of {total}"));
+                    let p = theme::palette(ui);
                     if *failed {
-                        let p = theme::palette(ui);
                         let text = format!("Disk {} failed. Its output says why.", *disk - 1);
                         ui.label(RichText::new(text).color(p.bad));
                     }
                     ui.label("Eject, then insert the next disk in the drive.");
+                    if let Some(image) = image {
+                        ui.label(RichText::new(format!("Next image: {image}")).color(p.dim));
+                    }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        let read = format!("Read disk {disk}");
-                        if ui.add(dialog_button(&read, p.accent, p)).clicked() {
+                        let next = format!("{} {disk}", run_label(command));
+                        if ui.add(dialog_button(&next, p.accent, p)).clicked() {
                             let ctx = ctx.clone();
                             action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
                             close = true;
                         }
+                        let tip = match command.as_str() {
+                            "read" => "End the session. The disks read so far are kept.",
+                            _ => "End the session.",
+                        };
                         if ui
                             .add(dialog_plain("Stop here"))
-                            .on_hover_text("End the session. The disks read so far are kept.")
+                            .on_hover_text(tip)
                             .clicked()
                         {
-                            action = Some(Box::new(|app: &mut App| app.session = None));
+                            action = Some(Box::new(|app: &mut App| app.end_session()));
                             close = true;
                         }
                     });
@@ -2210,7 +2306,11 @@ impl App {
         });
         if close || response.should_close() {
             // A session waits on its dialog: closing that any other way ends it.
-            if action.is_none() && matches!(dialog, Dialog::NextDisk { .. }) {
+            let waits = matches!(
+                dialog,
+                Dialog::NextDisk { .. } | Dialog::Confirm { disks: 2.., .. }
+            );
+            if action.is_none() && waits {
                 self.session = None;
             }
         } else {
@@ -2500,31 +2600,55 @@ fn run_label(command: &str) -> &str {
         .map_or("Run", |(_, _, run)| run)
 }
 
-/// gw's arguments for each run of a command, and the files they make: a
-/// read of several disks runs once per disk.
+/// gw's runs of a command: once per disk for a read of several, once per
+/// image of a batch's `images`, else once.
 fn runs(
     cmd: &Command,
     mut values: Values,
     outputs: &BTreeMap<String, Output>,
+    images: &[PathBuf],
     argv: impl Fn(&Values) -> Vec<String>,
-) -> (Vec<Vec<String>>, Vec<PathBuf>) {
+) -> Runs {
     let out = form::OUTPUTS
         .iter()
         .find(|(c, _)| *c == cmd.name)
         .and_then(|(c, dest)| Some((*dest, outputs.get(&form::output_key(c, dest))?)));
-    match out {
+    if let Some(dest) = form::batch_input(cmd, &values) {
+        let mut runs = Runs::default();
+        for image in images {
+            values.set(dest, image.to_string_lossy());
+            if let Some((out_dest, out)) = out {
+                values.set(out_dest, out.batch_value(image));
+                runs.makes.push(out.batch_path(image));
+            }
+            runs.args.push(argv(&values));
+            let name = image.file_name().map(|n| n.to_string_lossy().into_owned());
+            runs.images.push(name.unwrap_or_default());
+        }
+        return runs;
+    }
+    let (args, makes) = match out {
         Some((dest, out)) if cmd.name == "read" => {
-            let runs = (1..=out.disks.max(1))
+            let args = (1..=out.disks.max(1))
                 .map(|d| {
                     values.set(dest, out.value(d));
                     argv(&values)
                 })
                 .collect();
-            (runs, out.paths().collect())
+            (args, out.paths().collect())
         }
         Some((_, out)) => (vec![argv(&values)], vec![out.path(1)]),
         None => (vec![argv(&values)], Vec::new()),
+    };
+    Runs {
+        args,
+        makes,
+        ..Runs::default()
     }
+}
+
+fn destructive(command: &str) -> bool {
+    DESTRUCTIVE.iter().any(|(c, _)| *c == command)
 }
 
 /// What the status pane says before any disk job, for this page.
@@ -3317,6 +3441,77 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_convert_runs_gw_once_for_each_image_and_names_what_it_makes() {
+        let schema: Schema =
+            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let convert = schema.command("convert").unwrap();
+        let mut values = Values::default();
+        values.set(form::BATCH, command::ON);
+        values.set("format", "ibm.1440");
+        let out = Output {
+            folder: "/out".into(),
+            ext: ".img".into(),
+            suffix: "_pc".into(),
+            ..Output::default()
+        };
+        let outputs = BTreeMap::from([("convert/out_file".to_owned(), out)]);
+        let images = [PathBuf::from("/in/A.scp"), PathBuf::from("/in/B.scp")];
+        let runs = runs(convert, values, &outputs, &images, |v| {
+            command::argv(convert, v)
+        });
+        assert_eq!(runs.images, ["A.scp", "B.scp"]);
+        let made = ["A_pc.img", "B_pc.img"].map(|n| Path::new("/out").join(n));
+        assert_eq!(runs.makes, made);
+        for ((args, image), made) in runs.args.iter().zip(&images).zip(&made) {
+            let files = &args[args.len() - 2..];
+            assert_eq!(files, [image.to_string_lossy(), made.to_string_lossy()]);
+            assert!(args.contains(&"--format=ibm.1440".to_owned()));
+        }
+    }
+
+    #[test]
+    fn a_batch_write_confirms_once_asks_for_each_disk_by_its_image_and_says_how_it_went() {
+        let mut app = offline();
+        let ctx = egui::Context::default();
+        let runs = Runs {
+            args: vec![
+                vec!["write".into(), "a.adf".into()],
+                vec!["write".into(), "b.adf".into()],
+            ],
+            images: vec!["a.adf".into(), "b.adf".into()],
+            makes: Vec::new(),
+        };
+        app.begin(&ctx, "write", runs);
+        assert!(matches!(app.dialog, Some(Dialog::Confirm { disks: 2, .. })));
+
+        app.dialog = None;
+        app.session.as_mut().unwrap().next = 1;
+        app.disk = Some(Job::replay("write", "T0.0: Writing Track"));
+        app.ended(&ctx, true);
+        let next = match &app.dialog {
+            Some(Dialog::NextDisk {
+                command,
+                disk,
+                image,
+                ..
+            }) => (command.as_str(), *disk, image.as_deref()),
+            _ => panic!("no next disk"),
+        };
+        assert_eq!(next, ("write", 2, Some("b.adf")));
+
+        app.dialog = None;
+        app.session.as_mut().unwrap().next = 2;
+        app.disk = Some(Job::replay(
+            "write",
+            "** FATAL ERROR:\nNo index pulse detected",
+        ));
+        app.ended(&ctx, true);
+        assert!(app.session.is_none());
+        let note = "Wrote 1 of 2 disks. Failed: b.adf. The Log says why.";
+        assert_eq!(app.notices["write"], note);
+    }
+
+    #[test]
     fn a_read_of_three_disks_runs_gw_once_for_each() {
         let schema: Schema =
             serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
@@ -3331,7 +3526,8 @@ mod tests {
             ..Output::default()
         };
         let outputs = BTreeMap::from([("read/file".to_owned(), out)]);
-        let (runs, files) = runs(read, values, &outputs, |v| command::argv(read, v));
+        let runs = runs(read, values, &outputs, &[], |v| command::argv(read, v));
+        let (files, runs) = (runs.makes, runs.args);
         let last: Vec<&str> = runs.iter().map(|r| r.last().unwrap().as_str()).collect();
         let sep = std::path::MAIN_SEPARATOR;
         let expected = (1..=3).map(|d| format!("/f{sep}Game_Disk{d}.adf"));

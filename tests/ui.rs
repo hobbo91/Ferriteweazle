@@ -820,6 +820,39 @@ fn an_empty_log_dragged_taller_stays_that_tall() {
 }
 
 #[test]
+fn the_write_page_takes_a_folder_of_images_and_names_them_in_order() {
+    let dir =
+        std::env::temp_dir().join(format!("ferriteweazle-write-batch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in [
+        "Game_Disk10.adf",
+        "Game_Disk2.adf",
+        "Game_Disk1.adf",
+        "readme.txt",
+    ] {
+        std::fs::write(dir.join(name), "").unwrap();
+    }
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    };
+    let values = settings.values.entry("write".into()).or_default();
+    values.set(ferriteweazle::form::BATCH, "on");
+    values.set(ferriteweazle::form::BATCH_FOLDER, dir.to_string_lossy());
+    let w = window(settings);
+    w.get_by_label("Image");
+    w.get_by_label("3 images: Game_Disk1.adf, Game_Disk2.adf, Game_Disk10.adf");
+    w.get_by_role_and_label(Role::Button, "Write disks");
+    let first = dir.join("Game_Disk1.adf");
+    assert_eq!(
+        app(&w).settings.values["write"].get("file"),
+        first.to_string_lossy(),
+        "the first image stands for the folder"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn the_82_cylinders_gw_erases_add_a_row_not_smaller_squares() {
     let size = |log: &str| {
         let settings = Settings {

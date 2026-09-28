@@ -6,7 +6,7 @@ use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
 use ferriteweazle::engine::{Engine, Origin};
-use ferriteweazle::form::Output;
+use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::progress::Status;
 use ferriteweazle::schema::Port;
@@ -524,6 +524,70 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
     let log =
         std::fs::read_to_string(dir.join("Game.scp.log")).expect("the log is beside the image");
     assert!(log.contains("Found 720 sectors of 720 (100%)"), "{log}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("batch");
+    let (inputs, outputs) = (dir.join("in"), dir.join("out"));
+    std::fs::create_dir_all(&inputs).unwrap();
+    std::fs::create_dir_all(&outputs).unwrap();
+    let names = ["Game_Disk1", "Game_Disk2", "Game_Disk10"];
+    for name in names {
+        std::fs::write(inputs.join(format!("{name}.img")), vec![0u8; 368_640]).unwrap();
+    }
+    std::fs::write(inputs.join("notes.txt"), "not an image").unwrap();
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..Settings::default()
+    };
+    let values = settings.values.entry("convert".into()).or_default();
+    values.set(form::BATCH, "on");
+    values.set(form::BATCH_FOLDER, path(&inputs));
+    values.set("format", "ibm.360");
+    let out = Output {
+        folder: path(&outputs),
+        ext: ".scp".into(),
+        prefix: "Backup_".into(),
+        ..Output::default()
+    };
+    settings.outputs.insert("convert/out_file".into(), out);
+    let mut w = window(&engine, settings);
+    w.get_by_label_contains("3 images: Game_Disk1.img, Game_Disk2.img, Game_Disk10.img");
+    run_button(&w, "Convert images").click();
+    until(&mut w, "the batch", |app| {
+        app.notices.contains_key("convert")
+    });
+
+    let app = w.state().as_ref().unwrap();
+    assert_eq!(app.notices["convert"], "Converted 3 of 3 images.");
+    let last = outputs.join("Backup_Game_Disk10.scp");
+    assert_eq!(
+        app.disk.as_ref().unwrap().output.as_ref(),
+        Some(&last),
+        "each run's own image"
+    );
+    for name in names {
+        assert!(
+            outputs.join(format!("Backup_{name}.scp")).is_file(),
+            "{name}"
+        );
+    }
+    let headings: Vec<&String> = app
+        .log
+        .lines()
+        .iter()
+        .filter(|l| l.starts_with("gw convert"))
+        .collect();
+    assert_eq!(headings.len(), 3, "{headings:#?}");
+    for (heading, name) in headings.iter().zip(names) {
+        assert!(
+            heading.contains(&format!("{name}.img")),
+            "{heading} is not {name}"
+        );
+    }
     std::fs::remove_dir_all(dir).ok();
 }
 
