@@ -154,6 +154,24 @@ fn read_job() -> Job {
     job
 }
 
+/// gw info, a read and a drive speed in the session's log.
+fn session(w: &mut Window) {
+    let log = &mut w.state_mut().as_mut().unwrap().log;
+    let rpm = "Rate: 300.121 rpm ; Period: 199.919 ms";
+    for (heading, mut job, ending) in [
+        ("gw info", Job::replay("info", INFO), "Done in 0:01."),
+        (
+            "gw read --revs=2 --format=ibm.1440 /Users/you/Floppies/Floppy.img",
+            read_job(),
+            "Done in 0:52.",
+        ),
+        ("gw rpm", Job::replay("rpm", rpm), "Done in 0:01."),
+    ] {
+        log.begin(heading.into(), &mut job);
+        log.end(&mut job, ending.into());
+    }
+}
+
 #[test]
 #[ignore = "writes pictures for people to look at"]
 fn screens() {
@@ -190,7 +208,24 @@ fn screens() {
         }
         let read = settings("read", theme);
         render_sized("log", DEFAULT, theme, read, Some(read_job()), |w| {
+            session(w);
             w.get_by_role_and_label(Role::Button, "Log").click();
+        });
+        let read = settings("read", theme);
+        render_sized("log-tall", DEFAULT, theme, read, Some(read_job()), |w| {
+            session(w);
+            w.get_by_role_and_label(Role::Button, "Log").click();
+            w.run_steps(4);
+            // The drawer's top edge, at its first height, dragged up.
+            let edge = egui::pos2(700.0, DEFAULT.y - 124.0);
+            let up = edge - egui::vec2(0.0, 300.0);
+            w.hover_at(edge);
+            w.run_steps(2);
+            w.drag_at(edge);
+            w.run_steps(2);
+            w.hover_at(up);
+            w.run_steps(2);
+            w.drop_at(up);
         });
         render("found", theme, settings("read", theme), None, |w| {
             let app = w.state_mut().as_mut().unwrap();

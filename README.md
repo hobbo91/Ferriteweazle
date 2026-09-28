@@ -17,7 +17,7 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
   drive, or of a flux image, with every format gw knows, and chooses the best
   match and the image type that suits it (Akai to .img, Amiga to .adf).
 - Draws a disk map as gw works: a square per track, ten cylinders to a row.
-- Shows gw's output, to copy or save.
+- Shows gw's output from every job since the app opened, to copy or save.
 - Shows each page as its `gw` command line with **CLI**. Change either and the
   other follows. It takes only `gw` commands and runs nothing: the page's own
   button runs gw, with no shell.
@@ -25,7 +25,8 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
 - Asks before replacing a file.
 - Shows the Greaseweazle's model and firmware as soon as it is connected.
 - Saves presets as files in Documents/Ferriteweazle, or a folder you choose.
-- Follows the system's light or dark mode.
+- Follows the system's light or dark mode, or keeps to either. Choosing one in
+  Settings fades to it.
 - Takes image files by drag and drop.
 - Takes a disk definitions file of your own. gw's parser checks it line by line,
   and its formats come first in the format list.

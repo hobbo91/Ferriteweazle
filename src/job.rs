@@ -48,6 +48,10 @@ pub struct Job {
     pub step: u32,
     /// Which disk of a session this is, counting from 1, and how many.
     pub part: Option<(usize, usize)>,
+    /// Lines of `log` the session log has taken.
+    logged: usize,
+    /// The line number of the job's heading in the session log, and the heading.
+    head: Option<(usize, String)>,
     stopping: Option<Instant>,
     /// None for a job replayed from its output.
     child: Option<Child>,
@@ -203,6 +207,8 @@ impl Job {
             detected: Vec::new(),
             step: 1,
             part: None,
+            logged: 0,
+            head: None,
             stopping: None,
             child: None,
             stdin: None,
@@ -228,5 +234,191 @@ impl Job {
             self.progress.feed(&line);
             self.log.push(line);
         }
+    }
+}
+
+/// Most lines the session log keeps; it drops the oldest past this.
+pub const LOG_LINES: usize = 20_000;
+
+/// gw's output from every job of the session, oldest first, each job's lines
+/// under its heading.
+#[derive(Default)]
+pub struct SessionLog {
+    lines: Vec<String>,
+    /// Line numbers of the headings, counted from the session's first line.
+    heads: Vec<usize>,
+    /// Lines dropped from the start to keep within LOG_LINES.
+    dropped: usize,
+    /// The job the last lines are from, by its heading's line number.
+    last: Option<usize>,
+}
+
+impl SessionLog {
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    /// Whether `lines()[index]` heads a job.
+    pub fn is_head(&self, index: usize) -> bool {
+        self.heads.binary_search(&(self.dropped + index)).is_ok()
+    }
+
+    /// Starts a job's lines under `heading`.
+    pub fn begin(&mut self, heading: String, job: &mut Job) {
+        let at = self.head(heading.clone());
+        self.last = Some(at);
+        job.head = Some((at, heading));
+    }
+
+    /// Takes the job's output that is new since the last call.
+    pub fn follow(&mut self, job: &mut Job) {
+        if job.logged < job.log.len() {
+            self.resume(job);
+            self.lines.extend_from_slice(&job.log[job.logged..]);
+            job.logged = job.log.len();
+            self.trim();
+        }
+    }
+
+    /// Takes the rest of the job's output, then `ending`, which says how it ended.
+    pub fn end(&mut self, job: &mut Job, ending: String) {
+        self.follow(job);
+        self.resume(job);
+        self.lines.push(ending);
+        self.trim();
+    }
+
+    /// Heads the job's lines again when another job's came in between.
+    fn resume(&mut self, job: &Job) {
+        if let Some((at, heading)) = &job.head
+            && self.last != Some(*at)
+        {
+            self.head(format!("{heading} (continued)"));
+            self.last = Some(*at);
+        }
+    }
+
+    /// Adds a heading, a blank line after the lines before, and gives its line number.
+    fn head(&mut self, heading: String) -> usize {
+        if !self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        let at = self.dropped + self.lines.len();
+        self.heads.push(at);
+        self.lines.push(heading);
+        self.trim();
+        at
+    }
+
+    fn trim(&mut self) {
+        let over = self.lines.len().saturating_sub(LOG_LINES);
+        if over > 0 {
+            self.lines.drain(..over);
+            self.dropped += over;
+            self.heads.retain(|&h| h >= self.dropped);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(command: &str) -> Job {
+        Job::new(command, Vec::new(), mpsc::channel().1)
+    }
+
+    #[test]
+    fn the_session_log_keeps_each_job_under_its_heading_in_order() {
+        let mut log = SessionLog::default();
+        let mut info = job("info");
+        log.begin("gw info".into(), &mut info);
+        info.log.push("Host Tools: 1.23".into());
+        log.follow(&mut info);
+        info.log.push("Device:".into());
+        log.end(&mut info, "Done in 0:01.".into());
+        let mut read = job("read");
+        log.begin("gw read x.img".into(), &mut read);
+        read.log.push("Reading c=0-79:h=0-1 revs=2".into());
+        log.follow(&mut read);
+        log.follow(&mut read);
+        log.end(&mut read, "Stopped after 0:04.".into());
+        assert_eq!(
+            log.lines(),
+            [
+                "gw info",
+                "Host Tools: 1.23",
+                "Device:",
+                "Done in 0:01.",
+                "",
+                "gw read x.img",
+                "Reading c=0-79:h=0-1 revs=2",
+                "Stopped after 0:04."
+            ]
+        );
+        let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
+        assert_eq!(heads, [0, 5]);
+    }
+
+    #[test]
+    fn the_session_log_drops_its_oldest_lines_past_its_limit() {
+        let mut log = SessionLog::default();
+        let mut first = job("read");
+        log.begin("gw read a.img".into(), &mut first);
+        first.log = (0..LOG_LINES).map(|i| format!("T{i}")).collect();
+        log.follow(&mut first);
+        first.log.push("Found 2880 sectors of 2880 (100%)".into());
+        log.end(&mut first, "Done in 9:00.".into());
+        let mut second = job("read");
+        log.begin("gw read b.img".into(), &mut second);
+        assert_eq!(log.lines().len(), LOG_LINES);
+        assert_eq!(log.dropped(), 5, "the first heading and four lines");
+        assert_eq!(log.lines()[0], "T4");
+        let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
+        assert_eq!(
+            heads,
+            [LOG_LINES - 1],
+            "the first heading went with its lines, and did not come back"
+        );
+    }
+
+    #[test]
+    fn a_job_running_beside_another_keeps_its_lines_under_its_own_heading() {
+        let mut log = SessionLog::default();
+        let (mut info, mut detect) = (job("info"), job(DETECT));
+        log.begin("gw info".into(), &mut info);
+        info.log.push("Host Tools: 1.23".into());
+        log.follow(&mut info);
+        log.begin("Detect disk format in.scp".into(), &mut detect);
+        detect.log.push("Format ibm.1440".into());
+        log.follow(&mut detect);
+        info.log.push("Device:".into());
+        log.follow(&mut info);
+        log.follow(&mut detect);
+        log.end(&mut info, "Done in 0:01.".into());
+        log.end(&mut detect, "Done in 0:02.".into());
+        assert_eq!(
+            log.lines(),
+            [
+                "gw info",
+                "Host Tools: 1.23",
+                "",
+                "Detect disk format in.scp",
+                "Format ibm.1440",
+                "",
+                "gw info (continued)",
+                "Device:",
+                "Done in 0:01.",
+                "",
+                "Detect disk format in.scp (continued)",
+                "Done in 0:02.",
+            ]
+        );
+        let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
+        assert_eq!(heads, [0, 3, 6, 10]);
     }
 }
