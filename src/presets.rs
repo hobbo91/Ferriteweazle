@@ -19,12 +19,9 @@ pub struct Preset {
     pub outputs: BTreeMap<String, Output>,
 }
 
-/// Documents/Ferriteweazle in the home folder, made by the first save.
+/// Documents/Ferriteweazle/Presets, made by the first save.
 pub fn default_folder() -> PathBuf {
-    crate::home()
-        .unwrap_or_default()
-        .join("Documents")
-        .join("Ferriteweazle")
+    crate::app_folder().join("Presets")
 }
 
 /// The presets for a command in a folder, by name.

@@ -1744,6 +1744,11 @@ fn image_options(ui: &mut Ui, options: &[ImageOpt], values: &mut BTreeMap<String
     changed
 }
 
+/// Documents/Ferriteweazle/Images: where new images go unless Settings says otherwise.
+pub fn images_folder() -> PathBuf {
+    crate::app_folder().join("Images")
+}
+
 /// Where a new image goes, and what it is called. An empty `ext` is no
 /// type chosen yet.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1765,12 +1770,8 @@ pub struct Output {
 
 impl Default for Output {
     fn default() -> Self {
-        let folder = crate::home()
-            .unwrap_or_default()
-            .join("Documents")
-            .join("Floppies");
         Output {
-            folder: folder.to_string_lossy().into_owned(),
+            folder: images_folder().to_string_lossy().into_owned(),
             name: "Floppy".into(),
             disks: 1,
             label: "Disk".into(),

@@ -139,7 +139,9 @@ pub struct Settings {
     pub sound: bool,
     pub values: BTreeMap<String, Values>,
     pub outputs: BTreeMap<String, Output>,
-    /// Where presets are saved and listed from; unset, Documents/Ferriteweazle.
+    /// Where new images go; unset, Documents/Ferriteweazle/Images.
+    pub images_folder: Option<PathBuf>,
+    /// Where presets are saved and listed from; unset, Documents/Ferriteweazle/Presets.
     pub presets_folder: Option<PathBuf>,
     /// The drawer open under the page and the status pane, if one is.
     pub drawer: Option<Drawer>,
@@ -1419,6 +1421,10 @@ impl App {
                     ui.label(RichText::new(e).color(p.bad));
                 });
         }
+        if let Some(left) = cancelled(job) {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(left).color(p.partial)).wrap());
+        }
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
@@ -1638,11 +1644,6 @@ impl App {
                         Origin::Custom => "chosen here",
                     };
                     ui.label(format!("Greaseweazle {}, {origin}.", schema.version));
-                    let path = RichText::new(engine.python.to_string_lossy())
-                        .monospace()
-                        .small()
-                        .weak();
-                    ui.label(path).on_hover_text("The Python that runs gw.");
                 }
                 (Some(_), Load::Waiting(_)) => {
                     ui.horizontal(|ui| {
@@ -1655,61 +1656,78 @@ impl App {
                 }
             }
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let choose = ui
-                    .button("Use another gw…")
-                    .on_hover_text("Choose a gw, or a Python with greaseweazle.");
-                if choose.clicked()
-                    && let Some(path) = rfd::FileDialog::new().pick_file()
-                {
-                    self.settings.engine = Some(path);
-                    self.connect(ui.ctx());
+            if ui
+                .button("Restart")
+                .on_hover_text("Start gw again.")
+                .clicked()
+            {
+                self.connect(ui.ctx());
+            }
+        });
+        section(ui, "Paths", |ui| {
+            let default = ("Use the default", "Documents/Ferriteweazle/Images.");
+            let images = self.images_folder();
+            let back = self.settings.images_folder.is_some().then_some(default);
+            match path_row(
+                ui,
+                "Images folder",
+                &images,
+                "Choose where new images go.",
+                back,
+            ) {
+                Some(PathClick::Choose) => {
+                    let chosen = rfd::FileDialog::new().set_directory(&images).pick_folder();
+                    if let Some(folder) = chosen {
+                        self.set_images_folder(Some(folder));
+                    }
                 }
-                if self.settings.engine.is_some()
-                    && ui
-                        .button("Use the built-in gw")
-                        .on_hover_text("Go back to the gw Ferriteweazle ships.")
-                        .clicked()
-                {
+                Some(PathClick::Default) => self.set_images_folder(None),
+                None => {}
+            }
+            ui.add_space(8.0);
+            let default = ("Use the default", "Documents/Ferriteweazle/Presets.");
+            let presets = self.presets_folder();
+            let back = self.settings.presets_folder.is_some().then_some(default);
+            match path_row(
+                ui,
+                "Presets folder",
+                &presets,
+                "Choose the presets folder.",
+                back,
+            ) {
+                Some(PathClick::Choose) => {
+                    let chosen = rfd::FileDialog::new().set_directory(&presets).pick_folder();
+                    if chosen.is_some() {
+                        self.settings.presets_folder = chosen;
+                    }
+                }
+                Some(PathClick::Default) => self.settings.presets_folder = None,
+                None => {}
+            }
+            ui.add_space(8.0);
+            let default = (
+                "Use the built-in gw",
+                "Go back to the gw Ferriteweazle ships.",
+            );
+            let python = self.engine.as_ref().map(|e| e.python.clone());
+            let gw = python
+                .or_else(|| self.settings.engine.clone())
+                .unwrap_or_default();
+            let back = self.settings.engine.is_some().then_some(default);
+            let tip = "Choose a gw, or a Python with greaseweazle.";
+            match path_row(ui, "gw", &gw, tip, back) {
+                Some(PathClick::Choose) => {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        self.settings.engine = Some(path);
+                        self.connect(ui.ctx());
+                    }
+                }
+                Some(PathClick::Default) => {
                     self.settings.engine = None;
                     self.connect(ui.ctx());
                 }
-                if ui
-                    .button("Restart")
-                    .on_hover_text("Start gw again.")
-                    .clicked()
-                {
-                    self.connect(ui.ctx());
-                }
-            });
-        });
-        section(ui, "Presets", |ui| {
-            let folder = self.presets_folder();
-            ui.label("Presets folder:");
-            ui.label(
-                RichText::new(folder.to_string_lossy())
-                    .monospace()
-                    .small()
-                    .weak(),
-            );
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Choose…")
-                    .on_hover_text("Choose the presets folder.")
-                    .clicked()
-                    && let Some(path) = rfd::FileDialog::new().set_directory(&folder).pick_folder()
-                {
-                    self.settings.presets_folder = Some(path);
-                }
-                if self.settings.presets_folder.is_some()
-                    && ui
-                        .button("Use the default")
-                        .on_hover_text("Documents/Ferriteweazle.")
-                        .clicked()
-                {
-                    self.settings.presets_folder = None;
-                }
-            });
+                None => {}
+            }
         });
         section(ui, "Jobs", |ui| {
             setting(
@@ -1988,6 +2006,28 @@ impl App {
             .unwrap_or_else(presets::default_folder)
     }
 
+    fn images_folder(&self) -> PathBuf {
+        self.settings
+            .images_folder
+            .clone()
+            .unwrap_or_else(form::images_folder)
+    }
+
+    /// Changes where new images go, and moves every page still using the old
+    /// folder along with it.
+    fn set_images_folder(&mut self, folder: Option<PathBuf>) {
+        let old = self.images_folder();
+        self.settings.images_folder = folder;
+        let new = self.images_folder().to_string_lossy().into_owned();
+        for (command, dest) in form::OUTPUTS {
+            let key = form::output_key(command, dest);
+            let out = self.settings.outputs.entry(key).or_default();
+            if Path::new(&out.folder) == old {
+                out.folder = new.clone();
+            }
+        }
+    }
+
     fn save_preset(&mut self, command: &str, name: &str) {
         let values = self
             .settings
@@ -2204,7 +2244,7 @@ fn ending(job: &Job) -> String {
     let how = match job.outcome() {
         Some(Outcome::Succeeded) => "Done in",
         Some(Outcome::Failed) => "Failed after",
-        _ => "Stopped after",
+        _ => "Cancelled after",
     };
     format!("{how} {}.", clock(job.elapsed()))
 }
@@ -2347,7 +2387,22 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
         None => ("Running", p.accent),
         Some(Outcome::Succeeded) => ("Done", p.good),
         Some(Outcome::Failed) => ("Failed", p.bad),
-        Some(Outcome::Stopped) => ("Stopped", p.dim),
+        Some(Outcome::Stopped) => ("Cancelled", p.partial),
+    }
+}
+
+/// What a disk job cancelled part way leaves behind: gw keeps the tracks a
+/// read has done, and deletes a conversion's image.
+fn cancelled(job: &Job) -> Option<&'static str> {
+    if job.outcome() != Some(Outcome::Stopped) {
+        return None;
+    }
+    match job.command.as_str() {
+        "read" => Some("The image has only the tracks read so far. Reading again starts over."),
+        "write" => Some("The disk is only partly written."),
+        "erase" => Some("The disk is only partly erased."),
+        "convert" => Some("No image was made."),
+        _ => None,
     }
 }
 
@@ -2401,7 +2456,10 @@ fn output(
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
             if save.on_hover_text("Save gw's output to a file.").clicked()
-                && let Some(path) = rfd::FileDialog::new().set_file_name("gw.log").save_file()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_directory(crate::app_folder())
+                    .set_file_name("gw.log")
+                    .save_file()
             {
                 let _ = std::fs::write(&path, log.join("\n") + "\n");
             }
@@ -2463,7 +2521,7 @@ fn short_port(device: &str) -> &str {
     device.strip_prefix("/dev/").unwrap_or(device)
 }
 
-/// "Found akai.800. It also matches eagle.dsqd.800 and zx.quorum.ds80."
+/// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
 fn found_note(formats: &[String], step: u32) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {
@@ -2471,12 +2529,12 @@ fn found_note(formats: &[String], step: u32) -> String {
     }
     match &formats[1..] {
         [] => {}
-        [one] => note += &format!(" It also matches {one}."),
+        [one] => note += &format!(" Disk also matches {one}."),
         more => {
             let (last, rest) = more[..more.len().min(4)]
                 .split_last()
                 .expect("more has some");
-            note += &format!(" It also matches {} and {last}.", rest.join(", "));
+            note += &format!(" Disk also matches {} and {last}.", rest.join(", "));
         }
     }
     note
@@ -2490,6 +2548,42 @@ fn pill(ui: &mut Ui, text: &str, colour: Color32) {
         .show(ui, |ui| {
             ui.label(RichText::new(text).small().color(colour).strong())
         });
+}
+
+enum PathClick {
+    Choose,
+    Default,
+}
+
+/// A path in Settings: its name, where it is, and Choose… with, where `back`
+/// is given, its button and tip for going back to the default.
+fn path_row(
+    ui: &mut Ui,
+    name: &str,
+    path: &Path,
+    tip: &str,
+    back: Option<(&str, &str)>,
+) -> Option<PathClick> {
+    ui.label(name);
+    let shown = match path.as_os_str().is_empty() {
+        true => RichText::new("Not found.").weak(),
+        false => RichText::new(path.to_string_lossy())
+            .monospace()
+            .small()
+            .weak(),
+    };
+    ui.label(shown);
+    ui.horizontal(|ui| {
+        if ui.button("Choose…").on_hover_text(tip).clicked() {
+            return Some(PathClick::Choose);
+        }
+        let (text, tip) = back?;
+        ui.button(text)
+            .on_hover_text(tip)
+            .clicked()
+            .then_some(PathClick::Default)
+    })
+    .inner
 }
 
 fn section(ui: &mut Ui, heading: &str, add: impl FnOnce(&mut Ui)) {
@@ -2652,6 +2746,46 @@ mod tests {
         let wait = Some("Wait while the device says what it is.");
         assert_eq!(app.cannot_detect("read"), wait);
         assert_eq!(app.cannot_detect("convert"), None, "it reads a file");
+    }
+
+    #[test]
+    fn a_detected_format_names_the_others_the_disk_also_matches() {
+        let formats = ["akai.800", "eagle.dsqd.800", "epson.qx10.400"].map(String::from);
+        assert_eq!(found_note(&formats[..1], 1), "Found akai.800.");
+        assert_eq!(
+            found_note(&formats[..2], 1),
+            "Found akai.800. Disk also matches eagle.dsqd.800."
+        );
+        assert_eq!(
+            found_note(&formats, 1),
+            "Found akai.800. Disk also matches eagle.dsqd.800 and epson.qx10.400."
+        );
+    }
+
+    #[test]
+    fn images_and_presets_go_in_the_apps_own_folder_by_default() {
+        let folder = crate::app_folder();
+        assert!(folder.ends_with("Documents/Ferriteweazle"), "{folder:?}");
+        assert_eq!(Path::new(&Output::default().folder), folder.join("Images"));
+        assert_eq!(presets::default_folder(), folder.join("Presets"));
+    }
+
+    #[test]
+    fn pages_on_the_default_images_folder_follow_a_new_one() {
+        let mut app = offline();
+        let mine = Output {
+            folder: "/mine".into(),
+            ..Output::default()
+        };
+        let convert = form::output_key("convert", "out_file");
+        app.settings.outputs.insert(convert.clone(), mine);
+        app.set_images_folder(Some("/new".into()));
+        let read = form::output_key("read", "file");
+        assert_eq!(app.settings.outputs[&read].folder, "/new");
+        assert_eq!(app.settings.outputs[&convert].folder, "/mine");
+        app.set_images_folder(None);
+        let default = Path::new(&app.settings.outputs[&read].folder);
+        assert_eq!(default, form::images_folder());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::Output;
-use ferriteweazle::job::Job;
+use ferriteweazle::job::{Job, Outcome};
 use ferriteweazle::schema::Port;
 use ferriteweazle::{App, Page, Settings};
 use std::time::Duration;
@@ -33,7 +33,7 @@ To perform an Update:
  - Run \"gw update\" to download and install latest firmware";
 
 const FOUND: &str =
-    "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
+    "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
 
 /// The smallest the window goes.
 const SMALLEST: egui::Vec2 = egui::vec2(980.0, 744.0);
@@ -259,6 +259,15 @@ fn screens() {
             |w| {
                 w.get_by_label("CLI").click();
             },
+        );
+        let mut cancelled = read_job();
+        cancelled.ended = Some((cancelled.started, Outcome::Stopped));
+        render(
+            "cancelled",
+            theme,
+            settings("read", theme),
+            Some(cancelled),
+            |_| {},
         );
         render("formats", theme, settings("write", theme), None, |w| {
             // The sidebar's port picker comes first, then the page's format picker.

@@ -25,3 +25,11 @@ fn home() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(Into::into)
 }
+
+/// Documents/Ferriteweazle in the home folder, where the app saves by default.
+pub fn app_folder() -> std::path::PathBuf {
+    home()
+        .unwrap_or_default()
+        .join("Documents")
+        .join("Ferriteweazle")
+}

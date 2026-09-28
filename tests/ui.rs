@@ -4,7 +4,7 @@ use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
 use ferriteweazle::form::Output;
-use ferriteweazle::job::{Job, LOG_LINES};
+use ferriteweazle::job::{Job, LOG_LINES, Outcome};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
@@ -13,7 +13,7 @@ type Window = Harness<'static, Option<App>>;
 const DAMAGED: &str = include_str!("data/convert-damaged.log");
 
 const FOUND: &str =
-    "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
+    "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
 
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
@@ -762,6 +762,28 @@ fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() 
     w.run();
     let scrolled = w.get_by_label_contains("Good ").rect();
     assert!(scrolled.top() < legend.top(), "the pane did not scroll");
+}
+
+#[test]
+fn a_cancelled_read_says_so_and_what_it_left() {
+    let mut job = Job::replay("read", DAMAGED);
+    job.ended = Some((job.started, Outcome::Stopped));
+    let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    w.get_by_label_contains("Cancelled ·");
+    w.get_by_label("The image has only the tracks read so far. Reading again starts over.");
+}
+
+#[test]
+fn settings_keeps_every_path_under_paths() {
+    let w = window(Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    });
+    w.get_by_label("Paths");
+    for name in ["Images folder", "Presets folder", "gw"] {
+        w.get_by_label(name);
+    }
+    assert!(w.query_by_label("Presets").is_none());
 }
 
 #[test]

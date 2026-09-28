@@ -18,14 +18,16 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
   drive, or of a flux image, with every format gw knows, and chooses the best
   match and the image type that suits it (Akai to .img, Amiga to .adf).
 - Draws a disk map as gw works: a square per track, ten cylinders to a row.
-- Shows gw's output from every job since the app opened, to copy or save.
+- Shows gw's output from every job since the app opened, to copy, save or clear.
 - Shows each page as its `gw` command line with **CLI**. Change either and the
   other follows. It takes only `gw` commands and runs nothing: the page's own
   button runs gw, with no shell.
 - Reads a set of disks one after another into numbered files, asking for each.
 - Asks before replacing a file.
 - Shows the Greaseweazle's model and firmware as soon as it is connected.
-- Saves presets as files in Documents/Ferriteweazle, or a folder you choose.
+- Saves images and presets in Documents/Ferriteweazle, under Images and Presets,
+  or in folders chosen under **Settings > Paths**. Nothing else is kept: every
+  launch starts afresh.
 - Follows the system's light or dark mode, or keeps to either. Choosing one in
   Settings fades to it.
 - Takes image files by drag and drop.
@@ -50,8 +52,8 @@ release. To stay on one release, set `GREASEWEAZLE` in [`engine/versions`](engin
 to its tag. `cargo build` never checks: a build script that went online would slow
 every build and fail offline.
 
-**Settings > Use another gw** points the app at any installed `gw` instead, such as
-a pipx install or a development checkout.
+**Settings > Paths > gw** points the app at any installed `gw` instead, such as a
+pipx install or a development checkout.
 
 ## How it finds a format
 
