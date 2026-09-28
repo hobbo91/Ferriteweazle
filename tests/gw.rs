@@ -807,6 +807,24 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
     until_shown(&mut w, "Convert to be ready", |w| {
         !w.get_by_label("Convert").accesskit_node().is_disabled()
     });
+
+    // gw convert takes an output type's own format before the input's.
+    let output = |w: &mut Window, ext: &str| {
+        let outputs = &mut w.state_mut().as_mut().unwrap().settings.outputs;
+        outputs.get_mut("convert/out_file").unwrap().ext = ext.into();
+        w.run_steps(3);
+    };
+    let format = |w: &Window| {
+        w.get_all_by_role(egui::accesskit::Role::ComboBox)
+            .nth(1)
+            .and_then(|f| f.value())
+            .unwrap_or_default()
+    };
+    output(&mut w, ".adf");
+    assert_eq!(format(&w), "Choose disk format");
+    assert!(w.get_by_label("Convert").accesskit_node().is_disabled());
+    output(&mut w, ".scp");
+    assert_eq!(format(&w), "North Star · northstar.mfm.ss (from the input)");
     w.get_by_label("Convert").click();
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())

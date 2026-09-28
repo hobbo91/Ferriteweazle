@@ -633,8 +633,10 @@ impl<'a> Form<'a> {
 
     /// gw's objection to the input, where it would find the format in the file.
     fn input_fault(&mut self) -> Option<String> {
+        if !format_in_file(self.schema, self.cmd, self.values) {
+            return None;
+        }
         let path = input_file(self.cmd, self.values);
-        self.schema.image(path).filter(|(_, i)| i.finds_format)?;
         let e = self.service.image_format(path).error()?;
         let file = Path::new(path).file_name()?.to_string_lossy();
         Some(sentence(&e.replace(path, &file)))
@@ -1282,9 +1284,8 @@ pub fn effective_format(
 ) -> Option<String> {
     match values.get("format") {
         "" => {
-            let path = input_file(cmd, values);
-            if schema.image(path).is_some_and(|(_, i)| i.finds_format) {
-                service.image_format(path);
+            if format_in_file(schema, cmd, values) {
+                service.image_format(input_file(cmd, values));
             }
             input_format(schema, cmd, values, service)
         }
@@ -1302,8 +1303,23 @@ fn input_format(
 ) -> Option<String> {
     let path = input_file(cmd, values);
     let (_, image) = schema.image(path)?;
-    let found = || service.known_image_format(path).map(str::to_owned);
+    let found = || match format_in_file(schema, cmd, values) {
+        true => service.known_image_format(path).map(str::to_owned),
+        false => None,
+    };
     image.default_format.clone().or_else(found)
+}
+
+/// Whether gw looks in the input file for its format, as in an .nsi. Convert
+/// takes the output type's own format, such as an .adf's, first.
+fn format_in_file(schema: &Schema, cmd: &Command, values: &Values) -> bool {
+    let finds = schema
+        .image(input_file(cmd, values))
+        .is_some_and(|(_, i)| i.finds_format);
+    let output_has_one = schema
+        .image(values.get("out_file"))
+        .is_some_and(|(_, i)| i.default_format.is_some());
+    finds && !output_has_one
 }
 
 /// A tooltip of a widget's own, in a row that has one: the row's then stays hidden.
