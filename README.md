@@ -3,7 +3,7 @@
 <img src="assets/ferriteweazle.png" alt="" width="160">
 
 A desktop app for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's
-floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next.
+floppy disk flux reader and writer. It runs on macOS and Windows; Linux is next.
 
 ![Reading a disk](docs/screenshot.png)
 
@@ -47,7 +47,7 @@ gw release works once it is bundled: its new options appear under **Advanced opt
 and options it drops disappear.
 
 `engine/build.sh` bundles gw's latest release on GitHub, never a nightly build or a
-prerelease. `packaging/macos/bundle.sh` rebuilds the engine first when gw has a newer
+prerelease. The packaging scripts rebuild the engine first when gw has a newer
 release. To stay on one release, set `GREASEWEAZLE` in [`engine/versions`](engine/versions)
 to its tag. `cargo build` never checks: a build script that went online would slow
 every build and fail offline.
@@ -71,16 +71,38 @@ DOS 3.3.
 
 ## Building
 
-You need Rust 1.95 or later, and on macOS the Xcode command line tools.
+You need Rust 1.95 or later, on macOS the Xcode command line tools, and on
+Windows Visual Studio's C++ build tools and Git Bash.
 
 ```sh
 engine/build.sh              # Python and gw's latest release, into target/engine
 cargo run                    # uses target/engine, or an installed gw
-packaging/macos/bundle.sh    # target/Ferriteweazle.app, and a zip of it
+packaging/macos/bundle.sh    # dist/Ferriteweazle-VERSION-macos-universal.dmg
 ```
 
 The app is signed ad hoc, so it opens on the Mac that built it. Signed and
 notarised releases are still to do.
+
+On Windows, `packaging/windows/bundle.sh x64` or `arm64` (this PC's if neither)
+writes two packages to `dist`:
+
+- `Ferriteweazle-VERSION-win-ARCH.zip`: a Ferriteweazle folder that runs where it
+  is unzipped, with gw's Python in `ferriteweazle-data` beside the program.
+- `Ferriteweazle-VERSION-win-ARCH.msi`: installs the same in Program Files for all
+  users, with a Start menu shortcut, and replaces any older version. It refuses
+  Windows before 10.
+
+The installer needs WiX 5, a .NET tool (with the .NET 8 SDK):
+
+```sh
+dotnet tool install --global wix --version 5.0.2
+wix extension add --global WixToolset.UI.wixext/5.0.2
+```
+
+Keep the UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows Installer
+knows a new version of Ferriteweazle by it. Neither package is code-signed yet, so
+SmartScreen warns about a downloaded copy. `packaging/windows/ferriteweazle.ico`
+comes from the logo with `cargo test --test icon windows_icon -- --ignored`.
 
 ## Tests
 

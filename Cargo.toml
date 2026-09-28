@@ -14,10 +14,18 @@ rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[target.'cfg(windows)'.dependencies]
+windows-version = "0.1"
+
+# For build.rs; a build dependency's cfg is the building computer's.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
-# Already built for eframe; tests/icon.rs makes the logo with it.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Already built for eframe; tests/icon.rs makes the logo and the Windows icon
+# with it.
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 
 [profile.release]
 lto = "thin"
