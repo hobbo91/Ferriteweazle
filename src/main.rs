@@ -3,6 +3,9 @@
 
 use eframe::egui;
 
+/// The window's size when it opens, and its smallest.
+const SIZE: [f32; 2] = [1040.0, 744.0];
+
 fn main() -> eframe::Result {
     #[cfg(windows)]
     if !windows_supported(windows_version::OsVersion::current()) {
@@ -23,8 +26,8 @@ fn main() -> eframe::Result {
                     .expect("the logo is a PNG"),
             )
             // As short as the sidebar's full list allows, so it never scrolls.
-            .with_inner_size([1040.0, 744.0])
-            .with_min_inner_size([980.0, 744.0]),
+            .with_inner_size(SIZE)
+            .with_min_inner_size(SIZE),
         // Open at the size above, not as it was left.
         persist_window: false,
         ..Default::default()

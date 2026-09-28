@@ -39,10 +39,7 @@ const FOUND: &str =
 const REFUSED: &str = "** FATAL ERROR:
 [Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
 
-/// The smallest the window goes.
-const SMALLEST: egui::Vec2 = egui::vec2(980.0, 744.0);
-
-/// The window as the app first opens.
+/// The window as the app first opens, and the smallest it goes.
 const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 /// `render_sized` at 1240 by 780 points.
@@ -221,10 +218,8 @@ fn screens() {
                 modifiers: egui::Modifiers::NONE,
             });
         });
-        for (name, size) in [("default", DEFAULT), ("smallest", SMALLEST)] {
-            let read = settings("read", theme);
-            render_sized(name, size, theme, read, Some(read_job()), |_| {});
-        }
+        let read = settings("read", theme);
+        render_sized("default", DEFAULT, theme, read, Some(read_job()), |_| {});
         let read = settings("read", theme);
         render_sized("log", DEFAULT, theme, read, Some(read_job()), |w| {
             session(w);

@@ -18,10 +18,7 @@ const FOUND: &str =
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
 
-/// The smallest the window goes.
-const SMALLEST: egui::Vec2 = egui::vec2(980.0, 744.0);
-
-/// The window as the app first opens.
+/// The window as the app first opens, and the smallest it goes.
 const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 fn schema() -> Schema {
@@ -571,7 +568,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 
 #[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
-    let w = window_at(SMALLEST, chosen());
+    let w = window_at(DEFAULT, chosen());
     let image_type = combo(&w, 2).rect();
     let status = w.get_by_label("Disk status").rect();
     assert!(
@@ -1027,7 +1024,7 @@ fn clear_empties_the_log() {
 fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
     let mut w = first_track_read(
         Harness::builder()
-            .with_size(SMALLEST)
+            .with_size(DEFAULT)
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120),
     );
@@ -1057,7 +1054,7 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
         ..chosen()
     };
     let w = build(
-        Harness::builder().with_size(SMALLEST),
+        Harness::builder().with_size(DEFAULT),
         settings,
         Some(Job::replay("read", DAMAGED)),
     );
@@ -1127,7 +1124,7 @@ fn a_long_job_description_wraps_within_the_status_pane() {
 
 #[test]
 fn at_its_smallest_the_window_shows_the_whole_sidebar() {
-    let w = window_at(SMALLEST, Settings::default());
+    let w = window_at(DEFAULT, Settings::default());
     let last = w.get_by_label("USB bandwidth").rect();
     let settings = w.get_by_label("Settings").rect();
     assert!(

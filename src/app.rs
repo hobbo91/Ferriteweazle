@@ -265,6 +265,8 @@ pub struct App {
     /// The real app, not a test window: it asks each Greaseweazle that
     /// appears what it is, and GitHub for newer gw releases.
     live: bool,
+    /// The drive as last kept in drive_file().
+    kept_drive: String,
     gw_update: Update,
     app_update: Update,
     logo: Option<egui::TextureHandle>,
@@ -282,8 +284,14 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
-        let mut app = App::with_settings(&cc.egui_ctx, Settings::default());
+        let drive = kept_drive(&drive_file());
+        let settings = Settings {
+            drive: drive.clone(),
+            ..Settings::default()
+        };
+        let mut app = App::with_settings(&cc.egui_ctx, settings);
         app.live = true;
+        app.kept_drive = drive;
         update::tidy();
         app.look_for_updates(&cc.egui_ctx);
         #[cfg(target_os = "linux")]
@@ -324,6 +332,7 @@ impl App {
             probe_failed: None,
             probed: None,
             live: false,
+            kept_drive: String::new(),
             gw_update: Update::default(),
             app_update: Update::default(),
             logo: None,
@@ -389,6 +398,10 @@ impl App {
 
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        if self.live && self.settings.drive != self.kept_drive {
+            self.kept_drive.clone_from(&self.settings.drive);
+            keep_drive(&drive_file(), &self.kept_drive);
+        }
         self.follow_desktop(&ctx);
         self.fade_theme(&ctx);
         self.poll(&ctx);
@@ -612,7 +625,7 @@ impl App {
                         .extend(udev::advice(&port, self.udev_rule.as_deref()));
                 }
                 self.log.end(probe, ending(probe));
-                self.probe_failed = match (&self.device, probe.outcome()) {
+                self.probe_failed = match (device::parse(&probe.log), probe.outcome()) {
                     (Some(_), _) => None,
                     (None, Some(Outcome::Stopped)) => Some("No answer.".into()),
                     (None, _) => Some(
@@ -923,7 +936,7 @@ impl App {
                     } else if info.is_none() {
                         // On the line the firmware takes once the device answers.
                         if let Some(why) = &self.probe_failed {
-                            ui.label(RichText::new(why).small().color(p.partial));
+                            ui.label(RichText::new(why).small().color(p.bad));
                         }
                         let link = egui::Link::new(RichText::new("Get info").small());
                         ask |= ui
@@ -2949,6 +2962,32 @@ fn output(
     clear
 }
 
+/// Where the drive identifier is kept between runs: the one setting kept.
+fn drive_file() -> PathBuf {
+    crate::data_folder().join("drive.txt")
+}
+
+/// The drive kept in `file`, empty for gw's default.
+fn kept_drive(file: &Path) -> String {
+    let drive = std::fs::read_to_string(file).unwrap_or_default();
+    let drive = drive.trim();
+    match drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphanumeric()) {
+        true => drive.to_owned(),
+        false => String::new(),
+    }
+}
+
+/// Keeps `drive` in `file`, or removes the file for gw's default.
+fn keep_drive(file: &Path, drive: &str) {
+    let _ = match drive {
+        "" => std::fs::remove_file(file),
+        _ => file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(file, drive)),
+    };
+}
+
 /// The port chosen while it is connected, else the best Greaseweazle.
 fn chosen_port<'p>(ports: &'p [Port], chosen: &str) -> Option<&'p Port> {
     ports
@@ -3169,6 +3208,44 @@ mod tests {
     fn offline() -> App {
         let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
         App::offline(&egui::Context::default(), Settings::default(), Ok(schema))
+    }
+
+    #[test]
+    fn a_port_that_does_not_answer_says_so_after_a_greaseweazle_did() {
+        let mut app = offline();
+        let lines = |text: &str| text.lines().map(String::from).collect::<Vec<_>>();
+        app.device = device::parse(&lines(
+            "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem14201\n  Model:    Greaseweazle V4.1",
+        ));
+        app.pin_ports(vec![Port {
+            device: "/dev/cu.debug-console".into(),
+            name: None,
+            serial: None,
+            score: 0,
+            denied: false,
+        }]);
+        app.settings.device = "/dev/cu.debug-console".into();
+        let failed = "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        app.probe = Some(Job::replay("info", failed));
+        app.poll_probe(&egui::Context::default());
+        assert_eq!(
+            app.probe_failed.as_deref(),
+            Some("The Greaseweazle did not answer.")
+        );
+    }
+
+    #[test]
+    fn the_drive_is_kept_between_runs_and_gws_default_leaves_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-drive-{}", std::process::id()));
+        let file = dir.join("drive.txt");
+        assert_eq!(kept_drive(&file), "", "nothing kept yet");
+        keep_drive(&file, "B");
+        assert_eq!(kept_drive(&file), "B");
+        keep_drive(&file, "");
+        assert!(!file.exists());
+        std::fs::write(&file, "not a drive").unwrap();
+        assert_eq!(kept_drive(&file), "", "only an identifier is taken");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
