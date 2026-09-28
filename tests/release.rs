@@ -1,6 +1,7 @@
-//! Which Greaseweazle release engine/greaseweazle.sh picks for the build, and
-//! when packaging rebuilds the engine. Offline: curl and git are shell
-//! functions, or the tags come from a scratch git repository.
+//! Which Greaseweazle release engine/greaseweazle.sh picks for the build, when
+//! packaging rebuilds the engine, and what engine/build.sh records. Offline:
+//! curl, git and the Python download are stubs, or the tags come from a scratch
+//! git repository.
 #![cfg(unix)]
 
 use std::io::Write;
@@ -28,10 +29,14 @@ fn repo(test: &str, pin: &str) -> PathBuf {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/greaseweazle.sh");
     std::fs::copy(script, engine.join("greaseweazle.sh")).unwrap();
     std::fs::write(engine.join("versions"), format!("GREASEWEAZLE={pin}\n")).unwrap();
-    let build = engine.join("build.sh");
-    std::fs::write(&build, "#!/bin/sh\necho \"$GREASEWEAZLE\" >>built.log\n").unwrap();
-    std::fs::set_permissions(&build, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let build = "#!/bin/sh\necho \"$GREASEWEAZLE\" >>built.log\n";
+    executable(&engine.join("build.sh"), build);
     dir
+}
+
+fn executable(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// A git repository beside `dir` with one commit carrying each of `tags`.
@@ -109,6 +114,7 @@ fn the_newest_release_is_found_by_version_order_not_by_text() {
     assert_eq!(newest(&dir, "v1.9 v1.100 v1.23"), "v1.100");
     assert_eq!(newest(&dir, "v1.16 v1.16.3 v1.16.1"), "v1.16.3");
     assert_eq!(newest(&dir, "v1.23 v1.24rc1 v1.24-beta latest"), "v1.23");
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -127,6 +133,7 @@ fn the_latest_release_comes_from_github_and_else_from_its_tags() {
         run(&dir, &[], "", &format!("{down}; {tags}; wanted")),
         "v1.29"
     );
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -136,6 +143,7 @@ fn a_local_clone_builds_its_newest_release_tag() {
     let api = r#"curl() { echo '"tag_name": "v9.9"'; }"#;
     let source = [("GREASEWEAZLE_SOURCE", path(&clone))];
     assert_eq!(run(&dir, &source, "", &format!("{api}; wanted")), "v1.10.1");
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -146,6 +154,7 @@ fn a_tag_in_versions_or_the_environment_pins_the_release() {
     assert_eq!(run(&dir, &source, "", "wanted"), "v1.19");
     let pinned = [source[0], ("GREASEWEAZLE", "v1.20")];
     assert_eq!(run(&dir, &pinned, "", "wanted"), "v1.20");
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -155,6 +164,7 @@ fn no_release_found_is_an_error_that_says_how_to_pin_one() {
     let out = sh(&dir, &[("GREASEWEAZLE_SOURCE", path(&clone))], "", "wanted");
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("set GREASEWEAZLE to a tag"));
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -181,6 +191,7 @@ fn packaging_rebuilds_the_engine_only_for_another_release() {
         "v1.23\nv1.23\n",
         "the engine is a release behind"
     );
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
@@ -191,9 +202,40 @@ fn packaging_offline_keeps_the_engine_built_and_fails_without_one() {
     assert!(!sh(&dir, &source, "", "refresh").status.success());
 
     std::fs::create_dir_all(dir.join("target/engine/bin")).unwrap();
-    let python = dir.join("target/engine/bin/python3");
-    std::fs::write(&python, "").unwrap();
-    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    executable(&dir.join("target/engine/bin/python3"), "");
     run(&dir, &source, "", "refresh");
     assert_eq!(builds(&dir), "", "nothing was rebuilt");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_build_installs_the_release_wanted_and_records_it() {
+    let dir = repo("build", "");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/build.sh");
+    std::fs::copy(script, dir.join("engine/build.sh")).unwrap();
+    let versions = "GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\n";
+    std::fs::write(dir.join("engine/versions"), versions).unwrap();
+    std::fs::write(dir.join("engine/python.sha256"), "").unwrap();
+    // The download passes its check and unpacks a Python that logs its arguments.
+    let stubs = dir.join("stubs");
+    std::fs::create_dir(&stubs).unwrap();
+    let curl = "#!/bin/sh\nwhile [ \"$1\" != -o ]; do shift; done\n: >\"$2\"\n";
+    executable(&stubs.join("curl"), curl);
+    executable(&stubs.join("shasum"), "#!/bin/sh\ncat >/dev/null\n");
+    let tar = r#"#!/bin/sh
+mkdir -p target/engine/bin target/engine/lib/python3.14/site-packages
+printf '#!/bin/sh\necho "$*" >>python.log\n' >target/engine/bin/python3.14
+chmod +x target/engine/bin/python3.14
+ln -s python3.14 target/engine/bin/python3
+"#;
+    executable(&stubs.join("tar"), tar);
+    let path = format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap());
+    let env = [("PATH", path.as_str()), ("GREASEWEAZLE", "v1.30")];
+    run(&dir, &env, "", "engine/build.sh");
+    let python = std::fs::read_to_string(dir.join("python.log")).unwrap();
+    let pip = "git+https://github.com/keirf/greaseweazle@v1.30";
+    assert!(python.contains(pip), "{python}");
+    let record = std::fs::read_to_string(dir.join("target/engine/greaseweazle-version"));
+    assert_eq!(record.unwrap(), "v1.30\n");
+    std::fs::remove_dir_all(dir).ok();
 }
