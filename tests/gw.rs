@@ -394,6 +394,18 @@ fn entries(w: &Window) -> Vec<String> {
         .collect()
 }
 
+/// Whether the last frame painted `text`, as the sidebar paints gw's version.
+fn painted(w: &Window, text: &str) -> bool {
+    fn has(shape: &egui::Shape, text: &str) -> bool {
+        match shape {
+            egui::Shape::Text(t) => t.galley.text() == text,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|s| has(s, text)),
+            _ => false,
+        }
+    }
+    w.output().shapes.iter().any(|c| has(&c.shape, text))
+}
+
 #[test]
 fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let Some(engine) = engine() else { return };
@@ -413,6 +425,7 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     wait("gw to start again", || {
         w.step();
         assert_eq!(entries(&w), before);
+        assert!(painted(&w, "gw 1.23"), "the version beside Settings went");
         w.state().as_ref().unwrap().schema().map(|_| ())
     });
     w.run_steps(2);
@@ -1006,6 +1019,15 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
     std::fs::write(&nsi, vec![0u8; 1000]).unwrap();
     until_shown(&mut w, "gw's objection", |w| {
         w.query_by_label("NSI: Disk.nsi: unrecognised file size.")
+            .is_some()
+    });
+    // Why the page cannot run comes before that it needs a device.
+    w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Write disk")
+        .last()
+        .expect("the run button")
+        .hover();
+    until_shown(&mut w, "why it cannot run", |w| {
+        w.query_by_label("gw cannot read this image. See Disk format.")
             .is_some()
     });
     std::fs::remove_dir_all(dir).ok();

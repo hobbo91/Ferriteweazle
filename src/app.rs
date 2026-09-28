@@ -540,6 +540,21 @@ impl App {
         chosen_port(self.service.known_ports(), &self.settings.device).is_some()
     }
 
+    /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
+    fn cannot_detect(&self, page: &str) -> Option<&'static str> {
+        if self.running().is_some() {
+            Some("Wait for the job that is running.")
+        } else if page != "read" {
+            None
+        } else if self.probe.is_some() {
+            Some("Wait while the device says what it is.")
+        } else if !self.connected() {
+            Some(NO_DEVICE)
+        } else {
+            None
+        }
+    }
+
     /// Runs `gw info` for the device card, when nothing else is using the device.
     fn ask_device(&mut self, ctx: &egui::Context) {
         if self.running().is_some() || self.probe.is_some() {
@@ -675,7 +690,7 @@ impl App {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                let version = self.schema.as_ref().map(|s| format!("gw {}", s.version));
+                let version = self.listed.as_ref().map(|s| format!("gw {}", s.version));
                 let settings = self.settings.page == Page::Settings;
                 if nav_item(ui, "Settings", version.as_deref(), settings).clicked() {
                     self.settings.page = Page::Settings;
@@ -1009,14 +1024,7 @@ impl App {
             }))
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, cmd));
-        let cannot_detect = if self.running().is_some() {
-            Some("Wait for the job that is running.")
-        } else if name == "read" && !self.connected() {
-            // It reads the disk in the drive.
-            Some(NO_DEVICE)
-        } else {
-            None
-        };
+        let cannot_detect = self.cannot_detect(name);
         let action = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2622,6 +2630,29 @@ fn logo(ui: &mut Ui, texture: &mut Option<egui::TextureHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn offline() -> App {
+        let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        App::offline(&egui::Context::default(), Settings::default(), Ok(schema))
+    }
+
+    #[test]
+    fn detect_on_the_read_page_waits_while_the_device_card_asks_gw() {
+        let mut app = offline();
+        app.pin_ports(vec![Port {
+            device: "/dev/cu.usbmodem14201".into(),
+            name: Some("Greaseweazle".into()),
+            serial: None,
+            score: 20,
+        }]);
+        assert_eq!(app.cannot_detect("read"), None);
+        let mut probe = Job::replay("info", "");
+        probe.ended = None;
+        app.probe = Some(probe);
+        let wait = Some("Wait while the device says what it is.");
+        assert_eq!(app.cannot_detect("read"), wait);
+        assert_eq!(app.cannot_detect("convert"), None, "it reads a file");
+    }
 
     #[test]
     fn a_read_of_three_disks_runs_gw_once_for_each() {

@@ -1194,6 +1194,13 @@ pub fn blocked(
             _ => {}
         }
     }
+    // gw would stop at the image before it opens the drive.
+    if values.get("format").is_empty()
+        && format_in_file(schema, cmd, values)
+        && service.image_fault(input_file(cmd, values)).is_some()
+    {
+        return Some("gw cannot read this image. See Disk format.");
+    }
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {

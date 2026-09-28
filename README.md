@@ -10,7 +10,8 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
 ## What it does
 
 - Gives every `gw` command a page: read, write, convert, erase, clean, seek, drive
-  speed, alignment, device info, firmware update, delays, pins, reset and bandwidth.
+  speed, device info, firmware update, delays, pins, reset and bandwidth.
+- Greys out the pages that need a Greaseweazle until one is connected.
 - Offers every option of every command. Common options have their own controls; the
   others are under **Advanced options**.
 - Finds the format of a disk. **Detect** decodes a few tracks of the disk in the

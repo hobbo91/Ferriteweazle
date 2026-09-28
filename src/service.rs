@@ -236,6 +236,12 @@ impl Service {
         load.ready()?.as_deref()
     }
 
+    /// gw's objection to an image file, from what gw has already said.
+    pub fn image_fault(&self, path: &str) -> Option<&str> {
+        let load = self.image_formats.get(&(path.to_owned(), modified(path)))?;
+        load.error()
+    }
+
     pub fn format_info(&mut self, diskdefs: &str, name: &str) -> &Load<FormatInfo> {
         let requests = &self.requests;
         self.infos
