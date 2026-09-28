@@ -215,6 +215,8 @@ const TYPES: &[(&str, &str)] = &[
     ("commodore.", ".d64"),
 ];
 
+/// Most characters a typed name takes: an image's name, a disk label, a preset's name.
+pub const NAME_LIMIT: usize = 48;
 const LABEL_WIDTH: f32 = 112.0;
 const MIN_FIELD: f32 = 160.0;
 const MAX_FIELD: f32 = 400.0;
@@ -1081,6 +1083,7 @@ impl<'a> Form<'a> {
             let (name, _) = row(ui, "Name", |ui| {
                 ui.add(
                     edit(&mut out.name)
+                        .char_limit(NAME_LIMIT)
                         .hint_text("Required")
                         .desired_width(field_width(ui)),
                 )
@@ -1138,6 +1141,7 @@ impl<'a> Form<'a> {
                     ui.add_enabled(
                         out.disks > 1,
                         edit(&mut out.label)
+                            .char_limit(NAME_LIMIT)
                             .hint_text("e.g. Disk")
                             .desired_width(SHORT_FIELD),
                     )

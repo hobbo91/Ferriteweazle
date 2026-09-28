@@ -127,15 +127,21 @@ fn line(w: &Window) -> String {
         .unwrap_or_default()
 }
 
-/// The disk map's squares.
+/// The disk map's squares, above the legend's swatches.
 fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
     let left = w.get_by_label("Disk status").rect().left();
+    let legend = ["Good ", "Short ", "Bad ", "Flux ", "Written ", "Erased "]
+        .iter()
+        .flat_map(|name| w.query_all_by_label_contains(name))
+        .map(|l| l.rect().top() - 2.0)
+        .fold(f32::INFINITY, f32::min);
     w.output()
         .shapes
         .iter()
         .filter_map(move |c| match &c.shape {
             egui::Shape::Rect(r)
                 if r.rect.left() > left
+                    && r.rect.bottom() < legend
                     && (r.rect.width() - r.rect.height()).abs() < 0.5
                     && r.rect.width() > 8.0 =>
             {
@@ -178,6 +184,77 @@ fn a_bad_command_line_says_what_is_wrong_and_changes_nothing() {
     type_line(&mut w, "gw read --revs=4 --bogus x.img");
     w.get_by_label("gw read has no option --bogus.");
     assert_eq!(app(&w).settings.values["read"].get("revs"), "");
+}
+
+/// The command line's Reset, not the sidebar's page of that name.
+fn cli_reset(w: &Window) -> egui_kittest::Node<'_> {
+    let heading = w.get_by_label("Command line").rect();
+    w.get_all_by_label("Reset")
+        .find(|b| b.rect().top() > heading.top() - 10.0)
+        .expect("the command line's Reset")
+}
+
+#[test]
+fn a_command_line_gw_cannot_take_stays_until_reset() {
+    let mut w = window(Settings::default());
+    w.get_by_label("CLI").click();
+    w.run();
+    let synced = line(&w);
+    let reset = |w: &Window| !cli_reset(w).accesskit_node().is_disabled();
+    assert!(!reset(&w), "Reset is lit with nothing typed");
+    type_line(&mut w, "gw read --revs=4 --bogus x.img");
+    w.get_by_label("Command line").click();
+    w.run();
+    assert_eq!(
+        line(&w),
+        "gw read --revs=4 --bogus x.img",
+        "the typing was lost"
+    );
+    w.get_by_label("gw read has no option --bogus.");
+    assert!(reset(&w));
+    cli_reset(&w).click();
+    w.run();
+    assert_eq!(line(&w), synced);
+    assert!(w.query_by_label("gw read has no option --bogus.").is_none());
+    assert!(!reset(&w));
+}
+
+#[test]
+fn a_command_line_longer_than_two_rows_scrolls_in_its_drawer() {
+    let mut settings = Settings {
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    };
+    settings.outputs.get_mut("read/file").unwrap().name = "akai_s950_backup_".repeat(20);
+    let w = window(settings);
+    let heading = w.get_by_label("Command line").rect();
+    let bar = w
+        .get_all_by_role(Role::ScrollBar)
+        .map(|b| b.rect())
+        .find(|r| r.top() > heading.bottom() && r.height() > r.width())
+        .expect("a scroll bar beside the command");
+    let rows = 2.0 * 14.0;
+    assert!(bar.height() < rows + 20.0, "{bar:?}");
+}
+
+#[test]
+fn a_name_takes_no_more_than_its_limit() {
+    let mut w = window(chosen());
+    let name = w.get_by_label("Name").rect();
+    let field = w
+        .get_all_by_role(Role::TextInput)
+        .find(|f| (f.rect().center().y - name.center().y).abs() < 4.0)
+        .expect("the name's field");
+    field.click();
+    w.run();
+    type_text(&w, &"x".repeat(60));
+    w.run();
+    let name = &app(&w).settings.outputs["read/file"].name;
+    assert_eq!(
+        name.chars().count(),
+        ferriteweazle::form::NAME_LIMIT,
+        "{name}"
+    );
 }
 
 #[test]
@@ -748,6 +825,29 @@ fn an_empty_log_dragged_taller_stays_that_tall() {
     }
     let [taller, _] = edges(&w);
     assert!(taller < open - 50.0, "{open} to {taller}");
+}
+
+#[test]
+fn the_map_stays_centred_as_a_wider_window_widens_its_pane() {
+    let span = |width: f32| {
+        let w = window_at(egui::vec2(width, 780.0), chosen());
+        let (left, right) = squares(&w).fold((f32::MAX, f32::MIN), |(l, r), s| {
+            (l.min(s.rect.left()), r.max(s.rect.right()))
+        });
+        (left, right)
+    };
+    let (left, right) = span(1240.0);
+    let (wider_left, wider_right) = span(1340.0);
+    assert_eq!(
+        wider_right - wider_left,
+        right - left,
+        "the squares changed size"
+    );
+    assert!(
+        (wider_left - left - 50.0).abs() <= 1.0,
+        "moved {} for 100 more points",
+        wider_left - left
+    );
 }
 
 #[test]

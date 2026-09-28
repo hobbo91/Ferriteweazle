@@ -211,6 +211,8 @@ struct Session {
 struct Cli {
     text: String,
     error: Option<String>,
+    /// The page the text was typed on.
+    page: String,
 }
 
 pub struct App {
@@ -1550,6 +1552,15 @@ impl App {
         };
         let line = command::line(&self.args(cmd));
         let cli = &mut self.cli;
+        let id = ui.make_persistent_id("cli-text");
+        // The text is the person's own while they type, and after if gw
+        // cannot take it, until Reset; otherwise it follows the page.
+        if ui.memory(|m| m.has_focus(id)) {
+            cli.page = page.to_owned();
+        } else if cli.error.is_none() || cli.page != page {
+            cli.text.clone_from(&line);
+            cli.error = None;
+        }
         ui.horizontal(|ui| {
             ui.label(RichText::new("Command line").strong());
             right(ui, |ui| {
@@ -1560,23 +1571,54 @@ impl App {
                 {
                     ui.ctx().copy_text(cli.text.clone());
                 }
+                let reset = ui.add_enabled(cli.text != line, egui::Button::new("Reset"));
+                if reset
+                    .on_hover_text("Reset the CLI command.")
+                    .on_disabled_hover_text("No changes.")
+                    .clicked()
+                {
+                    cli.text.clone_from(&line);
+                    cli.error = None;
+                    ui.memory_mut(|m| m.surrender_focus(id));
+                }
             });
         });
         ui.add_space(4.0);
-        let id = ui.make_persistent_id("cli-text");
-        // While it is being typed in, the text is the person's own.
-        if !ui.memory(|m| m.has_focus(id)) {
-            cli.text = line;
-            cli.error = None;
-        }
-        let edit = ui
-            .add(
-                TextEdit::multiline(&mut cli.text)
-                    .id(id)
-                    .font(TextStyle::Monospace)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY),
-            )
+        // Two rows, then it scrolls inside its frame.
+        let rows = 2.0 * ui.text_style_height(&TextStyle::Monospace);
+        let visuals = ui.visuals();
+        let stroke = match ui.memory(|m| m.has_focus(id)) {
+            true => visuals.selection.stroke,
+            false => visuals.widgets.inactive.bg_stroke,
+        };
+        let edit = Frame::new()
+            .fill(visuals.text_edit_bg_color())
+            .stroke(stroke)
+            .corner_radius(visuals.widgets.inactive.corner_radius)
+            .inner_margin(Margin::symmetric(6, 4))
+            .show(ui, |ui| {
+                ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                    bar_width: 4.0,
+                    ..egui::style::ScrollStyle::solid()
+                };
+                ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+                egui::ScrollArea::vertical()
+                    .id_salt("cli")
+                    .max_height(rows)
+                    .min_scrolled_height(rows)
+                    .show(ui, |ui| {
+                        ui.add(
+                            TextEdit::multiline(&mut cli.text)
+                                .id(id)
+                                .font(TextStyle::Monospace)
+                                .frame(Frame::NONE)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY),
+                        )
+                    })
+                    .inner
+            })
+            .inner
             .on_hover_text("Type or paste options. The page follows.");
         let mut apply = None;
         if edit.changed() {
@@ -1931,7 +1973,7 @@ impl App {
                         let text = format!("Disk {} failed. Its output says why.", *disk - 1);
                         ui.label(RichText::new(text).color(p.bad));
                     }
-                    ui.label("Put the next disk in the drive, then read it.");
+                    ui.label("Insert the next disk in the drive.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
@@ -1955,6 +1997,7 @@ impl App {
                     dialog_heading(ui, "Save a preset");
                     ui.add(
                         form::edit(name)
+                            .char_limit(form::NAME_LIMIT)
                             .hint_text("e.g. Amiga DD")
                             .desired_width(f32::INFINITY),
                     )
