@@ -4,7 +4,8 @@
 //!     FERRITEWEAZLE_ARTWORK=path/to/art.png cargo test --test icon logo -- --ignored
 //!
 //! packaging/macos/icon.sh then makes the Mac's sizes from it, and
-//! `cargo test --test icon windows_icon -- --ignored` the Windows icon.
+//! `cargo test --test icon windows_art -- --ignored` the Windows icon and
+//! the installer's pictures.
 
 use image::codecs::ico::{IcoEncoder, IcoFrame};
 use image::imageops::FilterType;
@@ -14,6 +15,21 @@ const WINDOWS_ICON: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/packaging/windows/ferriteweazle.ico"
 );
+/// The installer's pictures, at the sizes WiX's dialogs take: the first and
+/// last pages' background, whose left 164 points hold the picture, and the
+/// banner across the other pages.
+const INSTALLER: [(&str, u32, u32); 2] = [
+    (
+        concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/windows/dialog.bmp"),
+        493,
+        312,
+    ),
+    (
+        concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/windows/banner.bmp"),
+        493,
+        58,
+    ),
+];
 /// Pixel sizes in the Windows icon: its small and large icons at 100% to 200%
 /// scaling, and Explorer's larger views.
 const WINDOWS_SIZES: [u32; 10] = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
@@ -44,10 +60,18 @@ fn logo() {
 }
 
 #[test]
-#[ignore = "remakes the Windows icon from the logo"]
-fn windows_icon() {
+#[ignore = "remakes the Windows icon and installer pictures from the logo"]
+fn windows_art() {
     let logo = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ferriteweazle.png");
     let art = image::open(logo).expect("the logo opens").to_rgba8();
+    // The logo on white: the dialog's in its left panel, the banner's at its right.
+    for ((path, w, h), (size, x, y)) in INSTALLER.into_iter().zip([(132, 16, 40), (48, 437, 5)]) {
+        let mut picture = RgbaImage::from_pixel(w, h, Rgba([255; 4]));
+        let small = image::imageops::resize(&art, size, size, FilterType::Lanczos3);
+        image::imageops::overlay(&mut picture, &small, x, y);
+        let rgb = image::DynamicImage::ImageRgba8(picture).into_rgb8();
+        rgb.save_with_format(path, image::ImageFormat::Bmp).unwrap();
+    }
     let frames: Vec<IcoFrame> = WINDOWS_SIZES
         .iter()
         .map(|&size| {
@@ -57,6 +81,13 @@ fn windows_icon() {
         .collect();
     let file = std::fs::File::create(WINDOWS_ICON).unwrap();
     IcoEncoder::new(file).encode_images(&frames).unwrap();
+}
+
+#[test]
+fn the_installer_pictures_are_the_sizes_wix_takes() {
+    for (path, w, h) in INSTALLER {
+        assert_eq!(image::image_dimensions(path).unwrap(), (w, h), "{path}");
+    }
 }
 
 #[test]

@@ -25,7 +25,7 @@ winresource = { version = "0.1", default-features = false }
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
 # Already built for eframe; tests/icon.rs makes the logo and the Windows icon
 # with it.
-image = { version = "0.25", default-features = false, features = ["ico", "png"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 
 [profile.release]
 lto = "thin"

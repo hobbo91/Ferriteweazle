@@ -21,7 +21,14 @@
     <Icon Id="ferriteweazle.ico" SourceFile="$(sys.SOURCEFILEDIR)ferriteweazle.ico" />
     <Property Id="ARPPRODUCTICON" Value="ferriteweazle.ico" />
     <WixVariable Id="WixUILicenseRtf" Value="$(Licence)" />
-    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(sys.SOURCEFILEDIR)dialog.bmp" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(sys.SOURCEFILEDIR)banner.bmp" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <!-- An upgrade goes where the installed version went. -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
+                      Type="raw" />
+    </Property>
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Ferriteweazle">
@@ -38,6 +45,10 @@
       </Component>
       <Component Directory="INSTALLFOLDER">
         <File Source="$(App)\LICENSE.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
+                       Type="string" Value="[INSTALLFOLDER]" />
       </Component>
       <Files Directory="DATAFOLDER" Include="$(App)\ferriteweazle-data\**" />
       <!-- Tells the app it was installed from an MSI, so it updates with one. -->

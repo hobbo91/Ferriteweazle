@@ -88,9 +88,10 @@ writes two packages to `dist`:
 
 - `Ferriteweazle-VERSION-win-ARCH.zip`: a Ferriteweazle folder that runs where it
   is unzipped, with gw's Python in `ferriteweazle-data` beside the program.
-- `Ferriteweazle-VERSION-win-ARCH.msi`: installs the same in Program Files for all
-  users, with a Start menu shortcut, and replaces any older version. It refuses
-  Windows before 10.
+- `Ferriteweazle-VERSION-win-ARCH.msi`: installs the same for all users, in
+  Program Files or a folder chosen in the installer, with a Start menu shortcut.
+  It replaces any older version in that version's folder, and refuses Windows
+  before 10.
 
 The installer needs WiX 5, a .NET tool (with the .NET 8 SDK):
 
