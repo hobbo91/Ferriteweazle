@@ -15,8 +15,17 @@ use ferriteweazle::{App, Drawer, Page, Settings};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The engine in target/engine, or the folder FERRITEWEAZLE_ENGINE names,
+/// such as another processor's engine run emulated.
 fn engine() -> Option<Engine> {
-    let python = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/engine/bin/python3");
+    let dir = std::env::var_os("FERRITEWEAZLE_ENGINE").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("target/engine"),
+        PathBuf::from,
+    );
+    let python = match cfg!(windows) {
+        true => dir.join("python.exe"),
+        false => dir.join("bin/python3"),
+    };
     let found = if python.is_file() {
         Some(Engine {
             python,
@@ -77,6 +86,65 @@ fn run(engine: &Engine, args: &[&str]) -> Job {
 
 fn detect(engine: &Engine, image: &Path) -> Job {
     finish(start(engine, DETECT, &[&path(image)]), "detection")
+}
+
+/// A port that loses the command sent after each opening listed, as Windows
+/// can, run through the bridge's handshake and gw's own.
+const LOSSY_PORT: &str = r#"
+import runpy, struct, sys
+bridge = runpy.run_path(sys.argv[1])
+bridge['steady_handshake']()
+from greaseweazle import error, usb
+
+class Port:
+    def __init__(self, lost):
+        self.lost, self.opens, self.timeout, self.out = lost, 0, None, b''
+    baudrate = property(lambda self: 9600, lambda self, rate: None)
+    def reset_output_buffer(self): pass
+    def reset_input_buffer(self): self.out = b''
+    def close(self): pass
+    def open(self): self.opens += 1
+    def write(self, cmd):
+        if self.opens not in self.lost:
+            info = struct.pack('<4BI4B3H14x', 1, 6, 1, 22, 72000000, 4, 1, 1, 0, 288, 224, 128)
+            self.out += bytes([cmd[0], 0]) + info
+    def read(self, n):
+        got, self.out = self.out[:n], self.out[n:]
+        assert len(got) == n or self.timeout is not None, 'gw would wait for ever'
+        return got
+
+for lost in eval(sys.argv[2]):
+    port = Port(lost)
+    try:
+        unit = usb.Unit(port)
+        print(f'firmware {unit.major}.{unit.minor} after {port.opens} openings, then waits for ever: {port.timeout is None}')
+    except error.Fatal as e:
+        print(e)
+"#;
+
+#[test]
+fn a_command_lost_after_opening_the_port_is_sent_again() {
+    let Some(engine) = engine() else { return };
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&engine.python)
+        .args(["-c", LOSSY_PORT])
+        .arg(&bridge)
+        .arg("[set(), {1}, {1, 2}, {1, 2, 3}]")
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "firmware 1.6 after 1 openings, then waits for ever: True",
+            "firmware 1.6 after 2 openings, then waits for ever: True",
+            "firmware 1.6 after 3 openings, then waits for ever: True",
+            "The Greaseweazle did not answer.",
+        ],
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

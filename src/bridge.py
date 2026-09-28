@@ -1,10 +1,11 @@
-"""Ferriteweazle's link to gw, through gw's own modules. Never patches gw.
+"""Ferriteweazle's link to gw, through gw's own modules. gw is left as it is,
+but for a time limit on the first reply from the device (steady_handshake).
 
   python bridge.py serve        one JSON request per stdin line, one reply per stdout line
   python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
   python bridge.py detect ARGS  finds the format of the disk in the drive, or of a flux file
 """
-import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, sys, threading, typing, _thread
+import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
@@ -532,8 +533,30 @@ def run(main):
     sys.exit(code)
 
 
+def steady_handshake():
+    """gw waits for ever for the device's first reply. On Windows every
+    second opening of the port can lose the first command, so the reply
+    never comes; gw's own reset, run again, gets it through."""
+    from greaseweazle import error, usb
+    connect = usb.Unit.__init__
+
+    def patient(unit, ser):
+        # A device answers in milliseconds; asking again early does no harm.
+        wait, ser.timeout = ser.timeout, 0.5
+        try:
+            for _ in range(3):
+                with contextlib.suppress(struct.error):  # a short read: no reply
+                    return connect(unit, ser)
+            raise error.Fatal('The Greaseweazle did not answer.')
+        finally:
+            ser.timeout = wait
+
+    usb.Unit.__init__ = patient
+
+
 def gw(args):
     from greaseweazle import cli
+    steady_handshake()
     sys.argv = ['gw'] + args
     return cli.main()
 
@@ -542,6 +565,7 @@ def detect_like_gw(args):
     """Runs detect with its output on stderr and errors reported as gw does."""
     sys.stdout = sys.stderr
     try:
+        steady_handshake()
         return detect(args)
     except Exception as e:
         print('** FATAL ERROR:\n' + str(e))
