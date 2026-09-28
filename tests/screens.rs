@@ -2,13 +2,15 @@
 //!
 //!     cargo test --test screens -- --ignored
 //!
-//! Uses the Greaseweazle it finds, as the app does, and replays saved gw output.
+//! Uses the gw it finds, as the app does, with a made-up Greaseweazle on
+//! /dev/cu.usbmodem14201 whatever is plugged in, and replays saved gw output.
 
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::Output;
 use ferriteweazle::job::Job;
+use ferriteweazle::schema::Port;
 use ferriteweazle::{App, Page, Settings};
 use std::time::Duration;
 
@@ -66,7 +68,16 @@ fn render_sized(
         .wgpu()
         .build_ui_state(
             |ui, app: &mut Option<App>| {
-                let app = app.get_or_insert_with(|| App::with_settings(ui.ctx(), settings.clone()));
+                let app = app.get_or_insert_with(|| {
+                    let mut app = App::with_settings(ui.ctx(), settings.clone());
+                    app.pin_ports(vec![Port {
+                        device: "/dev/cu.usbmodem14201".into(),
+                        name: Some("Greaseweazle".into()),
+                        serial: Some("GW0123456789ABCDEF".into()),
+                        score: 20,
+                    }]);
+                    app
+                });
                 match job.take() {
                     Some(job) if job.command == "info" => app.tool = Some(job),
                     Some(job) => app.disk = Some(job),
@@ -182,7 +193,15 @@ fn screens() {
             w.get_by_role_and_label(Role::Button, "Log").click();
         });
         render("found", theme, settings("read", theme), None, |w| {
-            w.state_mut().as_mut().unwrap().notice = Some(FOUND.into());
+            let app = w.state_mut().as_mut().unwrap();
+            app.notices.insert("read".into(), FOUND.into());
+        });
+        render("no-device", theme, settings("read", theme), None, |w| {
+            w.state_mut().as_mut().unwrap().pin_ports(Vec::new());
+            w.get_all_by_role_and_label(Role::Button, "Read disk")
+                .last()
+                .expect("the run button")
+                .hover();
         });
         let mut disks = settings("read", theme);
         disks.outputs.get_mut("read/file").unwrap().disks = 3;

@@ -69,6 +69,12 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
     ("erase", "Everything on the disk will be lost."),
 ];
 
+/// Pages that open with no device, so their settings can be made ready.
+const PREPARED: &[&str] = &["read", "write"];
+
+/// Why a command that uses the device cannot run.
+const NO_DEVICE: &str = "Connect a Greaseweazle.";
+
 /// Commands the status pane shows. Others show their results under their page.
 const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", DETECT];
 
@@ -188,6 +194,9 @@ pub struct App {
     engine: Option<Engine>,
     service: Service,
     schema: Option<Arc<Schema>>,
+    /// The latest gw's description, none once a gw fails to start. The sidebar
+    /// lists its commands, and keeps them while gw restarts.
+    listed: Option<Arc<Schema>>,
     /// The last job about a disk, which the status pane shows.
     pub disk: Option<Job>,
     /// The last job of any other command, shown under its page.
@@ -197,8 +206,9 @@ pub struct App {
     session: Option<Session>,
     cli: Cli,
     dialog: Option<Dialog>,
-    /// A note above the page, such as the formats detection found.
-    pub notice: Option<String>,
+    /// Notes above pages, such as the formats detection found, by the page
+    /// each came from. Each stays until dismissed or replaced there.
+    pub notices: BTreeMap<String, String>,
     /// Close the window once the stopped job has ended.
     quitting: bool,
     /// What the last `gw info` said about the device.
@@ -235,10 +245,12 @@ impl App {
     pub fn offline(ctx: &egui::Context, settings: Settings, schema: Result<Schema, String>) -> App {
         theme::install(ctx);
         ctx.set_theme(settings.theme);
+        let known = schema.as_ref().ok().cloned().map(Arc::new);
         App {
             settings,
             engine: None,
-            schema: schema.as_ref().ok().cloned().map(Arc::new),
+            schema: known.clone(),
+            listed: known,
             service: Service::offline(schema),
             disk: None,
             tool: None,
@@ -246,7 +258,7 @@ impl App {
             session: None,
             cli: Cli::default(),
             dialog: None,
-            notice: None,
+            notices: BTreeMap::new(),
             quitting: false,
             device: None,
             probe: None,
@@ -260,6 +272,8 @@ impl App {
     fn connect(&mut self, ctx: &egui::Context) {
         self.schema = None;
         self.engine = Engine::find(self.settings.engine.as_deref());
+        // A new gw finds the same device, so the window keeps it meanwhile.
+        let ports = self.service.known_ports().to_vec();
         self.service = match (&self.engine, &self.settings.engine) {
             (Some(engine), _) => Service::start(engine, repaint(ctx)),
             (None, Some(path)) => Service::offline(Err(format!(
@@ -270,6 +284,13 @@ impl App {
                 "Ferriteweazle could not find Greaseweazle. Choose your gw in Settings.".into(),
             )),
         };
+        self.service.seed_ports(ports);
+    }
+
+    /// Shows these ports as the connected devices, whatever gw finds, until
+    /// gw restarts: for tests and pictures of the window.
+    pub fn pin_ports(&mut self, ports: Vec<Port>) {
+        self.service.pin_ports(ports);
     }
 
     /// gw's command line, once the engine has described it.
@@ -338,7 +359,15 @@ impl App {
     fn poll(&mut self, ctx: &egui::Context) {
         self.service.poll();
         if self.schema.is_none() {
-            self.schema = self.service.schema.ready().cloned().map(Arc::new);
+            match &self.service.schema {
+                Load::Ready(schema) => {
+                    self.schema = Some(Arc::new(schema.clone()));
+                    self.listed = self.schema.clone();
+                }
+                // No gw runs, so the sidebar lists none of its commands.
+                Load::Failed(_) => self.listed = None,
+                Load::Waiting(_) => {}
+            }
         }
         let mut ended = Vec::new();
         for (disk, job) in [(true, &mut self.disk), (false, &mut self.tool)] {
@@ -404,6 +433,11 @@ impl App {
     fn found_port(&mut self) -> Option<&Port> {
         self.service.ports();
         chosen_port(self.service.known_ports(), &self.settings.device)
+    }
+
+    /// Whether the sidebar shows a Greaseweazle, as last listed.
+    fn connected(&self) -> bool {
+        chosen_port(self.service.known_ports(), &self.settings.device).is_some()
     }
 
     /// Runs `gw info` for the device card, when nothing else is using the device.
@@ -496,12 +530,12 @@ impl App {
         let Some(cmd) = schema.command(&page) else {
             return;
         };
-        let values = self.settings.values.entry(page).or_default();
+        let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
         if step > 1 {
             values.set("tracks", form::double_step(values.get("tracks")));
         }
-        self.notice = Some(found_note(&formats, step));
+        self.notices.insert(page, found_note(&formats, step));
     }
 
     /// Closing the window while gw works asks first: gw stops the drive before
@@ -553,18 +587,24 @@ impl App {
         ui.add_space(CARD_DROP);
         self.device_card(ui);
         ui.add_space(12.0);
+        let connected = self.connected();
         let list = egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 // Rows touch, as in a source list.
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (section, names) in sections(self.schema.as_deref()) {
+                for (section, names) in sections(self.listed.as_deref()) {
                     ui.add_space(4.0);
                     ui.label(RichText::new(section).small().weak());
                     ui.add_space(1.0);
                     for name in names {
                         let here = matches!(&self.settings.page, Page::Command(n) if n == name);
-                        if nav_item(ui, &title(name), None, here).clicked() {
+                        let shut = !connected
+                            && !PREPARED.contains(&name)
+                            && self.listed.as_deref().is_some_and(|s| uses_device(s, name));
+                        let item =
+                            ui.add_enabled_ui(!shut, |ui| nav_item(ui, &title(name), None, here));
+                        if item.inner.on_disabled_hover_text(NO_DEVICE).clicked() {
                             self.settings.page = Page::Command(name.to_owned());
                         }
                     }
@@ -855,7 +895,7 @@ impl App {
                 right(ui, |ui| self.presets_menu(ui, name));
             });
             ui.label(RichText::new(form::sentence(&cmd.about)).weak());
-            self.notice_bar(ui);
+            self.notice_bar(ui, name);
         });
         ui.add_space(14.0);
         egui::Panel::bottom("run-bar")
@@ -867,7 +907,14 @@ impl App {
             }))
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, cmd));
-        let busy = self.running().is_some();
+        let cannot_detect = if self.running().is_some() {
+            Some("Wait for the job that is running.")
+        } else if name == "read" && !self.connected() {
+            // It reads the disk in the drive.
+            Some(NO_DEVICE)
+        } else {
+            None
+        };
         let action = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -882,7 +929,7 @@ impl App {
                         values,
                         outputs: &mut self.settings.outputs,
                         service: &mut self.service,
-                        busy,
+                        cannot_detect,
                     }
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
@@ -896,14 +943,16 @@ impl App {
             })
             .inner;
         if action == Some(form::Action::Detect) {
+            // The page's earlier answer goes while it looks again.
+            self.notices.remove(name);
             self.detect_for = Some(name.to_owned());
             let args = self.detect_args(cmd);
             self.run(ui.ctx(), DETECT, args);
         }
     }
 
-    fn notice_bar(&mut self, ui: &mut Ui) {
-        let Some(notice) = self.notice.clone() else {
+    fn notice_bar(&mut self, ui: &mut Ui, page: &str) {
+        let Some(notice) = self.notices.get(page).cloned() else {
             return;
         };
         ui.add_space(8.0);
@@ -924,7 +973,7 @@ impl App {
                             .on_hover_text("Hide this.")
                             .clicked()
                         {
-                            self.notice = None;
+                            self.notices.remove(page);
                         }
                     });
                 });
@@ -1048,9 +1097,12 @@ impl App {
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
+            // The page's own settings first: they can be made ready with no device.
+            let no_device = uses_device(schema, &cmd.name) && !self.connected();
             let outputs = &self.settings.outputs;
             self.diskdefs_fault(values)
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
+                .or(no_device.then_some(NO_DEVICE))
                 .map(str::to_owned)
         }
     }
@@ -1166,9 +1218,17 @@ impl App {
                     .map(String::from);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
-                self.notice = None;
             }
-            Err(e) => self.notice = Some(format!("Could not start gw: {e}")),
+            Err(e) => {
+                // A detect job's page is the one it chooses the format on.
+                let page = match command {
+                    DETECT => self.detect_for.clone(),
+                    _ => None,
+                };
+                let page = page.unwrap_or_else(|| command.to_owned());
+                self.notices
+                    .insert(page, format!("Could not start gw: {e}"));
+            }
         }
     }
 
@@ -1397,7 +1457,7 @@ impl App {
                 .pick_file();
         }
         if let Some(path) = load {
-            self.load_preset(&path);
+            self.load_preset(command, &path);
         }
     }
 
@@ -1806,12 +1866,13 @@ impl App {
             outputs,
         };
         if let Err(e) = presets::save(&self.presets_folder(), name, &preset) {
-            self.notice = Some(format!("Could not save the preset: {e}"));
+            let text = format!("Could not save the preset: {e}");
+            self.notices.insert(command.to_owned(), text);
         }
     }
 
-    /// Applies a preset file's settings and opens its page.
-    fn load_preset(&mut self, path: &Path) {
+    /// Applies a preset file's settings and opens its page. A fault shows on `page`.
+    fn load_preset(&mut self, page: &str, path: &Path) {
         match presets::load(path) {
             Ok(preset) => {
                 self.settings
@@ -1822,7 +1883,8 @@ impl App {
             }
             Err(e) => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                self.notice = Some(format!("Could not load {name}. {e}"));
+                self.notices
+                    .insert(page.to_owned(), format!("Could not load {name}. {e}"));
             }
         }
     }
@@ -2044,15 +2106,21 @@ fn device_table(ui: &mut Ui, info: &DeviceInfo, p: &Palette) {
         });
 }
 
-/// The sidebar's sections and the commands this gw has in each.
+/// Whether a command acts on the Greaseweazle: gw gives each such one --device.
+fn uses_device(schema: &Schema, command: &str) -> bool {
+    schema
+        .command(command)
+        .is_some_and(|c| c.arg("device").is_some())
+}
+
+/// The sidebar's sections and the commands this gw has in each: none
+/// until a gw has described itself.
 fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
-    let names: Vec<&str> = match schema {
-        Some(s) => s.commands.iter().map(|c| c.name.as_str()).collect(),
-        None => SECTIONS
-            .iter()
-            .flat_map(|(_, names)| names.iter().copied())
-            .collect(),
-    };
+    let names: Vec<&str> = schema
+        .iter()
+        .flat_map(|s| &s.commands)
+        .map(|c| c.name.as_str())
+        .collect();
     let mut out: Vec<(&str, Vec<&str>)> = SECTIONS
         .iter()
         .map(|(section, known)| {
@@ -2073,6 +2141,7 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
     if !other.is_empty() {
         out.push(("Other", other));
     }
+    out.retain(|(_, names)| !names.is_empty());
     out
 }
 
@@ -2278,8 +2347,9 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
             p.dim,
         );
     }
+    let enabled = ui.is_enabled();
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, text)
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, selected, text)
     });
     response
 }
@@ -2457,5 +2527,48 @@ mod tests {
             ("/disks", "Game Disk", ".hfe")
         );
         assert_eq!(out.value(1), "/disks/Game Disk.hfe::version=3");
+    }
+
+    #[test]
+    fn a_fault_shows_on_the_page_it_happened_on() {
+        let ctx = egui::Context::default();
+        let settings = Settings {
+            presets_folder: Some("/dev/null/presets".into()),
+            ..Settings::default()
+        };
+        let mut app = App::offline(&ctx, settings, Err(String::new()));
+        app.engine = Some(Engine {
+            python: "/no/such/python".into(),
+            origin: Origin::Custom,
+        });
+        app.run(&ctx, "erase", Vec::new());
+        app.detect_for = Some("convert".into());
+        app.run(&ctx, DETECT, Vec::new());
+        app.save_preset("seek", "Mine");
+        app.load_preset("write", Path::new("/no/such/Mine.json"));
+        let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
+        assert_eq!(pages, ["convert", "erase", "seek", "write"]);
+        assert!(app.notices["erase"].starts_with("Could not start gw: "));
+    }
+
+    #[test]
+    fn a_gw_that_cannot_be_found_leaves_no_greaseweazle_or_command() {
+        let ctx = egui::Context::default();
+        let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let mut app = App::offline(&ctx, Settings::default(), Ok(schema));
+        app.pin_ports(vec![Port {
+            device: "/dev/cu.usbmodem14201".into(),
+            name: Some("Greaseweazle".into()),
+            serial: None,
+            score: 20,
+        }]);
+        assert!(app.connected());
+        assert!(!sections(app.listed.as_deref()).is_empty());
+        app.settings.engine = Some("/no/such/gw".into());
+        app.connect(&ctx);
+        app.poll(&ctx);
+        assert!(app.engine.is_none());
+        assert!(!app.connected(), "no gw will look for it");
+        assert!(sections(app.listed.as_deref()).is_empty(), "no gw runs");
     }
 }

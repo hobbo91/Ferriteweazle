@@ -5,12 +5,15 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node};
 use ferriteweazle::form::Output;
 use ferriteweazle::job::Job;
-use ferriteweazle::schema::Schema;
+use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
 type Window = Harness<'static, Option<App>>;
 
 const DAMAGED: &str = include_str!("data/convert-damaged.log");
+
+const FOUND: &str =
+    "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
 
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
@@ -287,12 +290,117 @@ fn every_page_draws() {
     }
 }
 
+/// A Greaseweazle as gw lists it, on a made-up port.
+fn greaseweazle() -> Port {
+    Port {
+        device: "/dev/cu.usbmodem14201".into(),
+        name: Some("Greaseweazle".into()),
+        serial: Some("GW0123456789ABCDEF".into()),
+        score: 20,
+    }
+}
+
+/// The sidebar's entry for a page.
+fn entry<'w>(w: &'w Window, title: &'w str) -> Node<'w> {
+    w.get_all_by_role_and_label(Role::Button, title)
+        .find(|n| n.rect().left() < 60.0)
+        .expect("the sidebar entry")
+}
+
+fn greyed(w: &Window, title: &str) -> bool {
+    entry(w, title).accesskit_node().is_disabled()
+}
+
+/// Pages that only act on the Greaseweazle.
+const DEVICE_PAGES: [&str; 11] = [
+    "Erase disk",
+    "Clean heads",
+    "Seek",
+    "Drive speed",
+    "Device info",
+    "Update firmware",
+    "Delays",
+    "Read pin",
+    "Set pin",
+    "Reset",
+    "USB bandwidth",
+];
+
+#[test]
+fn pages_that_only_act_on_the_device_grey_out_until_one_is_connected() {
+    let mut w = window(Settings::default());
+    for title in DEVICE_PAGES {
+        assert!(greyed(&w, title), "{title} opens");
+    }
+    for title in ["Read disk", "Write disk", "Convert image"] {
+        assert!(!greyed(&w, title), "{title} is greyed");
+    }
+    entry(&w, "Erase disk").hover();
+    w.run();
+    w.get_by_label("Connect a Greaseweazle.");
+    entry(&w, "Erase disk").click();
+    w.run();
+    assert_eq!(app(&w).settings.page, Page::Command("read".into()));
+
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run();
+    for title in DEVICE_PAGES {
+        assert!(!greyed(&w, title), "{title} is greyed");
+    }
+    entry(&w, "Erase disk").click();
+    w.run();
+    assert_eq!(app(&w).settings.page, Page::Command("erase".into()));
+
+    // The page it is on stays open when it goes.
+    app_mut(&mut w).pin_ports(Vec::new());
+    w.run();
+    assert_eq!(app(&w).settings.page, Page::Command("erase".into()));
+    assert!(greyed(&w, "Erase disk"));
+}
+
+#[test]
+fn detect_needs_the_device_on_the_read_page_only() {
+    let detect_greyed = |w: &Window| w.get_by_label("Detect").accesskit_node().is_disabled();
+    let mut w = window(chosen());
+    assert!(detect_greyed(&w), "it reads the disk in the drive");
+    w.get_by_label("Detect").hover();
+    w.run();
+    w.get_by_label("Connect a Greaseweazle.");
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run();
+    assert!(!detect_greyed(&w));
+
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..Settings::default()
+    };
+    set(&mut settings, "convert", "in_file", "/d/Game.scp");
+    let w = window(settings);
+    assert!(!detect_greyed(&w), "it reads the image");
+}
+
+#[test]
+fn until_gw_describes_itself_the_sidebar_lists_no_command() {
+    let mut w = Harness::builder().with_size(DEFAULT).build_ui_state(
+        |ui, app: &mut Option<App>| {
+            let error = Err("Starting.".to_owned());
+            app.get_or_insert_with(|| App::offline(ui.ctx(), Settings::default(), error))
+                .show(ui);
+        },
+        None,
+    );
+    w.run();
+    w.get_by_label("Settings");
+    let names = ["Read disk", "Erase disk", "Align heads", "USB bandwidth"];
+    for name in names.into_iter().chain(["Disk", "Drive", "Device"]) {
+        assert!(w.query_by_label(name).is_none(), "{name} is listed");
+    }
+}
+
 #[test]
 fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     let mut w = window(Settings::default());
-    app_mut(&mut w).notice = Some(
-        "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.".into(),
-    );
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
     w.run();
     let dismiss = w.get_by_label("Dismiss").rect();
     let status = w.get_by_label("Disk status").rect();
@@ -307,7 +415,28 @@ fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     );
     w.get_by_label("Dismiss").click();
     w.run();
-    assert!(app(&w).notice.is_none());
+    assert!(app(&w).notices.is_empty());
+}
+
+#[test]
+fn a_notice_shows_only_on_its_page_and_stays_until_dismissed() {
+    let mut w = window(Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    w.get_by_label(FOUND);
+    for title in ["Write disk", "Update firmware"] {
+        entry(&w, title).click();
+        w.run();
+        assert!(w.query_by_label(FOUND).is_none(), "it shows on {title}");
+    }
+    entry(&w, "Read disk").click();
+    w.run();
+    w.get_by_label(FOUND);
+    w.get_by_label("Dismiss").click();
+    w.run();
+    assert!(w.query_by_label(FOUND).is_none());
+    assert!(app(&w).notices.is_empty());
 }
 
 #[test]
@@ -363,6 +492,8 @@ fn every_field_and_its_label_explain_themselves_on_hover() {
 #[test]
 fn a_button_in_a_field_shows_its_own_tooltip_alone() {
     let mut w = window(chosen());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.run();
     w.get_by_label("Detect").hover();
     w.run();
     w.get_by_label("Attempt to find the disk format and image type.");
