@@ -2092,7 +2092,7 @@ impl App {
                         let text = format!("Disk {} failed. Its output says why.", *disk - 1);
                         ui.label(RichText::new(text).color(p.bad));
                     }
-                    ui.label("Insert the next disk in the drive.");
+                    ui.label("Eject, then insert the next disk in the drive.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
