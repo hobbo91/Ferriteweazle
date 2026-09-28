@@ -1180,6 +1180,9 @@ pub const MAX_DISKS: u32 = 99;
 pub const USUAL_DISK: (u32, u32) = (80, 2);
 
 /// Why settings with every argument filled in still cannot run.
+/// Why a page that makes an image cannot run before its image is named.
+const NO_OUTPUT: &str = "Choose the output file and location first.";
+
 pub fn blocked(
     schema: &Schema,
     cmd: &Command,
@@ -1204,10 +1207,10 @@ pub fn blocked(
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
-            return Some("Choose an image type first.");
+            return Some(NO_OUTPUT);
         };
         if out.value(1).is_empty() {
-            return Some("Name the image first.");
+            return Some(NO_OUTPUT);
         }
         let flux = flux_source(cmd, values);
         // Flux saved as flux needs no format.

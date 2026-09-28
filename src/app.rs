@@ -1132,10 +1132,8 @@ impl App {
                         "Stop"
                     };
                     let stop = ui.add_enabled(!job.stopping(), big_button(label, p.bad, p));
-                    if stop
-                        .on_hover_text("Stop gw. The drive motor turns off.")
-                        .clicked()
-                    {
+                    let drive = job.command != DETECT || self.detect_for.as_deref() == Some("read");
+                    if stop.on_hover_text(stop_tip(&job.command, drive)).clicked() {
                         self.stop();
                     }
                 }
@@ -1715,7 +1713,7 @@ impl App {
                 .unwrap_or_default();
             let back = self.settings.engine.is_some().then_some(default);
             let tip = "Choose a gw, or a Python with greaseweazle.";
-            match path_row(ui, "gw", &gw, tip, back) {
+            match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back) {
                 Some(PathClick::Choose) => {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.settings.engine = Some(path);
@@ -2388,6 +2386,18 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
         Some(Outcome::Succeeded) => ("Done", p.good),
         Some(Outcome::Failed) => ("Failed", p.bad),
         Some(Outcome::Stopped) => ("Cancelled", p.partial),
+    }
+}
+
+/// The Stop button's tip. Stopping a job that runs the drive turns its motor off.
+fn stop_tip(command: &str, drive: bool) -> &'static str {
+    match command {
+        "read" => "Stop read, this will also stop the drive's motor.",
+        "write" => "Stop write, this will also stop the drive's motor.",
+        "erase" => "Stop erase, this will also stop the drive's motor.",
+        "clean" | "seek" | "rpm" | "align" => "Stop, this will also stop the drive's motor.",
+        DETECT if drive => "Stop detect, this will also stop the drive's motor.",
+        _ => "Stop gw.",
     }
 }
 

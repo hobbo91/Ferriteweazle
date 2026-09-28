@@ -780,7 +780,11 @@ fn settings_keeps_every_path_under_paths() {
         ..Settings::default()
     });
     w.get_by_label("Paths");
-    for name in ["Images folder", "Presets folder", "gw"] {
+    for name in [
+        "Images folder",
+        "Presets folder",
+        "Greaseweazle Tools (gw cli)",
+    ] {
         w.get_by_label(name);
     }
     assert!(w.query_by_label("Presets").is_none());
