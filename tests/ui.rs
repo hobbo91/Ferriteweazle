@@ -701,4 +701,12 @@ fn a_typed_update_command_chooses_its_firmware_source() {
     assert_eq!(firmware(&w), ["Release"]);
     type_line(&mut w, "gw update --force");
     assert_eq!(firmware(&w), ["Latest"]);
+
+    // A typed line wins over the source last chosen on the page.
+    w.get_by_role_and_label(Role::Button, "File").click();
+    w.run();
+    assert_eq!(firmware(&w), ["File"]);
+    type_line(&mut w, "gw update --tag v1.7");
+    assert_eq!(firmware(&w), ["Release"]);
+    assert_eq!(line(&w), "gw update --tag v1.7");
 }

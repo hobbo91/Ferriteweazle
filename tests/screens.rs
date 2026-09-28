@@ -150,7 +150,18 @@ fn screens() {
     let dir = std::env::temp_dir().join("ferriteweazle-screens");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Floppy.img"), b"").unwrap();
+    // gw finds a North Star image's format from its size: this is one-sided FM.
+    let nsi = dir.join("Disk.nsi");
+    std::fs::write(&nsi, vec![0u8; 89_600]).unwrap();
+    let bad = dir.join("Bad.nsi");
+    std::fs::write(&bad, vec![0u8; 1000]).unwrap();
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        for (name, file) in [("write-nsi", &nsi), ("write-nsi-bad", &bad)] {
+            let mut write = settings("write", theme);
+            let values = write.values.entry("write".into()).or_default();
+            values.set("file", file.to_string_lossy());
+            render(name, theme, write, None, |_| {});
+        }
         render("read-more", theme, settings("read", theme), None, |w| {
             w.get_by_label_contains("Advanced options").click();
             w.run_steps(10);
