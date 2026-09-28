@@ -83,8 +83,11 @@ const PAGE_MIN: f32 = 420.0;
 const STATUS_MIN: f32 = 320.0;
 /// The sidebar logo's side.
 const LOGO_SIZE: f32 = 40.0;
-/// How far the logo reaches past the sidebar's margin, up and to the left.
+/// How far the logo reaches above the sidebar's margin.
 const LOGO_TUCK: f32 = 6.0;
+/// The clear strip at the logo's left, as a share of its side: the drawing
+/// lines up with the device card's edge.
+const LOGO_CLEAR: f32 = 16.0 / 256.0;
 /// Space above the device card, so its top lines up with the page's description.
 const CARD_DROP: f32 = 2.0;
 /// A sidebar entry's height.
@@ -734,7 +737,6 @@ impl App {
             });
         ui.horizontal(|ui| {
             logo(ui, &mut self.logo);
-            ui.add_space(6.0);
             ui.label(RichText::new("Ferriteweazle").size(17.0).strong());
         });
         ui.add_space(CARD_DROP);
@@ -2821,7 +2823,7 @@ fn logo(ui: &mut Ui, texture: &mut Option<egui::TextureHandle>) {
     });
     // It reaches into the sidebar's margin, so it takes less room than its size.
     let size = Vec2::splat(LOGO_SIZE);
-    let tuck = Vec2::splat(LOGO_TUCK);
+    let tuck = vec2(LOGO_SIZE * LOGO_CLEAR, LOGO_TUCK);
     let (rect, _) = ui.allocate_exact_size(size - tuck, Sense::hover());
     let at = egui::Rect::from_min_size(rect.min - tuck, size);
     egui::Image::new((texture.id(), size)).paint_at(ui, at);
