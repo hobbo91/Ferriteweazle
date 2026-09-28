@@ -1,4 +1,6 @@
 /target
+/dist
+/packaging/release.env
 **/*.new.png
 **/*.diff.png
 .DS_Store
