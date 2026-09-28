@@ -2398,10 +2398,10 @@ fn cancelled(job: &Job) -> Option<&'static str> {
         return None;
     }
     match job.command.as_str() {
-        "read" => Some("The image has only the tracks read so far. Reading again starts over."),
-        "write" => Some("The disk is only partly written."),
-        "erase" => Some("The disk is only partly erased."),
-        "convert" => Some("No image was made."),
+        "read" => Some("Cancelled: incomplete image."),
+        "write" => Some("Cancelled: disk partly written."),
+        "erase" => Some("Cancelled: disk partly erased."),
+        "convert" => Some("Cancelled: no image made."),
         _ => None,
     }
 }

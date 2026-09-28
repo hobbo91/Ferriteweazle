@@ -770,7 +770,7 @@ fn a_cancelled_read_says_so_and_what_it_left() {
     job.ended = Some((job.started, Outcome::Stopped));
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
     w.get_by_label_contains("Cancelled ·");
-    w.get_by_label("The image has only the tracks read so far. Reading again starts over.");
+    w.get_by_label("Cancelled: incomplete image.");
 }
 
 #[test]
