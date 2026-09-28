@@ -563,7 +563,7 @@ impl<'a> Form<'a> {
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
                     if ui
                         .add_enabled(!self.busy, detect)
-                        .own_tip("Find the disk format and image type.")
+                        .own_tip("Attempt to find the disk format and image type.")
                         .on_disabled_hover_text("Wait for the job that is running.")
                         .clicked()
                     {
