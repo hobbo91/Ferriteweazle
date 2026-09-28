@@ -40,8 +40,13 @@ to install.
 At start-up a bridge ([`src/bridge.py`](src/bridge.py)) reads the commands and
 options from gw's argument parsers, and the app builds its pages from them. A new
 gw release works once it is bundled: its new options appear under **Advanced options**,
-and options it drops disappear. To move to a new release, change `GREASEWEAZLE` in
-[`engine/versions`](engine/versions) and rebuild.
+and options it drops disappear.
+
+`engine/build.sh` bundles gw's latest release on GitHub, never a nightly build or a
+prerelease. `packaging/macos/bundle.sh` rebuilds the engine first when gw has a newer
+release. To stay on one release, set `GREASEWEAZLE` in [`engine/versions`](engine/versions)
+to its tag. `cargo build` never checks: a build script that went online would slow
+every build and fail offline.
 
 **Settings > Use another gw** points the app at any installed `gw` instead, such as
 a pipx install or a development checkout.
@@ -65,7 +70,7 @@ DOS 3.3.
 You need Rust 1.95 or later, and on macOS the Xcode command line tools.
 
 ```sh
-engine/build.sh              # Python and Greaseweazle, into target/engine
+engine/build.sh              # Python and gw's latest release, into target/engine
 cargo run                    # uses target/engine, or an installed gw
 packaging/macos/bundle.sh    # target/Ferriteweazle.app, and a zip of it
 ```

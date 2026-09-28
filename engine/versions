@@ -1,5 +1,6 @@
-# The bundled engine. For a new Greaseweazle, change GREASEWEAZLE and rebuild;
-# the app reads everything else from gw.
-GREASEWEAZLE=v1.23
+# The bundled engine. engine/build.sh builds Greaseweazle's newest release;
+# to pin one, set GREASEWEAZLE to its tag here or in the environment. The app
+# reads everything else from gw.
+GREASEWEAZLE=
 PYTHON=3.14.7
 PYTHON_RELEASE=20260924

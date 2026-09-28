@@ -1,13 +1,17 @@
 #!/bin/sh
 # Builds target/engine, the standalone Python with Greaseweazle that the app
-# ships. Downloads Python and gw's pip dependencies; needs curl, git and a C
+# ships: gw's newest release, or the tag GREASEWEAZLE names (engine/versions).
+# Downloads Python and gw's pip dependencies; needs curl, git and a C
 # compiler.
 #
 #   engine/build.sh
+#   GREASEWEAZLE=v1.22 engine/build.sh                       # a given release
 #   GREASEWEAZLE_SOURCE=~/src/greaseweazle engine/build.sh   # a local clone
 set -eu
 cd "$(dirname "$0")/.."
-. engine/versions
+. engine/greaseweazle.sh
+tag=$(wanted)
+echo "engine: building Greaseweazle $tag"
 
 case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) triple=aarch64-apple-darwin ;;
@@ -32,9 +36,8 @@ mkdir -p target/engine
 tar -xzf "$cache/$name" -C target/engine --strip-components=1
 py=target/engine/bin/python3
 
-source=${GREASEWEAZLE_SOURCE:-https://github.com/keirf/greaseweazle}
 case "$source" in /*) source="file://$source" ;; esac
-"$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check "git+$source@$GREASEWEAZLE"
+"$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check "git+$source@$tag"
 "$py" -m pip uninstall --quiet --yes pip
 
 # Drop what gw never uses, libpython (the interpreter is linked statically)
@@ -50,4 +53,5 @@ rm -rf target/engine/include target/engine/share target/engine/lib/libpython* \
 "$py" -m compileall -q "$lib/site-packages"
 
 "$py" -c 'import greaseweazle, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
+echo "$tag" >"$built"
 du -sh target/engine

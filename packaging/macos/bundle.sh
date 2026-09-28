@@ -1,10 +1,12 @@
 #!/bin/sh
-# Builds target/Ferriteweazle.app with the engine inside, and a zip of it.
-# Signed ad hoc, so it runs on the Mac that built it.
+# Builds target/Ferriteweazle.app with the engine inside, and a zip of it,
+# first rebuilding the engine if gw has a newer release. Signed ad hoc, so it
+# runs on the Mac that built it.
 # TODO: Developer ID signing and notarisation.
 set -eu
 cd "$(dirname "$0")/../.."
-[ -x target/engine/bin/python3 ] || engine/build.sh
+. engine/greaseweazle.sh
+refresh
 cargo build --release
 
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
