@@ -246,6 +246,60 @@ fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed()
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Lays out Ferriteweazle 0.9.1's release in argv[1]: a tarball, and one
+/// whose SHA-256 is not the one in SHA256SUMS.
+const FAKE_RELEASE: &str = r#"
+import hashlib, io, os, sys, tarfile
+folder = f'{sys.argv[1]}/hobbo91/ferriteweazle/releases/download/v0.9.1'
+os.makedirs(folder)
+def tarball(name, text):
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode='w:gz') as t:
+        info = tarfile.TarInfo('Ferriteweazle/marker')
+        info.size = len(text)
+        t.addfile(info, io.BytesIO(text))
+    with open(f'{folder}/{name}', 'wb') as f:
+        f.write(data.getvalue())
+    return hashlib.sha256(data.getvalue()).hexdigest()
+good = tarball('good.tar.gz', b'0.9.1')
+tarball('bad.tar.gz', b'tampered')
+with open(f'{folder}/Ferriteweazle-0.9.1-SHA256SUMS.txt', 'w') as f:
+    f.write(f'{good}  good.tar.gz\n{"0" * 64}  bad.tar.gz\n')
+"#;
+
+#[test]
+fn a_release_is_downloaded_checked_against_its_sums_and_unpacked() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("release");
+    let site = dir.join("site");
+    let made = std::process::Command::new(&engine.python)
+        .args(["-c", FAKE_RELEASE])
+        .arg(&site)
+        .status()
+        .expect("python runs");
+    assert!(made.success());
+    let server = serve(&engine, &site);
+    let fetch = |name: &str| {
+        let out = engine
+            .bridge("fetch")
+            .args(["v0.9.1", name])
+            .arg(dir.join("got"))
+            .env("FERRITEWEAZLE_GITHUB", &server.1)
+            .output()
+            .expect("the bridge runs");
+        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_owned();
+        (out.status.success(), text(&out.stdout), text(&out.stderr))
+    };
+    std::fs::create_dir_all(dir.join("got")).unwrap();
+    let (ok, unpacked, why) = fetch("good.tar.gz");
+    assert!(ok, "{why}");
+    let marker = Path::new(&unpacked).join("Ferriteweazle/marker");
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "0.9.1");
+    let (ok, _, why) = fetch("bad.tar.gz");
+    assert!(!ok && why.contains("does not match its SHA-256"), "{why}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn the_service_describes_gw_and_checks_values() {
     let Some(engine) = engine() else { return };

@@ -11,7 +11,7 @@ use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
 use crate::theme::{self, Palette};
-use crate::update::GwUpdate;
+use crate::update::{self, Install, Update};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense,
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
@@ -245,7 +245,8 @@ pub struct App {
     /// The real app, not a test window: it asks each Greaseweazle that
     /// appears what it is, and GitHub for newer gw releases.
     live: bool,
-    gw_update: GwUpdate,
+    gw_update: Update,
+    app_update: Update,
     logo: Option<egui::TextureHandle>,
     fade: Fade,
     /// The drawer open when the drawers were last drawn.
@@ -256,6 +257,8 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let mut app = App::with_settings(&cc.egui_ctx, Settings::default());
         app.live = true;
+        update::tidy();
+        app.look_for_updates(&cc.egui_ctx);
         app
     }
 
@@ -290,7 +293,8 @@ impl App {
             probe_failed: None,
             probed: None,
             live: false,
-            gw_update: GwUpdate::default(),
+            gw_update: Update::default(),
+            app_update: Update::default(),
             logo: None,
             fade: Fade::default(),
             drawn: None,
@@ -313,9 +317,19 @@ impl App {
             )),
         };
         self.service.seed_ports(ports);
-        let bundled = self.engine.as_ref().filter(|e| e.origin == Origin::Bundled);
-        if let Some(engine) = bundled.filter(|_| self.live) {
-            self.gw_update = GwUpdate::check(engine, repaint(ctx));
+        self.look_for_updates(ctx);
+    }
+
+    /// Asks GitHub for newer releases of the built-in gw and of this app.
+    fn look_for_updates(&mut self, ctx: &egui::Context) {
+        let Some(engine) = self.engine.as_ref().filter(|_| self.live) else {
+            return;
+        };
+        if engine.origin == Origin::Bundled {
+            self.gw_update = Update::check(engine, None, repaint(ctx));
+        }
+        if Install::this().is_some() {
+            self.app_update = Update::check(engine, Some(update::APP_REPO), repaint(ctx));
         }
     }
 
@@ -347,6 +361,12 @@ impl App {
             .poll(self.schema.as_deref().map(|s| s.version.as_str()))
         {
             self.connect(&ctx);
+        }
+        if self.app_update.poll(Some(env!("CARGO_PKG_VERSION")))
+            && let (Update::Latest(tag), Some(install)) = (&self.app_update, Install::this())
+        {
+            install.relaunch(tag.trim_start_matches('v'));
+            ctx.send_viewport_cmd(ViewportCommand::Close);
         }
         self.guard_close(&ctx);
         self.take_dropped_files(&ctx);
@@ -1686,15 +1706,15 @@ impl App {
                 else {
                     return;
                 };
-                let (can, tip) = self.gw_update.button();
+                let (can, tip) = self.gw_update.button("Greaseweazle Tools");
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
                 if update
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked()
-                    && let GwUpdate::Newer(tag) = &self.gw_update
+                    && let Update::Newer(tag) = &self.gw_update
                 {
-                    self.gw_update = GwUpdate::install(engine, tag, repaint(ui.ctx()));
+                    self.gw_update = Update::gw(engine, tag, repaint(ui.ctx()));
                 }
             });
         });
@@ -1793,8 +1813,13 @@ impl App {
                 env!("CARGO_PKG_VERSION"),
                 " written with \u{2661} by Lee Hobson (@hobbo91), under the MIT license."
             ));
-            ui.hyperlink_to("Source code and issues", REPO)
-                .on_hover_text(REPO);
+            ui.horizontal(|ui| {
+                if let Some(install) = Install::this() {
+                    self.app_update_button(ui, install);
+                }
+                ui.hyperlink_to("Source code and issues", REPO)
+                    .on_hover_text(REPO);
+            });
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -2035,6 +2060,27 @@ impl App {
         }
         self.settings.values.insert(name.clone(), values);
         self.settings.page = Page::Command(name);
+    }
+
+    fn app_update_button(&mut self, ui: &mut Ui, install: Install) {
+        let (can, tip) = match install.stuck() {
+            Some(why) => (false, why.to_owned()),
+            None if self.running().is_some() => (false, "Wait for the job that is running.".into()),
+            None => self.app_update.button("Ferriteweazle"),
+        };
+        let update = ui.add_enabled(can, egui::Button::new("Update"));
+        if update
+            .on_hover_text(&tip)
+            .on_disabled_hover_text(&tip)
+            .clicked()
+            && let (Update::Newer(tag), Some(engine)) = (&self.app_update, &self.engine)
+        {
+            if cfg!(windows) && matches!(install, Install::Folder(_)) {
+                // Windows will not move the data folder while gw runs from it.
+                self.service = Service::offline(Err("Updating Ferriteweazle\u{2026}".into()));
+            }
+            self.app_update = Update::app(engine, install, tag, repaint(ui.ctx()));
+        }
     }
 
     fn presets_folder(&self) -> PathBuf {

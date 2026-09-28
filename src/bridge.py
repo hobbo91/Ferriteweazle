@@ -4,9 +4,12 @@ but for a time limit on the first reply from the device (steady_handshake).
   python bridge.py serve        one JSON request per stdin line, one reply per stdout line
   python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
   python bridge.py detect ARGS  finds the format of the disk in the drive, or of a flux file
-  python bridge.py latest       prints the tag of gw's newest release on GitHub
+  python bridge.py latest [REPO] prints the tag of the newest release of REPO (gw's) on GitHub
   python bridge.py update TAG BUNDLED DIR
                                 installs gw TAG in DIR/TAG, beside the bundled gw BUNDLED
+  python bridge.py fetch TAG NAME DIR
+                                downloads Ferriteweazle's release asset NAME into DIR, checked
+                                against the release's SHA256SUMS, unpacking a zip or tarball
 """
 import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
 
@@ -18,6 +21,7 @@ RESULT = '@ferriteweazle result '
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
 GITHUB_API = os.environ.get('FERRITEWEAZLE_GITHUB_API', 'https://api.github.com')
 GW_REPO = 'keirf/greaseweazle'
+APP_REPO = 'hobbo91/ferriteweazle'
 
 
 class Captured(Exception):
@@ -580,12 +584,44 @@ def detect_like_gw(args):
         return 1
 
 
-def latest():
-    """The tag of gw's newest release. GitHub leaves out prereleases."""
+def latest(repo=GW_REPO):
+    """The tag of a repository's newest release. GitHub leaves out prereleases."""
     import requests
-    reply = requests.get(f'{GITHUB_API}/repos/{GW_REPO}/releases/latest', timeout=(5, 15))
+    try:
+        reply = requests.get(f'{GITHUB_API}/repos/{repo}/releases/latest', timeout=(5, 15))
+    except requests.RequestException:
+        raise ValueError('Could not reach GitHub to check for a newer release.') from None
+    if reply.status_code == 404:
+        raise ValueError(f'{repo} has no release on GitHub.')
     reply.raise_for_status()
     return reply.json()['tag_name']
+
+
+def fetch(tag, name, folder):
+    """Downloads a release asset of Ferriteweazle into folder, refusing one
+    whose SHA-256 is not the release's own; a zip or tarball is unpacked
+    into folder/unpacked. The path of what to install."""
+    import hashlib, requests, shutil, tarfile, zipfile
+    base = f'{GITHUB}/{APP_REPO}/releases/download/{tag}'
+    sums = requests.get(f'{base}/Ferriteweazle-{tag.lstrip("v")}-SHA256SUMS.txt', timeout=(5, 30))
+    sums.raise_for_status()
+    wanted = dict(reversed(line.split()) for line in sums.text.splitlines() if line.strip())
+    path, digest = os.path.join(folder, name), hashlib.sha256()
+    with requests.get(f'{base}/{name}', stream=True, timeout=(5, 60)) as reply:
+        reply.raise_for_status()
+        with open(path, 'wb') as f:
+            for chunk in reply.iter_content(1 << 16):
+                digest.update(chunk)
+                f.write(chunk)
+    if wanted.get(name) != digest.hexdigest():
+        raise ValueError(f'{name} does not match its SHA-256 in the release.')
+    if name.endswith(('.zip', '.tar.gz')):
+        unpacked = os.path.join(folder, 'unpacked')
+        shutil.rmtree(unpacked, ignore_errors=True)
+        with (zipfile.ZipFile if name.endswith('.zip') else tarfile.open)(path) as archive:
+            archive.extractall(unpacked)
+        return unpacked
+    return path
 
 
 def source(tag):
@@ -647,5 +683,6 @@ if __name__ == '__main__':
     {'serve': serve,
      'run': lambda: run(lambda: gw(args)),
      'detect': lambda: run(lambda: detect_like_gw(args)),
-     'latest': lambda: reported(latest),
+     'latest': lambda: reported(lambda: latest(*args)),
+     'fetch': lambda: reported(lambda: fetch(*args)),
      'update': lambda: reported(lambda: update(*args))}[mode]()
