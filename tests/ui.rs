@@ -733,6 +733,24 @@ fn a_log_dragged_taller_stays_that_tall_and_the_map_shrinks_only_when_it_must() 
 }
 
 #[test]
+fn an_empty_log_dragged_taller_stays_that_tall() {
+    let mut w = smooth(Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    });
+    w.run();
+    app_mut(&mut w).log.clear();
+    w.run();
+    let [open, _] = edges(&w);
+    drag_log(&mut w, 100.0);
+    for _ in 0..20 {
+        w.step();
+    }
+    let [taller, _] = edges(&w);
+    assert!(taller < open - 50.0, "{open} to {taller}");
+}
+
+#[test]
 fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() {
     let mut job = Job::replay("read", DAMAGED);
     job.progress.error = Some("The drive did not answer. ".repeat(6));

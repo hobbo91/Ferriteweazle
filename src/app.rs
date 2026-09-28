@@ -2537,11 +2537,9 @@ fn result(ui: &mut Ui, job: &Job) {
     }
 }
 
-/// gw's output: a scrolling log of this height, with a note beside its
-/// heading, and Copy and Save. `head` picks the lines that head a job.
 /// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
-/// `height` tall or, with none, as tall as the room left. True when Clear
-/// was pressed.
+/// `height` tall or, with none, as tall as the room left. `head` picks the
+/// lines that head a job. True when Clear was pressed.
 #[allow(clippy::too_many_arguments)]
 fn output(
     ui: &mut Ui,
@@ -2587,10 +2585,12 @@ fn output(
     // Exactly the room left: a drawer a little taller than its contents
     // would shrink to them, frame by frame.
     let room = || ui.available_height() - frame.total_margin().sum().y;
+    let fill = height.is_none();
     let height = height.unwrap_or_else(room).max(LOG_LINE);
     frame.show(ui, |ui| {
         if log.is_empty() {
-            ui.set_min_size(vec2(ui.available_width(), height.min(80.0)));
+            let least = if fill { height } else { height.min(80.0) };
+            ui.set_min_size(vec2(ui.available_width(), least));
             ui.label(RichText::new("gw's output appears here.").weak());
             return;
         }
