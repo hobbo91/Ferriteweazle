@@ -199,7 +199,7 @@ fn a_question_from_gw_waits_for_an_answer() {
 type Window = egui_kittest::Harness<'static, Option<App>>;
 
 /// The app's window on `engine`, stepped until gw has described itself.
-/// It sees no Greaseweazle, whatever is plugged in.
+/// It sees no Greaseweazle, whatever is plugged in, until gw restarts.
 fn window(engine: &Engine, settings: Settings) -> Window {
     let settings = Settings {
         engine: Some(engine.python.clone()),

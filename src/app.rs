@@ -194,8 +194,8 @@ pub struct App {
     engine: Option<Engine>,
     service: Service,
     schema: Option<Arc<Schema>>,
-    /// The latest gw's description. The sidebar lists its commands, and keeps
-    /// them while gw restarts.
+    /// The latest gw's description, none once a gw fails to start. The sidebar
+    /// lists its commands, and keeps them while gw restarts.
     listed: Option<Arc<Schema>>,
     /// The last job about a disk, which the status pane shows.
     pub disk: Option<Job>,
@@ -287,8 +287,8 @@ impl App {
         self.service.seed_ports(ports);
     }
 
-    /// Shows these ports as the connected devices, whatever gw finds: for
-    /// tests and pictures of the window.
+    /// Shows these ports as the connected devices, whatever gw finds, until
+    /// gw restarts: for tests and pictures of the window.
     pub fn pin_ports(&mut self, ports: Vec<Port>) {
         self.service.pin_ports(ports);
     }
@@ -358,11 +358,16 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         self.service.poll();
-        if self.schema.is_none()
-            && let Some(schema) = self.service.schema.ready()
-        {
-            self.schema = Some(Arc::new(schema.clone()));
-            self.listed = self.schema.clone();
+        if self.schema.is_none() {
+            match &self.service.schema {
+                Load::Ready(schema) => {
+                    self.schema = Some(Arc::new(schema.clone()));
+                    self.listed = self.schema.clone();
+                }
+                // No gw runs, so the sidebar lists none of its commands.
+                Load::Failed(_) => self.listed = None,
+                Load::Waiting(_) => {}
+            }
         }
         let mut ended = Vec::new();
         for (disk, job) in [(true, &mut self.disk), (false, &mut self.tool)] {
@@ -2538,5 +2543,26 @@ mod tests {
         let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
         assert_eq!(pages, ["convert", "erase", "seek", "write"]);
         assert!(app.notices["erase"].starts_with("Could not start gw: "));
+    }
+
+    #[test]
+    fn a_gw_that_cannot_be_found_leaves_no_greaseweazle_or_command() {
+        let ctx = egui::Context::default();
+        let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let mut app = App::offline(&ctx, Settings::default(), Ok(schema));
+        app.pin_ports(vec![Port {
+            device: "/dev/cu.usbmodem14201".into(),
+            name: Some("Greaseweazle".into()),
+            serial: None,
+            score: 20,
+        }]);
+        assert!(app.connected());
+        assert!(!sections(app.listed.as_deref()).is_empty());
+        app.settings.engine = Some("/no/such/gw".into());
+        app.connect(&ctx);
+        app.poll(&ctx);
+        assert!(app.engine.is_none());
+        assert!(!app.connected(), "no gw will look for it");
+        assert!(sections(app.listed.as_deref()).is_empty(), "no gw runs");
     }
 }

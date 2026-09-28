@@ -157,9 +157,11 @@ impl Service {
         }
     }
 
-    /// The devices to show until gw first lists them.
+    /// The devices to show until gw first lists them. None with no gw to ask.
     pub fn seed_ports(&mut self, ports: Vec<Port>) {
-        self.last_ports = ports;
+        if matches!(self.ports, Load::Waiting(_)) {
+            self.last_ports = ports;
+        }
     }
 
     /// Lists these devices from now on, and no longer asks gw: a window
