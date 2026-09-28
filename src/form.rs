@@ -28,9 +28,89 @@ pub const FIRST: &[(&str, &[&str])] = &[
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
 
+/// The kind of file an open dialog shows for an argument that takes one kind.
+const FILE_TYPES: &[(&str, &str, &str, &[&str])] =
+    &[("update", "file", "Firmware updates", &["upd"])];
+
+/// The update page's firmware source, kept with its settings. Not a gw argument.
+pub const FIRMWARE: &str = "firmware";
+
+/// Where gw update takes the firmware from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Firmware {
+    /// The newest release, downloaded: gw's default.
+    Latest,
+    /// A release by its tag, downloaded.
+    Release,
+    /// An update file.
+    File,
+}
+
+impl Firmware {
+    const ALL: [Firmware; 3] = [Firmware::Latest, Firmware::Release, Firmware::File];
+
+    /// The button's name, and the value kept under FIRMWARE.
+    fn name(self) -> &'static str {
+        match self {
+            Firmware::Latest => "Latest",
+            Firmware::Release => "Release",
+            Firmware::File => "File",
+        }
+    }
+
+    fn tip(self) -> &'static str {
+        match self {
+            Firmware::Latest => "Download the newest release.",
+            Firmware::Release => "Download a release by its tag.",
+            Firmware::File => "Install an update file.",
+        }
+    }
+
+    /// The gw argument that names this source.
+    fn dest(self) -> Option<&'static str> {
+        match self {
+            Firmware::Latest => None,
+            Firmware::Release => Some("tag"),
+            Firmware::File => Some("file"),
+        }
+    }
+
+    /// The source chosen on the page, else the one its settings name, as
+    /// when a command line is typed.
+    pub fn of(values: &Values) -> Firmware {
+        let chosen = Firmware::ALL
+            .into_iter()
+            .find(|f| f.name() == values.get(FIRMWARE));
+        let named = || {
+            Firmware::ALL
+                .into_iter()
+                .find(|f| f.dest().is_some_and(|d| values.on(d)))
+        };
+        chosen.or_else(named).unwrap_or(Firmware::Latest)
+    }
+
+    /// Whether `dest` is the setting of a source not chosen.
+    fn unchosen(values: &Values, dest: &str) -> bool {
+        let chosen = Firmware::of(values);
+        Firmware::ALL
+            .into_iter()
+            .any(|f| f != chosen && f.dest() == Some(dest))
+    }
+
+    /// Clears the other sources' settings, so gw is given the chosen one alone.
+    pub fn only(values: &mut Values) {
+        let chosen = Firmware::of(values);
+        let others = Firmware::ALL.into_iter().filter(|f| *f != chosen);
+        for dest in others.filter_map(Firmware::dest) {
+            values.set(dest, "");
+        }
+    }
+}
+
 /// Labels where gw's own argument name would not read well.
 const LABELS: &[(&str, &str)] = &[
     ("adjust_speed", "Adjust speed"),
+    ("cyls", "Cylinders"),
     ("densel", "Density select"),
     ("diskdefs", "Disk definitions"),
     ("erase_empty", "Erase empty tracks"),
@@ -38,18 +118,28 @@ const LABELS: &[(&str, &str)] = &[
     ("format", "Disk format"),
     ("gen_tg43", "TG43 signal"),
     ("hard_sectors", "Hard sectors"),
+    ("hfreq", "High frequency"),
     ("in_file", "Input"),
+    ("linger", "Time per step"),
+    ("motor", "Motor delay"),
     ("motor_on", "Motor on"),
     ("no_clobber", "Keep existing files"),
     ("no_verify", "Skip verify"),
+    ("nr", "Measurements"),
     ("out_file", "Output"),
     ("out_tracks", "Output tracks"),
     ("pll", "PLL"),
+    ("post_write", "Post-write"),
     ("pre_erase", "Erase before writing"),
+    ("pre_write", "Pre-write"),
     ("precomp", "Precompensation"),
     ("reverse", "Reverse (flippy)"),
     ("revs", "Revolutions"),
     ("seek_retries", "Seek retries"),
+    ("select", "Select delay"),
+    ("settle", "Settle time"),
+    ("step", "Step delay"),
+    ("tag", "Release tag"),
 ];
 
 /// Common values for arguments that take any; Other… ends the list.
@@ -258,6 +348,9 @@ impl<'a> Form<'a> {
         let mut action = None;
         let (first, rest) = sections(self.cmd);
         ui.spacing_mut().item_spacing.y = ROW_GAP;
+        if self.cmd.name == "update" {
+            self.firmware(ui);
+        }
         for a in &first {
             action = action.or(self.arg(ui, a));
         }
@@ -283,6 +376,10 @@ impl<'a> Form<'a> {
     fn arg(&mut self, ui: &mut Ui, a: &Arg) -> Option<Action> {
         if OUTPUTS.contains(&(self.cmd.name.as_str(), a.dest.as_str())) {
             self.output(ui, a);
+            return None;
+        }
+        // Below the Firmware row, only the chosen source's field.
+        if self.cmd.name == "update" && Firmware::unchosen(self.values, &a.dest) {
             return None;
         }
         let blocker = self.blocker(a);
@@ -320,7 +417,9 @@ impl<'a> Form<'a> {
             _ if a.is("TrackSet") => self.tracks(ui, a),
             "file" | "in_file" if a.positional() => self.input(ui, a),
             "diskdefs" => self.diskdefs(ui, a),
-            dest if dest.ends_with("file") => self.path(ui, a),
+            // Shown once File is chosen, so it is needed.
+            "file" if self.cmd.name == "update" => self.path(ui, a, "Required"),
+            dest if dest.ends_with("file") => self.path(ui, a, "None"),
             _ if a.switch => {
                 let mut on = self.values.on(&a.dest);
                 if toggle(ui, &mut on).changed() {
@@ -420,6 +519,27 @@ impl<'a> Form<'a> {
         });
     }
 
+    /// Where gw update gets the firmware. The chosen source's field follows.
+    fn firmware(&mut self, ui: &mut Ui) {
+        let chosen = Firmware::of(self.values);
+        let cmd = self.cmd;
+        let offered = Firmware::ALL
+            .into_iter()
+            .filter(|f| f.dest().is_none_or(|d| cmd.arg(d).is_some()));
+        let (name, _) = row(ui, "Firmware", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for f in offered {
+                    let button = ui.selectable_label(f == chosen, f.name());
+                    if button.on_hover_text(f.tip()).clicked() {
+                        self.values.set(FIRMWARE, f.name());
+                    }
+                }
+            });
+        });
+        name.on_hover_text("Where the firmware comes from.");
+    }
+
     fn text(&mut self, ui: &mut Ui, a: &Arg) {
         let number = matches!(a.ty.as_deref(), Some("min_int" | "int" | "uint"));
         ui.horizontal(|ui| {
@@ -452,17 +572,18 @@ impl<'a> Form<'a> {
         }
     }
 
-    fn path(&mut self, ui: &mut Ui, a: &Arg) {
+    /// A file for gw to read, typed or chosen in an open dialog.
+    fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str) {
         let mut value = self.values.get(&a.dest).to_owned();
         ui.horizontal(|ui| {
             let edit = edit(&mut value)
-                .hint_text("None")
+                .hint_text(hint)
                 .desired_width(beside_button(ui, BROWSE_BUTTON));
             if ui.add(edit).changed() {
                 self.values.set(&a.dest, value.as_str());
             }
             if browse_button(ui).own_tip("Choose a file.").clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_file()
+                && let Some(path) = open_dialog(&self.cmd.name, &a.dest).pick_file()
             {
                 self.values.set(&a.dest, path.to_string_lossy());
             }
@@ -471,7 +592,7 @@ impl<'a> Form<'a> {
 
     /// A disk definitions file, and what gw makes of it.
     fn diskdefs(&mut self, ui: &mut Ui, a: &Arg) {
-        self.path(ui, a);
+        self.path(ui, a, "None");
         let path = self.values.get(&a.dest).to_owned();
         if path.is_empty() {
             return;
@@ -506,12 +627,19 @@ impl<'a> Form<'a> {
         }
     }
 
-    /// The format to decode with: the one chosen, or the input image's own.
-    fn effective_format(&self) -> Option<String> {
-        match self.values.get("format") {
-            "" => input_format(self.schema, self.cmd, self.values),
-            chosen => Some(chosen.to_owned()),
+    fn effective_format(&mut self) -> Option<String> {
+        effective_format(self.service, self.schema, self.cmd, self.values)
+    }
+
+    /// gw's objection to the input, where it would find the format in the file.
+    fn input_fault(&mut self) -> Option<String> {
+        if !format_in_file(self.schema, self.cmd, self.values) {
+            return None;
         }
+        let path = input_file(self.cmd, self.values);
+        let e = self.service.image_format(path).error()?;
+        let file = Path::new(path).file_name()?.to_string_lossy();
+        Some(sentence(&e.replace(path, &file)))
     }
 
     /// What gw says of a format, read with the disk definitions it needs.
@@ -585,6 +713,8 @@ impl<'a> Form<'a> {
                     }
                     Load::Waiting(_) => {}
                 }
+            } else if let Some(e) = self.input_fault() {
+                ui.label(RichText::new(e).small().color(theme::palette(ui).bad));
             }
         });
         if let Some(f) = chosen {
@@ -1055,7 +1185,15 @@ pub fn blocked(
     cmd: &Command,
     values: &Values,
     outputs: &BTreeMap<String, Output>,
+    service: &Service,
 ) -> Option<&'static str> {
+    if cmd.name == "update" {
+        match Firmware::of(values) {
+            Firmware::Release if !values.on("tag") => return Some("Type a release tag first."),
+            Firmware::File if !values.on("file") => return Some("Choose an update file first."),
+            _ => {}
+        }
+    }
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
@@ -1068,7 +1206,7 @@ pub fn blocked(
         // Flux saved as flux needs no format.
         if !(flux && FLUX.contains(&out.ext.as_str()))
             && values.get("format").is_empty()
-            && input_format(schema, cmd, values).is_none()
+            && input_format(schema, cmd, values, service).is_none()
         {
             return Some(if flux {
                 "Choose a disk format first, or press Detect."
@@ -1136,13 +1274,52 @@ fn flux_source(cmd: &Command, values: &Values) -> bool {
         || extension(input_file(cmd, values)).is_some_and(|e| FLUX.contains(&e.as_str()))
 }
 
-/// The format the input image names for itself, such as an .adf's.
-fn input_format(schema: &Schema, cmd: &Command, values: &Values) -> Option<String> {
-    schema
-        .image(input_file(cmd, values))?
-        .1
-        .default_format
-        .clone()
+/// The format to decode with: the one chosen, or the input image's own.
+/// Asks gw about an input it finds the format in, if it has not yet.
+pub fn effective_format(
+    service: &mut Service,
+    schema: &Schema,
+    cmd: &Command,
+    values: &Values,
+) -> Option<String> {
+    match values.get("format") {
+        "" => {
+            if format_in_file(schema, cmd, values) {
+                service.image_format(input_file(cmd, values));
+            }
+            input_format(schema, cmd, values, service)
+        }
+        chosen => Some(chosen.to_owned()),
+    }
+}
+
+/// The format gw takes from the input image: its type's own, such as an
+/// .adf's, else one gw has found in the file, such as an .nsi's.
+fn input_format(
+    schema: &Schema,
+    cmd: &Command,
+    values: &Values,
+    service: &Service,
+) -> Option<String> {
+    let path = input_file(cmd, values);
+    let (_, image) = schema.image(path)?;
+    let found = || match format_in_file(schema, cmd, values) {
+        true => service.known_image_format(path).map(str::to_owned),
+        false => None,
+    };
+    image.default_format.clone().or_else(found)
+}
+
+/// Whether gw looks in the input file for its format, as in an .nsi. Convert
+/// takes the output type's own format, such as an .adf's, first.
+fn format_in_file(schema: &Schema, cmd: &Command, values: &Values) -> bool {
+    let finds = schema
+        .image(input_file(cmd, values))
+        .is_some_and(|(_, i)| i.finds_format);
+    let output_has_one = schema
+        .image(values.get("out_file"))
+        .is_some_and(|(_, i)| i.default_format.is_some());
+    finds && !output_has_one
 }
 
 /// A tooltip of a widget's own, in a row that has one: the row's then stays hidden.
@@ -1253,11 +1430,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     ),
     ("read", "file", "The image to make."),
     ("write", "file", "The image to write."),
-    (
-        "update",
-        "file",
-        "A firmware file to use instead of the latest.",
-    ),
+    ("update", "file", "The update file to install."),
     ("seek", "force", "Allow extreme cylinders without asking."),
     ("update", "force", "Update even if the firmware is older."),
     (
@@ -1370,6 +1543,8 @@ fn hint(a: &Arg, schema: &Schema) -> String {
         _ => match &a.default {
             Some(d) => format!("e.g. {d}"),
             None if a.required => "Required".into(),
+            // As the firmware's releases are tagged.
+            None if a.dest == "tag" => "e.g. v1.6".into(),
             None => String::new(),
         },
     }
@@ -1511,6 +1686,19 @@ fn join_opts(path: &str, opts: &BTreeMap<String, String>) -> String {
         path.to_owned()
     } else {
         format!("{path}::{}", set.join(":"))
+    }
+}
+
+/// An open dialog for a file argument, showing only its kind of file where
+/// gw takes one kind.
+fn open_dialog(command: &str, dest: &str) -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new();
+    match FILE_TYPES
+        .iter()
+        .find(|(c, d, _, _)| *c == command && *d == dest)
+    {
+        Some((_, _, name, exts)) => dialog.add_filter(*name, exts),
+        None => dialog,
     }
 }
 
@@ -1877,6 +2065,48 @@ mod tests {
                 "no gw argument is called {dest}"
             );
         }
+        assert!(
+            s.commands.iter().all(|c| c.arg(FIRMWARE).is_none()),
+            "the page's own {FIRMWARE} is a gw argument"
+        );
+    }
+
+    #[test]
+    fn update_waits_for_the_tag_or_file_its_source_needs_and_gives_gw_only_that() {
+        let s = schema();
+        let update = s.command("update").unwrap();
+        let service = Service::offline(Err(String::new()));
+        let outputs = BTreeMap::new();
+        let why = |v: &Values| blocked(&s, update, v, &outputs, &service);
+        let mut v = Values::default();
+        assert_eq!(why(&v), None, "the latest needs nothing");
+        v.set(FIRMWARE, "Release");
+        assert_eq!(why(&v), Some("Type a release tag first."));
+        v.set("tag", "v1.6");
+        assert_eq!(why(&v), None);
+        v.set(FIRMWARE, "File");
+        assert_eq!(why(&v), Some("Choose an update file first."));
+        v.set("file", "fw.upd");
+        assert_eq!(why(&v), None);
+        Firmware::only(&mut v);
+        assert_eq!((v.get("tag"), v.get("file")), ("", "fw.upd"));
+    }
+
+    #[test]
+    fn abbreviated_names_get_plain_labels() {
+        let s = schema();
+        let shown = |c: &str, d: &str| label(s.command(c).unwrap().arg(d).unwrap());
+        assert_eq!(shown("rpm", "nr"), "Measurements");
+        assert_eq!(shown("clean", "cyls"), "Cylinders");
+        assert_eq!(shown("clean", "linger"), "Time per step");
+        assert_eq!(shown("erase", "hfreq"), "High frequency");
+        assert_eq!(shown("delays", "select"), "Select delay");
+        assert_eq!(shown("delays", "pre_write"), "Pre-write");
+        assert_eq!(
+            shown("delays", "watchdog"),
+            "Watchdog",
+            "a plain name stays"
+        );
     }
 
     #[test]

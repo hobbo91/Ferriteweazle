@@ -114,9 +114,30 @@ def images():
         out[ext] = {'name': spec if isinstance(spec, str) else spec[0],
                     'writable': not cls.read_only,
                     'default_format': cls.default_format,
+                    'finds_format': finds_format(cls),
                     'read_opts': settings(o, o.a_settings + o.r_settings),
                     'write_opts': settings(o, o.a_settings + o.w_settings)}
     return out
+
+
+def finds_format(cls):
+    """Whether gw finds the disk format in the file, as it does an .nsi's from its size."""
+    return callable(getattr(cls, 'format_from_file', None))
+
+
+def image_format(path):
+    """The format gw takes from an image when none is chosen, opening it as
+    write and convert do: its type's own, or one found in the file. None if
+    one must be chosen."""
+    from greaseweazle.tools import util
+    cls = util.get_image_class(path)
+    if cls.default_format or not finds_format(cls):
+        return cls.default_format
+    if not os.path.isfile(path):
+        raise ValueError('There is no such file.')
+    with quiet():
+        cls.from_file(path, None, {})  # fails where gw would
+    return cls.format_from_file(path)
 
 
 def formats(diskdefs=None):
@@ -201,7 +222,7 @@ def schema():
 
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
-           'diskdefs': diskdefs, 'ports': ports, 'check': check}
+           'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)

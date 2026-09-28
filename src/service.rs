@@ -78,6 +78,8 @@ pub struct Service {
     last_ports: Vec<Port>,
     /// By path and the time the file last changed, so an edit is checked again.
     diskdefs: HashMap<(String, Option<SystemTime>), Load<DiskDefs>>,
+    /// Keyed as `diskdefs`.
+    image_formats: HashMap<(String, Option<SystemTime>), Load<Option<String>>>,
     infos: HashMap<(String, String), Load<FormatInfo>>,
     checks: HashMap<(String, String, String), Load<Option<String>>>,
 }
@@ -108,6 +110,7 @@ impl Service {
             ports_asked: Instant::now(),
             last_ports: Vec::new(),
             diskdefs: HashMap::new(),
+            image_formats: HashMap::new(),
             infos: HashMap::new(),
             checks: HashMap::new(),
         }
@@ -122,6 +125,9 @@ impl Service {
             self.last_ports = now;
         }
         for load in self.diskdefs.values_mut() {
+            changed |= load.poll();
+        }
+        for load in self.image_formats.values_mut() {
             changed |= load.poll();
         }
         for load in self.infos.values_mut() {
@@ -161,10 +167,9 @@ impl Service {
 
     /// The formats a disk definitions file adds, and what gw says is wrong with it.
     pub fn diskdefs(&mut self, path: &str) -> &Load<DiskDefs> {
-        let changed = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let requests = &self.requests;
         self.diskdefs
-            .entry((path.to_owned(), changed))
+            .entry((path.to_owned(), modified(path)))
             .or_insert_with(|| {
                 Load::Waiting(call(requests, json!({"op": "diskdefs", "path": path})))
             })
@@ -184,8 +189,7 @@ impl Service {
 
     /// What gw has said so far about a disk definitions file, without asking.
     pub fn known_diskdefs(&self, path: &str) -> Option<&Load<DiskDefs>> {
-        let changed = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        self.diskdefs.get(&(path.to_owned(), changed))
+        self.diskdefs.get(&(path.to_owned(), modified(path)))
     }
 
     /// As `custom_formats`, from what gw has already said.
@@ -194,6 +198,23 @@ impl Service {
             Some(Load::Ready(d)) if d.errors.is_empty() => &d.formats,
             _ => &[],
         }
+    }
+
+    /// The format gw takes from an image file when none is chosen, if any.
+    /// Asks gw if it has not opened this file yet.
+    pub fn image_format(&mut self, path: &str) -> &Load<Option<String>> {
+        let requests = &self.requests;
+        self.image_formats
+            .entry((path.to_owned(), modified(path)))
+            .or_insert_with(|| {
+                Load::Waiting(call(requests, json!({"op": "image_format", "path": path})))
+            })
+    }
+
+    /// As `image_format`, from what gw has already said.
+    pub fn known_image_format(&self, path: &str) -> Option<&str> {
+        let load = self.image_formats.get(&(path.to_owned(), modified(path)))?;
+        load.ready()?.as_deref()
     }
 
     pub fn format_info(&mut self, diskdefs: &str, name: &str) -> &Load<FormatInfo> {
@@ -219,6 +240,11 @@ impl Service {
             .ready()
             .and_then(|e| e.as_deref())
     }
+}
+
+/// When a file last changed, so gw looks at an edited file again.
+fn modified(path: &str) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 fn call<T>(requests: &Sender<Request>, body: Value) -> Pending<T> {

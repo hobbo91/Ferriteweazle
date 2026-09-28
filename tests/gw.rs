@@ -714,6 +714,132 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     assert!(w.query_by_label("Which tracks to read.").is_none());
 }
 
+/// The status pane's squares, one per track of the disk map.
+fn squares(w: &Window) -> usize {
+    let left = w.get_by_label("Disk status").rect().left();
+    w.output()
+        .shapes
+        .iter()
+        .filter(|c| match &c.shape {
+            egui::Shape::Rect(r) => {
+                r.rect.left() > left
+                    && (r.rect.width() - r.rect.height()).abs() < 0.5
+                    && r.rect.width() > 8.0
+            }
+            _ => false,
+        })
+        .count()
+}
+
+#[test]
+fn the_write_page_takes_a_north_star_images_format_from_gw() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("nsi");
+    // gw knows an .nsi's format only by its size: 89,600 bytes is one-sided FM.
+    let nsi = dir.join("Disk.nsi");
+    std::fs::write(&nsi, vec![0u8; 89_600]).unwrap();
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    };
+    let values = settings.values.entry("write".into()).or_default();
+    values.set("file", nsi.to_string_lossy());
+    let mut w = window(&engine, settings);
+    until_shown(&mut w, "the image's format", |w| {
+        w.query_by_label_contains("35\u{a0}cylinders").is_some()
+    });
+    w.get_by_label_contains("1\u{a0}side");
+    let format = |w: &Window| {
+        w.get_all_by_role(egui::accesskit::Role::ComboBox)
+            .nth(1)
+            .and_then(|f| f.value())
+            .unwrap_or_default()
+    };
+    assert_eq!(format(&w), "North Star · northstar.fm.ss (from the input)");
+    assert_eq!(sides(&w), [(false, true), (false, false)]);
+    let last = w
+        .get_all_by_role(egui::accesskit::Role::SpinButton)
+        .nth(1)
+        .and_then(|c| c.accesskit_node().numeric_value());
+    assert_eq!(last, Some(34.0), "cylinders 0 to 34");
+    assert_eq!(squares(&w), 35, "the blank map is the disk's");
+
+    // The file is looked at again when it changes.
+    std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();
+    until_shown(&mut w, "one-sided MFM", |w| {
+        format(w) == "North Star · northstar.mfm.ss (from the input)"
+            && w.query_by_label_contains("175\u{a0}KB").is_some()
+    });
+    assert_eq!(sides(&w), [(false, true), (false, false)]);
+    std::fs::write(&nsi, vec![0u8; 358_400]).unwrap();
+    until_shown(&mut w, "the new format", |w| {
+        w.query_by_label_contains("2\u{a0}sides").is_some()
+    });
+    assert_eq!(sides(&w), [(true, true), (true, true)]);
+
+    std::fs::write(&nsi, vec![0u8; 1000]).unwrap();
+    until_shown(&mut w, "gw's objection", |w| {
+        w.query_by_label("NSI: Disk.nsi: unrecognised file size.")
+            .is_some()
+    });
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("nsi-convert");
+    let nsi = dir.join("Disk.nsi");
+    std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..Settings::default()
+    };
+    let values = settings.values.entry("convert".into()).or_default();
+    values.set("in_file", nsi.to_string_lossy());
+    let out = Output {
+        beside_input: true,
+        ext: ".scp".into(),
+        ..Output::default()
+    };
+    settings.outputs.insert("convert/out_file".into(), out);
+    let mut w = window(&engine, settings);
+    until_shown(&mut w, "Convert to be ready", |w| {
+        !w.get_by_label("Convert").accesskit_node().is_disabled()
+    });
+
+    // gw convert takes an output type's own format before the input's.
+    let output = |w: &mut Window, ext: &str| {
+        let outputs = &mut w.state_mut().as_mut().unwrap().settings.outputs;
+        outputs.get_mut("convert/out_file").unwrap().ext = ext.into();
+        w.run_steps(3);
+    };
+    let format = |w: &Window| {
+        w.get_all_by_role(egui::accesskit::Role::ComboBox)
+            .nth(1)
+            .and_then(|f| f.value())
+            .unwrap_or_default()
+    };
+    output(&mut w, ".adf");
+    assert_eq!(format(&w), "Choose disk format");
+    assert!(w.get_by_label("Convert").accesskit_node().is_disabled());
+    output(&mut w, ".scp");
+    assert_eq!(format(&w), "North Star · northstar.mfm.ss (from the input)");
+    w.get_by_label("Convert").click();
+    until(&mut w, "the conversion", |app| {
+        app.disk.as_ref().is_some_and(|j| !j.running())
+    });
+    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
+    assert!(
+        job.log.iter().any(|l| l.contains("northstar.mfm.ss")),
+        "{:#?}",
+        job.log
+    );
+    assert!(dir.join("Disk.scp").is_file());
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them() {
     let Some(engine) = engine() else { return };

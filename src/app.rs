@@ -780,6 +780,9 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
+        if cmd.name == "update" {
+            form::Firmware::only(&mut values);
+        }
         values
     }
 
@@ -1045,8 +1048,9 @@ impl App {
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
+            let outputs = &self.settings.outputs;
             self.diskdefs_fault(values)
-                .or_else(|| form::blocked(schema, cmd, values, &self.settings.outputs))
+                .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
                 .map(str::to_owned)
         }
     }
@@ -1236,12 +1240,14 @@ impl App {
     fn blank_map(&mut self, page: &str) -> Progress {
         let empty = Values::default();
         let values = self.settings.values.get(page).unwrap_or(&empty);
-        let format = values.get("format");
-        let diskdefs = form::diskdefs_for(&mut self.service, values, format);
-        let info = match format.is_empty() {
-            true => None,
-            false => self.service.format_info(&diskdefs, format).ready(),
-        };
+        let format = self
+            .schema
+            .as_deref()
+            .and_then(|s| form::effective_format(&mut self.service, s, s.command(page)?, values));
+        let info = format.and_then(|format| {
+            let diskdefs = form::diskdefs_for(&mut self.service, values, &format);
+            self.service.format_info(&diskdefs, &format).ready()
+        });
         let (cyls, heads) = info.map_or(form::USUAL_DISK, |i| (i.cyls, i.heads));
         Progress::blank(cyls, heads)
     }

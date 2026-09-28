@@ -52,6 +52,9 @@ pub struct Image {
     pub name: String,
     pub writable: bool,
     pub default_format: Option<String>,
+    /// gw finds the disk format in the file itself, as it does an .nsi's from its size.
+    #[serde(default)]
+    pub finds_format: bool,
     /// Settings for `file.ext::opt=value`.
     #[serde(default)]
     pub read_opts: Vec<ImageOpt>,

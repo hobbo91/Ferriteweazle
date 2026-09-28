@@ -937,6 +937,7 @@
  "images": {
   ".a2r": {
    "default_format": null,
+   "finds_format": false,
    "name": "A2R",
    "read_opts": [],
    "writable": false,
@@ -944,6 +945,7 @@
   },
   ".adf": {
    "default_format": "amiga.amigados",
+   "finds_format": false,
    "name": "ADF",
    "read_opts": [],
    "writable": true,
@@ -951,6 +953,7 @@
   },
   ".adl": {
    "default_format": "acorn.adfs.640",
+   "finds_format": false,
    "name": "ADL",
    "read_opts": [],
    "writable": true,
@@ -958,6 +961,7 @@
   },
   ".adm": {
    "default_format": "acorn.adfs.320",
+   "finds_format": false,
    "name": "ADM",
    "read_opts": [],
    "writable": true,
@@ -965,6 +969,7 @@
   },
   ".ads": {
    "default_format": "acorn.adfs.160",
+   "finds_format": false,
    "name": "ADS",
    "read_opts": [],
    "writable": true,
@@ -972,6 +977,7 @@
   },
   ".ctr": {
    "default_format": null,
+   "finds_format": false,
    "name": "CTRaw",
    "read_opts": [],
    "writable": false,
@@ -979,6 +985,7 @@
   },
   ".d1m": {
    "default_format": "commodore.cmd.fd2000.dd",
+   "finds_format": false,
    "name": "D1M",
    "read_opts": [],
    "writable": true,
@@ -986,6 +993,7 @@
   },
   ".d2m": {
    "default_format": "commodore.cmd.fd2000.hd",
+   "finds_format": false,
    "name": "D2M",
    "read_opts": [],
    "writable": true,
@@ -993,6 +1001,7 @@
   },
   ".d4m": {
    "default_format": "commodore.cmd.fd4000.ed",
+   "finds_format": false,
    "name": "D4M",
    "read_opts": [],
    "writable": true,
@@ -1000,6 +1009,7 @@
   },
   ".d64": {
    "default_format": "commodore.1541",
+   "finds_format": false,
    "name": "D64",
    "read_opts": [],
    "writable": true,
@@ -1007,6 +1017,7 @@
   },
   ".d71": {
    "default_format": "commodore.1571",
+   "finds_format": false,
    "name": "D71",
    "read_opts": [],
    "writable": true,
@@ -1014,6 +1025,7 @@
   },
   ".d81": {
    "default_format": "commodore.1581",
+   "finds_format": false,
    "name": "D81",
    "read_opts": [],
    "writable": true,
@@ -1021,6 +1033,7 @@
   },
   ".d88": {
    "default_format": null,
+   "finds_format": false,
    "name": "D88",
    "read_opts": [
     {
@@ -1033,6 +1046,7 @@
   },
   ".dcp": {
    "default_format": null,
+   "finds_format": true,
    "name": "DCP",
    "read_opts": [],
    "writable": false,
@@ -1040,6 +1054,7 @@
   },
   ".dim": {
    "default_format": null,
+   "finds_format": true,
    "name": "DIM",
    "read_opts": [],
    "writable": false,
@@ -1047,6 +1062,7 @@
   },
   ".dmk": {
    "default_format": null,
+   "finds_format": false,
    "name": "DMK",
    "read_opts": [],
    "writable": false,
@@ -1054,6 +1070,7 @@
   },
   ".do": {
    "default_format": "apple2.appledos.140",
+   "finds_format": false,
    "name": "DO",
    "read_opts": [],
    "writable": true,
@@ -1061,6 +1078,7 @@
   },
   ".dsd": {
    "default_format": "acorn.dfs.ds",
+   "finds_format": false,
    "name": "DSD",
    "read_opts": [],
    "writable": true,
@@ -1068,6 +1086,7 @@
   },
   ".dsk": {
    "default_format": null,
+   "finds_format": false,
    "name": "DSK",
    "read_opts": [],
    "writable": true,
@@ -1075,6 +1094,7 @@
   },
   ".edsk": {
    "default_format": null,
+   "finds_format": false,
    "name": "EDSK",
    "read_opts": [],
    "writable": true,
@@ -1082,6 +1102,7 @@
   },
   ".fd": {
    "default_format": "thomson.1s320",
+   "finds_format": false,
    "name": "FD",
    "read_opts": [],
    "writable": true,
@@ -1089,6 +1110,7 @@
   },
   ".fdi": {
    "default_format": "pc98.2hd",
+   "finds_format": false,
    "name": "FDI",
    "read_opts": [],
    "writable": false,
@@ -1096,6 +1118,7 @@
   },
   ".hdm": {
    "default_format": "pc98.2hd",
+   "finds_format": false,
    "name": "HDM",
    "read_opts": [],
    "writable": true,
@@ -1103,6 +1126,7 @@
   },
   ".hfe": {
    "default_format": null,
+   "finds_format": false,
    "name": "HFE",
    "read_opts": [],
    "writable": true,
@@ -1135,6 +1159,7 @@
   },
   ".ima": {
    "default_format": null,
+   "finds_format": false,
    "name": "IMG",
    "read_opts": [],
    "writable": true,
@@ -1142,6 +1167,7 @@
   },
   ".imd": {
    "default_format": null,
+   "finds_format": false,
    "name": "IMD",
    "read_opts": [],
    "writable": true,
@@ -1149,6 +1175,7 @@
   },
   ".img": {
    "default_format": null,
+   "finds_format": false,
    "name": "IMG",
    "read_opts": [],
    "writable": true,
@@ -1156,6 +1183,7 @@
   },
   ".ipf": {
    "default_format": null,
+   "finds_format": false,
    "name": "IPF",
    "read_opts": [],
    "writable": false,
@@ -1163,6 +1191,7 @@
   },
   ".mgt": {
    "default_format": "ibm.800",
+   "finds_format": false,
    "name": "MGT",
    "read_opts": [],
    "writable": true,
@@ -1170,6 +1199,7 @@
   },
   ".msa": {
    "default_format": null,
+   "finds_format": false,
    "name": "MSA",
    "read_opts": [],
    "writable": true,
@@ -1177,6 +1207,7 @@
   },
   ".nfd": {
    "default_format": null,
+   "finds_format": false,
    "name": "NFD",
    "read_opts": [],
    "writable": false,
@@ -1184,6 +1215,7 @@
   },
   ".nsi": {
    "default_format": null,
+   "finds_format": true,
    "name": "NSI",
    "read_opts": [],
    "writable": true,
@@ -1191,6 +1223,7 @@
   },
   ".po": {
    "default_format": "apple2.prodos.140",
+   "finds_format": false,
    "name": "PO",
    "read_opts": [],
    "writable": true,
@@ -1198,6 +1231,7 @@
   },
   ".raw": {
    "default_format": null,
+   "finds_format": false,
    "name": "KryoFlux",
    "read_opts": [],
    "writable": true,
@@ -1214,6 +1248,7 @@
   },
   ".scp": {
    "default_format": null,
+   "finds_format": false,
    "name": "SCP",
    "read_opts": [],
    "writable": true,
@@ -1234,6 +1269,7 @@
   },
   ".sf7": {
    "default_format": "sega.sf7000",
+   "finds_format": false,
    "name": "SF7",
    "read_opts": [],
    "writable": true,
@@ -1241,6 +1277,7 @@
   },
   ".ssd": {
    "default_format": "acorn.dfs.ss",
+   "finds_format": false,
    "name": "SSD",
    "read_opts": [],
    "writable": true,
@@ -1248,6 +1285,7 @@
   },
   ".st": {
    "default_format": null,
+   "finds_format": false,
    "name": "IMG",
    "read_opts": [],
    "writable": true,
@@ -1255,6 +1293,7 @@
   },
   ".td0": {
    "default_format": null,
+   "finds_format": false,
    "name": "TD0",
    "read_opts": [],
    "writable": false,
@@ -1262,6 +1301,7 @@
   },
   ".xdf": {
    "default_format": "pc98.2hd",
+   "finds_format": false,
    "name": "XDF",
    "read_opts": [],
    "writable": true,
