@@ -520,8 +520,8 @@ impl App {
         let args = self.argv(cmd, &self.device_only(cmd));
         let Some(engine) = &self.engine else { return };
         match Job::start(engine, "info", args, repaint(ctx)) {
-            Ok(job) => {
-                self.log.begin(heading(&job));
+            Ok(mut job) => {
+                self.log.begin(heading(&job), &mut job);
                 self.probe = Some(job);
                 self.probe_failed = None;
             }
@@ -1259,7 +1259,7 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
-                self.log.begin(heading(&job));
+                self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
                 self.notice = None;

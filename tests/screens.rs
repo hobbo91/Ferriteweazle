@@ -146,13 +146,19 @@ fn read_job() -> Job {
 /// gw info, a read and a drive speed in the session's log.
 fn session(w: &mut Window) {
     let log = &mut w.state_mut().as_mut().unwrap().log;
-    log.begin("gw info".into());
-    log.end(&mut Job::replay("info", INFO), "Done in 0:01.".into());
-    log.begin("gw read --revs=2 --format=ibm.1440 /Users/you/Floppies/Floppy.img".into());
-    log.end(&mut read_job(), "Done in 0:52.".into());
-    log.begin("gw rpm".into());
     let rpm = "Rate: 300.121 rpm ; Period: 199.919 ms";
-    log.end(&mut Job::replay("rpm", rpm), "Done in 0:01.".into());
+    for (heading, mut job, ending) in [
+        ("gw info", Job::replay("info", INFO), "Done in 0:01."),
+        (
+            "gw read --revs=2 --format=ibm.1440 /Users/you/Floppies/Floppy.img",
+            read_job(),
+            "Done in 0:52.",
+        ),
+        ("gw rpm", Job::replay("rpm", rpm), "Done in 0:01."),
+    ] {
+        log.begin(heading.into(), &mut job);
+        log.end(&mut job, ending.into());
+    }
 }
 
 #[test]

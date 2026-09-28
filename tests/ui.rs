@@ -752,7 +752,7 @@ fn the_log_says_when_it_has_dropped_its_oldest_lines() {
     let lines: Vec<String> = (0..LOG_LINES).map(|i| format!("T{i}")).collect();
     let mut job = Job::replay("read", &lines.join("\n"));
     let log = &mut app_mut(&mut w).log;
-    log.begin("gw read x.img".into());
+    log.begin("gw read x.img".into(), &mut job);
     log.end(&mut job, "Done in 1:00.".into());
     w.run();
     w.get_by_label("Older lines were dropped.");
