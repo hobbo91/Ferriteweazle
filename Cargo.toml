@@ -21,6 +21,10 @@ windows-version = "0.1"
 [target.'cfg(windows)'.build-dependencies]
 winresource = { version = "0.1", default-features = false }
 
+# Asks the desktop portal for light or dark. Already built for eframe's AccessKit.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
 # Already built for eframe; tests/icon.rs makes the logo and the Windows icon

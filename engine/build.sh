@@ -4,7 +4,7 @@
 # names (engine/versions). Another processor's Python runs emulated (Rosetta,
 # Windows on ARM, qemu) so pip builds gw's C code for it; on Linux set CC and
 # LDSHARED to a compiler for that processor. Downloads Python and gw's pip
-# dependencies; needs curl, git and a C compiler.
+# dependencies, and on Linux gw's udev rule; needs curl, git and a C compiler.
 #
 #   engine/build.sh                                          # this computer
 #   engine/build.sh x86_64-pc-windows-msvc                   # another triple
@@ -69,5 +69,16 @@ esac
 "$py" -m compileall -q "$lib/site-packages"
 
 "$py" -c 'import greaseweazle, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
+
+# gw's udev rule, which the app offers when Linux refuses it the port.
+case "$triple" in *linux*)
+    rule=scripts/49-greaseweazle.rules
+    if [ -n "${GREASEWEAZLE_SOURCE:-}" ]; then
+        git -C "$GREASEWEAZLE_SOURCE" show "$tag:$rule" >"$dest/49-greaseweazle.rules"
+    else
+        curl -fsSL --retry 3 -o "$dest/49-greaseweazle.rules" \
+            "https://raw.githubusercontent.com/keirf/greaseweazle/$tag/$rule"
+    fi ;;
+esac
 echo "$tag" >"$dest/greaseweazle-version"
 du -sh "$dest"

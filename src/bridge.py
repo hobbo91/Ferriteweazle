@@ -194,13 +194,16 @@ def format_info(name, diskdefs=None):
 
 def ports():
     """Every serial port, best first, scored by gw's guess at a Greaseweazle:
-    0 for ports that are not one."""
+    0 for ports that are not one. On Linux, denied if this account may not
+    open it: `gw info` then says only that it found no device."""
     from greaseweazle.tools import util
     found = sorted(((util.score_port(p), p) for p in util.comports()),
                    key=lambda x: (-x[0], x[1].device))
+    linux = sys.platform.startswith('linux')
     return [{'device': p.device,
              'name': next((n for n in (p.product, p.description) if n and n != 'n/a'), None),
-             'serial': p.serial_number, 'score': s}
+             'serial': p.serial_number, 'score': s,
+             'denied': linux and not os.access(p.device, os.R_OK | os.W_OK)}
             for s, p in found]
 
 

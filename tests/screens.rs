@@ -35,6 +35,10 @@ To perform an Update:
 const FOUND: &str =
     "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
 
+/// What gw prints when Linux refuses it the port: pyserial's EACCES error.
+const REFUSED: &str = "** FATAL ERROR:
+[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
+
 /// The smallest the window goes.
 const SMALLEST: egui::Vec2 = egui::vec2(980.0, 744.0);
 
@@ -75,6 +79,7 @@ fn render_sized(
                         name: Some("Greaseweazle".into()),
                         serial: Some("GW0123456789ABCDEF".into()),
                         score: 20,
+                        denied: false,
                     }]);
                     app
                 });
@@ -152,6 +157,20 @@ fn read_job() -> Job {
     job.format = Some("ibm.1440".into());
     job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Floppy.img".into());
     job
+}
+
+/// A Greaseweazle on /dev/ttyACM0 that Linux denies this account, and gw's
+/// udev rule where the tarball keeps it.
+fn denied(w: &mut Window) {
+    let app = w.state_mut().as_mut().unwrap();
+    app.udev_rule = Some("/home/you/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules".into());
+    app.pin_ports(vec![Port {
+        device: "/dev/ttyACM0".into(),
+        name: Some("Greaseweazle".into()),
+        serial: Some("GW0123456789ABCDEF".into()),
+        score: 20,
+        denied: true,
+    }]);
 }
 
 /// gw info, a read and a drive speed in the session's log.
@@ -292,6 +311,14 @@ fn screens() {
             .or_default()
             .set("file", firmware);
         render("update", theme, update, None, |_| {});
+        let read = settings("read", theme);
+        let refused = Some(Job::replay("read", REFUSED));
+        render("refused", theme, read, refused, denied);
+        render("refused-card", theme, settings("read", theme), None, |w| {
+            denied(w);
+            w.run_steps(4);
+            w.get_by_label("Grant access…").click();
+        });
         let page = Settings {
             page: Page::Settings,
             ..settings("read", theme)

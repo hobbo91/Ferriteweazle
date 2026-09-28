@@ -105,6 +105,23 @@ knows a new version of Ferriteweazle by it. Neither package is code-signed yet, 
 SmartScreen warns about a downloaded copy. `packaging/windows/ferriteweazle.ico`
 comes from the logo with `cargo test --test icon windows_icon -- --ignored`.
 
+On Linux, `packaging/linux/bundle.sh [x86_64|aarch64]` builds, for this computer's
+processor or the one named, `dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz` and
+`dist/Ferriteweazle-VERSION-ARCH.AppImage`. It needs
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and zig, which link
+the program against glibc 2.17, and downloads appimagetool and the AppImage runtime
+at the versions `packaging/linux/appimage.sha256` checks. Build each engine with zig
+as its compiler too, so gw's C code needs no newer glibc; another processor's engine
+runs its Python emulated (qemu or Rosetta):
+
+```sh
+CC="zig cc -target x86_64-linux-gnu.2.17" LDSHARED="zig cc -target x86_64-linux-gnu.2.17 -shared" \
+    engine/build.sh x86_64-unknown-linux-gnu
+```
+
+A Linux engine also holds gw's udev rule, `49-greaseweazle.rules`, which the app
+offers to install when Linux refuses it the Greaseweazle's port.
+
 ## Tests
 
 ```sh

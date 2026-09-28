@@ -41,7 +41,17 @@ fn executable(path: &Path, text: &str) {
 
 /// A git repository beside `dir` with one commit carrying each of `tags`.
 fn clone(dir: &Path, tags: &[&str]) -> PathBuf {
+    clone_with(dir, tags, &[])
+}
+
+/// `clone`, its commit holding `files`, each a path and its text.
+fn clone_with(dir: &Path, tags: &[&str], files: &[(&str, &str)]) -> PathBuf {
     let clone = dir.join("greaseweazle");
+    for (file, text) in files {
+        let path = clone.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     std::fs::create_dir_all(&clone).unwrap();
     let git = |args: &[&str]| {
         let status = Command::new("git")
@@ -56,6 +66,7 @@ fn clone(dir: &Path, tags: &[&str]) -> PathBuf {
         assert!(status.success(), "git {args:?}");
     };
     git(&["init", "-q"]);
+    git(&["add", "-A"]);
     git(&["commit", "-q", "--allow-empty", "-m", "a"]);
     for tag in tags {
         git(&["tag", tag]);
@@ -208,28 +219,39 @@ fn packaging_offline_keeps_the_engine_built_and_fails_without_one() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-#[test]
-fn a_build_installs_the_release_wanted_and_records_it() {
-    let dir = repo("build", "");
+/// engine/build.sh in `dir`, and the PATH that finds its stubs: a download
+/// passes its check and holds its URL, and unpacks a Python that logs its
+/// arguments.
+fn stub_build(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/build.sh");
     std::fs::copy(script, dir.join("engine/build.sh")).unwrap();
     let versions = "GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\n";
     std::fs::write(dir.join("engine/versions"), versions).unwrap();
     std::fs::write(dir.join("engine/python.sha256"), "").unwrap();
-    // The download passes its check and unpacks a Python that logs its arguments.
     let stubs = dir.join("stubs");
     std::fs::create_dir(&stubs).unwrap();
-    let curl = "#!/bin/sh\nwhile [ \"$1\" != -o ]; do shift; done\n: >\"$2\"\n";
+    let curl = r#"#!/bin/sh
+for url; do :; done
+while [ "$1" != -o ]; do shift; done
+echo "$url" >"$2"
+"#;
     executable(&stubs.join("curl"), curl);
     executable(&stubs.join("shasum"), "#!/bin/sh\ncat >/dev/null\n");
     let tar = r#"#!/bin/sh
-mkdir -p target/engine/bin target/engine/lib/python3.14/site-packages
-printf '#!/bin/sh\necho "$*" >>python.log\n' >target/engine/bin/python3.14
-chmod +x target/engine/bin/python3.14
-ln -s python3.14 target/engine/bin/python3
+while [ "$1" != -C ]; do shift; done
+mkdir -p "$2/bin" "$2/lib/python3.14/site-packages"
+printf '#!/bin/sh\necho "$*" >>python.log\n' >"$2/bin/python3.14"
+chmod +x "$2/bin/python3.14"
+ln -s python3.14 "$2/bin/python3"
 "#;
     executable(&stubs.join("tar"), tar);
-    let path = format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap());
+    format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap())
+}
+
+#[test]
+fn a_build_installs_the_release_wanted_and_records_it() {
+    let dir = repo("build", "");
+    let path = stub_build(&dir);
     let env = [("PATH", path.as_str()), ("GREASEWEAZLE", "v1.30")];
     run(&dir, &env, "", "engine/build.sh");
     let python = std::fs::read_to_string(dir.join("python.log")).unwrap();
@@ -237,5 +259,39 @@ ln -s python3.14 target/engine/bin/python3
     assert!(python.contains(pip), "{python}");
     let record = std::fs::read_to_string(dir.join("target/engine/greaseweazle-version"));
     assert_eq!(record.unwrap(), "v1.30\n");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_linux_engine_holds_gws_udev_rule_from_the_release_it_builds() {
+    let dir = repo("rule", "");
+    let stubbed = stub_build(&dir);
+    let rule = |triple: &str| {
+        let engine = run(&dir, &[], "", &format!("engine_dir {triple}"));
+        std::fs::read_to_string(dir.join(engine).join("49-greaseweazle.rules")).ok()
+    };
+    let env = [("PATH", stubbed.as_str()), ("GREASEWEAZLE", "v1.30")];
+    for triple in ["aarch64-unknown-linux-gnu", "aarch64-apple-darwin"] {
+        run(&dir, &env, "", &format!("engine/build.sh {triple}"));
+    }
+    let url =
+        "https://raw.githubusercontent.com/keirf/greaseweazle/v1.30/scripts/49-greaseweazle.rules";
+    assert_eq!(
+        rule("aarch64-unknown-linux-gnu").as_deref(),
+        Some(format!("{url}\n").as_str())
+    );
+    assert_eq!(rule("aarch64-apple-darwin"), None, "only Linux uses it");
+
+    // A local clone's rule, as its tag has it.
+    let text = "ATTRS{product}==\"Greaseweazle\", TAG+=\"uaccess\"\n";
+    let clone = clone_with(&dir, &["v1.30"], &[("scripts/49-greaseweazle.rules", text)]);
+    let source = [env[0], env[1], ("GREASEWEAZLE_SOURCE", path(&clone))];
+    run(
+        &dir,
+        &source,
+        "",
+        "engine/build.sh x86_64-unknown-linux-gnu",
+    );
+    assert_eq!(rule("x86_64-unknown-linux-gnu").as_deref(), Some(text));
     std::fs::remove_dir_all(dir).ok();
 }

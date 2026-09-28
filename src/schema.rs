@@ -102,6 +102,9 @@ pub struct Port {
     /// gw's guess that this is a Greaseweazle: 0 if not.
     #[serde(default)]
     pub score: i32,
+    /// Linux denies this account read and write access to it.
+    #[serde(default)]
+    pub denied: bool,
 }
 
 impl Schema {
