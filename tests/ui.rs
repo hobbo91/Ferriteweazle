@@ -288,6 +288,24 @@ fn every_page_draws() {
 }
 
 #[test]
+fn until_gw_describes_itself_the_sidebar_lists_no_command() {
+    let mut w = Harness::builder().with_size(DEFAULT).build_ui_state(
+        |ui, app: &mut Option<App>| {
+            let error = Err("Starting.".to_owned());
+            app.get_or_insert_with(|| App::offline(ui.ctx(), Settings::default(), error))
+                .show(ui);
+        },
+        None,
+    );
+    w.run();
+    w.get_by_label("Settings");
+    let names = ["Read disk", "Erase disk", "Align heads", "USB bandwidth"];
+    for name in names.into_iter().chain(["Disk", "Drive", "Device"]) {
+        assert!(w.query_by_label(name).is_none(), "{name} is listed");
+    }
+}
+
+#[test]
 fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     let mut w = window(Settings::default());
     app_mut(&mut w).notice = Some(

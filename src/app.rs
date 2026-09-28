@@ -188,6 +188,9 @@ pub struct App {
     engine: Option<Engine>,
     service: Service,
     schema: Option<Arc<Schema>>,
+    /// The latest gw's description. The sidebar lists its commands, and keeps
+    /// them while gw restarts.
+    listed: Option<Arc<Schema>>,
     /// The last job about a disk, which the status pane shows.
     pub disk: Option<Job>,
     /// The last job of any other command, shown under its page.
@@ -235,10 +238,12 @@ impl App {
     pub fn offline(ctx: &egui::Context, settings: Settings, schema: Result<Schema, String>) -> App {
         theme::install(ctx);
         ctx.set_theme(settings.theme);
+        let known = schema.as_ref().ok().cloned().map(Arc::new);
         App {
             settings,
             engine: None,
-            schema: schema.as_ref().ok().cloned().map(Arc::new),
+            schema: known.clone(),
+            listed: known,
             service: Service::offline(schema),
             disk: None,
             tool: None,
@@ -337,8 +342,11 @@ impl App {
 
     fn poll(&mut self, ctx: &egui::Context) {
         self.service.poll();
-        if self.schema.is_none() {
-            self.schema = self.service.schema.ready().cloned().map(Arc::new);
+        if self.schema.is_none()
+            && let Some(schema) = self.service.schema.ready()
+        {
+            self.schema = Some(Arc::new(schema.clone()));
+            self.listed = self.schema.clone();
         }
         let mut ended = Vec::new();
         for (disk, job) in [(true, &mut self.disk), (false, &mut self.tool)] {
@@ -558,7 +566,7 @@ impl App {
             .show(ui, |ui| {
                 // Rows touch, as in a source list.
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (section, names) in sections(self.schema.as_deref()) {
+                for (section, names) in sections(self.listed.as_deref()) {
                     ui.add_space(4.0);
                     ui.label(RichText::new(section).small().weak());
                     ui.add_space(1.0);
@@ -2038,15 +2046,14 @@ fn device_table(ui: &mut Ui, info: &DeviceInfo, p: &Palette) {
         });
 }
 
-/// The sidebar's sections and the commands this gw has in each.
+/// The sidebar's sections and the commands this gw has in each: none
+/// until a gw has described itself.
 fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
-    let names: Vec<&str> = match schema {
-        Some(s) => s.commands.iter().map(|c| c.name.as_str()).collect(),
-        None => SECTIONS
-            .iter()
-            .flat_map(|(_, names)| names.iter().copied())
-            .collect(),
-    };
+    let names: Vec<&str> = schema
+        .iter()
+        .flat_map(|s| &s.commands)
+        .map(|c| c.name.as_str())
+        .collect();
     let mut out: Vec<(&str, Vec<&str>)> = SECTIONS
         .iter()
         .map(|(section, known)| {
@@ -2067,6 +2074,7 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
     if !other.is_empty() {
         out.push(("Other", other));
     }
+    out.retain(|(_, names)| !names.is_empty());
     out
 }
 

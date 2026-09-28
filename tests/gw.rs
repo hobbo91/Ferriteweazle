@@ -314,6 +314,39 @@ fn reading_waits_for_a_format_and_image_type() {
     );
 }
 
+/// The sidebar's entries, Settings first.
+fn entries(w: &Window) -> Vec<String> {
+    w.get_all_by_role(egui::accesskit::Role::Button)
+        .filter(|n| n.rect().left() < 60.0 && n.rect().width() > 150.0)
+        .filter_map(|n| n.accesskit_node().label())
+        .collect()
+}
+
+#[test]
+fn the_sidebar_keeps_its_entries_while_gw_restarts() {
+    let Some(engine) = engine() else { return };
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    let mut w = window(&engine, settings);
+    let before = entries(&w);
+    assert!(before.contains(&"Erase disk".to_owned()), "{before:?}");
+    w.get_by_label("Restart").click();
+    w.step();
+    assert!(
+        w.state().as_ref().unwrap().schema().is_none(),
+        "gw restarts"
+    );
+    wait("gw to start again", || {
+        w.step();
+        assert_eq!(entries(&w), before);
+        w.state().as_ref().unwrap().schema().map(|_| ())
+    });
+    w.run_steps(2);
+    assert_eq!(entries(&w), before);
+}
+
 #[test]
 fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
     let Some(engine) = engine() else { return };
