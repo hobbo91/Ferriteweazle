@@ -1,11 +1,22 @@
 //! Makes assets/ferriteweazle.png, the logo on a clear background, from
 //! artwork drawn on a flat placeholder colour (the colour of its corner).
 //!
-//!     FERRITEWEAZLE_ARTWORK=path/to/art.png cargo test --test icon -- --ignored
+//!     FERRITEWEAZLE_ARTWORK=path/to/art.png cargo test --test icon logo -- --ignored
 //!
-//! packaging/macos/icon.sh then makes the app's sizes from it.
+//! packaging/macos/icon.sh then makes the Mac's sizes from it, and
+//! `cargo test --test icon windows_icon -- --ignored` the Windows icon.
 
-use image::{Rgba, RgbaImage};
+use image::codecs::ico::{IcoEncoder, IcoFrame};
+use image::imageops::FilterType;
+use image::{ExtendedColorType, Rgba, RgbaImage};
+
+const WINDOWS_ICON: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/packaging/windows/ferriteweazle.ico"
+);
+/// Pixel sizes in the Windows icon: its small and large icons at 100% to 200%
+/// scaling, and Explorer's larger views.
+const WINDOWS_SIZES: [u32; 10] = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
 
 /// RGB distance from the placeholder below which a pixel is background.
 const NEAR: f32 = 40.0;
@@ -30,6 +41,35 @@ fn logo() {
             "/assets/ferriteweazle.png"
         ))
         .unwrap();
+}
+
+#[test]
+#[ignore = "remakes the Windows icon from the logo"]
+fn windows_icon() {
+    let logo = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ferriteweazle.png");
+    let art = image::open(logo).expect("the logo opens").to_rgba8();
+    let frames: Vec<IcoFrame> = WINDOWS_SIZES
+        .iter()
+        .map(|&size| {
+            let small = image::imageops::resize(&art, size, size, FilterType::Lanczos3);
+            IcoFrame::as_png(small.as_raw(), size, size, ExtendedColorType::Rgba8).unwrap()
+        })
+        .collect();
+    let file = std::fs::File::create(WINDOWS_ICON).unwrap();
+    IcoEncoder::new(file).encode_images(&frames).unwrap();
+}
+
+#[test]
+fn the_windows_icon_holds_every_size() {
+    let ico = std::fs::read(WINDOWS_ICON).expect("packaging/windows/ferriteweazle.ico exists");
+    let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+    // Each 16-byte entry starts with the width and height; 0 means 256.
+    let sizes: Vec<u32> = (0..count)
+        .map(|i| &ico[6 + 16 * i..])
+        .inspect(|entry| assert_eq!(entry[0], entry[1], "square"))
+        .map(|entry| if entry[0] == 0 { 256 } else { entry[0] as u32 })
+        .collect();
+    assert_eq!(sizes, WINDOWS_SIZES);
 }
 
 /// The artwork with its placeholder colour made clear. Edge pixels, where the
