@@ -126,7 +126,7 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
     s.outputs.insert(
         "read/file".into(),
         Output {
-            folder: "/Users/you/Floppies".into(),
+            folder: "/Users/you/Documents/Ferriteweazle/Images".into(),
             ext: ".img".into(),
             ..Output::default()
         },
@@ -150,7 +150,7 @@ fn read_job() -> Job {
         );
     let mut job = Job::replay("read", &log);
     job.format = Some("ibm.1440".into());
-    job.output = Some("/Users/you/Floppies/Floppy.img".into());
+    job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Floppy.img".into());
     job
 }
 
@@ -161,7 +161,7 @@ fn session(w: &mut Window) {
     for (heading, mut job, ending) in [
         ("gw info", Job::replay("info", INFO), "Done in 0:01."),
         (
-            "gw read --revs=2 --format=ibm.1440 /Users/you/Floppies/Floppy.img",
+            "gw read --revs=2 --format=ibm.1440 /Users/you/Documents/Ferriteweazle/Images/Floppy.img",
             read_job(),
             "Done in 0:52.",
         ),
