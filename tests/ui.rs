@@ -681,6 +681,23 @@ fn drag_log(w: &mut Window, by: f32) {
 }
 
 #[test]
+fn a_log_dragged_down_holds_at_its_least_height_before_it_shuts() {
+    let mut w = smooth(Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    });
+    w.run();
+    drag_log(&mut w, -25.0);
+    assert_eq!(
+        app(&w).settings.drawer,
+        Some(Drawer::Log),
+        "a small pull shut it"
+    );
+    drag_log(&mut w, -90.0);
+    assert_eq!(app(&w).settings.drawer, None, "a long pull did not shut it");
+}
+
+#[test]
 fn a_log_dragged_taller_stays_that_tall_and_the_map_shrinks_only_when_it_must() {
     let mut w = smooth(Settings {
         drawer: Some(Drawer::Log),
@@ -777,6 +794,81 @@ fn settings_keeps_every_path_under_paths() {
         w.get_by_label(name);
     }
     assert!(w.query_by_label("Presets").is_none());
+}
+
+/// What gw bandwidth printed on Windows 11 on ARM.
+const BANDWIDTH: &str = "                   Min.   /   Mean   /   Max.
+Write Bandwidth:    7.663 /    7.661 /    7.677 Mbps
+Read Bandwidth:     8.004 /    8.153 /    8.349 Mbps
+
+Estimated Consistent Min. Bandwidth: 6.897 Mbps
+ -> Max. Flux Rate: 0.776 Msamples/sec
+ -> Min. Ave. Flux: 1.289 us";
+
+#[test]
+fn a_result_shows_all_its_output_and_the_page_scrolls_under_a_tall_log() {
+    let mut w = window(Settings {
+        page: Page::Command("bandwidth".into()),
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    app_mut(&mut w).tool = Some(Job::replay("bandwidth", BANDWIDTH));
+    w.run();
+    for line in ["Write Bandwidth:", "-> Min. Ave. Flux: 1.289 us"] {
+        let shown = w.query_all_by_label_contains(line).next().is_some();
+        assert!(shown, "{line} is not shown");
+    }
+}
+
+#[test]
+fn text_dragged_across_the_log_is_copied() {
+    let mut w = window(Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    // Short enough for the log at its least height to show all of it.
+    let mut job = Job::replay("bandwidth", "Write Bandwidth: 7.66\nRead Bandwidth: 8.15");
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw bandwidth".into(), &mut job);
+    log.follow(&mut job);
+    w.run();
+    let from = w
+        .get_by_label_contains("Write Bandwidth:")
+        .rect()
+        .left_center();
+    let to = w
+        .get_by_label_contains("Read Bandwidth:")
+        .rect()
+        .right_center();
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    w.event(egui::Event::PointerMoved(from));
+    w.event(button(from, true));
+    w.step();
+    w.event(egui::Event::PointerMoved(to));
+    w.step();
+    w.event(button(to, false));
+    w.step();
+    w.event(egui::Event::Copy);
+    w.step();
+    let copied = w
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
+    let copied = copied.expect("something was copied");
+    assert!(
+        copied.contains("Write Bandwidth:") && copied.contains("Read Bandwidth:"),
+        "{copied:?}"
+    );
 }
 
 #[test]

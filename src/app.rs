@@ -104,6 +104,8 @@ const DRAWER: f32 = 124.0;
 const LOG_ROOM: f32 = 260.0;
 /// How long a drawer takes to slide open or shut, in seconds.
 const DRAWER_TIME: f32 = 0.2;
+/// How far past its least height the log must be dragged to shut, in points.
+const LOG_BUMP: f32 = 40.0;
 /// The status pane's strip for its scroll bar, taken from its right margin.
 const STATUS_BAR: i8 = 10;
 
@@ -1468,6 +1470,7 @@ impl App {
             .show_collapsible(ui, &mut cli, |ui| self.cli(ui, page));
         // As tall as the command line at first; drag its edge for more.
         let tallest = (ui.available_height() - LOG_ROOM).max(DRAWER);
+        let bottom = ui.max_rect().bottom();
         let mut log = open == Some(Drawer::Log);
         let mut clear = false;
         egui::Panel::bottom("log")
@@ -1481,13 +1484,21 @@ impl App {
                 let note = log.trimmed().then_some("Older lines were dropped.");
                 let lines = log.lines();
                 let heads = |i| log.is_head(i);
-                clear = output(ui, "Log", note, lines, heads, p, f32::INFINITY, true);
+                clear = output(ui, "Log", note, lines, heads, p, None, true);
             });
         if clear {
             self.log.clear();
         }
-        // Dragging the log's edge below its least height shuts it.
-        if open == Some(Drawer::Log) && !log {
+        // Dragged below its least height, the log holds there until pulled
+        // LOG_BUMP further; a double-click on its edge shuts it at once.
+        let (pointer, double) = ui.input(|i| {
+            let double = i
+                .pointer
+                .button_double_clicked(egui::PointerButton::Primary);
+            (i.pointer.interact_pos(), double)
+        });
+        let past = pointer.map_or(f32::INFINITY, |p| p.y - (bottom - DRAWER));
+        if open == Some(Drawer::Log) && !log && (double || past > LOG_BUMP) {
             self.settings.drawer = None;
         }
     }
@@ -2434,14 +2445,24 @@ fn result(ui: &mut Ui, job: &Job) {
     {
         device_table(ui, &info, p);
     } else {
-        output(ui, "Output", None, &job.log, |_| false, p, 260.0, false);
+        output(
+            ui,
+            "Output",
+            None,
+            &job.log,
+            |_| false,
+            p,
+            Some(260.0),
+            false,
+        );
     }
 }
 
 /// gw's output: a scrolling log of this height, with a note beside its
 /// heading, and Copy and Save. `head` picks the lines that head a job.
 /// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
-/// `height` tall or as tall as the room left. True when Clear was pressed.
+/// `height` tall or, with none, as tall as the room left. True when Clear
+/// was pressed.
 #[allow(clippy::too_many_arguments)]
 fn output(
     ui: &mut Ui,
@@ -2450,7 +2471,7 @@ fn output(
     log: &[String],
     head: impl Fn(usize) -> bool,
     p: &Palette,
-    height: f32,
+    height: Option<f32>,
     clearable: bool,
 ) -> bool {
     let mut clear = false;
@@ -2486,8 +2507,8 @@ fn output(
         .inner_margin(8);
     // Exactly the room left: a drawer a little taller than its contents
     // would shrink to them, frame by frame.
-    let room = ui.available_height() - frame.total_margin().sum().y;
-    let height = height.min(room).max(LOG_LINE);
+    let room = || ui.available_height() - frame.total_margin().sum().y;
+    let height = height.unwrap_or_else(room).max(LOG_LINE);
     frame.show(ui, |ui| {
         if log.is_empty() {
             ui.set_min_size(vec2(ui.available_width(), height.min(80.0)));
@@ -2507,7 +2528,7 @@ fn output(
                         true => RichText::new(&log[i]).monospace().color(p.accent),
                         false => log_line(&log[i], p),
                     };
-                    ui.add(egui::Label::new(text).extend());
+                    ui.add(egui::Label::new(text).extend().selectable(true));
                 }
             });
     });
