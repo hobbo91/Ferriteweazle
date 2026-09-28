@@ -655,6 +655,13 @@ impl App {
         chosen_port(self.service.known_ports(), &self.settings.device)
     }
 
+    /// Whether the chosen port is there, open to this account, and did not
+    /// fail its last gw info: the device card's dot is green.
+    fn answering(&self) -> bool {
+        let port = chosen_port(self.service.known_ports(), &self.settings.device);
+        port.is_some_and(|p| !p.denied) && self.probe_failed.is_none()
+    }
+
     /// Whether the sidebar shows a Greaseweazle, as last listed.
     fn connected(&self) -> bool {
         chosen_port(self.service.known_ports(), &self.settings.device).is_some()
@@ -866,6 +873,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|port| i.get("Port").is_none_or(|p| p == port.device))
         });
+        let answering = self.answering();
         let mut ask = false;
         let mut access = None;
         Frame::new()
@@ -878,7 +886,7 @@ impl App {
                 ui.spacing_mut().item_spacing.y = 5.0;
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                    let colour = if found.is_some() { p.good } else { p.bad };
+                    let colour = if answering { p.good } else { p.bad };
                     ui.painter().circle_filled(r.center(), 4.5, colour);
                     let name = match (&found, info.and_then(|i| i.get("Model"))) {
                         (None, _) => "Disconnected",
@@ -3232,6 +3240,7 @@ mod tests {
             app.probe_failed.as_deref(),
             Some("The Greaseweazle did not answer.")
         );
+        assert!(!app.answering(), "the dot stays green");
     }
 
     #[test]
