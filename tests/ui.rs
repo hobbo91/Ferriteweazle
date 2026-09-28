@@ -302,6 +302,7 @@ fn greaseweazle() -> Port {
         name: Some("Greaseweazle".into()),
         serial: Some("GW0123456789ABCDEF".into()),
         score: 20,
+        denied: false,
     }
 }
 
@@ -1296,4 +1297,82 @@ fn the_log_says_when_it_has_dropped_its_oldest_lines() {
     w.run();
     w.get_by_label("Older lines were dropped.");
     w.get_by_label("Done in 1:00.");
+}
+
+/// What gw prints when Linux refuses it the port: pyserial's EACCES error.
+const REFUSED: &str = "** FATAL ERROR:
+[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
+
+const RULE: &str = "/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules";
+
+/// The commands the fix shows, for the rule at RULE.
+const COMMANDS: [&str; 2] = [
+    "sudo cp /opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules /etc/udev/rules.d/",
+    "sudo udevadm control --reload-rules && sudo udevadm trigger",
+];
+
+/// The fix for a port Linux refused: named, with a button and the commands.
+fn shows_the_fix(w: &Window) {
+    w.get_by_label("No access to /dev/ttyACM0");
+    let install = w.get_by_role_and_label(Role::Button, "Install udev rule");
+    assert!(!install.accesskit_node().is_disabled());
+    for command in COMMANDS {
+        w.get_by_label(command);
+    }
+    w.get_by_role_and_label(Role::Link, "gw's Linux instructions");
+}
+
+#[test]
+fn a_disk_job_refused_the_port_names_it_and_gives_gws_udev_rule() {
+    let mut w = start(Harness::builder().with_size(DEFAULT), chosen(), None);
+    let app = app_mut(&mut w);
+    app.udev_rule = Some(RULE.into());
+    app.disk = Some(Job::replay("read", REFUSED));
+    w.run();
+    shows_the_fix(&w);
+    assert!(
+        w.query_by_label_contains("[Errno 13]").is_none(),
+        "not pyserial's words"
+    );
+}
+
+#[test]
+fn a_page_whose_job_was_refused_the_port_says_the_same_under_its_result() {
+    let mut w = window(Settings {
+        page: Page::Command("seek".into()),
+        ..Settings::default()
+    });
+    let app = app_mut(&mut w);
+    app.udev_rule = Some(RULE.into());
+    app.tool = Some(Job::replay("seek", REFUSED));
+    w.run();
+    shows_the_fix(&w);
+}
+
+#[test]
+fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() {
+    let mut w = window(chosen());
+    app_mut(&mut w).udev_rule = None;
+    app_mut(&mut w).disk = Some(Job::replay("read", REFUSED));
+    w.run();
+    let install = w.get_by_role_and_label(Role::Button, "Install udev rule");
+    assert!(install.accesskit_node().is_disabled());
+    w.get_by_label("sudo cp scripts/49-greaseweazle.rules /etc/udev/rules.d/");
+}
+
+#[test]
+fn the_device_card_names_a_port_linux_denies_and_shows_how_to_grant_access() {
+    let mut w = window(Settings::default());
+    let app = app_mut(&mut w);
+    app.udev_rule = Some(RULE.into());
+    app.pin_ports(vec![Port {
+        device: "/dev/ttyACM0".into(),
+        denied: true,
+        ..greaseweazle()
+    }]);
+    w.run();
+    w.get_by_label("No access to ttyACM0.");
+    w.get_by_label("Grant access…").click();
+    w.run();
+    shows_the_fix(&w);
 }

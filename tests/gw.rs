@@ -186,6 +186,36 @@ fn the_service_describes_gw_and_checks_values() {
 }
 
 #[test]
+fn the_port_list_says_which_ports_linux_denies_this_account() {
+    let Some(engine) = engine() else { return };
+    let mut bridge = engine
+        .bridge("serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the bridge starts");
+    // Its input closes after the one question, so it answers and ends.
+    let mut input = bridge.stdin.take().unwrap();
+    std::io::Write::write_all(&mut input, b"{\"op\": \"ports\"}\n").unwrap();
+    drop(input);
+    let out = bridge.wait_with_output().unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ports: Vec<Port> = serde_json::from_value(reply["ok"].clone()).unwrap();
+    // test(1) asks the kernel by access(2), as open(2) would decide.
+    let may_open = |device: &str| {
+        let both = r#"test -r "$1" && test -w "$1""#;
+        let status = std::process::Command::new("sh")
+            .args(["-c", both, "sh", device])
+            .status();
+        status.unwrap().success()
+    };
+    for port in &ports {
+        let denied = cfg!(target_os = "linux") && !may_open(&port.device);
+        assert_eq!(port.denied, denied, "{}", port.device);
+    }
+}
+
+#[test]
 fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     let Some(engine) = engine() else { return };
     let dir = scratch("round-trip");
@@ -394,6 +424,7 @@ fn greaseweazle() -> Port {
         name: Some("Greaseweazle".into()),
         serial: Some("GW0123456789ABCDEF".into()),
         score: 20,
+        denied: false,
     }
 }
 
@@ -502,6 +533,7 @@ fn a_page_that_acts_on_the_device_says_to_connect_one_until_it_is() {
         name: Some("Greaseweazle".into()),
         serial: None,
         score: 20,
+        denied: false,
     }]);
     w.run_steps(2);
     assert!(!run(&w), "it cannot run with a device");

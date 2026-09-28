@@ -11,11 +11,14 @@ mod diskmap;
 pub mod engine;
 pub mod form;
 pub mod job;
+#[cfg(target_os = "linux")]
+mod portal;
 pub mod presets;
 pub mod progress;
 pub mod schema;
 pub mod service;
 pub mod theme;
+mod udev;
 
 pub use app::{App, Drawer, Page, Settings};
 

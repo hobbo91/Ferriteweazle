@@ -61,15 +61,24 @@ fn python_in(root: &Path) -> PathBuf {
 }
 
 fn bundled() -> Option<PathBuf> {
-    bundled_with(&std::env::current_exe().ok()?)
+    Some(python_in(&data_with(&std::env::current_exe().ok()?)?))
 }
 
 /// The folder a package keeps gw's Python in.
 pub const DATA: &str = "ferriteweazle-data";
 
+/// gw's udev rule, which a Linux package keeps beside gw's Python.
+pub fn udev_rule() -> Option<PathBuf> {
+    udev_rule_with(&std::env::current_exe().ok()?)
+}
+
+fn udev_rule_with(exe: &Path) -> Option<PathBuf> {
+    Some(data_with(exe)?.join(crate::udev::RULE)).filter(|r| r.is_file())
+}
+
 /// `Contents/Resources/ferriteweazle-data` in a macOS app, `ferriteweazle-data`
 /// beside the program elsewhere, and `target/engine` for `cargo run`.
-fn bundled_with(exe: &Path) -> Option<PathBuf> {
+fn data_with(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [
         dir.join("../Resources").join(DATA),
@@ -77,8 +86,7 @@ fn bundled_with(exe: &Path) -> Option<PathBuf> {
         dir.join("../engine"),
     ]
     .into_iter()
-    .map(|root| python_in(&root))
-    .find(|p| p.is_file())
+    .find(|root| python_in(root).is_file())
 }
 
 /// An installed `gw` on the PATH or in the usual places, which apps started
@@ -195,7 +203,7 @@ mod tests {
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::create_dir_all(app.join("MacOS")).unwrap();
         std::fs::write(&python, "").unwrap();
-        let found = bundled_with(&app.join("MacOS/ferriteweazle")).unwrap();
+        let found = python_in(&data_with(&app.join("MacOS/ferriteweazle")).unwrap());
         assert_eq!(
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
@@ -208,11 +216,25 @@ mod tests {
         let python = python_in(&dir.join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
-        let found = bundled_with(&dir.join("ferriteweazle")).unwrap();
+        let found = python_in(&data_with(&dir.join("ferriteweazle")).unwrap());
         assert_eq!(
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn a_linux_package_keeps_gws_udev_rule_beside_its_python() {
+        let dir = std::env::temp_dir().join("ferriteweazle-rule");
+        let python = python_in(&dir.join(DATA));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        let exe = dir.join("ferriteweazle");
+        let rule = dir.join(DATA).join(crate::udev::RULE);
+        let _ = std::fs::remove_file(&rule);
+        assert_eq!(udev_rule_with(&exe), None);
+        std::fs::write(&rule, "").unwrap();
+        assert_eq!(udev_rule_with(&exe), Some(rule));
     }
 
     #[test]

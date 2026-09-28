@@ -11,6 +11,7 @@ use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
 use crate::theme::{self, Palette};
+use crate::udev;
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense,
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
@@ -19,6 +20,7 @@ use eframe::egui::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 /// How long the device card waits for `gw info`.
@@ -178,6 +180,10 @@ enum Dialog {
         command: String,
         name: String,
     },
+    /// How to give this account the port Linux refused it.
+    Access {
+        port: String,
+    },
     Quit,
 }
 
@@ -192,6 +198,15 @@ struct Fade {
 
 /// Marks the screenshot a theme change asks for.
 struct FadeShot;
+
+/// Installing gw's udev rule through pkexec, and how it went.
+#[derive(Default)]
+enum Install {
+    #[default]
+    Idle,
+    Running(Receiver<Result<(), String>>),
+    Done(Result<(), String>),
+}
 
 /// What a dialog's button does, once the dialog has let go of the app.
 type Action = Box<dyn FnOnce(&mut App)>;
@@ -239,20 +254,31 @@ pub struct App {
     probe: Option<Job>,
     /// Why the last probe learned nothing.
     probe_failed: Option<String>,
-    /// The port the card last asked about.
-    probed: Option<String>,
+    /// The port the card last asked about, and whether Linux denied it then.
+    probed: Option<(String, bool)>,
     /// Ask each Greaseweazle that appears what it is.
     auto_info: bool,
     logo: Option<egui::TextureHandle>,
     fade: Fade,
+    /// The desktop's light or dark preference, where winit reports none.
+    desktop_theme: Option<Receiver<Theme>>,
+    /// The theme last given the window's frame.
+    framed: Option<Theme>,
     /// The drawer open when the drawers were last drawn.
     drawn: Option<Drawer>,
+    /// gw's udev rule, where a Linux package ships it.
+    pub udev_rule: Option<PathBuf>,
+    install: Install,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let mut app = App::with_settings(&cc.egui_ctx, Settings::default());
         app.auto_info = true;
+        #[cfg(target_os = "linux")]
+        {
+            app.desktop_theme = Some(crate::portal::watch(repaint(&cc.egui_ctx)));
+        }
         app
     }
 
@@ -289,7 +315,11 @@ impl App {
             auto_info: false,
             logo: None,
             fade: Fade::default(),
+            desktop_theme: None,
+            framed: None,
             drawn: None,
+            udev_rule: crate::engine::udev_rule(),
+            install: Install::Idle,
         }
     }
 
@@ -332,6 +362,7 @@ impl App {
 
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.follow_desktop(&ctx);
         self.fade_theme(&ctx);
         self.poll(&ctx);
         self.guard_close(&ctx);
@@ -402,6 +433,28 @@ impl App {
             let shot = egui::UserData::new(FadeShot);
             ctx.send_viewport_cmd(ViewportCommand::Screenshot(shot));
             self.fade.asked = Some((pref, 0));
+        }
+    }
+
+    /// Takes the desktop's preference as the theme System falls back on where
+    /// winit reports none. On Linux the window's frame follows the theme shown:
+    /// egui's own sync gives it winit's default for System, which is light.
+    fn follow_desktop(&mut self, ctx: &egui::Context) {
+        if let Some(theme) = self
+            .desktop_theme
+            .as_ref()
+            .and_then(|d| d.try_iter().last())
+        {
+            ctx.options_mut(|o| o.fallback_theme = theme);
+        }
+        if cfg!(target_os = "linux") && self.framed != Some(ctx.theme()) {
+            self.framed = Some(ctx.theme());
+            ctx.options_mut(|o| o.sync_window_theme = false);
+            let frame = match ctx.theme() {
+                Theme::Dark => egui::SystemTheme::Dark,
+                Theme::Light => egui::SystemTheme::Light,
+            };
+            ctx.send_viewport_cmd(ViewportCommand::SetTheme(frame));
         }
     }
 
@@ -485,6 +538,13 @@ impl App {
             self.ended(ctx, disk);
         }
         self.poll_probe(ctx);
+        if let Install::Running(answer) = &self.install
+            && let Ok(done) = answer.try_recv()
+        {
+            // The port list says so once udev has granted access.
+            self.service.refresh_ports();
+            self.install = Install::Done(done);
+        }
         if self.quitting && self.running().is_none() && self.probe.is_none() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
@@ -506,6 +566,12 @@ impl App {
                 self.device = Some(info);
             }
             if !probe.running() {
+                let port = chosen_port(self.service.known_ports(), &self.settings.device);
+                if let Some(port) = refused_port(probe, port) {
+                    probe
+                        .log
+                        .extend(udev::advice(&port, self.udev_rule.as_deref()));
+                }
                 self.log.end(probe, ending(probe));
                 self.probe_failed = match (&self.device, probe.outcome()) {
                     (Some(_), _) => None,
@@ -521,7 +587,7 @@ impl App {
                 self.probe = None;
             }
         }
-        let port = self.found_port().map(|p| p.device.clone());
+        let port = self.found_port().map(|p| (p.device.clone(), p.denied));
         if port.is_none() {
             self.probed = None;
             self.device = None;
@@ -568,7 +634,7 @@ impl App {
         let Some(cmd) = schema.command("info") else {
             return;
         };
-        self.probed = self.found_port().map(|p| p.device.clone());
+        self.probed = self.found_port().map(|p| (p.device.clone(), p.denied));
         // None of the Device info page's options: --bootloader would switch
         // the device's mode every time.
         let args = self.argv(cmd, &self.device_only(cmd));
@@ -585,6 +651,7 @@ impl App {
 
     /// A job has just ended: save the log, and do whatever was waiting on it.
     fn ended(&mut self, ctx: &egui::Context, disk: bool) {
+        let port = chosen_port(self.service.known_ports(), &self.settings.device).cloned();
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
         let outcome = job.outcome();
@@ -597,6 +664,10 @@ impl App {
                 job.log
                     .push(format!("Could not save this output beside the image: {e}"));
             }
+        }
+        if let Some(port) = refused_port(job, port.as_ref()) {
+            job.log
+                .extend(udev::advice(&port, self.udev_rule.as_deref()));
         }
         self.log.end(job, ending(job));
         let command = job.command.clone();
@@ -745,6 +816,7 @@ impl App {
                 .is_some_and(|port| i.get("Port").is_none_or(|p| p == port.device))
         });
         let mut ask = false;
+        let mut access = None;
         Frame::new()
             .fill(p.card)
             .stroke(Stroke::new(1.0, p.line))
@@ -792,11 +864,24 @@ impl App {
                             }
                         });
                     }
+                    let denied = found.as_ref().filter(|p| p.denied);
                     if info.is_none() && asking {
                         text_row(ui, |ui| {
                             ui.add(egui::Spinner::new().size(10.0));
                             ui.label(RichText::new("Asking the device…").small().weak());
                         });
+                    } else if let Some(port) = denied.filter(|_| info.is_none()) {
+                        // gw info says only that it found none; the port list says why.
+                        let text = format!("No access to {}.", short_port(&port.device));
+                        ui.label(RichText::new(text).small().color(p.bad));
+                        let link = egui::Link::new(RichText::new("Grant access…").small());
+                        if ui
+                            .add(link)
+                            .on_hover_text("How to give this account access.")
+                            .clicked()
+                        {
+                            access = Some(port.device.clone());
+                        }
                     } else if info.is_none() {
                         // On the line the firmware takes once the device answers.
                         if let Some(why) = &self.probe_failed {
@@ -870,6 +955,9 @@ impl App {
             if found.is_some() {
                 self.ask_device(ui.ctx());
             }
+        }
+        if let Some(port) = access {
+            self.dialog = Some(Dialog::Access { port });
         }
     }
 
@@ -1021,6 +1109,7 @@ impl App {
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, cmd));
         let cannot_detect = self.cannot_detect(name);
+        let mut install = false;
         let action = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -1040,7 +1129,7 @@ impl App {
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
                         ui.add_space(18.0);
-                        result(ui, job);
+                        install = result(ui, job, self.refused(job));
                     }
                     ui.add_space(12.0);
                     action
@@ -1048,6 +1137,9 @@ impl App {
                 .inner
             })
             .inner;
+        if install {
+            self.install_rule(ui.ctx());
+        }
         if action == Some(form::Action::Detect) {
             // The page's earlier answer goes while it looks again.
             self.notices.remove(name);
@@ -1402,16 +1494,16 @@ impl App {
         }
         ui.add_space(6.0);
         progress_bar(ui, job, p);
+        let mut install = false;
         if let Some(e) = &job.progress.error {
             ui.add_space(6.0);
-            Frame::new()
-                .fill(p.bad.gamma_multiply(0.14))
-                .corner_radius(8)
-                .inner_margin(10)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
+            let refused = self.refused(job);
+            error_box(ui, p, |ui| match &refused {
+                Some(refused) => install = access(ui, refused),
+                None => {
                     ui.label(RichText::new(e).color(p.bad));
-                });
+                }
+            });
         }
         if let Some(left) = cancelled(job) {
             ui.add_space(6.0);
@@ -1422,6 +1514,28 @@ impl App {
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
             true => diskmap::show(ui, &blank, "blank", budget, room),
             false => diskmap::show(ui, &job.progress, job.started, budget, room),
+        }
+        if install {
+            self.install_rule(ui.ctx());
+        }
+    }
+
+    /// The port Linux refused `job`, if it was refused one, and what can grant access.
+    fn refused(&self, job: &Job) -> Option<Refused<'_>> {
+        let port = chosen_port(self.service.known_ports(), &self.settings.device);
+        Some(Refused {
+            port: refused_port(job, port)?,
+            rule: self.udev_rule.as_deref(),
+            install: &self.install,
+        })
+    }
+
+    /// Installs gw's udev rule through pkexec, which asks for a password.
+    fn install_rule(&mut self, ctx: &egui::Context) {
+        if let Some(rule) = &self.udev_rule
+            && !matches!(self.install, Install::Running(_))
+        {
+            self.install = Install::Running(udev::install(rule, repaint(ctx)));
         }
     }
 
@@ -1794,8 +1908,13 @@ impl App {
         }
         let mut close = false;
         let mut action: Option<Action> = None;
+        // Room for the commands that grant a port.
+        let width = match dialog {
+            Dialog::Access { .. } => 560.0,
+            _ => 420.0,
+        };
         let response = egui::Modal::new(Id::new("dialog")).show(ctx, |ui| {
-            ui.set_width(420.0);
+            ui.set_width(width);
             match &mut dialog {
                 Dialog::Confirm { command, args } => {
                     let drive = if self.settings.drive.is_empty() {
@@ -1926,6 +2045,23 @@ impl App {
                             close = true;
                         }
                         if ui.add(dialog_plain("Cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Access { port } => {
+                    let refused = Refused {
+                        port: port.clone(),
+                        rule: self.udev_rule.as_deref(),
+                        install: &self.install,
+                    };
+                    if access(ui, &refused) {
+                        let ctx = ctx.clone();
+                        action = Some(Box::new(move |app: &mut App| app.install_rule(&ctx)));
+                    }
+                    ui.add_space(10.0);
+                    right(ui, |ui| {
+                        if ui.add(dialog_plain("Close")).clicked() {
                             close = true;
                         }
                     });
@@ -2423,9 +2559,11 @@ fn cancelled(job: &Job) -> Option<&'static str> {
     }
 }
 
-/// What a command other than a disk job did, under its page.
-fn result(ui: &mut Ui, job: &Job) {
+/// What a command other than a disk job did, under its page. True when
+/// Install udev rule was pressed.
+fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> bool {
     let p = theme::palette(ui);
+    let mut install = false;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Result").strong());
         let (text, colour) = state(job, p);
@@ -2434,8 +2572,12 @@ fn result(ui: &mut Ui, job: &Job) {
             ui.label(RichText::new(clock(job.elapsed())).monospace().weak());
         });
     });
-    if let Some(e) = &job.progress.error {
-        ui.label(RichText::new(e).color(p.bad));
+    match (&refused, &job.progress.error) {
+        (Some(refused), _) => error_box(ui, p, |ui| install = access(ui, refused)),
+        (None, Some(e)) => {
+            ui.label(RichText::new(e).color(p.bad));
+        }
+        (None, None) => {}
     }
     ui.add_space(4.0);
     // The device's report reads as a table; gw's raw words stay in the Log.
@@ -2456,6 +2598,120 @@ fn result(ui: &mut Ui, job: &Job) {
             false,
         );
     }
+    install
+}
+
+/// A port Linux refused gw, and what can grant this account access to it.
+struct Refused<'a> {
+    port: String,
+    rule: Option<&'a Path>,
+    install: &'a Install,
+}
+
+/// The port a job was refused for want of permission. gw's error names it,
+/// but `gw info` says only that it found no device, so there `port`, the
+/// port list's, tells.
+fn refused_port(job: &Job, port: Option<&Port>) -> Option<String> {
+    if let Some(port) = job.progress.error.as_deref().and_then(udev::denied_port) {
+        return Some(port.to_owned());
+    }
+    let port = port.filter(|p| p.denied)?;
+    let unanswered = job.command == "info" && !job.running() && device::parse(&job.log).is_none();
+    unanswered.then(|| port.device.clone())
+}
+
+const NO_ACCESS: &str = "This account has no permission to open the port. gw's udev rule \
+                         gives the user logged in at this computer access to a Greaseweazle, \
+                         and tells ModemManager to leave it alone.";
+
+/// Why gw was refused the port, and gw's udev rule: a button that installs
+/// it, and the commands that do the same. True when the button is pressed.
+fn access(ui: &mut Ui, refused: &Refused) -> bool {
+    let p = theme::palette(ui);
+    let heading = format!("No access to {}", refused.port);
+    ui.label(RichText::new(heading).strong().color(p.bad));
+    ui.add(egui::Label::new(NO_ACCESS).wrap());
+    ui.add_space(4.0);
+    let running = matches!(refused.install, Install::Running(_));
+    let pressed = ui
+        .add_enabled(
+            refused.rule.is_some() && !running,
+            egui::Button::new("Install udev rule"),
+        )
+        .on_hover_text("Copy it to /etc/udev/rules.d and reload udev, as root, through pkexec.")
+        .on_disabled_hover_text(match running {
+            true => "Waiting for pkexec…",
+            false => "No copy of the rule ships with this build.",
+        })
+        .clicked();
+    match refused.install {
+        Install::Idle => {}
+        Install::Running(_) => {
+            text_row(ui, |ui| {
+                ui.add(egui::Spinner::new().size(10.0));
+                ui.label(RichText::new("Waiting for pkexec…").small().weak());
+            });
+        }
+        Install::Done(Ok(())) => {
+            ui.label(RichText::new("Installed, and udev has applied it.").color(p.good));
+        }
+        Install::Done(Err(e)) => {
+            ui.add(egui::Label::new(RichText::new(e).color(p.partial)).wrap());
+        }
+    }
+    ui.add_space(4.0);
+    let commands = udev::commands(refused.rule);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Or in a terminal:").weak());
+        right(ui, |ui| {
+            if ui
+                .small_button("Copy")
+                .on_hover_text("Copy these commands.")
+                .clicked()
+            {
+                ui.ctx().copy_text(commands.join("\n"));
+            }
+        });
+    });
+    // A command to a line, never broken: the box scrolls sideways instead,
+    // with a bar that shows there is more.
+    Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0, p.line))
+        .corner_radius(6)
+        .inner_margin(8)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                foreground_color: true,
+                dormant_handle_opacity: 0.35,
+                ..egui::style::ScrollStyle::thin()
+            };
+            egui::ScrollArea::horizontal()
+                .id_salt("udev-commands")
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for command in &commands {
+                        let text = RichText::new(command).monospace();
+                        ui.add(egui::Label::new(text).extend().selectable(true));
+                    }
+                });
+        });
+    ui.hyperlink_to("gw's Linux instructions", udev::WIKI)
+        .on_hover_text(udev::WIKI);
+    pressed
+}
+
+/// A tinted box for what went wrong.
+fn error_box(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+    Frame::new()
+        .fill(p.bad.gamma_multiply(0.14))
+        .corner_radius(8)
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
 }
 
 /// gw's output: a scrolling log of this height, with a note beside its
@@ -2765,6 +3021,7 @@ mod tests {
             name: Some("Greaseweazle".into()),
             serial: None,
             score: 20,
+            denied: false,
         }]);
         assert_eq!(app.cannot_detect("read"), None);
         let mut probe = Job::replay("info", "");
@@ -2905,6 +3162,7 @@ mod tests {
             name: Some("Greaseweazle".into()),
             serial: None,
             score: 20,
+            denied: false,
         }]);
         assert!(app.connected());
         assert!(!sections(app.listed.as_deref()).is_empty());
@@ -2914,5 +3172,99 @@ mod tests {
         assert!(app.engine.is_none());
         assert!(!app.connected(), "no gw will look for it");
         assert!(sections(app.listed.as_deref()).is_empty(), "no gw runs");
+    }
+
+    #[test]
+    fn system_follows_the_desktops_preference_and_a_chosen_theme_wins() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let (desktop, answers) = std::sync::mpsc::channel();
+        app.desktop_theme = Some(answers);
+        for theme in [Theme::Light, Theme::Dark, Theme::Light] {
+            desktop.send(theme).unwrap();
+            app.follow_desktop(&ctx);
+            assert_eq!(ctx.theme(), theme);
+        }
+        ctx.set_theme(ThemePreference::Dark);
+        desktop.send(Theme::Light).unwrap();
+        app.follow_desktop(&ctx);
+        assert_eq!(ctx.theme(), Theme::Dark, "a theme chosen in Settings wins");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_the_window_frame_follows_the_theme_shown() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let (desktop, answers) = std::sync::mpsc::channel();
+        app.desktop_theme = Some(answers);
+        let frames = |app: &mut App| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| app.follow_desktop(ui.ctx()));
+            out.textures_delta.clear(); // no painter here
+            let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+            commands
+                .iter()
+                .filter(|c| matches!(c, ViewportCommand::SetTheme(_)))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let light = || ViewportCommand::SetTheme(egui::SystemTheme::Light);
+        let dark = ViewportCommand::SetTheme(egui::SystemTheme::Dark);
+        desktop.send(Theme::Light).unwrap();
+        assert_eq!(frames(&mut app), [light()]);
+        assert_eq!(frames(&mut app), [], "only when the theme changes");
+        ctx.set_theme(ThemePreference::Dark);
+        assert_eq!(frames(&mut app), [dark], "a theme chosen in Settings too");
+        ctx.set_theme(ThemePreference::System);
+        assert_eq!(frames(&mut app), [light()]);
+    }
+
+    /// What gw prints when Linux refuses it the port: pyserial's EACCES error.
+    const REFUSED: &str = "** FATAL ERROR:\n[Errno 13] could not open port /dev/ttyACM0: \
+                           [Errno 13] Permission denied: '/dev/ttyACM0'";
+
+    const RULE: &str = "/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules";
+
+    fn has_the_fix(log: &[String]) -> bool {
+        let log = log.join("\n");
+        [
+            "No access to /dev/ttyACM0: this account has no permission to open it.",
+            &format!("  sudo cp {RULE} /etc/udev/rules.d/"),
+            "  sudo udevadm control --reload-rules && sudo udevadm trigger",
+            udev::WIKI,
+        ]
+        .iter()
+        .all(|line| log.contains(line))
+    }
+
+    #[test]
+    fn a_port_refused_for_want_of_permission_puts_the_fix_in_the_log() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.udev_rule = Some(RULE.into());
+        app.disk = Some(Job::replay("read", REFUSED));
+        app.ended(&ctx, true);
+        assert!(has_the_fix(app.log.lines()), "{:#?}", app.log.lines());
+    }
+
+    #[test]
+    fn gw_info_on_a_port_linux_denies_puts_the_fix_in_the_log() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.udev_rule = Some(RULE.into());
+        app.pin_ports(vec![Port {
+            device: "/dev/ttyACM0".into(),
+            name: Some("Greaseweazle".into()),
+            serial: None,
+            score: 20,
+            denied: true,
+        }]);
+        // gw info takes a port it may not open for no device.
+        app.probe = Some(Job::replay(
+            "info",
+            "Host Tools: 1.23\nDevice:\n  Not found",
+        ));
+        app.poll_probe(&ctx);
+        assert!(has_the_fix(app.log.lines()), "{:#?}", app.log.lines());
     }
 }

@@ -1122,6 +1122,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "zbus",
 ]
 
 [[package]]
