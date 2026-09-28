@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Windows installer, built by bundle.sh with WiX 5 from the zip's
+     folder (App), the version (Version), the licence as RTF (Licence) and an
+     empty file (Marker). -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <!-- A new version replaces any installed one with this UpgradeCode: keep it. -->
+  <Package Name="Ferriteweazle" Manufacturer="Lee Hobson" Version="$(Version)"
+           UpgradeCode="CD82DDD9-A9DC-4D5D-A230-2CD9607D66EB" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer Ferriteweazle is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <!-- Windows Installer reads Windows 10 and 11 as 8.1 (VersionNT 603,
+         WindowsBuild 9600); CurrentMajorVersionNumber first appears in 10. -->
+    <Property Id="WINDOWS10">
+      <RegistrySearch Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentMajorVersionNumber" Type="raw" />
+    </Property>
+    <Launch Condition="Installed OR WINDOWS10"
+            Message="Ferriteweazle needs Windows 10 or newer." />
+
+    <Icon Id="ferriteweazle.ico" SourceFile="$(sys.SOURCEFILEDIR)ferriteweazle.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ferriteweazle.ico" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(Licence)" />
+    <ui:WixUI Id="WixUI_Minimal" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Ferriteweazle">
+        <Directory Id="DATAFOLDER" Name="ferriteweazle-data" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Ferriteweazle">
+      <Component Directory="INSTALLFOLDER">
+        <File Source="$(App)\Ferriteweazle.exe">
+          <Shortcut Name="Ferriteweazle" Directory="ProgramMenuFolder"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        </File>
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="$(App)\LICENSE.txt" />
+      </Component>
+      <Files Directory="DATAFOLDER" Include="$(App)\ferriteweazle-data\**" />
+      <!-- Tells the app it was installed from an MSI, so it updates with one. -->
+      <Component Directory="DATAFOLDER">
+        <File Name="msi" Source="$(Marker)" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>
