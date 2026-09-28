@@ -210,6 +210,14 @@ fn screens() {
         ] {
             render(name, theme, settings(name, theme), job, |_| {});
         }
+        let mut update = settings("update", theme);
+        let firmware = "/Users/you/Downloads/greaseweazle-firmware-v1.7.upd";
+        update
+            .values
+            .entry("update".into())
+            .or_default()
+            .set("file", firmware);
+        render("update", theme, update, None, |_| {});
         let page = Settings {
             page: Page::Settings,
             ..settings("read", theme)

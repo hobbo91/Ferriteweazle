@@ -627,3 +627,78 @@ fn the_device_card_lines_up_with_the_pages_description() {
         card.top()
     );
 }
+
+/// The update page, with the command line open.
+fn update_page() -> Window {
+    window(Settings {
+        page: Page::Command("update".into()),
+        drawer: Some(Drawer::Cli),
+        ..Settings::default()
+    })
+}
+
+/// The firmware source that is lit.
+fn firmware(w: &Window) -> Vec<&'static str> {
+    ["Latest", "Release", "File"]
+        .into_iter()
+        .filter(|name| {
+            let button = w.get_by_role_and_label(Role::Button, name);
+            button.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+        })
+        .collect()
+}
+
+/// Clicks the page's one-line text field and types into it.
+fn type_field(w: &mut Window, text: &str) {
+    w.get_by_role(Role::TextInput).click();
+    w.run();
+    type_text(w, text);
+    w.run();
+}
+
+#[test]
+fn update_takes_the_latest_firmware_a_release_or_a_file_and_gives_gw_only_that() {
+    let mut w = update_page();
+    assert_eq!(firmware(&w), ["Latest"]);
+    assert!(
+        w.query_by_role(Role::TextInput).is_none(),
+        "nothing to fill in"
+    );
+    assert_eq!(line(&w), "gw update");
+
+    w.get_by_role_and_label(Role::Button, "Release").click();
+    w.run();
+    assert_eq!(firmware(&w), ["Release"]);
+    w.get_by_label("Release tag");
+    type_field(&mut w, "v1.6");
+    assert_eq!(line(&w), "gw update --tag=v1.6");
+
+    w.get_by_role_and_label(Role::Button, "File").click();
+    w.run();
+    assert_eq!(
+        line(&w),
+        "gw update",
+        "the tag stays on the page, not in gw's"
+    );
+    type_field(&mut w, "/x/fw.upd");
+    assert_eq!(line(&w), "gw update --file=/x/fw.upd");
+
+    w.get_by_role_and_label(Role::Button, "Release").click();
+    w.run();
+    assert_eq!(line(&w), "gw update --tag=v1.6");
+    w.get_by_role_and_label(Role::Button, "Latest").click();
+    w.run();
+    assert_eq!(line(&w), "gw update");
+}
+
+#[test]
+fn a_typed_update_command_chooses_its_firmware_source() {
+    let mut w = update_page();
+    type_line(&mut w, "gw update --file /x/fw.upd");
+    assert_eq!(firmware(&w), ["File"]);
+    assert_eq!(app(&w).settings.values["update"].get("file"), "/x/fw.upd");
+    type_line(&mut w, "gw update --tag v1.6 --force");
+    assert_eq!(firmware(&w), ["Release"]);
+    type_line(&mut w, "gw update --force");
+    assert_eq!(firmware(&w), ["Latest"]);
+}

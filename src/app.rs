@@ -780,6 +780,9 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
+        if cmd.name == "update" {
+            form::Firmware::only(&mut values);
+        }
         values
     }
 
