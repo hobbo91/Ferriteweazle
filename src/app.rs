@@ -549,7 +549,7 @@ impl App {
                             .progress
                             .error
                             .clone()
-                            .unwrap_or_else(|| "It did not say what it is.".into()),
+                            .unwrap_or_else(|| "Unable to retrieve firmware.".into()),
                     ),
                 };
                 self.probe = None;
