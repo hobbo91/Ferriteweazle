@@ -4,5 +4,3 @@
 **/*.new.png
 **/*.diff.png
 .DS_Store
-.claude/
-CLAUDE.local.md
