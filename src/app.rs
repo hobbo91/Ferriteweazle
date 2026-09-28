@@ -206,8 +206,9 @@ pub struct App {
     session: Option<Session>,
     cli: Cli,
     dialog: Option<Dialog>,
-    /// A note above the page, such as the formats detection found.
-    pub notice: Option<String>,
+    /// Notes above pages, such as the formats detection found, by the page
+    /// each came from. Each stays until dismissed or replaced there.
+    pub notices: BTreeMap<String, String>,
     /// Close the window once the stopped job has ended.
     quitting: bool,
     /// What the last `gw info` said about the device.
@@ -257,7 +258,7 @@ impl App {
             session: None,
             cli: Cli::default(),
             dialog: None,
-            notice: None,
+            notices: BTreeMap::new(),
             quitting: false,
             device: None,
             probe: None,
@@ -524,12 +525,12 @@ impl App {
         let Some(cmd) = schema.command(&page) else {
             return;
         };
-        let values = self.settings.values.entry(page).or_default();
+        let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
         if step > 1 {
             values.set("tracks", form::double_step(values.get("tracks")));
         }
-        self.notice = Some(found_note(&formats, step));
+        self.notices.insert(page, found_note(&formats, step));
     }
 
     /// Closing the window while gw works asks first: gw stops the drive before
@@ -886,7 +887,7 @@ impl App {
                 right(ui, |ui| self.presets_menu(ui, name));
             });
             ui.label(RichText::new(form::sentence(&cmd.about)).weak());
-            self.notice_bar(ui);
+            self.notice_bar(ui, name);
         });
         ui.add_space(14.0);
         egui::Panel::bottom("run-bar")
@@ -934,14 +935,16 @@ impl App {
             })
             .inner;
         if action == Some(form::Action::Detect) {
+            // The page's earlier answer goes while it looks again.
+            self.notices.remove(name);
             self.detect_for = Some(name.to_owned());
             let args = self.detect_args(cmd);
             self.run(ui.ctx(), DETECT, args);
         }
     }
 
-    fn notice_bar(&mut self, ui: &mut Ui) {
-        let Some(notice) = self.notice.clone() else {
+    fn notice_bar(&mut self, ui: &mut Ui, page: &str) {
+        let Some(notice) = self.notices.get(page).cloned() else {
             return;
         };
         ui.add_space(8.0);
@@ -962,7 +965,7 @@ impl App {
                             .on_hover_text("Hide this.")
                             .clicked()
                         {
-                            self.notice = None;
+                            self.notices.remove(page);
                         }
                     });
                 });
@@ -1206,9 +1209,17 @@ impl App {
                     .map(String::from);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
-                self.notice = None;
             }
-            Err(e) => self.notice = Some(format!("Could not start gw: {e}")),
+            Err(e) => {
+                // A detect job's page is the one it chooses the format on.
+                let page = match command {
+                    DETECT => self.detect_for.clone(),
+                    _ => None,
+                };
+                let page = page.unwrap_or_else(|| command.to_owned());
+                self.notices
+                    .insert(page, format!("Could not start gw: {e}"));
+            }
         }
     }
 
@@ -1435,7 +1446,7 @@ impl App {
                 .pick_file();
         }
         if let Some(path) = load {
-            self.load_preset(&path);
+            self.load_preset(command, &path);
         }
     }
 
@@ -1844,12 +1855,13 @@ impl App {
             outputs,
         };
         if let Err(e) = presets::save(&self.presets_folder(), name, &preset) {
-            self.notice = Some(format!("Could not save the preset: {e}"));
+            let text = format!("Could not save the preset: {e}");
+            self.notices.insert(command.to_owned(), text);
         }
     }
 
-    /// Applies a preset file's settings and opens its page.
-    fn load_preset(&mut self, path: &Path) {
+    /// Applies a preset file's settings and opens its page. A fault shows on `page`.
+    fn load_preset(&mut self, page: &str, path: &Path) {
         match presets::load(path) {
             Ok(preset) => {
                 self.settings
@@ -1860,7 +1872,8 @@ impl App {
             }
             Err(e) => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
-                self.notice = Some(format!("Could not load {name}. {e}"));
+                self.notices
+                    .insert(page.to_owned(), format!("Could not load {name}. {e}"));
             }
         }
     }
@@ -2503,5 +2516,27 @@ mod tests {
             ("/disks", "Game Disk", ".hfe")
         );
         assert_eq!(out.value(1), "/disks/Game Disk.hfe::version=3");
+    }
+
+    #[test]
+    fn a_fault_shows_on_the_page_it_happened_on() {
+        let ctx = egui::Context::default();
+        let settings = Settings {
+            presets_folder: Some("/dev/null/presets".into()),
+            ..Settings::default()
+        };
+        let mut app = App::offline(&ctx, settings, Err(String::new()));
+        app.engine = Some(Engine {
+            python: "/no/such/python".into(),
+            origin: Origin::Custom,
+        });
+        app.run(&ctx, "erase", Vec::new());
+        app.detect_for = Some("convert".into());
+        app.run(&ctx, DETECT, Vec::new());
+        app.save_preset("seek", "Mine");
+        app.load_preset("write", Path::new("/no/such/Mine.json"));
+        let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
+        assert_eq!(pages, ["convert", "erase", "seek", "write"]);
+        assert!(app.notices["erase"].starts_with("Could not start gw: "));
     }
 }

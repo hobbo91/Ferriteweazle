@@ -182,7 +182,8 @@ fn screens() {
             w.get_by_role_and_label(Role::Button, "Log").click();
         });
         render("found", theme, settings("read", theme), None, |w| {
-            w.state_mut().as_mut().unwrap().notice = Some(FOUND.into());
+            let app = w.state_mut().as_mut().unwrap();
+            app.notices.insert("read".into(), FOUND.into());
         });
         render("no-device", theme, settings("read", theme), None, |w| {
             w.state_mut().as_mut().unwrap().pin_ports(Vec::new());

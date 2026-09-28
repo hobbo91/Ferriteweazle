@@ -12,6 +12,9 @@ type Window = Harness<'static, Option<App>>;
 
 const DAMAGED: &str = include_str!("data/convert-damaged.log");
 
+const FOUND: &str =
+    "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
+
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
 
@@ -397,9 +400,7 @@ fn until_gw_describes_itself_the_sidebar_lists_no_command() {
 #[test]
 fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     let mut w = window(Settings::default());
-    app_mut(&mut w).notice = Some(
-        "Found akai.800. It also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.".into(),
-    );
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
     w.run();
     let dismiss = w.get_by_label("Dismiss").rect();
     let status = w.get_by_label("Disk status").rect();
@@ -414,7 +415,28 @@ fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     );
     w.get_by_label("Dismiss").click();
     w.run();
-    assert!(app(&w).notice.is_none());
+    assert!(app(&w).notices.is_empty());
+}
+
+#[test]
+fn a_notice_shows_only_on_its_page_and_stays_until_dismissed() {
+    let mut w = window(Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    w.get_by_label(FOUND);
+    for title in ["Write disk", "Update firmware"] {
+        entry(&w, title).click();
+        w.run();
+        assert!(w.query_by_label(FOUND).is_none(), "it shows on {title}");
+    }
+    entry(&w, "Read disk").click();
+    w.run();
+    w.get_by_label(FOUND);
+    w.get_by_label("Dismiss").click();
+    w.run();
+    assert!(w.query_by_label(FOUND).is_none());
+    assert!(app(&w).notices.is_empty());
 }
 
 #[test]

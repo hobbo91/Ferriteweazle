@@ -565,7 +565,7 @@ fn a_blank_image_is_no_format_and_says_so() {
 }
 
 #[test]
-fn the_detect_button_chooses_the_format_of_the_input() {
+fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
     let Some(engine) = engine() else { return };
     let dir = scratch("detect-button");
     let scp = flux_of(&engine, &dir, "amiga.amigados", 901_120);
@@ -578,11 +578,21 @@ fn the_detect_button_chooses_the_format_of_the_input() {
         .entry("convert".into())
         .or_default()
         .set("in_file", scp.to_string_lossy());
+    let beside = Output {
+        beside_input: true,
+        ..Output::default()
+    };
+    settings.outputs.insert("convert/out_file".into(), beside);
     let mut w = window(&engine, settings);
+    let ended = |command: &'static str| {
+        move |app: &App| {
+            app.disk
+                .as_ref()
+                .is_some_and(|j| j.command == command && !j.running())
+        }
+    };
     w.get_by_label("Detect").click();
-    until(&mut w, "detection", |app| {
-        app.disk.as_ref().is_some_and(|j| !j.running())
-    });
+    until(&mut w, "detection", ended(DETECT));
     w.run_steps(2);
     let app = w.state().as_ref().unwrap();
     assert_eq!(
@@ -590,7 +600,28 @@ fn the_detect_button_chooses_the_format_of_the_input() {
         "amiga.amigados"
     );
     assert_eq!(app.settings.outputs["convert/out_file"].ext, ".adf");
-    w.get_by_label_contains("Found amiga.amigados.");
+    let found = |w: &Window| w.query_by_label_contains("Found amiga.amigados.").is_some();
+    assert!(found(&w));
+
+    w.get_by_label("Read disk").click();
+    w.run_steps(2);
+    assert!(!found(&w), "it shows on the Read page");
+    w.get_by_label("Convert image").click();
+    w.run_steps(2);
+    assert!(found(&w));
+
+    w.get_by_label("Convert").click();
+    until(&mut w, "the conversion", ended("convert"));
+    w.run_steps(2);
+    assert!(found(&w), "another job took it away");
+
+    // Detect again: the old answer goes until the new one comes.
+    w.get_by_label("Detect").click();
+    w.run_steps(2);
+    assert!(!found(&w));
+    until(&mut w, "detection", ended(DETECT));
+    w.run_steps(2);
+    assert!(found(&w));
     std::fs::remove_dir_all(dir).ok();
 }
 
