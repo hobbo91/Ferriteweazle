@@ -4,12 +4,13 @@
 
 use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
+use ferriteweazle::command::quote;
 use ferriteweazle::engine::{Engine, Origin};
 use ferriteweazle::form::Output;
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::progress::Status;
 use ferriteweazle::service::{Load, Service};
-use ferriteweazle::{App, Page, Settings};
+use ferriteweazle::{App, Drawer, Page, Settings};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -466,6 +467,75 @@ fn the_detect_button_chooses_the_format_of_the_input() {
     );
     assert_eq!(app.settings.outputs["convert/out_file"].ext, ".adf");
     w.get_by_label_contains("Found amiga.amigados.");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("session-log");
+    let scp = flux_of(&engine, &dir, "amiga.amigados", 901_120);
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    };
+    settings
+        .values
+        .entry("convert".into())
+        .or_default()
+        .set("in_file", path(&scp));
+    let beside = Output {
+        beside_input: true,
+        ..Output::default()
+    };
+    settings.outputs.insert("convert/out_file".into(), beside);
+    let mut w = window(&engine, settings);
+    w.get_by_label("Detect").click();
+    until(&mut w, "detection", |app| {
+        app.disk.as_ref().is_some_and(|j| !j.running())
+    });
+    w.run_steps(2);
+    w.get_by_label("Convert").click();
+    until(&mut w, "the conversion", |app| {
+        app.disk
+            .as_ref()
+            .is_some_and(|j| j.command == "convert" && !j.running())
+    });
+    w.run_steps(2);
+
+    let app = w.state().as_ref().unwrap();
+    let lines = app.log.lines();
+    let at = |line: &str| {
+        lines
+            .iter()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no {line:?} in {lines:#?}"))
+    };
+    let adf = dir.join("amiga.amigados.adf");
+    let detect = at(&format!("Detect disk format {}", quote(&path(&scp))));
+    let convert = at(&format!(
+        "gw convert --format=amiga.amigados {} {}",
+        quote(&path(&scp)),
+        quote(&path(&adf))
+    ));
+    assert_eq!(detect, 0, "{lines:#?}");
+    let under = |from: usize, to: usize, line: &str| lines[from..to].iter().any(|l| l == line);
+    assert!(
+        under(detect, convert, "Format amiga.amigados"),
+        "{lines:#?}"
+    );
+    assert!(lines[convert - 2].starts_with("Done in "), "{lines:#?}");
+    assert!(under(
+        convert,
+        lines.len(),
+        "Found 1760 sectors of 1760 (100%)"
+    ));
+    assert!(lines.last().unwrap().starts_with("Done in "), "{lines:#?}");
+    let heads: Vec<usize> = (0..lines.len()).filter(|&i| app.log.is_head(i)).collect();
+    assert_eq!(heads, [detect, convert]);
+    // The drawer shows it, ending with the conversion.
+    w.get_by_label(lines.last().unwrap());
     std::fs::remove_dir_all(dir).ok();
 }
 

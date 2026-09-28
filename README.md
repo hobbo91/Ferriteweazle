@@ -17,7 +17,7 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
   drive, or of a flux image, with every format gw knows, and chooses the best
   match and the image type that suits it (Akai to .img, Amiga to .adf).
 - Draws a disk map as gw works: a square per track, ten cylinders to a row.
-- Shows gw's output, to copy or save.
+- Shows gw's output from every job since the app opened, to copy or save.
 - Shows each page as its `gw` command line with **CLI**. Change either and the
   other follows. It takes only `gw` commands and runs nothing: the page's own
   button runs gw, with no shell.

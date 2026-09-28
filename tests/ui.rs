@@ -4,7 +4,7 @@ use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node};
 use ferriteweazle::form::Output;
-use ferriteweazle::job::Job;
+use ferriteweazle::job::{Job, LOG_LINES};
 use ferriteweazle::schema::Schema;
 use ferriteweazle::{App, Drawer, Page, Settings};
 
@@ -626,4 +626,22 @@ fn the_device_card_lines_up_with_the_pages_description() {
         "card at {}, description's letters at {letters}",
         card.top()
     );
+}
+
+#[test]
+fn the_log_says_when_it_has_dropped_its_oldest_lines() {
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    };
+    let mut w = window(settings);
+    assert!(w.query_by_label("Older lines were dropped.").is_none());
+    let lines: Vec<String> = (0..LOG_LINES).map(|i| format!("T{i}")).collect();
+    let mut job = Job::replay("read", &lines.join("\n"));
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw read x.img".into());
+    log.end(&mut job, "Done in 1:00.".into());
+    w.run();
+    w.get_by_label("Older lines were dropped.");
+    w.get_by_label("Done in 1:00.");
 }

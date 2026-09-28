@@ -5,7 +5,7 @@ use crate::device::{self, DeviceInfo};
 use crate::diskmap;
 use crate::engine::{Engine, Origin};
 use crate::form::{self, Form, Output};
-use crate::job::{DETECT, Job, Outcome};
+use crate::job::{DETECT, Job, Outcome, SessionLog};
 use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
@@ -138,7 +138,7 @@ pub struct Settings {
 pub enum Drawer {
     /// The page's gw command line.
     Cli,
-    /// gw's output from the latest job.
+    /// gw's output from every job of the session.
     Log,
 }
 
@@ -192,6 +192,8 @@ pub struct App {
     pub disk: Option<Job>,
     /// The last job of any other command, shown under its page.
     pub tool: Option<Job>,
+    /// Every job's output since the app opened: the Log drawer.
+    pub log: SessionLog,
     /// The page a running detect job chooses the format on.
     detect_for: Option<String>,
     session: Option<Session>,
@@ -242,6 +244,7 @@ impl App {
             service: Service::offline(schema),
             disk: None,
             tool: None,
+            log: SessionLog::default(),
             detect_for: None,
             session: None,
             cli: Cli::default(),
@@ -345,6 +348,7 @@ impl App {
             let Some(job) = job else { continue };
             let was_running = job.running();
             job.poll();
+            self.log.follow(job);
             if let Some(wait) = job.wake_in() {
                 ctx.request_repaint_after(wait);
             }
@@ -365,6 +369,7 @@ impl App {
     fn poll_probe(&mut self, ctx: &egui::Context) {
         if let Some(probe) = &mut self.probe {
             probe.poll();
+            self.log.follow(probe);
             if probe.running() && probe.elapsed() > INFO_TIMEOUT {
                 probe.stop();
             }
@@ -376,6 +381,7 @@ impl App {
                 self.device = Some(info);
             }
             if !probe.running() {
+                self.log.end(probe, ending(probe));
                 self.probe_failed = match (&self.device, probe.outcome()) {
                     (Some(_), _) => None,
                     (None, Some(Outcome::Stopped)) => Some("No answer.".into()),
@@ -424,6 +430,7 @@ impl App {
         let Some(engine) = &self.engine else { return };
         match Job::start(engine, "info", args, repaint(ctx)) {
             Ok(job) => {
+                self.log.begin(heading(&job));
                 self.probe = Some(job);
                 self.probe_failed = None;
             }
@@ -446,6 +453,7 @@ impl App {
                     .push(format!("Could not save this output beside the image: {e}"));
             }
         }
+        self.log.end(job, ending(job));
         let command = job.command.clone();
         let detected = std::mem::take(&mut job.detected);
         let step = job.step;
@@ -1160,6 +1168,7 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
+                self.log.begin(heading(&job));
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
                 self.notice = None;
@@ -1272,15 +1281,12 @@ impl App {
                     .default_size(DRAWER)
                     .size_range(DRAWER..=tallest)
                     .show(ui, |ui| {
-                        // The latest job, of either kind.
-                        let latest = [&self.disk, &self.tool]
-                            .into_iter()
-                            .flatten()
-                            .max_by_key(|j| j.started);
-                        let log = latest.map_or(&[][..], |j| j.log.as_slice());
+                        let log = &self.log;
+                        let note = (log.dropped() > 0).then_some("Older lines were dropped.");
                         // Exactly the room there is, or the drawer grows to fit.
                         let height = (ui.available_height() - LOG_HEADING).max(LOG_LINE);
-                        output(ui, "Log", log, p, height);
+                        let lines = log.lines();
+                        output(ui, "Log", note, lines, |i| log.is_head(i), p, height);
                     });
             }
         }
@@ -1980,6 +1986,28 @@ fn clock(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A job's heading in the log: its command line, as the CLI shows it.
+/// Detection is the bridge's own, so it goes by its title.
+fn heading(job: &Job) -> String {
+    match job.command.as_str() {
+        DETECT => job
+            .args
+            .iter()
+            .fold(title(DETECT), |out, a| out + " " + &command::quote(a)),
+        _ => command::line(&job.args),
+    }
+}
+
+/// A job's last line in the log: how it ended, and when.
+fn ending(job: &Job) -> String {
+    let how = match job.outcome() {
+        Some(Outcome::Succeeded) => "Done in",
+        Some(Outcome::Failed) => "Failed after",
+        _ => "Stopped after",
+    };
+    format!("{how} {}.", clock(job.elapsed()))
+}
+
 fn repaint(ctx: &egui::Context) -> Repaint {
     let ctx = ctx.clone();
     Box::new(move || ctx.request_repaint())
@@ -2137,14 +2165,26 @@ fn result(ui: &mut Ui, job: &Job) {
     {
         device_table(ui, &info, p);
     } else {
-        output(ui, "Output", &job.log, p, 260.0);
+        output(ui, "Output", None, &job.log, |_| false, p, 260.0);
     }
 }
 
-/// gw's output: a scrolling log of this height, with Copy and Save.
-fn output(ui: &mut Ui, heading: &str, log: &[String], p: &Palette, height: f32) {
+/// gw's output: a scrolling log of this height, with a note beside its
+/// heading, and Copy and Save. `head` picks the lines that head a job.
+fn output(
+    ui: &mut Ui,
+    heading: &str,
+    note: Option<&str>,
+    log: &[String],
+    head: impl Fn(usize) -> bool,
+    p: &Palette,
+    height: f32,
+) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).strong());
+        if let Some(note) = note {
+            ui.label(RichText::new(note).small().weak());
+        }
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
             if save.on_hover_text("Save gw's output to a file.").clicked()
@@ -2177,8 +2217,12 @@ fn output(ui: &mut Ui, heading: &str, log: &[String], p: &Palette, height: f32) 
                 .max_height(height)
                 .min_scrolled_height(height)
                 .show_rows(ui, row, log.len(), |ui, rows| {
-                    for line in &log[rows] {
-                        ui.add(egui::Label::new(log_line(line, p)).extend());
+                    for i in rows {
+                        let text = match head(i) {
+                            true => RichText::new(&log[i]).monospace().color(p.accent),
+                            false => log_line(&log[i], p),
+                        };
+                        ui.add(egui::Label::new(text).extend());
                     }
                 });
         });
