@@ -51,8 +51,21 @@ codesign --verify --deep --strict "$app"
 ln -s /Applications "$stage/Applications"
 cp packaging/macos/README.txt "$stage/README.txt"
 cp LICENSE "$stage/LICENSE.txt"
+# The disk shows the logo: made writable, given Finder's custom-icon flag,
+# then compressed.
+cp packaging/macos/AppIcon.icns "$stage/.VolumeIcon.icns"
 dmg=dist/Ferriteweazle-$version-macos-universal.dmg
-rm -f "$dmg"
+rw=target/macos-rw.dmg
+volume=target/macos-volume
+rm -f "$dmg" "$rw"
 hdiutil create -quiet -volname "Ferriteweazle $version" -srcfolder "$stage" -fs HFS+ \
-    -format UDZO "$dmg"
+    -format UDRW "$rw"
+mkdir -p "$volume"
+hdiutil attach -quiet -nobrowse -noautoopen -mountpoint "$volume" "$rw"
+xattr -wx com.apple.FinderInfo \
+    0000000000000000040000000000000000000000000000000000000000000000 "$volume"
+hdiutil detach -quiet "$volume"
+rmdir "$volume"
+hdiutil convert -quiet "$rw" -format UDZO -o "$dmg"
+rm -f "$rw"
 du -sh "$dmg"
