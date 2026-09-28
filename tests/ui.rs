@@ -127,21 +127,15 @@ fn line(w: &Window) -> String {
         .unwrap_or_default()
 }
 
-/// The disk map's squares, above the legend's swatches.
+/// The disk map's squares.
 fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
     let left = w.get_by_label("Disk status").rect().left();
-    let legend = ["Good ", "Short ", "Bad ", "Flux ", "Written ", "Erased "]
-        .iter()
-        .flat_map(|name| w.query_all_by_label_contains(name))
-        .map(|l| l.rect().top() - 2.0)
-        .fold(f32::INFINITY, f32::min);
     w.output()
         .shapes
         .iter()
         .filter_map(move |c| match &c.shape {
             egui::Shape::Rect(r)
                 if r.rect.left() > left
-                    && r.rect.bottom() < legend
                     && (r.rect.width() - r.rect.height()).abs() < 0.5
                     && r.rect.width() > 8.0 =>
             {
@@ -829,26 +823,13 @@ fn an_empty_log_dragged_taller_stays_that_tall() {
 }
 
 #[test]
-fn the_map_stays_centred_as_a_wider_window_widens_its_pane() {
-    let span = |width: f32| {
+fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
+    let left = |width: f32| {
         let w = window_at(egui::vec2(width, 780.0), chosen());
-        let (left, right) = squares(&w).fold((f32::MAX, f32::MIN), |(l, r), s| {
-            (l.min(s.rect.left()), r.max(s.rect.right()))
-        });
-        (left, right)
+        let heading = w.get_by_label("Disk status").rect().left();
+        squares(&w).map(|s| s.rect.left()).fold(f32::MAX, f32::min) - heading
     };
-    let (left, right) = span(1240.0);
-    let (wider_left, wider_right) = span(1340.0);
-    assert_eq!(
-        wider_right - wider_left,
-        right - left,
-        "the squares changed size"
-    );
-    assert!(
-        (wider_left - left - 50.0).abs() <= 1.0,
-        "moved {} for 100 more points",
-        wider_left - left
-    );
+    assert_eq!(left(1340.0), left(1240.0));
 }
 
 #[test]

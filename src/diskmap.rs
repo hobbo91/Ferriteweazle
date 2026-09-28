@@ -77,10 +77,7 @@ pub fn show(
         true => vec2(grid.x * sides + SIDE_GAP * (sides - 1.0), grid.y),
         false => vec2(grid.x, grid.y * sides + SIDE_GAP * 0.5 * (sides - 1.0)),
     };
-    // Centred: the height usually limits the squares before the pane's width does.
-    let inset = snap(((width - size.x) / 2.0).max(0.0));
-    let (row, response) = ui.allocate_exact_size(vec2(inset + size.x, size.y), Sense::hover());
-    let rect = Rect::from_min_size(row.min + vec2(inset, 0.0), size);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let radius = CornerRadius::same((cell / 5.0).round() as u8);
     let square = |i: usize, cyl: u32| {
@@ -148,7 +145,7 @@ pub fn show(
         });
     }
     ui.add_space(6.0);
-    legend(ui, inset, &shown, progress.tally().retries, p);
+    legend(ui, &shown, progress.tally().retries, p);
 }
 
 /// How far a square has faded in, 0 to 1. Timed from the frame it lit up,
@@ -212,11 +209,9 @@ fn colour(status: Status, p: &Palette) -> Color32 {
     }
 }
 
-/// Each colour on the map with its track count, then the retries, `inset`
-/// from the left to line up with the map.
-fn legend(ui: &mut egui::Ui, inset: f32, shown: &[Color32], retries: u32, p: &Palette) {
+/// Each colour on the map with its track count, then the retries.
+fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
     ui.horizontal_wrapped(|ui| {
-        ui.add_space(inset);
         for (status, name, tip) in [
             (Status::Good, "Good", "Every sector read."),
             (Status::Partial, "Short", "Some sectors missing."),
