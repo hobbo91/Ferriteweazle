@@ -296,6 +296,8 @@ fn screens() {
             page: Page::Settings,
             ..settings("read", theme)
         };
-        render("settings", theme, page, None, |_| {});
+        // Tall enough for every section.
+        let tall = egui::vec2(1240.0, 1180.0);
+        render_sized("settings", tall, theme, page, None, |_| {});
     }
 }

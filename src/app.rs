@@ -1808,19 +1808,15 @@ impl App {
                 "Passes --bt, so gw's errors say where they came from.",
             );
         });
+        section(ui, "Update", |ui| self.app_update(ui));
         section(ui, "About", |ui| {
             ui.label(concat!(
                 "Ferriteweazle ",
                 env!("CARGO_PKG_VERSION"),
                 " written with \u{2661} by Lee Hobson (@hobbo91), under the MIT license."
             ));
-            ui.horizontal(|ui| {
-                if let Some(install) = Install::this() {
-                    self.app_update_button(ui, install);
-                }
-                ui.hyperlink_to("Source code and issues", REPO)
-                    .on_hover_text(REPO);
-            });
+            ui.hyperlink_to("Source code and issues", REPO)
+                .on_hover_text(REPO);
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -2063,24 +2059,58 @@ impl App {
         self.settings.page = Page::Command(name);
     }
 
-    fn app_update_button(&mut self, ui: &mut Ui, install: Install) {
-        let (can, tip) = match install.stuck() {
-            Some(why) => (false, why.to_owned()),
-            None if self.running().is_some() => (false, "Wait for the job that is running.".into()),
-            None => self.app_update.button("Ferriteweazle"),
+    /// What GitHub has for this copy, with Update at the right.
+    fn app_update(&mut self, ui: &mut Ui) {
+        let install = Install::this();
+        let (line, why) = match install {
+            Some(_) => self.app_update.summary(env!("CARGO_PKG_VERSION")),
+            None => ("This copy was built from source.".into(), None),
         };
-        let update = ui.add_enabled(can, egui::Button::new("Update"));
-        if update
-            .on_hover_text(&tip)
-            .on_disabled_hover_text(&tip)
-            .clicked()
-            && let (Update::Newer(tag), Some(engine)) = (&self.app_update, &self.engine)
-        {
-            if cfg!(windows) && matches!(install, Install::Folder(_)) {
-                // Windows will not move the data folder while gw runs from it.
-                self.service = Service::offline(Err("Updating Ferriteweazle\u{2026}".into()));
+        let blocked = match &install {
+            None => Some("Needs a copy installed from a release."),
+            Some(install) => install.stuck(),
+        }
+        .or_else(|| {
+            self.running()
+                .is_some()
+                .then_some("Wait for the job that is running.")
+        });
+        let busy = matches!(
+            self.app_update,
+            Update::Checking(_) | Update::Installing(..)
+        );
+        ui.horizontal(|ui| {
+            if busy {
+                ui.spinner();
             }
-            self.app_update = Update::app(engine, install, tag, repaint(ui.ctx()));
+            let status = ui.label(line);
+            if let Some(why) = why {
+                status.on_hover_text(why);
+            }
+            right(ui, |ui| {
+                let (can, tip) = match blocked {
+                    Some(why) => (false, why.to_owned()),
+                    None => self.app_update.button("Ferriteweazle"),
+                };
+                let update = ui.add_enabled(can, egui::Button::new("Update"));
+                if update
+                    .on_hover_text(&tip)
+                    .on_disabled_hover_text(&tip)
+                    .clicked()
+                    && let (Update::Newer(tag), Some(engine), Some(install)) =
+                        (&self.app_update, &self.engine, install.clone())
+                {
+                    if cfg!(windows) && matches!(install, Install::Folder(_)) {
+                        // Windows will not move the data folder while gw runs from it.
+                        self.service =
+                            Service::offline(Err("Updating Ferriteweazle\u{2026}".into()));
+                    }
+                    self.app_update = Update::app(engine, install, tag, repaint(ui.ctx()));
+                }
+            });
+        });
+        if let (Some(why), Update::Newer(_)) = (blocked, &self.app_update) {
+            ui.label(RichText::new(why).small().weak());
         }
     }
 

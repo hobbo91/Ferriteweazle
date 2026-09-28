@@ -110,6 +110,27 @@ impl Update {
             Update::Unreachable(why) | Update::Failed(why) => (false, why.clone()),
         }
     }
+
+    /// Settings' line for Ferriteweazle `now`, such as `0.9.0`, and the reason
+    /// behind a failure.
+    pub fn summary(&self, now: &str) -> (String, Option<String>) {
+        let bare = |tag: &str| tag.trim_start_matches('v').to_owned();
+        match self {
+            Update::Idle => ("Not checked.".into(), None),
+            Update::Checking(_) => ("Checking GitHub for a newer release\u{2026}".into(), None),
+            Update::Latest(_) => (
+                format!("You are running the latest release ({now}) of Ferriteweazle."),
+                None,
+            ),
+            Update::Newer(tag) => (format!("Update available ({now} -> {})", bare(tag)), None),
+            Update::Installing(_, tag) => (format!("Installing {}\u{2026}", bare(tag)), None),
+            Update::Unreachable(why) => (
+                "Unable to connect to GitHub repository.".into(),
+                Some(why.clone()),
+            ),
+            Update::Failed(why) => ("Unable to install the update.".into(), Some(why.clone())),
+        }
+    }
 }
 
 /// How this copy of Ferriteweazle was installed, and so how to replace it.
@@ -372,6 +393,30 @@ mod tests {
         let mut check = Update::Checking(answered(Err(why)));
         check.poll(Some("0.9.0"));
         assert_eq!(check.button("Ferriteweazle"), (false, why.into()));
+    }
+
+    #[test]
+    fn settings_says_what_github_has_in_a_line_and_keeps_the_reason_for_hover() {
+        let line = |u: Update| u.summary("0.9.0");
+        assert_eq!(
+            line(Update::Latest("v0.9.0".into())),
+            (
+                "You are running the latest release (0.9.0) of Ferriteweazle.".into(),
+                None
+            )
+        );
+        assert_eq!(
+            line(Update::Newer("v0.9.1".into())).0,
+            "Update available (0.9.0 -> 0.9.1)"
+        );
+        let why = "Could not reach GitHub to check for a newer release.";
+        assert_eq!(
+            line(Update::Unreachable(why.into())),
+            (
+                "Unable to connect to GitHub repository.".into(),
+                Some(why.into())
+            )
+        );
     }
 
     #[test]
