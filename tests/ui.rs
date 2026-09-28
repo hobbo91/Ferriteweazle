@@ -1,8 +1,8 @@
 //! The window driven the way a person would, over the gw 1.23 schema.
 
-use eframe::egui::{self, accesskit::Role};
+use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
-use egui_kittest::{Harness, HarnessBuilder, Node};
+use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
 use ferriteweazle::form::Output;
 use ferriteweazle::job::{Job, LOG_LINES};
 use ferriteweazle::schema::Schema;
@@ -626,6 +626,119 @@ fn the_device_card_lines_up_with_the_pages_description() {
         "card at {}, description's letters at {letters}",
         card.top()
     );
+}
+
+/// Settings from `theme`, a frame every 60th of a second.
+fn settings_from(theme: ThemePreference, builder: HarnessBuilder<Option<App>>) -> Window {
+    let settings = Settings {
+        page: Page::Settings,
+        theme,
+        ..Settings::default()
+    };
+    let builder = builder
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    build(builder, settings, None)
+}
+
+/// The old theme's picture over the whole window, as it fades: its opacity.
+fn fading(w: &Window) -> Option<u8> {
+    w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Mesh(m)
+            if m.texture_id != egui::TextureId::default()
+                && m.calc_bounds().width() >= DEFAULT.x - 0.5 =>
+        {
+            m.vertices.first().map(|v| v.color.a())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn choosing_a_theme_fades_the_old_one_out_then_the_window_rests() {
+    for (from, to, shows) in [
+        (ThemePreference::Dark, "Light", egui::Theme::Light),
+        // The harness's system theme is dark.
+        (ThemePreference::Light, "System", egui::Theme::Dark),
+    ] {
+        let mut w = settings_from(from, Harness::builder());
+        w.get_by_label(to).click();
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            w.step();
+            seen.extend(fading(&w));
+        }
+        assert_eq!(w.ctx.theme(), shows, "to {to}");
+        assert!(seen.len() >= 10, "to {to}, over {} frames", seen.len());
+        assert_eq!(seen[0], 255, "to {to}, it starts as the old theme");
+        assert!(
+            seen.windows(2).all(|p| p[1] <= p[0]),
+            "to {to}, it does not fade out steadily: {seen:?}"
+        );
+        assert_eq!(w.run(), 1, "to {to}, the window keeps drawing");
+    }
+}
+
+#[test]
+fn a_long_frame_as_the_fade_begins_does_not_skip_it() {
+    let mut w = settings_from(ThemePreference::Dark, Harness::builder());
+    let mut time = w.ctx.input(|i| i.time);
+    let mut frame = |w: &mut Window, dt: f64| {
+        time += dt;
+        w.input_mut().time = Some(time);
+        w.step();
+        fading(w)
+    };
+    w.get_by_label("Light").click();
+    let mut shown = None;
+    for _ in 0..10 {
+        shown = frame(&mut w, 1.0 / 60.0);
+        if shown.is_some() {
+            break;
+        }
+    }
+    assert_eq!(shown, Some(255), "the old theme's picture, in full");
+    // Loading that picture can hold up the next frame.
+    let next = frame(&mut w, 0.4);
+    assert!(next.is_some_and(|a| a > 150), "it jumped to {next:?}");
+}
+
+/// A renderer that cannot render, so no screenshot comes.
+struct Blind;
+
+impl TestRenderer for Blind {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        delta.clear();
+    }
+
+    fn render(
+        &mut self,
+        _: &egui::Context,
+        _: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        Err("no renderer".into())
+    }
+}
+
+#[test]
+fn with_no_screenshot_to_fade_the_theme_changes_at_once() {
+    let mut w = settings_from(ThemePreference::Dark, Harness::builder().renderer(Blind));
+    w.get_by_label("Light").click();
+    w.run();
+    assert_eq!(w.ctx.theme(), egui::Theme::Light);
+    assert_eq!(w.run(), 1, "the window keeps drawing");
+}
+
+#[test]
+fn a_window_too_big_for_one_texture_changes_theme_at_once() {
+    // The harness's largest texture is 2048 pixels, the window 2080 wide.
+    let builder = Harness::builder().with_pixels_per_point(2.0);
+    let mut w = settings_from(ThemePreference::Dark, builder);
+    w.get_by_label("Light").click();
+    w.run();
+    assert_eq!(w.ctx.theme(), egui::Theme::Light);
+    assert_eq!(w.run(), 1, "the window keeps drawing");
 }
 
 #[test]

@@ -25,7 +25,8 @@ floppy disk flux reader and writer. It runs on macOS; Windows and Linux are next
 - Asks before replacing a file.
 - Shows the Greaseweazle's model and firmware as soon as it is connected.
 - Saves presets as files in Documents/Ferriteweazle, or a folder you choose.
-- Follows the system's light or dark mode.
+- Follows the system's light or dark mode, or keeps to either. Choosing one in
+  Settings fades to it.
 - Takes image files by drag and drop.
 - Takes a disk definitions file of your own. gw's parser checks it line by line,
   and its formats come first in the format list.

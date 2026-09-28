@@ -13,8 +13,8 @@ use crate::service::{Load, Repaint, Service};
 use crate::theme::{self, Palette};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense,
-    Stroke, TextEdit, TextStyle, ThemePreference, Ui, UserAttentionType, Vec2, ViewportCommand,
-    pos2, vec2,
+    Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
+    ViewportCommand, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -87,6 +87,12 @@ const CARD_DROP: f32 = 2.0;
 const NAV_ROW: f32 = 26.0;
 /// The share of the status pane's height the map and its heading fill.
 const MAP_SHARE: f32 = 0.8;
+/// How long a theme chosen in Settings takes to fade in, in seconds.
+const FADE_TIME: f32 = 0.25;
+/// The most of a frame the fade counts, in seconds, so a stall cannot skip it.
+const FADE_STEP: f32 = 1.0 / 30.0;
+/// Frames to wait for the old theme's screenshot before changing at once.
+const FADE_WAIT: u32 = 8;
 /// The log's height apart from its lines: its heading row and frame.
 const LOG_HEADING: f32 = 58.0;
 /// One line of the log.
@@ -167,6 +173,18 @@ enum Dialog {
     Quit,
 }
 
+/// A theme chosen in Settings: the old theme's last frame fades out over the new.
+#[derive(Default)]
+struct Fade {
+    /// The theme to change to once the screenshot comes, and frames waited for it.
+    asked: Option<(ThemePreference, u32)>,
+    /// The old theme's last frame, and how long it has faded, in seconds.
+    shown: Option<(egui::TextureHandle, f32)>,
+}
+
+/// Marks the screenshot a theme change asks for.
+struct FadeShot;
+
 /// What a dialog's button does, once the dialog has let go of the app.
 type Action = Box<dyn FnOnce(&mut App)>;
 
@@ -214,6 +232,7 @@ pub struct App {
     /// Ask each Greaseweazle that appears what it is.
     auto_info: bool,
     logo: Option<egui::TextureHandle>,
+    fade: Fade,
 }
 
 impl App {
@@ -257,6 +276,7 @@ impl App {
             probed: None,
             auto_info: false,
             logo: None,
+            fade: Fade::default(),
         }
     }
 
@@ -290,6 +310,7 @@ impl App {
 
     pub fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.fade_theme(&ctx);
         self.poll(&ctx);
         self.guard_close(&ctx);
         self.take_dropped_files(&ctx);
@@ -336,6 +357,76 @@ impl App {
             }
         }
         self.dialogs(&ctx);
+    }
+
+    /// Changes the theme, cross-fading when the window will look different.
+    fn choose_theme(&mut self, ctx: &egui::Context, pref: ThemePreference) {
+        self.settings.theme = pref;
+        let next = match pref {
+            ThemePreference::Dark => Theme::Dark,
+            ThemePreference::Light => Theme::Light,
+            ThemePreference::System => ctx
+                .system_theme()
+                .unwrap_or_else(|| ctx.options(|o| o.fallback_theme)),
+        };
+        if next == ctx.theme() {
+            ctx.set_theme(pref);
+            self.fade.asked = None;
+        } else {
+            let shot = egui::UserData::new(FadeShot);
+            ctx.send_viewport_cmd(ViewportCommand::Screenshot(shot));
+            self.fade.asked = Some((pref, 0));
+        }
+    }
+
+    /// Takes a theme change's screenshot, then fades it out over the new theme.
+    /// With no screenshot the theme changes at once.
+    fn fade_theme(&mut self, ctx: &egui::Context) {
+        if let Some((_, faded)) = &mut self.fade.shown {
+            *faded += ctx.input(|i| i.stable_dt).min(FADE_STEP);
+        }
+        if let Some((pref, waited)) = &mut self.fade.asked {
+            let (shot, side) = ctx.input(|i| {
+                let shot = i.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot {
+                        user_data, image, ..
+                    } if user_data.data.as_ref().is_some_and(|d| d.is::<FadeShot>()) => {
+                        Some(image.clone())
+                    }
+                    _ => None,
+                });
+                (shot, i.max_texture_side)
+            });
+            let got = shot.is_some();
+            // A window too big for one texture changes at once.
+            if let Some(image) = shot.filter(|s| s.width().max(s.height()) <= side) {
+                let old = ctx.load_texture("theme-fade", image, egui::TextureOptions::NEAREST);
+                self.fade.shown = Some((old, 0.0));
+            }
+            if got || *waited >= FADE_WAIT {
+                ctx.set_theme(*pref);
+                self.fade.asked = None;
+            } else {
+                *waited += 1;
+                ctx.request_repaint();
+            }
+        }
+        let Some((old, faded)) = &self.fade.shown else {
+            return;
+        };
+        let t = faded / FADE_TIME;
+        if t >= 1.0 {
+            self.fade.shown = None;
+            return;
+        }
+        // The screenshot is in pixels, from the window's top left.
+        let rect =
+            egui::Rect::from_min_size(pos2(0.0, 0.0), old.size_vec2() / ctx.pixels_per_point());
+        let uv = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let tint = Color32::WHITE.gamma_multiply(1.0 - egui::emath::easing::quadratic_out(t));
+        ctx.layer_painter(egui::LayerId::new(egui::Order::TOP, Id::new("theme-fade")))
+            .image(old.id(), rect, uv, tint);
+        ctx.request_repaint();
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -1420,8 +1511,7 @@ impl App {
                 ] {
                     let r = ui.selectable_label(self.settings.theme == pref, text);
                     if r.on_hover_text(tip).clicked() {
-                        self.settings.theme = pref;
-                        ui.ctx().set_theme(pref);
+                        self.choose_theme(ui.ctx(), pref);
                     }
                 }
             });
