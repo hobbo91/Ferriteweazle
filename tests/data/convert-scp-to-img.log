@@ -1,0 +1,201 @@
+Format ibm.1440
+Converting c=0-79:h=0-1 -> c=0-79:h=0-1
+T0.0: IBM MFM (18/18 sectors) from Raw Flux (188612 flux in 400.00ms)
+T0.1: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T1.0: IBM MFM (18/18 sectors) from Raw Flux (188574 flux in 400.00ms)
+T1.1: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T2.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T2.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T3.0: IBM MFM (18/18 sectors) from Raw Flux (188582 flux in 400.00ms)
+T3.1: IBM MFM (18/18 sectors) from Raw Flux (188546 flux in 400.00ms)
+T4.0: IBM MFM (18/18 sectors) from Raw Flux (188580 flux in 400.00ms)
+T4.1: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T5.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T5.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T6.0: IBM MFM (18/18 sectors) from Raw Flux (188572 flux in 400.00ms)
+T6.1: IBM MFM (18/18 sectors) from Raw Flux (188536 flux in 400.00ms)
+T7.0: IBM MFM (18/18 sectors) from Raw Flux (188578 flux in 400.00ms)
+T7.1: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T8.0: IBM MFM (18/18 sectors) from Raw Flux (188584 flux in 400.00ms)
+T8.1: IBM MFM (18/18 sectors) from Raw Flux (188548 flux in 400.00ms)
+T9.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T9.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T10.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T10.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T11.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T11.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T12.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T12.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T13.0: IBM MFM (18/18 sectors) from Raw Flux (188534 flux in 400.00ms)
+T13.1: IBM MFM (18/18 sectors) from Raw Flux (188498 flux in 400.00ms)
+T14.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T14.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T15.0: IBM MFM (18/18 sectors) from Raw Flux (188578 flux in 400.00ms)
+T15.1: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T16.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T16.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T17.0: IBM MFM (18/18 sectors) from Raw Flux (188546 flux in 400.00ms)
+T17.1: IBM MFM (18/18 sectors) from Raw Flux (188510 flux in 400.00ms)
+T18.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T18.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T19.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T19.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T20.0: IBM MFM (18/18 sectors) from Raw Flux (188536 flux in 400.00ms)
+T20.1: IBM MFM (18/18 sectors) from Raw Flux (188500 flux in 400.00ms)
+T21.0: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T21.1: IBM MFM (18/18 sectors) from Raw Flux (188470 flux in 400.00ms)
+T22.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T22.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T23.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T23.1: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T24.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T24.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T25.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T25.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T26.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T26.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T27.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T27.1: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T28.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T28.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T29.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T29.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T30.0: IBM MFM (18/18 sectors) from Raw Flux (188580 flux in 400.00ms)
+T30.1: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T31.0: IBM MFM (18/18 sectors) from Raw Flux (188574 flux in 400.00ms)
+T31.1: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T32.0: IBM MFM (18/18 sectors) from Raw Flux (188572 flux in 400.00ms)
+T32.1: IBM MFM (18/18 sectors) from Raw Flux (188536 flux in 400.00ms)
+T33.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T33.1: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T34.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T34.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T35.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T35.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T36.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T36.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T37.0: IBM MFM (18/18 sectors) from Raw Flux (188510 flux in 400.00ms)
+T37.1: IBM MFM (18/18 sectors) from Raw Flux (188474 flux in 400.00ms)
+T38.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T38.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T39.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T39.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T40.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T40.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T41.0: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T41.1: IBM MFM (18/18 sectors) from Raw Flux (188470 flux in 400.00ms)
+T42.0: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T42.1: IBM MFM (18/18 sectors) from Raw Flux (188468 flux in 400.00ms)
+T43.0: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T43.1: IBM MFM (18/18 sectors) from Raw Flux (188466 flux in 400.00ms)
+T44.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T44.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T45.0: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T45.1: IBM MFM (18/18 sectors) from Raw Flux (188466 flux in 400.00ms)
+T46.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T46.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T47.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T47.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T48.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T48.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T49.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T49.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T50.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T50.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T51.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T51.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T52.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T52.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T53.0: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T53.1: IBM MFM (18/18 sectors) from Raw Flux (188470 flux in 400.00ms)
+T54.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T54.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T55.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T55.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T56.0: IBM MFM (18/18 sectors) from Raw Flux (188576 flux in 400.00ms)
+T56.1: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T57.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T57.1: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T58.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T58.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T59.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T59.1: IBM MFM (18/18 sectors) from Raw Flux (188502 flux in 400.00ms)
+T60.0: IBM MFM (18/18 sectors) from Raw Flux (188580 flux in 400.00ms)
+T60.1: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T61.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T61.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T62.0: IBM MFM (18/18 sectors) from Raw Flux (188580 flux in 400.00ms)
+T62.1: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T63.0: IBM MFM (18/18 sectors) from Raw Flux (188578 flux in 400.00ms)
+T63.1: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T64.0: IBM MFM (18/18 sectors) from Raw Flux (188574 flux in 400.00ms)
+T64.1: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T65.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T65.1: IBM MFM (18/18 sectors) from Raw Flux (188500 flux in 400.00ms)
+T66.0: IBM MFM (18/18 sectors) from Raw Flux (188546 flux in 400.00ms)
+T66.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T67.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T67.1: IBM MFM (18/18 sectors) from Raw Flux (188508 flux in 400.00ms)
+T68.0: IBM MFM (18/18 sectors) from Raw Flux (188546 flux in 400.00ms)
+T68.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T69.0: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T69.1: IBM MFM (18/18 sectors) from Raw Flux (188472 flux in 400.00ms)
+T70.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T70.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T71.0: IBM MFM (18/18 sectors) from Raw Flux (188540 flux in 400.00ms)
+T71.1: IBM MFM (18/18 sectors) from Raw Flux (188500 flux in 400.00ms)
+T72.0: IBM MFM (18/18 sectors) from Raw Flux (188542 flux in 400.00ms)
+T72.1: IBM MFM (18/18 sectors) from Raw Flux (188510 flux in 400.00ms)
+T73.0: IBM MFM (18/18 sectors) from Raw Flux (188512 flux in 400.00ms)
+T73.1: IBM MFM (18/18 sectors) from Raw Flux (188472 flux in 400.00ms)
+T74.0: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T74.1: IBM MFM (18/18 sectors) from Raw Flux (188466 flux in 400.00ms)
+T75.0: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+T75.1: IBM MFM (18/18 sectors) from Raw Flux (188472 flux in 400.00ms)
+T76.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T76.1: IBM MFM (18/18 sectors) from Raw Flux (188498 flux in 400.00ms)
+T77.0: IBM MFM (18/18 sectors) from Raw Flux (188500 flux in 400.00ms)
+T77.1: IBM MFM (18/18 sectors) from Raw Flux (188468 flux in 400.00ms)
+T78.0: IBM MFM (18/18 sectors) from Raw Flux (188538 flux in 400.00ms)
+T78.1: IBM MFM (18/18 sectors) from Raw Flux (188506 flux in 400.00ms)
+T79.0: IBM MFM (18/18 sectors) from Raw Flux (188544 flux in 400.00ms)
+T79.1: IBM MFM (18/18 sectors) from Raw Flux (188504 flux in 400.00ms)
+Cyl-> 0         1         2         3         4         5         6         7         
+H. S: 01234567890123456789012345678901234567890123456789012345678901234567890123456789
+0. 0: ................................................................................
+0. 1: ................................................................................
+0. 2: ................................................................................
+0. 3: ................................................................................
+0. 4: ................................................................................
+0. 5: ................................................................................
+0. 6: ................................................................................
+0. 7: ................................................................................
+0. 8: ................................................................................
+0. 9: ................................................................................
+0.10: ................................................................................
+0.11: ................................................................................
+0.12: ................................................................................
+0.13: ................................................................................
+0.14: ................................................................................
+0.15: ................................................................................
+0.16: ................................................................................
+0.17: ................................................................................
+1. 0: ................................................................................
+1. 1: ................................................................................
+1. 2: ................................................................................
+1. 3: ................................................................................
+1. 4: ................................................................................
+1. 5: ................................................................................
+1. 6: ................................................................................
+1. 7: ................................................................................
+1. 8: ................................................................................
+1. 9: ................................................................................
+1.10: ................................................................................
+1.11: ................................................................................
+1.12: ................................................................................
+1.13: ................................................................................
+1.14: ................................................................................
+1.15: ................................................................................
+1.16: ................................................................................
+1.17: ................................................................................
+Found 2880 sectors of 2880 (100%)
