@@ -31,7 +31,7 @@ strip "$app/Contents/MacOS/ferriteweazle"
 # unless pip installed one built for both. Joining drops signatures, and
 # Apple Silicon will not run unsigned code.
 intel=$(engine_dir x86_64-apple-darwin)
-engine=$app/Contents/Resources/engine
+engine=$app/Contents/Resources/ferriteweazle-data
 ditto "$(engine_dir aarch64-apple-darwin)" "$engine"
 find "$engine" -type f | while read -r f; do
     file -b "$f" | grep -q Mach-O || continue

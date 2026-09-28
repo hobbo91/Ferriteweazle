@@ -68,9 +68,6 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
     ("erase", "Everything on the disk will be lost."),
 ];
 
-/// Pages that open with no device, so their settings can be made ready.
-const PREPARED: &[&str] = &["read", "write"];
-
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
 
@@ -78,6 +75,7 @@ const NO_DEVICE: &str = "Connect a Greaseweazle.";
 const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", DETECT];
 
 const REPO: &str = "https://github.com/hobbo91/ferriteweazle";
+const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
 
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
@@ -706,7 +704,6 @@ impl App {
         ui.add_space(CARD_DROP);
         self.device_card(ui);
         ui.add_space(12.0);
-        let connected = self.connected();
         let list = egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
@@ -718,12 +715,7 @@ impl App {
                     ui.add_space(1.0);
                     for name in names {
                         let here = matches!(&self.settings.page, Page::Command(n) if n == name);
-                        let shut = !connected
-                            && !PREPARED.contains(&name)
-                            && self.listed.as_deref().is_some_and(|s| uses_device(s, name));
-                        let item =
-                            ui.add_enabled_ui(!shut, |ui| nav_item(ui, &title(name), None, here));
-                        if item.inner.on_disabled_hover_text(NO_DEVICE).clicked() {
+                        if nav_item(ui, &title(name), None, here).clicked() {
                             self.settings.page = Page::Command(name.to_owned());
                         }
                     }
@@ -1752,17 +1744,21 @@ impl App {
             );
         });
         section(ui, "About", |ui| {
-            ui.label(format!(
-                "Ferriteweazle {}, under the MIT licence.",
-                env!("CARGO_PKG_VERSION")
+            ui.label(concat!(
+                "Ferriteweazle ",
+                env!("CARGO_PKG_VERSION"),
+                " written with \u{2661} by Lee Hobson (@hobbo91), under the MIT license."
             ));
             ui.hyperlink_to("Source code and issues", REPO)
                 .on_hover_text(REPO);
-            ui.horizontal(|ui| {
-                ui.label("Greaseweazle is by Keir Fraser:");
-                ui.hyperlink_to(
-                    "github.com/keirf/greaseweazle",
-                    "https://github.com/keirf/greaseweazle",
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.hyperlink_to("Greaseweazle Tools", GW_REPO)
+                    .on_hover_text(GW_REPO);
+                ui.label(
+                    " is the brains of the operation, all credit goes to Keir Fraser. \
+                     This is merely a fancy GUI front end.",
                 );
             });
         });

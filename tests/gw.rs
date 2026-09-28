@@ -475,6 +475,39 @@ fn painted(w: &Window, text: &str) -> bool {
 }
 
 #[test]
+fn a_page_that_acts_on_the_device_says_to_connect_one_until_it_is() {
+    let Some(engine) = engine() else { return };
+    let settings = Settings {
+        page: Page::Command("erase".into()),
+        ..Settings::default()
+    };
+    let mut w = window(&engine, settings);
+    let run = |w: &Window| {
+        w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
+            .find(|n| n.rect().left() > 240.0)
+            .expect("the run button")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(run(&w), "it runs with no device");
+    w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
+        .find(|n| n.rect().left() > 240.0)
+        .expect("the run button")
+        .hover();
+    until_shown(&mut w, "why", |w| {
+        w.query_by_label("Connect a Greaseweazle.").is_some()
+    });
+    w.state_mut().as_mut().unwrap().pin_ports(vec![Port {
+        device: "/dev/cu.usbmodem14201".into(),
+        name: Some("Greaseweazle".into()),
+        serial: None,
+        score: 20,
+    }]);
+    w.run_steps(2);
+    assert!(!run(&w), "it cannot run with a device");
+}
+
+#[test]
 fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let Some(engine) = engine() else { return };
     let settings = Settings {

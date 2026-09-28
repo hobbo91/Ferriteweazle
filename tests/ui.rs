@@ -316,51 +316,40 @@ fn greyed(w: &Window, title: &str) -> bool {
     entry(w, title).accesskit_node().is_disabled()
 }
 
-/// Pages that only act on the Greaseweazle.
-const DEVICE_PAGES: [&str; 11] = [
-    "Erase disk",
-    "Clean heads",
-    "Seek",
-    "Drive speed",
-    "Device info",
-    "Update firmware",
-    "Delays",
-    "Read pin",
-    "Set pin",
-    "Reset",
-    "USB bandwidth",
+/// Each page that acts on the Greaseweazle, and its run button.
+const DEVICE_PAGES: [(&str, &str); 13] = [
+    ("Read disk", "Read disk"),
+    ("Write disk", "Write disk"),
+    ("Erase disk", "Erase disk"),
+    ("Clean heads", "Clean"),
+    ("Seek", "Seek"),
+    ("Drive speed", "Measure"),
+    ("Device info", "Get info"),
+    ("Update firmware", "Update"),
+    ("Delays", "Run"),
+    ("Read pin", "Read pin"),
+    ("Set pin", "Set pin"),
+    ("Reset", "Reset"),
+    ("USB bandwidth", "Measure"),
 ];
 
+/// The page's run button, not the sidebar entry of the same name.
+fn run_button<'w>(w: &'w Window, name: &'w str) -> Node<'w> {
+    w.get_all_by_role_and_label(Role::Button, name)
+        .find(|n| n.rect().left() > 240.0)
+        .expect("the run button")
+}
+
 #[test]
-fn pages_that_only_act_on_the_device_grey_out_until_one_is_connected() {
+fn every_page_opens_without_a_device_but_cannot_run() {
     let mut w = window(Settings::default());
-    for title in DEVICE_PAGES {
-        assert!(greyed(&w, title), "{title} opens");
+    for (page, run) in DEVICE_PAGES {
+        assert!(!greyed(&w, page), "{page} is greyed");
+        entry(&w, page).click();
+        w.run();
+        let disabled = run_button(&w, run).accesskit_node().is_disabled();
+        assert!(disabled, "{page} runs with no device");
     }
-    for title in ["Read disk", "Write disk", "Convert image"] {
-        assert!(!greyed(&w, title), "{title} is greyed");
-    }
-    entry(&w, "Erase disk").hover();
-    w.run();
-    w.get_by_label("Connect a Greaseweazle.");
-    entry(&w, "Erase disk").click();
-    w.run();
-    assert_eq!(app(&w).settings.page, Page::Command("read".into()));
-
-    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
-    w.run();
-    for title in DEVICE_PAGES {
-        assert!(!greyed(&w, title), "{title} is greyed");
-    }
-    entry(&w, "Erase disk").click();
-    w.run();
-    assert_eq!(app(&w).settings.page, Page::Command("erase".into()));
-
-    // The page it is on stays open when it goes.
-    app_mut(&mut w).pin_ports(Vec::new());
-    w.run();
-    assert_eq!(app(&w).settings.page, Page::Command("erase".into()));
-    assert!(greyed(&w, "Erase disk"));
 }
 
 #[test]

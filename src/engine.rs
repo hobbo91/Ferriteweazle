@@ -64,14 +64,21 @@ fn bundled() -> Option<PathBuf> {
     bundled_with(&std::env::current_exe().ok()?)
 }
 
-/// `Contents/Resources/engine` in a macOS app, `engine` beside the program
-/// elsewhere, and `target/engine` for `cargo run`.
+/// The folder a package keeps gw's Python in.
+pub const DATA: &str = "ferriteweazle-data";
+
+/// `Contents/Resources/ferriteweazle-data` in a macOS app, `ferriteweazle-data`
+/// beside the program elsewhere, and `target/engine` for `cargo run`.
 fn bundled_with(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
-    ["../Resources/engine", "engine", "../engine"]
-        .into_iter()
-        .map(|rel| python_in(&dir.join(rel)))
-        .find(|p| p.is_file())
+    [
+        dir.join("../Resources").join(DATA),
+        dir.join(DATA),
+        dir.join("../engine"),
+    ]
+    .into_iter()
+    .map(|root| python_in(&root))
+    .find(|p| p.is_file())
 }
 
 /// An installed `gw` on the PATH or in the usual places, which apps started
@@ -184,11 +191,24 @@ mod tests {
     #[test]
     fn the_engine_inside_a_mac_app_is_found() {
         let app = std::env::temp_dir().join("ferriteweazle-bundle/Ferriteweazle.app/Contents");
-        let python = python_in(&app.join("Resources/engine"));
+        let python = python_in(&app.join("Resources").join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::create_dir_all(app.join("MacOS")).unwrap();
         std::fs::write(&python, "").unwrap();
         let found = bundled_with(&app.join("MacOS/ferriteweazle")).unwrap();
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            python.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn the_engine_beside_the_program_is_found() {
+        let dir = std::env::temp_dir().join("ferriteweazle-portable");
+        let python = python_in(&dir.join(DATA));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        let found = bundled_with(&dir.join("ferriteweazle")).unwrap();
         assert_eq!(
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
