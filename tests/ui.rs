@@ -823,6 +823,38 @@ fn an_empty_log_dragged_taller_stays_that_tall() {
 }
 
 #[test]
+fn the_82_cylinders_gw_erases_add_a_row_not_smaller_squares() {
+    let size = |log: &str| {
+        let settings = Settings {
+            page: Page::Command("erase".into()),
+            ..Settings::default()
+        };
+        let w = build(
+            Harness::builder().with_size(DEFAULT),
+            settings,
+            Some(Job::replay("erase", log)),
+        );
+        let squares: Vec<_> = squares(&w).map(|s| s.rect).collect();
+        let bottom = squares.iter().map(|r| r.bottom()).fold(f32::MIN, f32::max);
+        (squares.len(), squares[0].width(), bottom)
+    };
+    let tracks = |cyls: u32| {
+        (0..cyls)
+            .flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: Erasing Track")))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (eighty, cell, _) = size(&tracks(80));
+    let (all, wider, bottom) = size(&tracks(82));
+    assert_eq!((eighty, all), (160, 164));
+    assert_eq!(wider, cell, "the squares shrank for two more cylinders");
+    assert!(
+        bottom < DEFAULT.y,
+        "the last row is off the window at {bottom}"
+    );
+}
+
+#[test]
 fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
     let left = |width: f32| {
         let w = window_at(egui::vec2(width, 780.0), chosen());

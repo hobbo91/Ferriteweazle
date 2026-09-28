@@ -24,6 +24,9 @@ const WIDTH_SHARE: f32 = 0.9;
 const LABEL: f32 = 24.0;
 /// Room for a side's name above its grid.
 const TITLE: f32 = 20.0;
+/// Rows the squares are sized for, 80 cylinders: the 82 gw erases add a row
+/// below, not smaller squares, while the pane has room for it.
+const SIZED_ROWS: u32 = 8;
 const SIDE_GAP: f32 = 28.0;
 
 /// Draws the map as tall as `budget` points (legend included) where the width
@@ -50,7 +53,7 @@ pub fn show(
     let width = ui.available_width();
     let room = room - LEGEND;
     let wanted = (budget - LEGEND).min(room);
-    let cell_in = |across: bool, height: f32, share: f32| {
+    let cell_in = |across: bool, height: f32, share: f32, rows: u32| {
         let (columns, stacked) = if across { (sides, 1.0) } else { (1.0, sides) };
         let each_width = (width * share - SIDE_GAP * (columns - 1.0)) / columns;
         let by_width = (each_width - LABEL - (ROW - 1) as f32 * gap) / ROW as f32;
@@ -60,8 +63,10 @@ pub fn show(
     };
     // The usual size where it fits, larger where the budget allows.
     let cell_for = |across: bool| {
-        let usual = CELL.min(cell_in(across, room, 1.0));
-        cell_in(across, wanted, WIDTH_SHARE)
+        let fits = cell_in(across, room, 1.0, rows);
+        let usual = CELL.min(fits);
+        cell_in(across, wanted, WIDTH_SHARE, rows.min(SIZED_ROWS))
+            .min(fits)
             .max(usual)
             .min(MAX_CELL)
     };
