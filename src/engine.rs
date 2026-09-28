@@ -34,9 +34,39 @@ impl Engine {
         Some(Engine { python, origin })
     }
 
+    /// The release tag the bundled gw was built from, such as `v1.23`.
+    pub fn bundled_tag(&self) -> Option<String> {
+        if self.origin != Origin::Bundled {
+            return None;
+        }
+        let bin = self.python.parent()?;
+        let root = if cfg!(windows) { bin } else { bin.parent()? };
+        let tag = std::fs::read_to_string(root.join("greaseweazle-version")).ok()?;
+        Some(tag.trim().to_owned())
+    }
+
+    /// The newest gw that Update installed in `folder`, if newer than the
+    /// bundled one.
+    pub fn update_in(&self, folder: &Path) -> Option<PathBuf> {
+        let bundled = version(&self.bundled_tag()?)?;
+        std::fs::read_dir(folder)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| {
+                let version = version(entry.file_name().to_str()?)?;
+                let path = entry.path();
+                (version > bundled && path.join("greaseweazle").is_dir()).then_some((version, path))
+            })
+            .max()
+            .map(|(_, path)| path)
+    }
+
     /// `python -c BRIDGE MODE`, ready for more arguments.
     pub fn bridge(&self, mode: &str) -> Command {
         let mut cmd = Command::new(&self.python);
+        if let Some(update) = self.update_in(&updates()) {
+            cmd.env("PYTHONPATH", update);
+        }
         // No .pyc files: the app leaves nothing behind, and a signed bundle
         // must not change.
         cmd.args(["-c", BRIDGE, mode])
@@ -50,6 +80,20 @@ impl Engine {
         }
         cmd
     }
+}
+
+/// Where Update installs newer gw releases, one folder per tag.
+pub fn updates() -> PathBuf {
+    crate::data_folder().join("gw")
+}
+
+/// `v1.23.1` as [1, 23, 1]; anything else, such as a half-installed
+/// `v1.24.part`, as none.
+pub fn version(tag: &str) -> Option<Vec<u32>> {
+    tag.strip_prefix('v')?
+        .split('.')
+        .map(|n| n.parse().ok())
+        .collect()
 }
 
 fn python_in(root: &Path) -> PathBuf {
@@ -199,6 +243,41 @@ mod tests {
         assert_eq!(
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn an_update_is_used_only_when_newer_than_the_bundled_gw_and_whole() {
+        let dir = std::env::temp_dir().join("ferriteweazle-updates");
+        let _ = std::fs::remove_dir_all(&dir);
+        let python = python_in(&dir.join(DATA));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        let root = if cfg!(windows) {
+            dir.join(DATA)
+        } else {
+            dir.join(DATA).join("..").join(DATA)
+        };
+        std::fs::write(root.join("greaseweazle-version"), "v1.23\n").unwrap();
+        let engine = Engine {
+            python,
+            origin: Origin::Bundled,
+        };
+        assert_eq!(engine.bundled_tag().as_deref(), Some("v1.23"));
+        let updates = dir.join("gw");
+        for tag in ["v1.22", "v1.23", "v1.24", "v1.24.1", "v1.25.part"] {
+            std::fs::create_dir_all(updates.join(tag).join("greaseweazle")).unwrap();
+        }
+        std::fs::create_dir_all(updates.join("v1.30")).unwrap();
+        assert_eq!(engine.update_in(&updates), Some(updates.join("v1.24.1")));
+        let custom = Engine {
+            origin: Origin::Custom,
+            ..engine
+        };
+        assert_eq!(
+            custom.update_in(&updates),
+            None,
+            "only the bundled gw is updated"
         );
     }
 

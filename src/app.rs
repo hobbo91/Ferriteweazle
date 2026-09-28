@@ -3,7 +3,7 @@
 use crate::command::{self, Values};
 use crate::device::{self, DeviceInfo};
 use crate::diskmap;
-use crate::engine::{Engine, Origin};
+use crate::engine::{self, Engine, Origin};
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
 use crate::presets::{self, Preset};
@@ -11,6 +11,7 @@ use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
 use crate::theme::{self, Palette};
+use crate::update::GwUpdate;
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense,
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
@@ -241,8 +242,10 @@ pub struct App {
     probe_failed: Option<String>,
     /// The port the card last asked about.
     probed: Option<String>,
-    /// Ask each Greaseweazle that appears what it is.
-    auto_info: bool,
+    /// The real app, not a test window: it asks each Greaseweazle that
+    /// appears what it is, and GitHub for newer gw releases.
+    live: bool,
+    gw_update: GwUpdate,
     logo: Option<egui::TextureHandle>,
     fade: Fade,
     /// The drawer open when the drawers were last drawn.
@@ -252,7 +255,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let mut app = App::with_settings(&cc.egui_ctx, Settings::default());
-        app.auto_info = true;
+        app.live = true;
         app
     }
 
@@ -286,7 +289,8 @@ impl App {
             probe: None,
             probe_failed: None,
             probed: None,
-            auto_info: false,
+            live: false,
+            gw_update: GwUpdate::default(),
             logo: None,
             fade: Fade::default(),
             drawn: None,
@@ -309,6 +313,10 @@ impl App {
             )),
         };
         self.service.seed_ports(ports);
+        let bundled = self.engine.as_ref().filter(|e| e.origin == Origin::Bundled);
+        if let Some(engine) = bundled.filter(|_| self.live) {
+            self.gw_update = GwUpdate::check(engine, repaint(ctx));
+        }
     }
 
     /// Shows these ports as the connected devices, whatever gw finds, until
@@ -334,6 +342,12 @@ impl App {
         let ctx = ui.ctx().clone();
         self.fade_theme(&ctx);
         self.poll(&ctx);
+        if self
+            .gw_update
+            .poll(self.schema.as_deref().map(|s| s.version.as_str()))
+        {
+            self.connect(&ctx);
+        }
         self.guard_close(&ctx);
         self.take_dropped_files(&ctx);
         let p = theme::palette(ui);
@@ -526,7 +540,7 @@ impl App {
             self.probed = None;
             self.device = None;
             self.probe_failed = None;
-        } else if self.auto_info && port != self.probed {
+        } else if self.live && port != self.probed {
             self.ask_device(ctx);
         }
     }
@@ -1640,6 +1654,9 @@ impl App {
             match (&self.engine, &self.service.schema) {
                 (Some(engine), Load::Ready(schema)) => {
                     let origin = match engine.origin {
+                        Origin::Bundled if engine.update_in(&engine::updates()).is_some() => {
+                            "updated from GitHub"
+                        }
                         Origin::Bundled => "built in",
                         Origin::Installed => "installed on this computer",
                         Origin::Custom => "chosen here",
@@ -1657,13 +1674,29 @@ impl App {
                 }
             }
             ui.add_space(4.0);
-            if ui
-                .button("Restart")
-                .on_hover_text("Start gw again.")
-                .clicked()
-            {
-                self.connect(ui.ctx());
-            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Restart")
+                    .on_hover_text("Start gw again, and check GitHub for a newer release.")
+                    .clicked()
+                {
+                    self.connect(ui.ctx());
+                }
+                let Some(engine) = self.engine.as_ref().filter(|e| e.origin == Origin::Bundled)
+                else {
+                    return;
+                };
+                let (can, tip) = self.gw_update.button();
+                let update = ui.add_enabled(can, egui::Button::new("Update"));
+                if update
+                    .on_hover_text(&tip)
+                    .on_disabled_hover_text(&tip)
+                    .clicked()
+                    && let GwUpdate::Newer(tag) = &self.gw_update
+                {
+                    self.gw_update = GwUpdate::install(engine, tag, repaint(ui.ctx()));
+                }
+            });
         });
         section(ui, "Paths", |ui| {
             let default = ("Use the default", "Documents/Ferriteweazle/Images.");

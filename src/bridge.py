@@ -4,12 +4,20 @@ but for a time limit on the first reply from the device (steady_handshake).
   python bridge.py serve        one JSON request per stdin line, one reply per stdout line
   python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
   python bridge.py detect ARGS  finds the format of the disk in the drive, or of a flux file
+  python bridge.py latest       prints the tag of gw's newest release on GitHub
+  python bridge.py update TAG BUNDLED DIR
+                                installs gw TAG in DIR/TAG, beside the bundled gw BUNDLED
 """
 import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
+
+# gw on GitHub; the variables point tests at a server of their own.
+GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
+GITHUB_API = os.environ.get('FERRITEWEAZLE_GITHUB_API', 'https://api.github.com')
+GW_REPO = 'keirf/greaseweazle'
 
 
 class Captured(Exception):
@@ -572,8 +580,72 @@ def detect_like_gw(args):
         return 1
 
 
+def latest():
+    """The tag of gw's newest release. GitHub leaves out prereleases."""
+    import requests
+    reply = requests.get(f'{GITHUB_API}/repos/{GW_REPO}/releases/latest', timeout=(5, 15))
+    reply.raise_for_status()
+    return reply.json()['tag_name']
+
+
+def source(tag):
+    import requests, zipfile
+    reply = requests.get(f'{GITHUB}/{GW_REPO}/archive/refs/tags/{tag}.zip', timeout=(5, 60))
+    reply.raise_for_status()
+    return zipfile.ZipFile(io.BytesIO(reply.content))
+
+
+def compiled_from(z):
+    """What gw's compiled part is made from: its C code, and what setup.py needs."""
+    code = {n.split('/', 1)[1]: z.read(n) for n in z.namelist()
+            if '/src/greaseweazle/optimised/' in n and n.endswith(('.c', '.h'))}
+    setup = next(n for n in z.namelist() if n.count('/') == 1 and n.endswith('/setup.py'))
+    needs = re.search(r'install_requires\s*=\s*\[(.*?)\]', z.read(setup).decode(), re.S)
+    return code, needs and needs.group(1).split()
+
+
+def update(tag, bundled, folder):
+    """Installs gw `tag` in folder/tag. It keeps the bundled gw's compiled part,
+    so it must be made from the same C code and need the same packages."""
+    import compileall, shutil
+    from greaseweazle import optimised
+    new = source(tag)
+    if compiled_from(new) != compiled_from(source(bundled)):
+        raise ValueError(f'gw {tag} changes its C code or its dependencies, '
+                         'so it needs a new build of Ferriteweazle.')
+    part, done = os.path.join(folder, tag + '.part'), os.path.join(folder, tag)
+    shutil.rmtree(part, ignore_errors=True)
+    for name in new.namelist():
+        rel = name.partition('/src/')[2]
+        if rel.startswith('greaseweazle/') and not name.endswith('/'):
+            path = os.path.join(part, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(new.read(name))
+    with open(os.path.join(part, 'greaseweazle', '__init__.py'), 'w') as f:
+        f.write(f"__version__ = '{tag.lstrip('v')}'\n")  # setup.py writes this for pip
+    built = os.path.dirname(optimised.__file__)
+    for name in os.listdir(built):
+        if name.startswith('optimised.') and name.endswith(('.so', '.pyd')):
+            shutil.copy2(os.path.join(built, name), os.path.join(part, 'greaseweazle', 'optimised'))
+    compileall.compile_dir(part, quiet=1)
+    shutil.rmtree(done, ignore_errors=True)
+    os.replace(part, done)
+    return tag
+
+
+def reported(work):
+    """Prints what `work` returns, or exits with its error for the app to show."""
+    try:
+        print(work(), flush=True)
+    except Exception as e:
+        sys.exit(str(e) or type(e).__name__)
+
+
 if __name__ == '__main__':
     mode, args = sys.argv[1], sys.argv[2:]
     {'serve': serve,
      'run': lambda: run(lambda: gw(args)),
-     'detect': lambda: run(lambda: detect_like_gw(args))}[mode]()
+     'detect': lambda: run(lambda: detect_like_gw(args)),
+     'latest': lambda: reported(latest),
+     'update': lambda: reported(lambda: update(*args))}[mode]()

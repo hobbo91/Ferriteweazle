@@ -16,6 +16,7 @@ pub mod progress;
 pub mod schema;
 pub mod service;
 pub mod theme;
+pub mod update;
 
 pub use app::{App, Drawer, Page, Settings};
 
@@ -24,6 +25,19 @@ fn home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(Into::into)
+}
+
+/// The system's per-user folder for what the app keeps for itself, such as
+/// gw releases installed by Update.
+pub fn data_folder() -> std::path::PathBuf {
+    let home = home().unwrap_or_default();
+    let var = |name, or: &str| std::env::var_os(name).map_or_else(|| home.join(or), Into::into);
+    let base = match () {
+        _ if cfg!(target_os = "macos") => home.join("Library/Application Support"),
+        _ if cfg!(windows) => var("LOCALAPPDATA", "AppData/Local"),
+        _ => var("XDG_DATA_HOME", ".local/share"),
+    };
+    base.join("Ferriteweazle")
 }
 
 /// Documents/Ferriteweazle in the home folder, where the app saves by default.

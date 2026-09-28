@@ -147,6 +147,105 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
     );
 }
 
+/// Lays out a GitHub for gw in argv[1], its latest release v1.99: source
+/// zips made from the installed gw, v1.98's with different C code.
+const FAKE_GITHUB: &str = r#"
+import json, os, sys, zipfile, greaseweazle
+root, gw = sys.argv[1], os.path.dirname(greaseweazle.__file__)
+os.makedirs(f'{root}/repos/keirf/greaseweazle/releases')
+with open(f'{root}/repos/keirf/greaseweazle/releases/latest', 'w') as f:
+    json.dump({'tag_name': 'v1.99'}, f)
+tags = f'{root}/keirf/greaseweazle/archive/refs/tags'
+os.makedirs(tags)
+for tag, c in [('v1.23', 'same'), ('v1.99', 'same'), ('v1.98', 'changed')]:
+    top = 'greaseweazle-' + tag[1:]
+    with zipfile.ZipFile(f'{tags}/{tag}.zip', 'w') as z:
+        z.writestr(f'{top}/setup.py', "install_requires = ['crcmod', 'pyserial']")
+        z.writestr(f'{top}/src/greaseweazle/optimised/optimised.c', c)
+        for folder, _, files in os.walk(gw):
+            for name in files:
+                rel = os.path.relpath(os.path.join(folder, name), gw)
+                if name.endswith(('.py', '.cfg')) and rel != '__init__.py':
+                    z.write(os.path.join(folder, name), f'{top}/src/greaseweazle/{rel}')
+"#;
+
+/// A web server for `dir` on localhost, stopped when dropped.
+struct Server(std::process::Child, String);
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+    }
+}
+
+fn serve(engine: &Engine, dir: &Path) -> Server {
+    let mut child = std::process::Command::new(&engine.python)
+        .args([
+            "-u",
+            "-m",
+            "http.server",
+            "0",
+            "--bind",
+            "127.0.0.1",
+            "--directory",
+        ])
+        .arg(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a web server");
+    let mut line = String::new();
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    std::io::BufRead::read_line(&mut out, &mut line).unwrap();
+    // "Serving HTTP on 127.0.0.1 port 51234 (http://127.0.0.1:51234/) ..."
+    let url = line.split(['(', ')']).nth(1).expect("the server's address");
+    Server(child, url.trim_end_matches('/').to_owned())
+}
+
+#[test]
+fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("github");
+    let site = dir.join("site");
+    let made = std::process::Command::new(&engine.python)
+        .args(["-c", FAKE_GITHUB])
+        .arg(&site)
+        .status()
+        .expect("python runs");
+    assert!(made.success());
+    let server = serve(&engine, &site);
+    let bridge = |args: &[&str]| {
+        let out = engine
+            .bridge(args[0])
+            .args(&args[1..])
+            .env("FERRITEWEAZLE_GITHUB", &server.1)
+            .env("FERRITEWEAZLE_GITHUB_API", &server.1)
+            .output()
+            .expect("the bridge runs");
+        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_owned();
+        (out.status.success(), text(&out.stdout), text(&out.stderr))
+    };
+    assert_eq!(bridge(&["latest"]).1, "v1.99");
+
+    let updates = dir.join("gw");
+    std::fs::create_dir_all(&updates).unwrap();
+    let folder = path(&updates);
+    let (ok, _, why) = bridge(&["update", "v1.98", "v1.23", &folder]);
+    assert!(!ok && why.contains("changes its C code"), "{why}");
+    let (ok, tag, why) = bridge(&["update", "v1.99", "v1.23", &folder]);
+    assert!(ok, "{why}");
+    assert_eq!(tag, "v1.99");
+
+    assert_eq!(engine.update_in(&updates), Some(updates.join("v1.99")));
+    let ran = std::process::Command::new(&engine.python)
+        .args(["-c", "import greaseweazle.optimised as o, greaseweazle as g; print(g.__version__, o.enabled)"])
+        .env("PYTHONPATH", updates.join("v1.99"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout).trim(), "1.99 True");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn the_service_describes_gw_and_checks_values() {
     let Some(engine) = engine() else { return };
