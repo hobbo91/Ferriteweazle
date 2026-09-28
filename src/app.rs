@@ -16,7 +16,6 @@ use eframe::egui::{
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
     ViewportCommand, pos2, vec2,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -108,7 +107,7 @@ const DRAWER: f32 = 124.0;
 /// Height the log leaves the page above it, however far it is dragged.
 const LOG_ROOM: f32 = 260.0;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Page {
     Command(String),
     Settings,
@@ -120,9 +119,8 @@ impl Default for Page {
     }
 }
 
-/// Everything remembered between runs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+/// The choices made in the window. Nothing is saved: every run starts afresh.
+#[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
     pub theme: ThemePreference,
@@ -146,7 +144,7 @@ pub struct Settings {
 }
 
 /// What the drawer under the page and the status pane shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Drawer {
     /// The page's gw command line.
     Cli,
@@ -247,11 +245,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
-        let settings = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
-            .unwrap_or_default();
-        let mut app = App::with_settings(&cc.egui_ctx, settings);
+        let mut app = App::with_settings(&cc.egui_ctx, Settings::default());
         app.auto_info = true;
         app
     }
@@ -1990,10 +1984,6 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
-
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, &self.settings);
-    }
 }
 
 /// A question from gw, such as whether to seek past the last cylinder.
@@ -2573,33 +2563,6 @@ fn logo(ui: &mut Ui, texture: &mut Option<egui::TextureHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn settings_survive_a_save_and_load() {
-        let mut s = Settings {
-            page: Page::Command("convert".into()),
-            theme: ThemePreference::Dark,
-            drive: "B".into(),
-            ..Settings::default()
-        };
-        s.values.entry("read".into()).or_default().set("revs", "5");
-        let out = Output {
-            disks: 7,
-            ..Output::default()
-        };
-        s.outputs.insert("read/file".into(), out);
-        s.presets_folder = Some("/presets".into());
-        let saved = serde_json::to_string(&s).unwrap();
-        let loaded: Settings = serde_json::from_str(&saved).unwrap();
-        assert_eq!(serde_json::to_string(&loaded).unwrap(), saved);
-    }
-
-    #[test]
-    fn settings_missing_newer_fields_still_load() {
-        let loaded: Settings = serde_json::from_str(r#"{"drive": "B"}"#).unwrap();
-        assert_eq!(loaded.drive, "B");
-        assert_eq!(loaded.page, Page::Command("read".into()));
-    }
 
     #[test]
     fn a_read_of_three_disks_runs_gw_once_for_each() {

@@ -37,8 +37,11 @@ impl Engine {
     /// `python -c BRIDGE MODE`, ready for more arguments.
     pub fn bridge(&self, mode: &str) -> Command {
         let mut cmd = Command::new(&self.python);
+        // No .pyc files: the app leaves nothing behind, and a signed bundle
+        // must not change.
         cmd.args(["-c", BRIDGE, mode])
-            .env("PYTHONIOENCODING", "utf-8");
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONDONTWRITEBYTECODE", "1");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -124,6 +127,19 @@ fn words(line: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gw_writes_no_bytecode_beside_itself() {
+        let engine = Engine {
+            python: "python3".into(),
+            origin: Origin::Bundled,
+        };
+        let cmd = engine.bridge("serve");
+        let set = |(k, v): (&std::ffi::OsStr, Option<&std::ffi::OsStr>)| {
+            k == "PYTHONDONTWRITEBYTECODE" && v.is_some_and(|v| v == "1")
+        };
+        assert!(cmd.get_envs().any(set));
+    }
 
     fn launcher(test: &str, text: &str) -> Option<PathBuf> {
         let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}"));
