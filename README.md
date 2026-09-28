@@ -82,6 +82,23 @@ packaging/macos/bundle.sh    # target/Ferriteweazle.app, and a zip of it
 The app is signed ad hoc, so it opens on the Mac that built it. Signed and
 notarised releases are still to do.
 
+On Linux, `packaging/linux/bundle.sh [x86_64|aarch64]` builds, for this computer's
+processor or the one named, `dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz` and
+`dist/Ferriteweazle-VERSION-ARCH.AppImage`. It needs
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and zig, which link
+the program against glibc 2.17, and downloads appimagetool and the AppImage runtime
+at the versions `packaging/linux/appimage.sha256` checks. Build each engine with zig
+as its compiler too, so gw's C code needs no newer glibc; another processor's engine
+runs its Python emulated (qemu or Rosetta):
+
+```sh
+CC="zig cc -target x86_64-linux-gnu.2.17" LDSHARED="zig cc -target x86_64-linux-gnu.2.17 -shared" \
+    engine/build.sh x86_64-unknown-linux-gnu
+```
+
+A Linux engine also holds gw's udev rule, `49-greaseweazle.rules`, which the app
+offers to install when Linux refuses it the Greaseweazle's port.
+
 ## Tests
 
 ```sh

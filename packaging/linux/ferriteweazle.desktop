@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ferriteweazle
+Comment=A desktop app for Greaseweazle, the floppy disk flux reader and writer
+Exec=ferriteweazle
+Icon=ferriteweazle
+Terminal=false
+Categories=Utility;
+Keywords=floppy;disk;flux;greaseweazle;gw;
+StartupWMClass=ferriteweazle
