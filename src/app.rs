@@ -2626,6 +2626,11 @@ fn output(
             return;
         }
         let row = ui.text_style_height(&TextStyle::Monospace);
+        // Bars drawn whenever there is more to see, as a text view's: a
+        // floating one hides until hovered, and a wheel does not scroll
+        // sideways. The theme paints an idle handle in the card's colour.
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        ui.visuals_mut().widgets.inactive.bg_fill = p.line;
         egui::ScrollArea::both()
             .id_salt("log")
             .stick_to_bottom(true)

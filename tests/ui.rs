@@ -1340,3 +1340,37 @@ fn a_log_dragged_to_its_tallest_never_pushes_the_page_over_the_run_bar() {
         .expect("the page scrolls");
     assert!(page.bottom() <= run.top(), "{page:?} over {run:?}");
 }
+
+#[test]
+fn a_result_wider_than_its_box_shows_a_scroll_bar_without_hovering() {
+    let settings = Settings {
+        page: Page::Command("update".into()),
+        ..Settings::default()
+    };
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .wgpu();
+    let mut w = build(builder, settings, None);
+    let wide = "Downloading latest firmware: greaseweazle-firmware-1.6.upd, \
+                and on well past the right edge of the box it is shown in";
+    app_mut(&mut w).tool = Some(Job::replay("update", wide));
+    w.run();
+    let line = w.get_by_label_contains("Downloading latest").rect();
+    let bar = w
+        .get_all_by_role(Role::ScrollBar)
+        .map(|b| b.rect())
+        .find(|r| r.width() > r.height() && r.top() > line.bottom())
+        .expect("a horizontal scroll bar");
+    let image = w.render().expect("the window renders");
+    let px = |p: egui::Pos2| *image.get_pixel(p.x as u32, p.y as u32);
+    // The box's fill, between the line and the bar.
+    let fill = px(egui::pos2(bar.left() + 4.0, bar.top() - 20.0));
+    let marked = (bar.left() as u32..bar.right() as u32)
+        .flat_map(|x| (bar.top() as u32..bar.bottom() as u32).map(move |y| (x, y)))
+        .filter(|&(x, y)| {
+            let p = image.get_pixel(x, y);
+            p.0.iter().zip(fill.0).any(|(a, b)| a.abs_diff(b) > 12)
+        })
+        .count();
+    assert!(marked > 50, "the bar is not drawn: {marked} pixels");
+}
