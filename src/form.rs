@@ -31,6 +31,7 @@ pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")
 /// Labels where gw's own argument name would not read well.
 const LABELS: &[(&str, &str)] = &[
     ("adjust_speed", "Adjust speed"),
+    ("cyls", "Cylinders"),
     ("densel", "Density select"),
     ("diskdefs", "Disk definitions"),
     ("erase_empty", "Erase empty tracks"),
@@ -38,18 +39,27 @@ const LABELS: &[(&str, &str)] = &[
     ("format", "Disk format"),
     ("gen_tg43", "TG43 signal"),
     ("hard_sectors", "Hard sectors"),
+    ("hfreq", "High frequency"),
     ("in_file", "Input"),
+    ("linger", "Time per step"),
+    ("motor", "Motor delay"),
     ("motor_on", "Motor on"),
     ("no_clobber", "Keep existing files"),
     ("no_verify", "Skip verify"),
+    ("nr", "Measurements"),
     ("out_file", "Output"),
     ("out_tracks", "Output tracks"),
     ("pll", "PLL"),
+    ("post_write", "Post-write"),
     ("pre_erase", "Erase before writing"),
+    ("pre_write", "Pre-write"),
     ("precomp", "Precompensation"),
     ("reverse", "Reverse (flippy)"),
     ("revs", "Revolutions"),
     ("seek_retries", "Seek retries"),
+    ("select", "Select delay"),
+    ("settle", "Settle time"),
+    ("step", "Step delay"),
 ];
 
 /// Common values for arguments that take any; Other… ends the list.
@@ -568,7 +578,7 @@ impl<'a> Form<'a> {
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
                     if ui
                         .add_enabled(!self.busy, detect)
-                        .own_tip("Find the disk format and image type.")
+                        .own_tip("Attempt to find the disk format and image type.")
                         .on_disabled_hover_text("Wait for the job that is running.")
                         .clicked()
                     {
@@ -1910,6 +1920,23 @@ mod tests {
                 "no gw argument is called {dest}"
             );
         }
+    }
+
+    #[test]
+    fn abbreviated_names_get_plain_labels() {
+        let s = schema();
+        let shown = |c: &str, d: &str| label(s.command(c).unwrap().arg(d).unwrap());
+        assert_eq!(shown("rpm", "nr"), "Measurements");
+        assert_eq!(shown("clean", "cyls"), "Cylinders");
+        assert_eq!(shown("clean", "linger"), "Time per step");
+        assert_eq!(shown("erase", "hfreq"), "High frequency");
+        assert_eq!(shown("delays", "select"), "Select delay");
+        assert_eq!(shown("delays", "pre_write"), "Pre-write");
+        assert_eq!(
+            shown("delays", "watchdog"),
+            "Watchdog",
+            "a plain name stays"
+        );
     }
 
     #[test]
