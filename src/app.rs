@@ -2805,14 +2805,9 @@ mod tests {
         let outputs = BTreeMap::from([("read/file".to_owned(), out)]);
         let (runs, files) = runs(read, values, &outputs, |v| command::argv(read, v));
         let last: Vec<&str> = runs.iter().map(|r| r.last().unwrap().as_str()).collect();
-        assert_eq!(
-            last,
-            [
-                "/f/Game_Disk1.adf",
-                "/f/Game_Disk2.adf",
-                "/f/Game_Disk3.adf"
-            ]
-        );
+        let sep = std::path::MAIN_SEPARATOR;
+        let expected = (1..=3).map(|d| format!("/f{sep}Game_Disk{d}.adf"));
+        assert_eq!(last, expected.collect::<Vec<_>>());
         assert!(
             runs.iter()
                 .all(|r| r.contains(&"--format=amiga.amigados".into()))
@@ -2847,7 +2842,8 @@ mod tests {
             (out.folder.as_str(), out.name.as_str(), out.ext.as_str()),
             ("/disks", "Game Disk", ".hfe")
         );
-        assert_eq!(out.value(1), "/disks/Game Disk.hfe::version=3");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(out.value(1), format!("/disks{sep}Game Disk.hfe::version=3"));
     }
 
     #[test]

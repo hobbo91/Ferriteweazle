@@ -2214,7 +2214,8 @@ mod tests {
         };
         assert_eq!(out.value(1), "");
         out.ext = ".img".into();
-        assert_eq!(out.value(1), "/f/Floppy.img");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(out.value(1), format!("/f{sep}Floppy.img"));
         out.name = " ".into();
         assert_eq!(out.value(1), "");
     }
@@ -2229,9 +2230,11 @@ mod tests {
         };
         out.opts.insert("version".into(), "3".into());
         out.opts.insert("double_step".into(), ON.into());
-        assert_eq!(out.value(1), "/f/D.hfe::double_step:version=3");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(out.value(1), format!("/f{sep}D.hfe::double_step:version=3"));
         let value = out.value(1);
-        assert_eq!(split_opts(&value), ("/f/D.hfe", out.opts.clone()));
+        let path = format!("/f{sep}D.hfe");
+        assert_eq!(split_opts(&value), (path.as_str(), out.opts.clone()));
     }
 
     #[test]

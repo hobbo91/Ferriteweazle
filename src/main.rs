@@ -3,7 +3,8 @@
 use eframe::egui;
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions {
+    #[cfg_attr(not(windows), expect(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Ferriteweazle")
             .with_app_id("ferriteweazle")
@@ -18,6 +19,13 @@ fn main() -> eframe::Result {
         persist_window: false,
         ..Default::default()
     };
+    // Every Windows 10 has DirectX 12, with a software fallback; Windows on ARM
+    // has no OpenGL of its own, and wgpu may choose a broken one.
+    #[cfg(windows)]
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends =
+            eframe::wgpu::Backends::from_env().unwrap_or(eframe::wgpu::Backends::DX12);
+    }
     eframe::run_native(
         "Ferriteweazle",
         options,

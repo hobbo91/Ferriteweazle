@@ -1,24 +1,27 @@
 #!/bin/sh
-# Builds target/engine, the standalone Python with Greaseweazle that the app
-# ships: gw's newest release, or the tag GREASEWEAZLE names (engine/versions).
-# Downloads Python and gw's pip dependencies; needs curl, git and a C
-# compiler.
+# Builds the engine the app ships, a standalone Python with Greaseweazle, for
+# this computer or for TRIPLE: gw's newest release, or the tag GREASEWEAZLE
+# names (engine/versions). Another processor's Python runs emulated (Rosetta,
+# Windows on ARM, qemu) so pip builds gw's C code for it; on Linux set CC and
+# LDSHARED to a compiler for that processor. Downloads Python and gw's pip
+# dependencies; needs curl, git and a C compiler.
 #
-#   engine/build.sh
+#   engine/build.sh                                          # this computer
+#   engine/build.sh x86_64-pc-windows-msvc                   # another triple
 #   GREASEWEAZLE=v1.22 engine/build.sh                       # a given release
 #   GREASEWEAZLE_SOURCE=~/src/greaseweazle engine/build.sh   # a local clone
 set -eu
 cd "$(dirname "$0")/.."
 . engine/greaseweazle.sh
+triple=${1:-$(host)}
+dest=$(engine_dir "$triple")
 tag=$(wanted)
-echo "engine: building Greaseweazle $tag"
+echo "engine: building Greaseweazle $tag for $triple in $dest"
 
-case "$(uname -s)-$(uname -m)" in
-    Darwin-arm64) triple=aarch64-apple-darwin ;;
-    Darwin-x86_64) triple=x86_64-apple-darwin ;;
-    Linux-aarch64) triple=aarch64-unknown-linux-gnu ;;
-    Linux-x86_64) triple=x86_64-unknown-linux-gnu ;;
-    *) echo "engine: no Python build for $(uname -s) $(uname -m)" >&2; exit 1 ;;
+case "$triple" in
+    aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-gnu | \
+        x86_64-unknown-linux-gnu | aarch64-pc-windows-msvc | x86_64-pc-windows-msvc) ;;
+    *) echo "engine: no Python build for $triple" >&2; exit 1 ;;
 esac
 
 name="cpython-$PYTHON+$PYTHON_RELEASE-$triple-install_only_stripped.tar.gz"
@@ -31,27 +34,40 @@ if [ ! -f "$cache/$name" ]; then
 fi
 grep " $name\$" engine/python.sha256 | (cd "$cache" && shasum -a 256 -c -)
 
-rm -rf target/engine
-mkdir -p target/engine
-tar -xzf "$cache/$name" -C target/engine --strip-components=1
-py=target/engine/bin/python3
+rm -rf "$dest"
+mkdir -p "$dest"
+tar -xzf "$cache/$name" -C "$dest" --strip-components=1
+case "$triple" in
+    *windows*) py=$dest/python.exe lib=$dest/Lib ;;
+    *) py=$dest/bin/python3 lib=$(echo "$dest"/lib/python3.*) ;;
+esac
 
 case "$source" in /*) source="file://$source" ;; esac
-"$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check "git+$source@$tag"
+"$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check \
+    --no-warn-script-location "git+$source@$tag"
 "$py" -m pip uninstall --quiet --yes pip
 
-# Drop what gw never uses, libpython (the interpreter is linked statically)
-# and launchers whose #! line names this build folder.
-lib=$(echo target/engine/lib/python3.*)
-find target/engine/bin -type f ! -name 'python3.*[0-9]' -delete
-find target/engine/bin -type l ! -name python ! -name python3 -delete
-rm -rf target/engine/include target/engine/share target/engine/lib/libpython* \
-    target/engine/lib/libtcl* target/engine/lib/libtk* target/engine/lib/tcl* target/engine/lib/tk* \
-    target/engine/lib/itcl* target/engine/lib/thread* target/engine/lib/pkgconfig \
-    "$lib"/config-* "$lib/lib-dynload/_tkinter"* \
-    "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/ensurepip" "$lib/pydoc_data"
+# Drop what gw never uses, and what only building needed. On Linux and macOS
+# the interpreter is linked statically, so libpython goes too, as do
+# launchers whose #! line names this build folder.
+rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/ensurepip" \
+    "$lib/pydoc_data"
+case "$triple" in
+    *windows*)
+        rm -rf "$dest/include" "$dest/libs" "$dest/Scripts" "$dest/tcl" \
+            "$dest"/DLLs/_tkinter* "$dest"/DLLs/tcl* "$dest"/DLLs/tk*
+        ;;
+    *)
+        find "$dest/bin" -type f ! -name 'python3.*[0-9]' -delete
+        find "$dest/bin" -type l ! -name python ! -name python3 -delete
+        rm -rf "$dest/include" "$dest/share" "$dest"/lib/libpython* "$dest"/lib/libtcl* \
+            "$dest"/lib/libtk* "$dest"/lib/tcl* "$dest"/lib/tk* "$dest"/lib/itcl* \
+            "$dest"/lib/thread* "$dest/lib/pkgconfig" "$lib"/config-* \
+            "$lib/lib-dynload/_tkinter"*
+        ;;
+esac
 "$py" -m compileall -q "$lib/site-packages"
 
 "$py" -c 'import greaseweazle, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
-echo "$tag" >"$built"
-du -sh target/engine
+echo "$tag" >"$dest/greaseweazle-version"
+du -sh "$dest"
