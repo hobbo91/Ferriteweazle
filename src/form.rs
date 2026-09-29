@@ -169,8 +169,7 @@ const OTHER: &str = "Other…";
 const CUSTOM: &str = "custom";
 const CUSTOM_NAME: &str = "Custom disk definitions";
 
-/// Image types that hold flux: a format can be found from them, and reading
-/// into one needs no format.
+/// Image types that hold flux or bitcells: Detect can find a format from them.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 
 /// Names for gw's format families, which it names only by prefix.
@@ -674,7 +673,14 @@ impl<'a> Form<'a> {
         let dim = theme::palette(ui).dim;
         let shown = match (current.as_str(), &effective) {
             ("", Some(own)) => {
-                RichText::new(format!("{} (from the input)", format_name(own))).color(dim)
+                // The input's own comes first, as in gw.
+                let input = own_format(self.schema, input_file(self.cmd, self.values));
+                let output = own_format(self.schema, output_file(self.cmd, self.values));
+                let from = match (input, output) {
+                    (None, Some(_)) => "the image type",
+                    _ => "the input",
+                };
+                RichText::new(format!("{} (from {from})", format_name(own))).color(dim)
             }
             ("", None) => RichText::new("Choose disk format").color(dim),
             (chosen, _) if custom => RichText::new(format!("Custom · {chosen}")),
@@ -797,14 +803,9 @@ impl<'a> Form<'a> {
                     }
                 });
         } else {
-            let none = if self.cmd.name == "read" {
-                "Read the flux, with no format."
-            } else {
-                "Use the input's own format, if it has one."
-            };
             if ui
                 .selectable_label(current.is_empty(), "None")
-                .on_hover_text(none)
+                .on_hover_text("Leave the format to gw: the images' own, if they have one.")
                 .clicked()
             {
                 chosen = Some(String::new());
@@ -1350,8 +1351,8 @@ const REPLACES_INPUTS: &str =
 /// The most disks one session reads.
 pub const MAX_DISKS: u32 = 99;
 
-/// Cylinders and sides assumed while the format is unknown.
-pub const USUAL_DISK: (u32, u32) = (80, 2);
+/// gw's tracks when no format gives them: c=0-81:h=0-1.
+pub const USUAL_DISK: (u32, u32) = (82, 2);
 
 /// Why settings with every argument filled in still cannot run.
 /// Why a page that makes an image cannot run before its image is named.
@@ -1403,10 +1404,17 @@ pub fn blocked(
             }
         }
         let flux = flux_source(cmd, values);
-        // Flux saved as flux needs no format.
-        if !(flux && FLUX.contains(&out.ext.as_str()))
+        // Flux saved as flux needs no format. HFE holds bitcells, which gw
+        // makes from flux only with a format or a bitrate.
+        let bitcells = matches!(
+            extension(input_file(cmd, values)).as_deref(),
+            Some(".hfe" | ".ipf" | ".ctr")
+        );
+        let flux_out = FLUX.contains(&out.ext.as_str())
+            && (out.ext != ".hfe" || out.opts.contains_key("bitrate") || bitcells);
+        if !(flux && flux_out)
             && values.get("format").is_empty()
-            && input_format(schema, cmd, values, service).is_none()
+            && implied_format(schema, cmd, values, service).is_none()
         {
             return Some(if flux {
                 "Choose a disk format first, or press Detect."
@@ -1558,6 +1566,12 @@ fn input_file<'v>(cmd: &Command, values: &'v Values) -> &'v str {
     split_opts(values.get(dest)).0
 }
 
+/// The image file a command writes, if it writes one.
+fn output_file<'v>(cmd: &Command, values: &'v Values) -> &'v str {
+    let output = OUTPUTS.iter().find(|(c, _)| *c == cmd.name);
+    output.map_or("", |(_, dest)| split_opts(values.get(dest)).0)
+}
+
 /// Whether a command reads flux, from the drive or a flux image, so Detect
 /// can find its format.
 fn flux_source(cmd: &Command, values: &Values) -> bool {
@@ -1565,7 +1579,7 @@ fn flux_source(cmd: &Command, values: &Values) -> bool {
         || extension(input_file(cmd, values)).is_some_and(|e| FLUX.contains(&e.as_str()))
 }
 
-/// The format to decode with: the one chosen, or the input image's own.
+/// The format to decode with: the one chosen, or the one gw takes without.
 /// Asks gw about an input it finds the format in, if it has not yet.
 pub fn effective_format(
     service: &mut Service,
@@ -1578,39 +1592,43 @@ pub fn effective_format(
             if format_in_file(schema, cmd, values) {
                 service.image_format(input_file(cmd, values));
             }
-            input_format(schema, cmd, values, service)
+            implied_format(schema, cmd, values, service)
         }
         chosen => Some(chosen.to_owned()),
     }
 }
 
-/// The format gw takes from the input image: its type's own, such as an
-/// .adf's, else one gw has found in the file, such as an .nsi's.
-fn input_format(
+/// The format gw takes when none is chosen, in gw's order: the input type's
+/// own, such as an .adf's, else the output type's, else one gw has found in
+/// the input file, such as an .nsi's.
+fn implied_format(
     schema: &Schema,
     cmd: &Command,
     values: &Values,
     service: &Service,
 ) -> Option<String> {
     let path = input_file(cmd, values);
-    let (_, image) = schema.image(path)?;
     let found = || match format_in_file(schema, cmd, values) {
         true => service.known_image_format(path).map(str::to_owned),
         false => None,
     };
-    image.default_format.clone().or_else(found)
+    own_format(schema, path)
+        .or_else(|| own_format(schema, output_file(cmd, values)))
+        .or_else(found)
 }
 
-/// Whether gw looks in the input file for its format, as in an .nsi. Convert
-/// takes the output type's own format, such as an .adf's, first.
+/// An image type's own format, such as an .adf's.
+fn own_format(schema: &Schema, path: &str) -> Option<String> {
+    schema.image(path)?.1.default_format.clone()
+}
+
+/// Whether gw looks in the input file for its format, as in an .nsi. The
+/// output type's own format, such as an .adf's, comes first.
 fn format_in_file(schema: &Schema, cmd: &Command, values: &Values) -> bool {
     let finds = schema
         .image(input_file(cmd, values))
         .is_some_and(|(_, i)| i.finds_format);
-    let output_has_one = schema
-        .image(values.get("out_file"))
-        .is_some_and(|(_, i)| i.default_format.is_some());
-    finds && !output_has_one
+    finds && own_format(schema, output_file(cmd, values)).is_none()
 }
 
 /// A tooltip of a widget's own, in a row that has one: the row's then stays hidden.
@@ -2356,9 +2374,134 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     fn schema() -> Schema {
         serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+    }
+
+    fn values(pairs: &[(&str, &str)]) -> Values {
+        let mut v = Values::default();
+        pairs.iter().for_each(|(k, x)| v.set(k, *x));
+        v
+    }
+
+    /// An output of type `ext` in /f, named Floppy.
+    fn output(ext: &str) -> Output {
+        Output {
+            folder: "/f".into(),
+            ext: ext.into(),
+            ..Output::default()
+        }
+    }
+
+    type Page = (Values, BTreeMap<String, Output>);
+
+    /// A command's form alone, drawn until it settles.
+    fn page(
+        command: &str,
+        values: Values,
+        outputs: BTreeMap<String, Output>,
+    ) -> Harness<'static, Page> {
+        let schema = schema();
+        let cmd = schema.command(command).unwrap().clone();
+        let mut service = Service::offline(Ok(schema.clone()));
+        let mut h = Harness::new_ui_state(
+            move |ui, (values, outputs): &mut Page| {
+                let form = Form {
+                    schema: &schema,
+                    cmd: &cmd,
+                    values,
+                    outputs,
+                    service: &mut service,
+                    cannot_detect: None,
+                };
+                form.show(ui);
+            },
+            (values, outputs),
+        );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn with_no_format_chosen_gw_takes_the_input_types_own_then_the_output_types() {
+        let s = schema();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut implied = |command: &str, pairs: &[(&str, &str)]| {
+            effective_format(
+                &mut service,
+                &s,
+                s.command(command).unwrap(),
+                &values(pairs),
+            )
+        };
+        let read = |file| [("file", file)];
+        assert_eq!(
+            implied("read", &read("/f/x.adf")).as_deref(),
+            Some("amiga.amigados")
+        );
+        assert_eq!(implied("read", &read("/f/x.scp")), None);
+        let convert = |from, to| [("in_file", from), ("out_file", to)];
+        assert_eq!(
+            implied("convert", &convert("/f/x.scp", "/f/x.d64")).as_deref(),
+            Some("commodore.1541")
+        );
+        assert_eq!(
+            implied("convert", &convert("/f/x.adf", "/f/x.d64")).as_deref(),
+            Some("amiga.amigados"),
+            "the input's own comes first"
+        );
+
+        let outputs = BTreeMap::from([(output_key("read", "file"), output(".adf"))]);
+        let v = values(&[("file", &outputs["read/file"].value(1))]);
+        let read = s.command("read").unwrap();
+        assert_eq!(blocked(&s, read, &v, &outputs, &service), None);
+        let h = page("read", Values::default(), outputs);
+        let format = h.get_all_by_role(Role::ComboBox).next().unwrap().value();
+        assert_eq!(
+            format.as_deref(),
+            Some("Amiga · amiga.amigados (from the image type)")
+        );
+    }
+
+    #[test]
+    fn hfe_made_from_flux_needs_a_format_or_a_bitrate() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |command: &str, input: &str, out: Output| {
+            let (_, dest) = OUTPUTS.iter().find(|(c, _)| *c == command).unwrap();
+            let mut v = values(&[(dest, &out.value(1))]);
+            if command == "convert" {
+                v.set("in_file", input);
+            }
+            let outputs = BTreeMap::from([(output_key(command, dest), out)]);
+            blocked(&s, s.command(command).unwrap(), &v, &outputs, &service)
+        };
+        let mut bitrate = output(".hfe");
+        bitrate.opts.insert("bitrate".into(), "250".into());
+        let needs = Some("Choose a disk format first, or press Detect.");
+        assert_eq!(why("read", "", output(".hfe")), needs);
+        assert_eq!(why("read", "", bitrate), None);
+        assert_eq!(why("read", "", output(".scp")), None, "flux kept as flux");
+        assert_eq!(why("convert", "/f/x.scp", output(".hfe")), needs);
+        assert_eq!(
+            why("convert", "/f/x.ipf", output(".hfe")),
+            None,
+            "an IPF's tracks have a bitrate"
+        );
+    }
+
+    #[test]
+    fn with_no_format_the_track_picker_offers_the_82_cylinders_gw_uses() {
+        let h = page("erase", Values::default(), BTreeMap::new());
+        let cylinders: Vec<_> = h
+            .get_all_by_role(Role::SpinButton)
+            .map(|c| c.accesskit_node().numeric_value())
+            .collect();
+        assert_eq!(cylinders, [Some(0.0), Some(81.0)]);
     }
 
     #[test]
