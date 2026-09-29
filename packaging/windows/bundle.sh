@@ -27,7 +27,7 @@ mkdir -p "$app" dist
 refresh "$triple"
 cargo build --release --locked --target "$triple"
 cp "target/$triple/release/ferriteweazle.exe" "$app/Ferriteweazle.exe"
-cp -R "$(engine_dir "$triple")" "$app/ferriteweazle-data"
+cp -a "$(engine_dir "$triple")" "$app/ferriteweazle-data"
 # CRLF, for Notepad before Windows 10 1809.
 sed 's/\r*$/\r/' LICENSE >"$app/LICENSE.txt"
 sed 's/\r*$/\r/' packaging/windows/README.txt >"$app/README.txt"

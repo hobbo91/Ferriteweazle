@@ -72,7 +72,9 @@ case "$triple" in
             "$lib/lib-dynload/_tkinter"*
         ;;
 esac
-"$py" -m compileall -q "$lib/site-packages"
+# The engine never changes once built, so its bytecode is not checked against
+# the sources' file times, which copies, zips and installers do not all keep.
+"$py" -m compileall -q -f --invalidation-mode unchecked-hash "$lib"
 
 # gw cannot run without its C extension, so it must load too.
 "$py" -c 'import greaseweazle.optimised.optimised, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'

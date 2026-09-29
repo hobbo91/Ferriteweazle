@@ -330,6 +330,22 @@ fn a_linux_engine_holds_gws_udev_rule_from_the_release_it_builds() {
 }
 
 #[test]
+fn an_engines_bytecode_is_never_checked_against_file_times() {
+    let dir = repo("bytecode", "");
+    let path = stub_build(&dir);
+    let env = [("PATH", path.as_str()), ("GREASEWEAZLE", "v1.30")];
+    run(&dir, &env, "", "engine/build.sh");
+    let python = std::fs::read_to_string(dir.join("python.log")).unwrap();
+    let compile = python.lines().find(|l| l.contains("compileall")).unwrap();
+    assert_eq!(
+        compile.split(" CC=").next().unwrap(),
+        "-m compileall -q -f --invalidation-mode unchecked-hash target/engine/lib/python3.14",
+        "the whole library, gw's packages and Python's own"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
     let dir = repo("zig", "");
     let stubbed = stub_build(&dir);
