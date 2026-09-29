@@ -159,8 +159,13 @@ fn bundled() -> Option<PathBuf> {
     Some(python_in(&data_with(&std::env::current_exe().ok()?)?))
 }
 
+/// Whether a package's own Greaseweazle Tools is where Ferriteweazle looks for it.
+pub fn has_bundled() -> bool {
+    bundled().is_some()
+}
+
 /// The folder a package keeps gw's Python in.
-pub const DATA: &str = "ferriteweazle-data";
+pub const DATA: &str = "greaseweazle";
 
 /// gw's udev rule, which a Linux package keeps beside gw's Python.
 pub fn udev_rule() -> Option<PathBuf> {
@@ -171,7 +176,7 @@ fn udev_rule_with(exe: &Path) -> Option<PathBuf> {
     Some(data_with(exe)?.join(crate::udev::RULE)).filter(|r| r.is_file())
 }
 
-/// `Contents/Resources/ferriteweazle-data` in a macOS app, `ferriteweazle-data`
+/// `Contents/Resources/greaseweazle` in a macOS app, `greaseweazle`
 /// beside the program elsewhere, and `target/engine` for `cargo run`.
 fn data_with(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;

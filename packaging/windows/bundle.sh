@@ -24,8 +24,8 @@ mkdir -p "$app" dist
 refresh "$triple"
 cargo build --release --locked --target "$triple"
 cp "target/$triple/release/ferriteweazle.exe" "$app/Ferriteweazle.exe"
-cp -a "$(engine_dir "$triple")" "$app/ferriteweazle-data"
-packaging/notices.sh "$app/ferriteweazle-data" "$triple" >"$stage/notices.txt"
+cp -a "$(engine_dir "$triple")" "$app/greaseweazle"
+packaging/notices.sh "$app/greaseweazle" "$triple" >"$stage/notices.txt"
 # CRLF, for Notepad before Windows 10 1809.
 sed 's/\r*$/\r/' "$stage/notices.txt" >"$app/THIRD-PARTY-NOTICES.txt"
 sed 's/\r*$/\r/' LICENSE >"$app/LICENSE.txt"
@@ -41,10 +41,11 @@ rm -f "$zip"
 awk 'BEGIN { printf "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs18 " }
     { sub(/\r$/, "") } NF { printf "%s ", $0; next } { printf "\\par\\par " }
     END { print "}" }' LICENSE >"$stage/LICENSE.rtf"
-: >"$stage/msi"
 msi=dist/Ferriteweazle-$version-win-$arch.msi
-wix build -arch "$arch" -ext WixToolset.UI.wixext -d Version="$version" \
+# The bundled gw's release, v1.23, as the installer names it: 1.23.
+tools=$(sed 's/^v//' "$app/greaseweazle/greaseweazle-version")
+wix build -arch "$arch" -ext WixToolset.UI.wixext -d Version="$version" -d Tools="$tools" \
     -d App="$(cygpath -w "$PWD/$app")" -d Licence="$(cygpath -w "$PWD/$stage/LICENSE.rtf")" \
-    -d Marker="$(cygpath -w "$PWD/$stage/msi")" -pdbtype none -o "$msi" \
+    -pdbtype none -o "$msi" \
     packaging/windows/ferriteweazle.wxs
 du -sh "$zip" "$msi"

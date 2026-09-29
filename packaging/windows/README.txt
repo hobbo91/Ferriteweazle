@@ -9,7 +9,7 @@ Unzip the Ferriteweazle folder anywhere and run Ferriteweazle.exe. Nothing
 is installed, and it needs no administrator rights and no Visual C++
 Redistributable.
 
-The ferriteweazle-data folder holds gw and the Python it runs on. Keep it
+The greaseweazle folder holds Greaseweazle Tools and the Python it runs on. Keep it
 beside Ferriteweazle.exe: the app looks for it there.
 
 A Greaseweazle needs no driver on Windows 10 or newer. It appears as a COM

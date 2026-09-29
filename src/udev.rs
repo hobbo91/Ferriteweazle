@@ -1,5 +1,5 @@
 //! Serial port access on Linux, which gw's udev rule grants: the app ships
-//! it in ferriteweazle-data and can install it through pkexec.
+//! it in greaseweazle and can install it through pkexec.
 
 use crate::service::Repaint;
 use std::io::Write;
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 
-/// gw's udev rule, as ferriteweazle-data holds it.
+/// gw's udev rule, as greaseweazle holds it.
 pub const RULE: &str = "49-greaseweazle.rules";
 
 /// gw's instructions for Linux, at the revision these commands follow.
@@ -135,10 +135,10 @@ mod tests {
 
     #[test]
     fn the_commands_copy_the_shipped_rule_or_gws_own() {
-        let shipped = Path::new("/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules");
+        let shipped = Path::new("/opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules");
         assert_eq!(
             commands(Some(shipped))[0],
-            "sudo cp /opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules /etc/udev/rules.d/"
+            "sudo cp /opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules /etc/udev/rules.d/"
         );
         let spaced = Path::new("/home/x/My Apps/49-greaseweazle.rules");
         if cfg!(unix) {
@@ -158,13 +158,13 @@ mod tests {
     #[test]
     fn from_an_appimage_the_shell_reads_the_rule_for_sudo() {
         let mount = Path::new("/tmp/.mount_FerritcNdGCG");
-        let rule = mount.join("usr/bin/ferriteweazle-data/49-greaseweazle.rules");
+        let rule = mount.join("usr/bin/greaseweazle/49-greaseweazle.rules");
         assert_eq!(
             commands_for(Some(&rule), Some(mount))[0],
-            "cat /tmp/.mount_FerritcNdGCG/usr/bin/ferriteweazle-data/49-greaseweazle.rules \
+            "cat /tmp/.mount_FerritcNdGCG/usr/bin/greaseweazle/49-greaseweazle.rules \
              | sudo tee /etc/udev/rules.d/49-greaseweazle.rules >/dev/null"
         );
-        let tarball = Path::new("/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules");
+        let tarball = Path::new("/opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules");
         assert!(commands_for(Some(tarball), Some(mount))[0].starts_with("sudo cp "));
     }
 

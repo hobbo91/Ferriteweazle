@@ -2242,11 +2242,11 @@ fn a_result_wider_than_its_box_shows_a_scroll_bar_without_hovering() {
     assert!(marked > 50, "the bar is not drawn: {marked} pixels");
 }
 
-const RULE: &str = "/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules";
+const RULE: &str = "/opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules";
 
 /// The commands the fix shows, for the rule at RULE.
 const COMMANDS: [&str; 2] = [
-    "sudo cp /opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules /etc/udev/rules.d/",
+    "sudo cp /opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules /etc/udev/rules.d/",
     "sudo udevadm control --reload-rules && sudo udevadm trigger",
 ];
 

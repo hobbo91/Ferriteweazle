@@ -172,12 +172,12 @@ impl Install {
             return Some(Install::AppImage(image));
         }
         let dir = exe.parent()?;
-        let data = dir.join(engine::DATA);
-        match (data.is_dir(), data.join("msi").exists()) {
-            (false, _) => None,
-            (true, true) => Some(Install::Msi),
-            (true, false) => Some(Install::Folder(dir.to_path_buf())),
+        if msi_folder().is_some_and(|f| same_folder(f, dir)) {
+            return Some(Install::Msi);
         }
+        dir.join(engine::DATA)
+            .is_dir()
+            .then(|| Install::Folder(dir.to_path_buf()))
     }
 
     /// Why this copy cannot replace itself, if it cannot.
@@ -286,6 +286,39 @@ pub fn tidy() {
 /// Removes `path`, a folder or a file, if it is there.
 fn remove(path: &Path) {
     let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
+}
+
+/// The folder the MSI installed Ferriteweazle in, as it records it in the
+/// registry (ferriteweazle.wxs), read once.
+fn msi_folder() -> Option<&'static Path> {
+    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let read = || {
+        let key = r"HKLM\SOFTWARE\Ferriteweazle";
+        let reg = engine::quiet(Command::new("reg"))
+            .args(["query", key, "/v", "InstallFolder"])
+            .output()
+            .ok()?;
+        registry_text(&String::from_utf8_lossy(&reg.stdout))
+    };
+    FOLDER
+        .get_or_init(|| read().filter(|_| cfg!(windows)).map(PathBuf::from))
+        .as_deref()
+}
+
+/// A REG_SZ value's text in `reg query`'s output, spaces and all.
+fn registry_text(text: &str) -> Option<String> {
+    let (_, value) = text.lines().find_map(|l| l.split_once("REG_SZ"))?;
+    Some(value.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+/// Whether two Windows folders are one, whatever their case or a last `\`.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let text = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    text(a) == text(b)
 }
 
 /// The AppImage `exe` runs from. The AppImage runtime sets APPIMAGE and
@@ -439,6 +472,24 @@ fn run(cmd: &mut Command, limit: Option<Duration>) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_msis_folder_is_read_from_the_registry_spaces_and_all() {
+        let reg = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Ferriteweazle\r\n    \
+                   InstallFolder    REG_SZ    C:\\Program Files\\Ferriteweazle\\\r\n\r\n";
+        let folder = registry_text(reg).unwrap();
+        assert_eq!(folder, r"C:\Program Files\Ferriteweazle\");
+        let exe_dir = Path::new(r"c:\program files\Ferriteweazle");
+        assert!(same_folder(Path::new(&folder), exe_dir));
+        assert!(!same_folder(
+            Path::new(&folder),
+            Path::new(r"C:\Tools\Ferriteweazle")
+        ));
+        assert_eq!(
+            registry_text("ERROR: The system was unable to find the key."),
+            None
+        );
+    }
 
     fn answered(answer: Result<&str, &str>) -> Answer {
         let (send, answer_) = mpsc::channel();

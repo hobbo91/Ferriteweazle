@@ -162,7 +162,7 @@ fn write_job() -> Job {
 /// udev rule where the tarball keeps it.
 fn denied(w: &mut Window) {
     let app = w.state_mut().as_mut().unwrap();
-    app.udev_rule = Some("/home/you/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules".into());
+    app.udev_rule = Some("/home/you/Ferriteweazle/greaseweazle/49-greaseweazle.rules".into());
     app.pin_ports(vec![Port {
         device: "/dev/ttyACM0".into(),
         denied: true,

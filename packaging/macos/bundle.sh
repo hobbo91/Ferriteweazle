@@ -39,7 +39,7 @@ print(sorted(d.name + " " + d.version for d in m.distributions()))'
     echo "bundle: the two engines differ; rebuild each with engine/build.sh TRIPLE" >&2
     exit 1
 }
-engine=$app/Contents/Resources/ferriteweazle-data
+engine=$app/Contents/Resources/greaseweazle
 ditto "$arm" "$engine"
 find "$engine" -type f | while read -r f; do
     file -b "$f" | grep -q Mach-O || continue

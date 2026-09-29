@@ -37,12 +37,12 @@ top=$stage/Ferriteweazle
 rm -rf "$stage"
 mkdir -p "$top" dist
 cp "$program" "$top/ferriteweazle"
-cp -a "$data" "$top/ferriteweazle-data"
+cp -a "$data" "$top/greaseweazle"
 cp packaging/linux/ferriteweazle.desktop packaging/linux/README.txt "$top/"
 cp assets/logo.png "$top/ferriteweazle.png"
 cp LICENSE "$top/LICENSE.txt"
 notices=$top/THIRD-PARTY-NOTICES.txt
-packaging/notices.sh "$top/ferriteweazle-data" "$triple" >"$notices"
+packaging/notices.sh "$top/greaseweazle" "$triple" >"$notices"
 sed "s/@VERSION@/$version/g" packaging/licences/linux-lgpl.txt >>"$notices"
 tarball=dist/Ferriteweazle-$version-linux-$arch.tar.gz
 tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$stage" Ferriteweazle
@@ -51,7 +51,7 @@ tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$stage" Ferriteweazl
 appdir=$stage/AppDir
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/doc/ferriteweazle"
 cp "$program" "$appdir/usr/bin/ferriteweazle"
-cp -a "$data" "$appdir/usr/bin/ferriteweazle-data"
+cp -a "$data" "$appdir/usr/bin/greaseweazle"
 cp LICENSE "$appdir/usr/share/doc/ferriteweazle/"
 # The AppImage also carries the runtime at its front.
 { cat "$notices"; sed "s/@VERSION@/$version/g" "packaging/licences/appimage-runtime-$RUNTIME.txt"; } \

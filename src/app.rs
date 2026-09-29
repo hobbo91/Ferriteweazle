@@ -80,9 +80,9 @@ const NO_DEVICE: &str = "Connect a Greaseweazle.";
 /// Why Detect greys for a gw with no Python the bridge can run in.
 const STANDALONE_DETECT: &str = "Standalone Greaseweazle Tools cannot run Detect.";
 /// Why Restart and Update grey when no gw is found.
-const NOT_FOUND: &str = "Ferriteweazle could not find Greaseweazle Tools.";
+const NOT_FOUND: &str = "Unable to load Greaseweazle Tools.";
 /// When no gw is found, built in, installed or chosen.
-const NO_GW: &str = "Ferriteweazle could not find Greaseweazle Tools, update the path in Settings.";
+const NO_GW: &str = "Unable to load Greaseweazle Tools, update the path in Settings.";
 /// Why nothing that uses an Adafruit RP2040 can start, by whether a port is chosen.
 const NO_ADAFRUIT: &str = "Select the Adafruit RP2040's serial port.";
 const GONE_ADAFRUIT: &str = "Connect the Adafruit RP2040.";
@@ -2546,20 +2546,11 @@ impl App {
                     ui.label(RichText::new(UPDATING).weak());
                 }
                 (Some(engine), Load::Ready(schema)) => {
-                    let origin = match engine.origin {
-                        Origin::Bundled if engine.update_in(&engine::updates()).is_some() => {
-                            "updated from GitHub"
-                        }
-                        Origin::Bundled => "built in",
-                        Origin::Installed => "installed on this computer",
-                        Origin::Custom => "chosen here",
+                    let bundled = match engine.origin {
+                        Origin::Bundled => " (bundled)",
+                        _ => "",
                     };
-                    let kind = if engine.standalone {
-                        " (standalone)"
-                    } else {
-                        ""
-                    };
-                    ui.label(format!("{}{kind}, {origin}.", schema.tools()));
+                    ui.label(format!("{}{bundled}", schema.tools()));
                 }
                 (Some(_), Load::Waiting(_)) => {
                     ui.horizontal(|ui| {
@@ -2567,8 +2558,11 @@ impl App {
                         ui.label("Starting…");
                     });
                 }
+                (None, _) => {
+                    ui.label(RichText::new(NOT_FOUND).color(p.bad));
+                }
                 (_, load) => {
-                    ui.label(RichText::new(load.error().unwrap_or("Not found.")).color(p.bad));
+                    ui.label(RichText::new(load.error().unwrap_or(NOT_FOUND)).color(p.bad));
                 }
             }
             ui.add_space(4.0);
@@ -2613,7 +2607,11 @@ impl App {
         section(ui, "Paths", |ui| {
             static IMAGES: OnceLock<String> = OnceLock::new();
             static PRESETS: OnceLock<String> = OnceLock::new();
-            let default = ("Use the default", back_to(&IMAGES, form::images_folder));
+            let default = (
+                "Use the default",
+                back_to(&IMAGES, form::images_folder),
+                None,
+            );
             let images = self.images_folder();
             let back = self.settings.images_folder.is_some().then_some(default);
             match path_row(
@@ -2637,6 +2635,7 @@ impl App {
             let default = (
                 "Use the default",
                 back_to(&PRESETS, presets::default_folder),
+                None,
             );
             let presets = self.presets_folder();
             let back = self.settings.presets_folder.is_some().then_some(default);
@@ -2658,9 +2657,11 @@ impl App {
                 None => {}
             }
             ui.add_space(8.0);
+            let missing = (!engine::has_bundled()).then_some("No bundled version found.");
             let default = (
-                "Use the built-in Greaseweazle Tools",
-                "Go back to the Greaseweazle Tools Ferriteweazle ships.",
+                "Use bundled version",
+                "Go back to the Greaseweazle Tools bundled with Ferriteweazle.",
+                missing,
             );
             let python = self.engine.as_ref().map(|e| e.python.clone());
             let gw = python
@@ -4331,13 +4332,14 @@ fn back_to(tip: &'static OnceLock<String>, folder: fn() -> PathBuf) -> &'static 
 }
 
 /// A path in Settings: its name, where it is, Browse…, and with `back` a
-/// button and tip that restore the default. Both wait while `busy` says why.
+/// button, its tip and why it greys, to restore the default. Both wait while
+/// `busy` says why.
 fn path_row(
     ui: &mut Ui,
     name: &str,
     path: &Path,
     tip: &str,
-    back: Option<(&str, &str)>,
+    back: Option<(&str, &str, Option<&str>)>,
     busy: Option<&str>,
 ) -> Option<PathClick> {
     ui.label(name);
@@ -4359,10 +4361,11 @@ fn path_row(
         {
             return Some(PathClick::Choose);
         }
-        let (text, tip) = back?;
-        ui.add_enabled(busy.is_none(), egui::Button::new(text))
+        let (text, tip, missing) = back?;
+        let why = missing.or(busy);
+        ui.add_enabled(why.is_none(), egui::Button::new(text))
             .on_hover_text(tip)
-            .on_disabled_hover_text(why)
+            .on_disabled_hover_text(why.unwrap_or_default())
             .clicked()
             .then_some(PathClick::Default)
     })
@@ -5290,7 +5293,7 @@ mod tests {
     const REFUSED: &str = "** FATAL ERROR:\n[Errno 13] could not open port /dev/ttyACM0: \
                            [Errno 13] Permission denied: '/dev/ttyACM0'";
 
-    const RULE: &str = "/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules";
+    const RULE: &str = "/opt/Ferriteweazle/greaseweazle/49-greaseweazle.rules";
 
     fn has_the_fix(log: &[String]) -> bool {
         let log = log.join("\n");
@@ -5341,13 +5344,13 @@ mod tests {
     #[test]
     fn the_caps_library_goes_beside_the_built_in_gws_python() {
         let engine = Engine {
-            python: r"C:\Program Files\Ferriteweazle\ferriteweazle-data\python.exe".into(),
+            python: r"C:\Program Files\Ferriteweazle\greaseweazle\python.exe".into(),
             origin: Origin::Bundled,
             standalone: false,
         };
         assert_eq!(
             caps_advice(Some(&engine)),
-            r"Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\ferriteweazle-data and in System32."
+            r"Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\greaseweazle and in System32."
         );
     }
 
@@ -5467,20 +5470,29 @@ mod tests {
         let mut w = window(app);
         let greyed = |w: &Harness<'_, App>| {
             let choose = w.get_all_by_label("Browse…").last().expect("the gw row's");
-            [
-                w.get_by_label("Restart"),
-                w.get_by_label("Use the built-in Greaseweazle Tools"),
-                choose,
-            ]
-            .map(|b| b.accesskit_node().is_disabled())
+            [w.get_by_label("Restart"), choose].map(|b| b.accesskit_node().is_disabled())
         };
-        assert_eq!(greyed(&w), [true; 3], "a job runs");
+        assert_eq!(greyed(&w), [true; 2], "a job runs");
         w.state_mut().tool = None;
         w.run_steps(2);
-        assert_eq!(greyed(&w), [false; 3]);
+        assert_eq!(greyed(&w), [false; 2]);
         w.state_mut().gw_update = installing();
         w.run_steps(2);
-        assert_eq!(greyed(&w), [true; 3], "gw installs an update");
+        assert_eq!(greyed(&w), [true; 2], "gw installs an update");
+    }
+
+    #[test]
+    fn use_bundled_version_greys_where_there_is_none() {
+        // A test program has no greaseweazle folder beside it.
+        assert!(!engine::has_bundled());
+        let mut app = offline();
+        app.settings.page = Page::Settings;
+        app.settings.engine = Some("/no/such/gw".into());
+        app.engine = Some(no_gw());
+        let w = window(app);
+        let button = w.get_by_label("Use bundled version");
+        assert!(button.accesskit_node().is_disabled());
+        w.get_by_label("Greaseweazle Tools 1.23");
     }
 
     #[test]
@@ -5512,7 +5524,7 @@ mod tests {
         };
         let app = App::with_settings(&egui::Context::default(), settings);
         let mut w = window(app);
-        w.get_by_label(NO_GW);
+        w.get_by_label(NOT_FOUND);
         // The first Update is gw's; the app's own comes later.
         let greyed = |w: &Harness<'_, App>, name| {
             w.get_all_by_label(name)
@@ -5522,6 +5534,11 @@ mod tests {
                 .is_disabled()
         };
         assert!(greyed(&w, "Restart") && greyed(&w, "Update"));
+        w.state_mut().settings.page = Page::Command("read".into());
+        w.run_steps(2);
+        w.get_by_label(NO_GW);
+        w.state_mut().settings.page = Page::Settings;
+        w.run_steps(2);
         // A gw of the person's own runs, but only the built-in one updates.
         w.state_mut().engine = Some(no_gw());
         w.run_steps(2);

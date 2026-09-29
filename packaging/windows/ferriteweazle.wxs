@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The Windows installer, built by bundle.sh with WiX 5 from the zip's
-     folder (App), the version (Version), the licence as RTF (Licence) and an
-     empty file (Marker). -->
+     folder (App), the version (Version), the bundled gw's release (Tools) and
+     the licence as RTF (Licence).
+     INSTALLGW=0 leaves Greaseweazle Tools out of a silent install. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <!-- A new version, or a new build of the same one, replaces any installed
@@ -26,6 +27,47 @@
     <WixVariable Id="WixUIDialogBmp" Value="$(sys.SOURCEFILEDIR)dialog.bmp" />
     <WixVariable Id="WixUIBannerBmp" Value="$(sys.SOURCEFILEDIR)banner.bmp" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <!-- Ticked unless the command line says otherwise. -->
+    <Property Id="INSTALLGW" Value="1" />
+    <!-- A page after the folder's: install Greaseweazle Tools, or use your own. -->
+    <UI>
+      <Dialog Id="ToolsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+                 TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15"
+                 Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Greaseweazle Tools" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="Ferriteweazle runs gw, the command line of Greaseweazle Tools." />
+        <Control Id="Install" Type="CheckBox" X="20" Y="60" Width="330" Height="18"
+                 Property="INSTALLGW" CheckBoxValue="1"
+                 Text="Install Greaseweazle Tools $(Tools)" />
+        <Control Id="Own" Type="Text" X="20" Y="84" Width="330" Height="40" NoPrefix="yes"
+                 Text="Untick to use your own: select its gw or gw.exe under Settings &gt; Paths once Ferriteweazle runs." />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="!(loc.WixUICancel)" />
+      </Dialog>
+      <!-- The tick sets the feature: its Level condition is read before the pages. -->
+      <Publish Dialog="ToolsDlg" Control="Next" Event="AddLocal" Value="GreaseweazleTools"
+               Order="1" Condition="INSTALLGW = &quot;1&quot;" />
+      <Publish Dialog="ToolsDlg" Control="Next" Event="Remove" Value="GreaseweazleTools"
+               Order="2" Condition="INSTALLGW &lt;&gt; &quot;1&quot;" />
+      <Publish Dialog="ToolsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg"
+               Order="3" />
+      <Publish Dialog="ToolsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" />
+      <Publish Dialog="ToolsDlg" Control="Cancel" Event="SpawnDialog" Value="CancelDlg" />
+      <!-- The last NewDialog a control publishes wins: these follow WixUI_InstallDir's. -->
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ToolsDlg"
+               Order="10" Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID = &quot;1&quot;" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ToolsDlg"
+               Order="10" Condition="NOT Installed" />
+    </UI>
     <!-- An upgrade goes where the installed version went. -->
     <Property Id="INSTALLFOLDER">
       <RegistrySearch Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
@@ -34,11 +76,11 @@
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Ferriteweazle">
-        <Directory Id="DATAFOLDER" Name="ferriteweazle-data" />
+        <Directory Id="DATAFOLDER" Name="greaseweazle" />
       </Directory>
     </StandardDirectory>
 
-    <Feature Id="Ferriteweazle">
+    <Feature Id="Ferriteweazle" AllowAbsent="no">
       <Component Directory="INSTALLFOLDER">
         <File Source="$(App)\Ferriteweazle.exe">
           <Shortcut Name="Ferriteweazle" Directory="ProgramMenuFolder"
@@ -55,11 +97,10 @@
         <RegistryValue Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
                        Type="string" Value="[INSTALLFOLDER]" />
       </Component>
-      <Files Directory="DATAFOLDER" Include="$(App)\ferriteweazle-data\**" />
-      <!-- Tells the app it was installed from an MSI, so it updates with one. -->
-      <Component Directory="DATAFOLDER">
-        <File Name="msi" Source="$(Marker)" />
-      </Component>
+    </Feature>
+    <Feature Id="GreaseweazleTools" Title="Greaseweazle Tools $(Tools)" AllowAbsent="yes">
+      <Level Value="0" Condition="INSTALLGW &lt;&gt; &quot;1&quot;" />
+      <Files Directory="DATAFOLDER" Include="$(App)\greaseweazle\**" />
     </Feature>
   </Package>
 </Wix>
