@@ -7,26 +7,26 @@ You need [Rust](https://rustup.rs) 1.95 or later.
 ```sh
 git clone https://github.com/hobbo91/ferriteweazle
 cd ferriteweazle
-engine/build.sh     # optional: gw with its own Python, in target/engine
+bundle/build.sh     # optional: gw with its own Python, in target/greaseweazle-bundle
 cargo run --release
 ```
 
 The app runs the first gw it finds:
 
-1. The engine in `target/engine`.
+1. The bundle in `target/greaseweazle-bundle`.
 2. An installed `gw`: on the PATH, or in `~/.local/bin`, `/opt/homebrew/bin` or
    `/usr/local/bin`.
 
 **Settings > Paths > gw** points it at any other gw.
 
-## The engine
+## The Greaseweazle Tools bundle
 
-`engine/build.sh` builds `target/engine`, the gw that packages ship: a standalone
+`bundle/build.sh` builds `target/greaseweazle-bundle`, the gw that packages ship: a standalone
 Python from [python-build-standalone](https://github.com/astral-sh/python-build-standalone),
 gw's latest release installed into it with pip, and the
 [SPS/CAPS library](https://github.com/simonowen/capsimage), which gw needs for IPF and
 CT Raw images. Python and the CAPS source are checked against the hashes in
-`engine/`. The CAPS library is free for non-commercial use only.
+`bundle/`. The CAPS library is free for non-commercial use only.
 
 It needs curl, git and a C/C++ compiler:
 
@@ -35,13 +35,13 @@ It needs curl, git and a C/C++ compiler:
 - Linux: [zig](https://ziglang.org), which builds for glibc 2.17.
 
 ```sh
-engine/build.sh                          # this computer
-engine/build.sh x86_64-apple-darwin      # another processor, run emulated
-GREASEWEAZLE=v1.23 engine/build.sh       # a given gw release
-GREASEWEAZLE_SOURCE=~/src/greaseweazle engine/build.sh   # a local clone
+bundle/build.sh                          # this computer
+bundle/build.sh x86_64-apple-darwin      # another processor, run emulated
+GREASEWEAZLE=v1.23 bundle/build.sh       # a given gw release
+GREASEWEAZLE_SOURCE=~/src/greaseweazle bundle/build.sh   # a local clone
 ```
 
-To stay on one gw release, set `GREASEWEAZLE` in `engine/versions` to its tag.
+To stay on one gw release, set `GREASEWEAZLE` in `bundle/versions` to its tag.
 
 ## Tests
 
@@ -55,7 +55,7 @@ there is no gw. No test opens a device.
 
 ## Packages
 
-Each script writes to `dist`, rebuilding the engine first if gw has a newer
+Each script writes to `dist`, rebuilding the bundle first if gw has a newer
 release. `VERSION` is the one in `Cargo.toml`.
 
 | System | Command | Packages |
@@ -67,7 +67,7 @@ release. `VERSION` is the one in `Cargo.toml`.
 ### macOS
 
 One app for Apple Silicon and Intel, macOS 10.15 or newer. Needs rustup's stable
-toolchain with both targets, and Rosetta for the Intel engine:
+toolchain with both targets, and Rosetta for the Intel bundle:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin

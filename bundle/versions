@@ -1,8 +1,8 @@
-# The bundled engine. engine/build.sh builds Greaseweazle's newest release
+# The Greaseweazle Tools bundle. bundle/build.sh builds Greaseweazle's newest release
 # unless GREASEWEAZLE, here or in the environment, names a tag. PYTHON and
 # PYTHON_RELEASE pick python-build-standalone's build: list its archives in
-# engine/python.sha256, then run packaging/python-licences.sh. CAPS_COMMIT is
-# the SPS/CAPS source (engine/caps.sh), which engine/caps.sha256 must list.
+# bundle/python.sha256, then run packaging/python-licences.sh. CAPS_COMMIT is
+# the SPS/CAPS source (bundle/caps.sh), which bundle/caps.sha256 must list.
 GREASEWEAZLE=
 PYTHON=3.14.7
 PYTHON_RELEASE=20260924

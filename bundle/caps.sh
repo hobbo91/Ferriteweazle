@@ -1,25 +1,25 @@
 #!/bin/sh
 # Builds the SPS/CAPS library, which gw needs for IPF and CT Raw images, into
 # DEST/caps for TRIPLE, where the bridge points gw at it (its licence forbids
-# commercial use). A gw run outside an engine finds its own. Downloads the
-# source, checked against engine/caps.sha256.
+# commercial use). A gw run outside a bundle finds its own. Downloads the
+# source, checked against bundle/caps.sha256.
 #
-#   engine/caps.sh TRIPLE DEST
+#   bundle/caps.sh TRIPLE DEST
 set -eu
 cd "$(dirname "$0")/.."
-. engine/versions
+. bundle/versions
 triple=$1
 dest=$2
 
 name=capsimage-$CAPS_COMMIT.tar.gz
-cache=target/engine-cache
+cache=target/bundle-cache
 mkdir -p "$cache"
 if [ ! -f "$cache/$name" ]; then
     curl -fL --retry 3 -o "$cache/$name.part" \
         "https://github.com/simonowen/capsimage/archive/$CAPS_COMMIT.tar.gz"
     mv "$cache/$name.part" "$cache/$name"
 fi
-grep " $name\$" engine/caps.sha256 | (cd "$cache" && shasum -a 256 -c -) >/dev/null
+grep " $name\$" bundle/caps.sha256 | (cd "$cache" && shasum -a 256 -c -) >/dev/null
 work=target/caps-$triple
 rm -rf "$work"
 mkdir -p "$work"

@@ -1,4 +1,4 @@
-//! Finds the Python gw runs in, and starts the bridge in it.
+//! Finds the Greaseweazle Tools the app runs, and starts the bridge in their Python.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +19,7 @@ fn loader() -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Engine {
+pub struct Tools {
     /// gw's Python, or gw itself when `standalone`.
     pub python: PathBuf,
     pub origin: Origin,
@@ -38,9 +38,9 @@ pub enum Origin {
     Installed,
 }
 
-impl Engine {
-    /// The custom choice if given, else the bundled engine, else an installed `gw`.
-    pub fn find(custom: Option<&Path>) -> Option<Engine> {
+impl Tools {
+    /// The custom choice if given, else the bundle, else an installed `gw`.
+    pub fn find(custom: Option<&Path>) -> Option<Tools> {
         let ((python, standalone), origin) = if let Some(path) = custom {
             (gw(path)?, Origin::Custom)
         } else if let Some(python) = bundled() {
@@ -48,19 +48,19 @@ impl Engine {
         } else {
             (installed()?, Origin::Installed)
         };
-        Some(Engine {
+        Some(Tools {
             python,
             origin,
             standalone,
         })
     }
 
-    /// An engine with a Python to ask GitHub with: this one, or beside a
-    /// standalone gw the built-in one.
-    pub fn with_python(&self) -> Option<Engine> {
+    /// Greaseweazle Tools with a Python to ask GitHub with: these, or beside a
+    /// standalone gw the bundle.
+    pub fn with_python(&self) -> Option<Tools> {
         match self.standalone {
             false => Some(self.clone()),
-            true => Some(Engine {
+            true => Some(Tools {
                 python: bundled()?,
                 origin: Origin::Bundled,
                 standalone: false,
@@ -177,13 +177,13 @@ fn udev_rule_with(exe: &Path) -> Option<PathBuf> {
 }
 
 /// `Contents/Resources/greaseweazle` in a macOS app, `greaseweazle`
-/// beside the program elsewhere, and `target/engine` for `cargo run`.
+/// beside the program elsewhere, and `target/greaseweazle-bundle` for `cargo run`.
 fn data_with(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [
         dir.join("../Resources").join(DATA),
         dir.join(DATA),
-        dir.join("../engine"),
+        dir.join("../greaseweazle-bundle"),
     ]
     .into_iter()
     .find(|root| python_in(root).is_file())
@@ -295,12 +295,12 @@ mod tests {
 
     #[test]
     fn gw_writes_no_bytecode_beside_itself() {
-        let engine = Engine {
+        let tools = Tools {
             python: "python3".into(),
             origin: Origin::Bundled,
             standalone: false,
         };
-        let cmd = engine.bridge("serve");
+        let cmd = tools.bridge("serve");
         let set = |(k, v): (&std::ffi::OsStr, Option<&std::ffi::OsStr>)| {
             k == "PYTHONDONTWRITEBYTECODE" && v.is_some_and(|v| v == "1")
         };
@@ -311,7 +311,7 @@ mod tests {
     fn the_built_in_gw_ignores_the_users_own_packages_and_python_paths() {
         // Some(None) is a variable taken away, None one left as inherited.
         let var = |origin, name: &str| {
-            let cmd = Engine {
+            let cmd = Tools {
                 python: "python3".into(),
                 origin,
                 standalone: false,
@@ -465,10 +465,10 @@ mod tests {
         );
         std::fs::remove_dir_all(&launcher).ok();
         assert_eq!(installed_in(dirs()), Some((program.clone(), true)));
-        let chosen = Engine::find(Some(&program)).unwrap();
+        let chosen = Tools::find(Some(&program)).unwrap();
         assert!(chosen.standalone && chosen.origin == Origin::Custom);
         assert_eq!(
-            Engine::find(Some(&dir.join("readme.txt"))),
+            Tools::find(Some(&dir.join("readme.txt"))),
             None,
             "not there"
         );
@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_inside_a_mac_app_is_found() {
+    fn the_bundle_inside_a_mac_app_is_found() {
         let dir = scratch("bundle");
         let app = dir.join("Ferriteweazle.app/Contents");
         let python = python_in(&app.join("Resources").join(DATA));
@@ -498,21 +498,21 @@ mod tests {
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
         std::fs::write(dir.join(DATA).join("greaseweazle-version"), "v1.23\n").unwrap();
-        let engine = Engine {
+        let tools = Tools {
             python,
             origin: Origin::Bundled,
             standalone: false,
         };
-        assert_eq!(engine.bundled_tag().as_deref(), Some("v1.23"));
+        assert_eq!(tools.bundled_tag().as_deref(), Some("v1.23"));
         let updates = dir.join("gw");
         for tag in ["v1.22", "v1.23", "v1.24", "v1.24.1", "v1.25.part"] {
             std::fs::create_dir_all(updates.join(tag).join("greaseweazle")).unwrap();
         }
         std::fs::create_dir_all(updates.join("v1.30")).unwrap();
-        assert_eq!(engine.update_in(&updates), Some(updates.join("v1.24.1")));
-        let custom = Engine {
+        assert_eq!(tools.update_in(&updates), Some(updates.join("v1.24.1")));
+        let custom = Tools {
             origin: Origin::Custom,
-            ..engine
+            ..tools
         };
         assert_eq!(
             custom.update_in(&updates),
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_beside_the_program_is_found() {
+    fn the_bundle_beside_the_program_is_found() {
         let dir = scratch("portable");
         let python = python_in(&dir.join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();

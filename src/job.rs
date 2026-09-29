@@ -1,9 +1,9 @@
 //! One gw command, run through the bridge, with its output as it arrives.
 
 use crate::device;
-use crate::engine::{Engine, quiet};
 use crate::progress::Progress;
 use crate::service::Repaint;
+use crate::tools::{Tools, quiet};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -71,21 +71,21 @@ pub struct Job {
 impl Job {
     /// Runs `gw ARGS`, or with [`DETECT`] finds the format of the disk they name.
     pub fn start(
-        engine: &Engine,
+        tools: &Tools,
         device: &str,
         command: &str,
         args: Vec<String>,
         repaint: Repaint,
     ) -> std::io::Result<Job> {
         let mode = if command == DETECT { "detect" } else { "run" };
-        let mut cmd = match engine.standalone {
+        let mut cmd = match tools.standalone {
             true if command == DETECT => {
                 return Err(std::io::Error::other(
                     "Standalone Greaseweazle Tools cannot run Detect.",
                 ));
             }
-            true => quiet(std::process::Command::new(&engine.python)),
-            false => engine.bridge(mode),
+            true => quiet(std::process::Command::new(&tools.python)),
+            false => tools.bridge(mode),
         };
         let mut child = cmd
             // The device the bridge's own messages name.
@@ -103,7 +103,7 @@ impl Job {
         Ok(Job {
             child: Some(child),
             stdin,
-            standalone: engine.standalone,
+            standalone: tools.standalone,
             ..Job::new(command, args, lines)
         })
     }
@@ -459,14 +459,14 @@ mod tests {
 
     /// A standalone gw that runs `body` in sh.
     #[cfg(unix)]
-    fn standalone(test: &str, body: &str) -> (Engine, std::path::PathBuf) {
+    fn standalone(test: &str, body: &str) -> (Tools, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("gw");
         std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        (Engine::find(Some(&script)).unwrap(), dir)
+        (Tools::find(Some(&script)).unwrap(), dir)
     }
 
     #[test]

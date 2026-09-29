@@ -2,14 +2,14 @@
 # Writes packaging/licences/python-PYTHON+PYTHON_RELEASE.txt: CPython's licence,
 # python-build-standalone's texts for the libraries it links (the same on every
 # platform) but Tcl/Tk and X11 (tkinter), Berkeley DB (_dbm) and OpenSSL 1.1,
-# which the engine lacks, and zstd's, which that build leaves out. Run it after
-# changing PYTHON or PYTHON_RELEASE in engine/versions; engine/python.sha256
+# which the bundle lacks, and zstd's, which that build leaves out. Run it after
+# changing PYTHON or PYTHON_RELEASE in bundle/versions; bundle/python.sha256
 # must list the downloads. Needs zstd.
 set -eu
 cd "$(dirname "$0")/.."
-. engine/versions
+. bundle/versions
 ZSTD=1.5.7
-cache=target/engine-cache
+cache=target/bundle-cache
 work=target/python-licences
 mkdir -p "$cache"
 rm -rf "$work"
@@ -17,8 +17,8 @@ mkdir -p "$work"
 
 # Downloads NAME from URL into the cache once, and checks it.
 fetch() {
-    sum=$(grep " $1\$" engine/python.sha256) ||
-        { echo "licences: engine/python.sha256 has no line for $1" >&2; exit 1; }
+    sum=$(grep " $1\$" bundle/python.sha256) ||
+        { echo "licences: bundle/python.sha256 has no line for $1" >&2; exit 1; }
     if [ ! -f "$cache/$1" ]; then
         curl -fL --retry 3 -o "$cache/$1.part" "$2"
         mv "$cache/$1.part" "$cache/$1"

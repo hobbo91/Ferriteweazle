@@ -1,4 +1,4 @@
-//! End-to-end tests against real gw: the bundled engine in target/engine if
+//! End-to-end tests against real gw: the bundle in target/greaseweazle-bundle if
 //! built, else an installed one. They skip when there is neither. None opens
 //! a device.
 
@@ -8,22 +8,22 @@ use common::{Window, app, app_mut, greaseweazle, line, run_button, squares};
 use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
-use ferriteweazle::engine::{Engine, Origin};
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
 use ferriteweazle::progress::Status;
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::service::{Load, Service};
+use ferriteweazle::tools::{Origin, Tools};
 use ferriteweazle::{App, Drawer, Page, Settings};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The engine in target/engine or the folder FERRITEWEAZLE_ENGINE names (such
+/// The bundle in target/greaseweazle-bundle or the folder FERRITEWEAZLE_BUNDLE names (such
 /// as another processor's, run emulated), else an installed gw.
-fn engine() -> Option<Engine> {
-    let dir = std::env::var_os("FERRITEWEAZLE_ENGINE").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("target/engine"),
+fn tools() -> Option<Tools> {
+    let dir = std::env::var_os("FERRITEWEAZLE_BUNDLE").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("target/greaseweazle-bundle"),
         PathBuf::from,
     );
     let python = match cfg!(windows) {
@@ -31,16 +31,16 @@ fn engine() -> Option<Engine> {
         false => dir.join("bin/python3"),
     };
     let found = if python.is_file() {
-        Some(Engine {
+        Some(Tools {
             python,
             origin: Origin::Bundled,
             standalone: false,
         })
     } else {
-        Engine::find(None)
+        Tools::find(None)
     };
     if found.is_none() {
-        eprintln!("skipped: no Greaseweazle engine on this machine");
+        eprintln!("skipped: no Greaseweazle Tools on this machine");
     }
     found
 }
@@ -69,9 +69,9 @@ fn wait<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-fn start(engine: &Engine, command: &str, args: &[&str]) -> Job {
+fn start(tools: &Tools, command: &str, args: &[&str]) -> Job {
     let args = args.iter().map(|a| a.to_string()).collect();
-    Job::start(engine, "Greaseweazle", command, args, Box::new(|| {})).expect("the bridge starts")
+    Job::start(tools, "Greaseweazle", command, args, Box::new(|| {})).expect("the bridge starts")
 }
 
 fn finish(mut job: Job, what: &str) -> Job {
@@ -83,14 +83,14 @@ fn finish(mut job: Job, what: &str) -> Job {
 }
 
 /// Runs a conversion to the end; it must succeed.
-fn run(engine: &Engine, args: &[&str]) -> Job {
-    let job = finish(start(engine, "convert", args), "the job to end");
+fn run(tools: &Tools, args: &[&str]) -> Job {
+    let job = finish(start(tools, "convert", args), "the job to end");
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     job
 }
 
-fn detect(engine: &Engine, image: &Path) -> Job {
-    finish(start(engine, DETECT, &[&path(image)]), "detection")
+fn detect(tools: &Tools, image: &Path) -> Job {
+    finish(start(tools, DETECT, &[&path(image)]), "detection")
 }
 
 /// A port that loses the command sent after each opening listed, as Windows
@@ -129,9 +129,9 @@ for lost in eval(sys.argv[2]):
 
 #[test]
 fn a_command_lost_after_opening_the_port_is_sent_again() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
-    let out = std::process::Command::new(&engine.python)
+    let out = std::process::Command::new(&tools.python)
         .args(["-c", LOSSY_PORT])
         .arg(&bridge)
         .arg("[set(), {1}, {1, 2}, {1, 2, 3}]")
@@ -151,7 +151,7 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
         String::from_utf8_lossy(&out.stderr)
     );
     // The device the app drives, as Job::start names it.
-    let out = std::process::Command::new(&engine.python)
+    let out = std::process::Command::new(&tools.python)
         .args(["-c", LOSSY_PORT])
         .arg(&bridge)
         .arg("[{1, 2, 3}]")
@@ -164,11 +164,11 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
 
 #[test]
 fn gw_on_the_adafruit_rp2040_does_what_its_firmware_allows_and_no_more() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("adafruit");
     let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
     let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
-    let out = std::process::Command::new(&engine.python)
+    let out = std::process::Command::new(&tools.python)
         .arg(data.join("adafruit.py"))
         .arg(&bridge)
         .arg(dir.join("read.img"))
@@ -221,9 +221,9 @@ print(sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & 
 
 #[test]
 fn the_bridge_runs_on_the_oldest_python_gw_does() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
-    let out = std::process::Command::new(&engine.python)
+    let out = std::process::Command::new(&tools.python)
         .args(["-c", NEWER_PYTHON])
         .arg(&bridge)
         .output()
@@ -268,8 +268,8 @@ impl Drop for Server {
     }
 }
 
-fn serve(engine: &Engine, dir: &Path) -> Server {
-    let mut child = std::process::Command::new(&engine.python)
+fn serve(tools: &Tools, dir: &Path) -> Server {
+    let mut child = std::process::Command::new(&tools.python)
         .args([
             "-u",
             "-m",
@@ -294,20 +294,20 @@ fn serve(engine: &Engine, dir: &Path) -> Server {
 
 #[test]
 fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed() {
-    let Some(engine) = engine().filter(|e| e.origin == Origin::Bundled) else {
+    let Some(tools) = tools().filter(|e| e.origin == Origin::Bundled) else {
         return;
     };
     let dir = scratch("github");
     let site = dir.join("site");
-    let made = std::process::Command::new(&engine.python)
+    let made = std::process::Command::new(&tools.python)
         .args(["-c", FAKE_GITHUB])
         .arg(&site)
         .status()
         .expect("python runs");
     assert!(made.success());
-    let server = serve(&engine, &site);
+    let server = serve(&tools, &site);
     let bridge = |args: &[&str]| {
-        let out = engine
+        let out = tools
             .bridge(args[0])
             .args(&args[1..])
             .env("FERRITEWEAZLE_GITHUB", &server.1)
@@ -328,8 +328,8 @@ fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed()
     assert!(ok, "{why}");
     assert_eq!(tag, "v1.99");
 
-    assert_eq!(engine.update_in(&updates), Some(updates.join("v1.99")));
-    let ran = std::process::Command::new(&engine.python)
+    assert_eq!(tools.update_in(&updates), Some(updates.join("v1.99")));
+    let ran = std::process::Command::new(&tools.python)
         .args(["-c", "import greaseweazle.optimised as o, greaseweazle as g; print(g.__version__, o.enabled)"])
         .env("PYTHONPATH", updates.join("v1.99"))
         .output()
@@ -361,18 +361,18 @@ with open(f'{folder}/SHA256SUMS-0.9.1.txt', 'w') as f:
 
 #[test]
 fn a_release_is_downloaded_checked_against_its_sums_and_unpacked() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("release");
     let site = dir.join("site");
-    let made = std::process::Command::new(&engine.python)
+    let made = std::process::Command::new(&tools.python)
         .args(["-c", FAKE_RELEASE])
         .arg(&site)
         .status()
         .expect("python runs");
     assert!(made.success());
-    let server = serve(&engine, &site);
+    let server = serve(&tools, &site);
     let fetch = |name: &str| {
-        let out = engine
+        let out = tools
             .bridge("fetch")
             .args(["v0.9.1", name])
             .arg(dir.join("got"))
@@ -394,7 +394,7 @@ fn a_release_is_downloaded_checked_against_its_sums_and_unpacked() {
 
 #[test]
 fn github_out_of_reach_is_one_sentence_whatever_asked_it() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("unreachable");
     let folder = path(&dir);
     for args in [
@@ -408,7 +408,7 @@ fn github_out_of_reach_is_one_sentence_whatever_asked_it() {
         vec!["update", "v1.99", "v1.23", &folder],
     ] {
         // Nothing listens on the discard port.
-        let out = engine
+        let out = tools
             .bridge(args[0])
             .args(&args[1..])
             .env("FERRITEWEAZLE_GITHUB", "http://127.0.0.1:9")
@@ -424,8 +424,8 @@ fn github_out_of_reach_is_one_sentence_whatever_asked_it() {
 
 #[test]
 fn the_service_describes_gw_and_checks_values() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let schema = wait("the schema", || {
         service.poll();
         if let Some(e) = service.schema.error() {
@@ -471,7 +471,7 @@ fn the_service_describes_gw_and_checks_values() {
 
 #[test]
 fn every_value_of_the_example_presets_is_one_gws_own_parser_takes() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets");
     let mut asked = Vec::new();
     for entry in std::fs::read_dir(folder).unwrap().flatten() {
@@ -488,7 +488,7 @@ fn every_value_of_the_example_presets_is_one_gws_own_parser_takes() {
             asked.push((format!("{name}: {dest}={value}"), op));
         }
     }
-    let mut bridge = engine
+    let mut bridge = tools
         .bridge("serve")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -518,8 +518,8 @@ fn every_value_of_the_example_presets_is_one_gws_own_parser_takes() {
 
 #[test]
 fn format_details_describe_the_whole_disk_not_its_first_track() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let mut info = |name: &str| {
         let info = wait(name, || {
             service.poll();
@@ -551,8 +551,8 @@ fn format_details_describe_the_whole_disk_not_its_first_track() {
 
 #[test]
 fn the_port_list_says_which_ports_linux_denies_this_account() {
-    let Some(engine) = engine() else { return };
-    let mut bridge = engine
+    let Some(tools) = tools() else { return };
+    let mut bridge = tools
         .bridge("serve")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -581,15 +581,15 @@ fn the_port_list_says_which_ports_linux_denies_this_account() {
 
 #[test]
 fn a_packaged_engine_opens_ipf_images_with_its_own_caps_library() {
-    let Some(engine) = engine() else { return };
-    let root = engine.python.parent().unwrap();
+    let Some(tools) = tools() else { return };
+    let root = tools.python.parent().unwrap();
     let root = if cfg!(windows) {
         root
     } else {
         root.parent().unwrap()
     };
     if !root.join("caps").is_dir() {
-        eprintln!("skipped: this engine has no SPS/CAPS library");
+        eprintln!("skipped: this bundle has no SPS/CAPS library");
         return;
     }
     let dir = scratch("caps");
@@ -597,7 +597,7 @@ fn a_packaged_engine_opens_ipf_images_with_its_own_caps_library() {
     std::fs::write(&ipf, b"not an IPF").unwrap();
     let args = [path(&ipf), path(&dir.join("junk.hfe"))];
     let job = finish(
-        start(&engine, "convert", &["convert", &args[0], &args[1]]),
+        start(&tools, "convert", &["convert", &args[0], &args[1]]),
         "the job to end",
     );
     let log = job.log.join("\n");
@@ -608,7 +608,7 @@ fn a_packaged_engine_opens_ipf_images_with_its_own_caps_library() {
 
 #[test]
 fn a_conversion_round_trip_is_exact_and_fully_mapped() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("round-trip");
     let (img, scp, back) = (dir.join("a.img"), dir.join("a.scp"), dir.join("b.img"));
     std::fs::write(
@@ -619,11 +619,11 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     )
     .unwrap();
     run(
-        &engine,
+        &tools,
         &["convert", "--format=ibm.360", &path(&img), &path(&scp)],
     );
     let job = run(
-        &engine,
+        &tools,
         &["convert", "--format=ibm.360", &path(&scp), &path(&back)],
     );
 
@@ -637,50 +637,50 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
 }
 
 /// A standalone gw: FERRITEWEAZLE_STANDALONE_GW, such as the gw.exe of gw's
-/// Windows download, else on Unix the engine's gw run by a script of its own,
+/// Windows download, else on Unix the bundle's gw run by a script of its own,
 /// as the frozen gw.exe runs it in its own Python.
-fn standalone(engine: &Engine, dir: &Path) -> Option<Engine> {
+fn standalone(tools: &Tools, dir: &Path) -> Option<Tools> {
     if let Some(gw) = std::env::var_os("FERRITEWEAZLE_STANDALONE_GW") {
-        return Engine::find(Some(Path::new(&gw))).filter(|e| e.standalone);
+        return Tools::find(Some(Path::new(&gw))).filter(|e| e.standalone);
     }
-    script_gw(engine, dir)
+    script_gw(tools, dir)
 }
 
 #[cfg(not(unix))]
-fn script_gw(_: &Engine, _: &Path) -> Option<Engine> {
+fn script_gw(_: &Tools, _: &Path) -> Option<Tools> {
     None
 }
 
 #[cfg(unix)]
-fn script_gw(engine: &Engine, dir: &Path) -> Option<Engine> {
+fn script_gw(tools: &Tools, dir: &Path) -> Option<Tools> {
     use std::os::unix::fs::PermissionsExt;
     let script = dir.join("gw");
     let gw = "import sys; from greaseweazle import cli; sys.argv[0] = 'gw'; sys.exit(cli.main())";
     let text = format!(
         "#!/bin/sh\nexec '{}' -c \"{gw}\" \"$@\"\n",
-        path(&engine.python)
+        path(&tools.python)
     );
     std::fs::write(&script, text).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    Engine::find(Some(&script)).filter(|e| e.standalone)
+    Tools::find(Some(&script)).filter(|e| e.standalone)
 }
 
 #[test]
 fn a_standalone_gw_gets_its_pages_from_its_help_and_converts_as_it_is() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("standalone-gw");
-    let Some(gw) = standalone(&engine, &dir) else {
+    let Some(gw) = standalone(&tools, &dir) else {
         eprintln!("skipped: no standalone gw here");
         return;
     };
-    let schema = |engine: &Engine| {
-        let mut service = Service::start(engine, Box::new(|| {}));
+    let schema = |tools: &Tools| {
+        let mut service = Service::start(tools, Box::new(|| {}));
         wait("the schema", || {
             service.poll();
             service.schema.ready().cloned()
         })
     };
-    let (help, parsers) = (schema(&gw), schema(&engine));
+    let (help, parsers) = (schema(&gw), schema(&tools));
     let options = |s: &Schema| {
         let dests =
             |c: &ferriteweazle::schema::Command| c.args.iter().map(|a| a.dest.clone()).collect();
@@ -719,17 +719,17 @@ fn a_standalone_gw_gets_its_pages_from_its_help_and_converts_as_it_is() {
 
 #[test]
 fn stopping_a_job_ends_it_and_gw_tidies_up() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("stop");
     let (img, scp, back) = (dir.join("a.img"), dir.join("a.scp"), dir.join("b.img"));
     std::fs::write(&img, vec![0u8; 1_474_560]).unwrap();
     run(
-        &engine,
+        &tools,
         &["convert", "--format=ibm.1440", &path(&img), &path(&scp)],
     );
 
     let mut job = start(
-        &engine,
+        &tools,
         "convert",
         &["convert", "--format=ibm.1440", &path(&scp), &path(&back)],
     );
@@ -753,9 +753,9 @@ fn stopping_a_job_ends_it_and_gw_tidies_up() {
 
 #[test]
 fn a_question_from_gw_waits_for_an_answer() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     // Past cylinder 83 gw asks first; answering No ends it before any device is opened.
-    let mut job = start(&engine, "seek", &["seek", "90"]);
+    let mut job = start(&tools, "seek", &["seek", "90"]);
     let question = wait("the question", || {
         job.poll();
         job.question.clone()
@@ -767,11 +767,11 @@ fn a_question_from_gw_waits_for_an_answer() {
     assert!(job.log.is_empty(), "{:?}", job.log);
 }
 
-/// The app's window on `engine` once gw has described itself, with no Greaseweazle
+/// The app's window on `tools` once gw has described itself, with no Greaseweazle
 /// listed, whatever is plugged in, until gw restarts.
-fn window(engine: &Engine, settings: Settings) -> Window {
+fn window(tools: &Tools, settings: Settings) -> Window {
     let settings = Settings {
-        engine: Some(engine.python.clone()),
+        tools: Some(tools.python.clone()),
         ..settings
     };
     let mut w = egui_kittest::Harness::builder()
@@ -787,7 +787,7 @@ fn window(engine: &Engine, settings: Settings) -> Window {
             },
             None,
         );
-    until(&mut w, "the engine", |app| app.schema().is_some());
+    until(&mut w, "Greaseweazle Tools", |app| app.schema().is_some());
     // A click lands on what the last frame drew, as for a person.
     w.run_steps(2);
     w
@@ -820,13 +820,13 @@ fn convert_page(dir: &Path) -> Settings {
 
 #[test]
 fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("page");
     let settings = Settings {
         save_logs: true,
         ..convert_page(&dir)
     };
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     w.get_by_label("Convert").click();
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
@@ -843,7 +843,7 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
 
 #[test]
 fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("batch");
     let (inputs, outputs) = (dir.join("in"), dir.join("out"));
     std::fs::create_dir_all(&inputs).unwrap();
@@ -869,7 +869,7 @@ fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went
         ..Output::default()
     };
     settings.outputs.insert("convert/out_file".into(), out);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     w.get_by_label_contains("3 images: Game_Disk1.img, Game_Disk2.img, Game_Disk10.img");
     run_button(&w, "Convert images").click();
     until(&mut w, "the batch", |app| {
@@ -908,10 +908,10 @@ fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went
 
 #[test]
 fn a_job_that_would_replace_a_file_asks_first() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("overwrite");
     std::fs::write(dir.join("Game.scp"), b"keep me").unwrap();
-    let mut w = window(&engine, convert_page(&dir));
+    let mut w = window(&tools, convert_page(&dir));
     w.get_by_label("Convert").click();
     w.run_steps(2);
     w.get_by_label("Overwrite \"Game.scp\"?");
@@ -937,8 +937,8 @@ fn read_button(w: &Window) -> egui_kittest::Node<'_> {
 }
 
 /// Starts `seek 90` as the tool job, which waits on gw's question until stopped.
-fn waiting_tool(w: &mut Window, engine: &Engine) {
-    app_mut(w).tool = Some(start(engine, "seek", &["seek", "90"]));
+fn waiting_tool(w: &mut Window, tools: &Tools) {
+    app_mut(w).tool = Some(start(tools, "seek", &["seek", "90"]));
     until(w, "gw's question", |app| {
         app.tool.as_ref().is_some_and(|j| j.question.is_some())
     });
@@ -946,8 +946,8 @@ fn waiting_tool(w: &mut Window, engine: &Engine) {
 
 #[test]
 fn reading_waits_for_a_format_an_image_type_and_a_greaseweazle() {
-    let Some(engine) = engine() else { return };
-    let mut w = window(&engine, Settings::default());
+    let Some(tools) = tools() else { return };
+    let mut w = window(&tools, Settings::default());
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     w.run_steps(2);
     assert!(read_button(&w).accesskit_node().is_disabled());
@@ -967,12 +967,12 @@ fn reading_waits_for_a_format_an_image_type_and_a_greaseweazle() {
 
 #[test]
 fn a_device_page_stays_open_when_the_greaseweazle_goes_and_its_job_runs_on() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let settings = Settings {
         page: Page::Command("erase".into()),
         ..Settings::default()
     };
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     let greyed = |w: &Window| run_button(w, "Erase disk").accesskit_node().is_disabled();
     assert!(greyed(&w));
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
@@ -985,7 +985,7 @@ fn a_device_page_stays_open_when_the_greaseweazle_goes_and_its_job_runs_on() {
 
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     app_mut(&mut w).settings.page = Page::Command("seek".into());
-    waiting_tool(&mut w, &engine);
+    waiting_tool(&mut w, &tools);
     app_mut(&mut w).pin_ports(Vec::new());
     w.run_steps(2);
     assert!(app_mut(&mut w).tool.as_ref().unwrap().running());
@@ -1019,12 +1019,12 @@ fn painted(w: &Window, text: &str) -> bool {
 
 #[test]
 fn the_sidebar_keeps_its_entries_while_gw_restarts() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let settings = Settings {
         page: Page::Settings,
         ..Settings::default()
     };
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     let before = entries(&w);
     assert!(before.contains(&"Erase disk".to_owned()), "{before:?}");
     let version = format!("gw {}", app(&w).schema().unwrap().version);
@@ -1043,12 +1043,12 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
 
 #[test]
 fn a_restarted_gw_keeps_the_greaseweazle_until_it_has_looked() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let settings = Settings {
         page: Page::Settings,
         ..Settings::default()
     };
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     w.run_steps(2);
     w.get_by_label("Restart").click();
@@ -1059,9 +1059,9 @@ fn a_restarted_gw_keeps_the_greaseweazle_until_it_has_looked() {
 
 #[test]
 fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
-    let Some(engine) = engine() else { return };
-    let mut w = window(&engine, Settings::default());
-    waiting_tool(&mut w, &engine);
+    let Some(tools) = tools() else { return };
+    let mut w = window(&tools, Settings::default());
+    waiting_tool(&mut w, &tools);
 
     w.input_mut()
         .viewports
@@ -1093,9 +1093,9 @@ fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
 
 #[test]
 fn a_job_that_ends_while_quit_asks_lets_the_window_close() {
-    let Some(engine) = engine() else { return };
-    let mut w = window(&engine, Settings::default());
-    waiting_tool(&mut w, &engine);
+    let Some(tools) = tools() else { return };
+    let mut w = window(&tools, Settings::default());
+    waiting_tool(&mut w, &tools);
     w.input_mut()
         .viewports
         .entry(egui::ViewportId::ROOT)
@@ -1117,7 +1117,7 @@ fn a_job_that_ends_while_quit_asks_lets_the_window_close() {
 }
 
 /// A flux image of `format`, which gw makes from a sector image `bytes` long.
-fn flux_of(engine: &Engine, dir: &Path, format: &str, bytes: usize) -> PathBuf {
+fn flux_of(tools: &Tools, dir: &Path, format: &str, bytes: usize) -> PathBuf {
     let (img, scp) = (
         dir.join(format!("{format}.img")),
         dir.join(format!("{format}.scp")),
@@ -1128,7 +1128,7 @@ fn flux_of(engine: &Engine, dir: &Path, format: &str, bytes: usize) -> PathBuf {
     )
     .unwrap();
     run(
-        engine,
+        tools,
         &[
             "convert",
             &format!("--format={format}"),
@@ -1141,9 +1141,9 @@ fn flux_of(engine: &Engine, dir: &Path, format: &str, bytes: usize) -> PathBuf {
 
 #[test]
 fn detection_names_the_format_of_a_flux_image() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect");
-    let job = detect(&engine, &flux_of(&engine, &dir, "akai.800", 819_200));
+    let job = detect(&tools, &flux_of(&tools, &dir, "akai.800", 819_200));
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert_eq!(
         job.detected.first().map(String::as_str),
@@ -1157,10 +1157,10 @@ fn detection_names_the_format_of_a_flux_image() {
 
 #[test]
 fn a_blank_image_is_no_format_and_says_so() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-blank");
     // Nothing written, so every track is empty.
-    let job = detect(&engine, &flux_of(&engine, &dir, "raw.250", 0));
+    let job = detect(&tools, &flux_of(&tools, &dir, "raw.250", 0));
     assert_eq!(job.outcome(), Some(Outcome::Failed));
     assert!(job.detected.is_empty());
     assert!(
@@ -1176,9 +1176,9 @@ fn a_blank_image_is_no_format_and_says_so() {
 
 #[test]
 fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-button");
-    let scp = flux_of(&engine, &dir, "amiga.amigados", 901_120);
+    let scp = flux_of(&tools, &dir, "amiga.amigados", 901_120);
     let mut settings = Settings {
         page: Page::Command("convert".into()),
         ..Settings::default()
@@ -1193,7 +1193,7 @@ fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
         ..Output::default()
     };
     settings.outputs.insert("convert/out_file".into(), beside);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     let ended = |command: &'static str| {
         move |app: &App| {
             app.disk
@@ -1237,9 +1237,9 @@ fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
 
 #[test]
 fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("session-log");
-    let scp = flux_of(&engine, &dir, "amiga.amigados", 901_120);
+    let scp = flux_of(&tools, &dir, "amiga.amigados", 901_120);
     let mut settings = Settings {
         page: Page::Command("convert".into()),
         drawer: Some(Drawer::Log),
@@ -1255,7 +1255,7 @@ fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
         ..Output::default()
     };
     settings.outputs.insert("convert/out_file".into(), beside);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     w.get_by_label("Detect").click();
     until(&mut w, "detection", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
@@ -1306,7 +1306,7 @@ fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
 
 #[test]
 fn detection_tells_apart_formats_that_differ_only_in_layout() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-layout");
     // Each decodes like another format on cylinder 0; only the index mark,
     // interleave, skew, gaps or length differ.
@@ -1317,7 +1317,7 @@ fn detection_tells_apart_formats_that_differ_only_in_layout() {
         ("thomson.2s320", 655_360), // interleaves 7:1, where luxor does not
         ("acorn.adfs.320", 327_680), // 80 cylinders, where acorn.adfs.160 has 40
     ] {
-        let job = detect(&engine, &flux_of(&engine, &dir, format, bytes));
+        let job = detect(&tools, &flux_of(&tools, &dir, format, bytes));
         assert_eq!(
             job.detected.first().map(String::as_str),
             Some(format),
@@ -1330,7 +1330,7 @@ fn detection_tells_apart_formats_that_differ_only_in_layout() {
 
 #[test]
 fn a_forty_track_disk_in_an_eighty_track_drive_needs_double_step() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-step");
     let (img, scp) = (dir.join("d.img"), dir.join("d.scp"));
     std::fs::write(
@@ -1340,7 +1340,7 @@ fn a_forty_track_disk_in_an_eighty_track_drive_needs_double_step() {
     .unwrap();
     // Cylinder c of the disk lands on cylinder 2c, as an 80-track drive sees it.
     run(
-        &engine,
+        &tools,
         &[
             "convert",
             "--format=ibm.360",
@@ -1349,7 +1349,7 @@ fn a_forty_track_disk_in_an_eighty_track_drive_needs_double_step() {
             &path(&scp),
         ],
     );
-    let job = detect(&engine, &scp);
+    let job = detect(&tools, &scp);
     assert_eq!(
         job.detected.first().map(String::as_str),
         Some("ibm.360"),
@@ -1362,7 +1362,7 @@ fn a_forty_track_disk_in_an_eighty_track_drive_needs_double_step() {
 
 #[test]
 fn apple_ii_disks_are_told_apart_by_their_filesystem() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-apple");
     let mut prodos = vec![0u8; 143_360];
     prodos[1024 + 2] = 3; // block 2: no previous block, the next is 3,
@@ -1388,7 +1388,7 @@ fn apple_ii_disks_are_told_apart_by_their_filesystem() {
         let (img, scp) = (dir.join(name), dir.join(format!("{name}.scp")));
         std::fs::write(&img, image).unwrap();
         run(
-            &engine,
+            &tools,
             &[
                 "convert",
                 &format!("--format={format}"),
@@ -1396,7 +1396,7 @@ fn apple_ii_disks_are_told_apart_by_their_filesystem() {
                 &path(&scp),
             ],
         );
-        let job = detect(&engine, &scp);
+        let job = detect(&tools, &scp);
         assert_eq!(
             job.detected.first().map(String::as_str),
             Some(format),
@@ -1421,7 +1421,7 @@ fn custom_defs(dir: &Path) -> PathBuf {
 
 #[test]
 fn gw_checks_a_disk_definitions_file_line_by_line() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("diskdefs-check");
     let good = custom_defs(&dir);
     let bad = dir.join("bad.cfg");
@@ -1431,7 +1431,7 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
          bogus = 3\n    end\nend\ndisk mine.worse\n    cyls = eighty\nend\n",
     )
     .unwrap();
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let mut read = |file: &Path| {
         let file = path(file);
         wait("the file's check", || {
@@ -1482,11 +1482,11 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
 
 #[test]
 fn an_edited_disk_definitions_file_gives_its_new_layout() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("diskdefs-edit");
     let defs = custom_defs(&dir);
     let file = path(&defs);
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let mut cyls = |want: u32| {
         wait("the layout", || {
             service.poll();
@@ -1557,8 +1557,8 @@ fn sides(w: &Window) -> [(bool, bool); 2] {
 
 #[test]
 fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
-    let Some(engine) = engine() else { return };
-    let mut w = window(&engine, Settings::default());
+    let Some(tools) = tools() else { return };
+    let mut w = window(&tools, Settings::default());
     choose_format(&mut w, "ibm.1440");
     until_shown(&mut w, "two sides", |w| {
         w.query_by_label_contains("2\u{a0}sides").is_some()
@@ -1587,7 +1587,7 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
 
 #[test]
 fn the_write_page_takes_a_north_star_images_format_from_gw() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("nsi");
     // gw knows an .nsi's format only by its size: 89,600 bytes is one-sided FM.
     let nsi = dir.join("Disk.nsi");
@@ -1598,7 +1598,7 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
     };
     let values = settings.values.entry("write".into()).or_default();
     values.set("file", nsi.to_string_lossy());
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     until_shown(&mut w, "the image's format", |w| {
         w.query_by_label_contains("35\u{a0}cylinders").is_some()
     });
@@ -1650,7 +1650,7 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
 
 #[test]
 fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("nsi-convert");
     let nsi = dir.join("Disk.nsi");
     std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();
@@ -1666,7 +1666,7 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
         ..Output::default()
     };
     settings.outputs.insert("convert/out_file".into(), out);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     until_shown(&mut w, "Convert to be ready", |w| {
         !w.get_by_label("Convert").accesskit_node().is_disabled()
     });
@@ -1705,13 +1705,13 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
 
 #[test]
 fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("diskdefs-page");
     let defs = custom_defs(&dir);
     let mut settings = Settings::default();
     let values = settings.values.entry("read".into()).or_default();
     values.set("diskdefs", defs.to_string_lossy());
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     w.get_by_label("CLI").click();
     w.run_steps(2);
 
@@ -1750,7 +1750,7 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
 
 #[test]
 fn a_broken_definition_stops_only_a_page_that_uses_it() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("diskdefs-broken");
     let defs = dir.join("mixed.cfg");
     let sound = std::fs::read_to_string(custom_defs(&dir)).unwrap();
@@ -1760,7 +1760,7 @@ fn a_broken_definition_stops_only_a_page_that_uses_it() {
     let mut settings = Settings::default();
     let values = settings.values.entry("read".into()).or_default();
     values.set("diskdefs", defs.to_string_lossy());
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     w.get_all_by_role(egui::accesskit::Role::ComboBox)
         .nth(1)
@@ -1799,10 +1799,10 @@ fn a_broken_definition_stops_only_a_page_that_uses_it() {
 
 #[test]
 fn a_disk_definitions_path_may_start_at_the_home_folder() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let home = scratch("diskdefs-home");
     custom_defs(&home);
-    let mut bridge = engine
+    let mut bridge = tools
         .bridge("serve")
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -1826,7 +1826,7 @@ fn a_disk_definitions_path_may_start_at_the_home_folder() {
 
 #[test]
 fn detection_finds_a_format_from_a_disk_definitions_file() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("diskdefs-detect");
     let defs = format!("--diskdefs={}", custom_defs(&dir).display());
     let (img, scp) = (dir.join("mine.img"), dir.join("mine.scp"));
@@ -1838,7 +1838,7 @@ fn detection_finds_a_format_from_a_disk_definitions_file() {
     )
     .unwrap();
     run(
-        &engine,
+        &tools,
         &[
             "convert",
             &defs,
@@ -1847,7 +1847,7 @@ fn detection_finds_a_format_from_a_disk_definitions_file() {
             &path(&scp),
         ],
     );
-    let job = finish(start(&engine, DETECT, &[&defs, &path(&scp)]), "detection");
+    let job = finish(start(&tools, DETECT, &[&defs, &path(&scp)]), "detection");
     assert!(
         job.detected.iter().any(|f| f == "mine.800"),
         "{:#?}",
@@ -1858,11 +1858,11 @@ fn detection_finds_a_format_from_a_disk_definitions_file() {
 
 #[test]
 fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("kryoflux");
     let mut settings = convert_page(&dir);
     settings.outputs.get_mut("convert/out_file").unwrap().ext = ".raw".into();
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     w.get_by_label("Convert").click();
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
@@ -1877,16 +1877,16 @@ fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
 
 #[test]
 fn detection_finds_the_format_of_a_track_image() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-imd");
     let (img, imd) = (dir.join("d.img"), dir.join("d.imd"));
     let data: Vec<u8> = (0..737_280).map(|i| (i * 7 % 251) as u8).collect();
     std::fs::write(&img, data).unwrap();
     run(
-        &engine,
+        &tools,
         &["convert", "--format=ibm.720", &path(&img), &path(&imd)],
     );
-    let job = detect(&engine, &imd);
+    let job = detect(&tools, &imd);
     assert_eq!(
         job.detected.first().map(String::as_str),
         Some("ibm.720"),
@@ -1898,8 +1898,8 @@ fn detection_finds_the_format_of_a_track_image() {
 
 #[test]
 fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let mut fits = |format: &str, ext: &str| {
         wait("gw's answer", || {
             service.poll();
@@ -1926,7 +1926,7 @@ fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
         Some("The image would be empty.")
     );
 
-    let mut w = window(&engine, Settings::default());
+    let mut w = window(&tools, Settings::default());
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     choose_format(&mut w, "amiga.amigados");
     assert!(!read_button(&w).accesskit_node().is_disabled());
@@ -1951,8 +1951,8 @@ fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
 
 #[test]
 fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let mut info = |name: &str| {
         wait("format details", || {
             service.poll();
@@ -1970,7 +1970,7 @@ fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
     let broken = info("zx.rocky.ss40").unwrap_err();
     assert!(broken.contains("cylinder out of range"), "{broken}");
 
-    let mut w = window(&engine, Settings::default());
+    let mut w = window(&tools, Settings::default());
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     choose_format(&mut w, "zx.rocky.ss40");
     until_shown(&mut w, "gw's objection to the format", |w| {
@@ -1987,8 +1987,8 @@ fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
 
 #[test]
 fn image_options_offer_gws_names_and_show_its_objections() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let schema = wait("the schema", || {
         service.poll();
         service.schema.ready().cloned()
@@ -2018,7 +2018,7 @@ fn image_options_offer_gws_names_and_show_its_objections() {
     };
     out.opts.insert("version".into(), "2".into());
     settings.outputs.insert("read/file".into(), out);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     until_shown(&mut w, "gw's complaint on the page", |w| {
         w.query_by_label("HFE: Invalid version: '2'.").is_some()
     });
@@ -2029,7 +2029,7 @@ const NO_SUCH_PORT: &str = "/dev/ferriteweazle-no-such-port";
 
 #[test]
 fn a_disk_that_fails_is_read_again_into_its_own_file() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("again");
     let mut settings = Settings {
         drawer: Some(Drawer::Cli),
@@ -2045,7 +2045,7 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
         ..Output::default()
     };
     settings.outputs.insert("read/file".into(), out);
-    let mut w = window(&engine, settings);
+    let mut w = window(&tools, settings);
     let port = Port {
         device: NO_SUCH_PORT.into(),
         ..greaseweazle()
@@ -2075,8 +2075,8 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
 
 #[test]
 fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
-    let Some(engine) = engine() else { return };
-    let mut service = Service::start(&engine, Box::new(|| {}));
+    let Some(tools) = tools() else { return };
+    let mut service = Service::start(&tools, Box::new(|| {}));
     let schema = wait("the schema", || {
         service.poll();
         service.schema.ready().cloned()
@@ -2149,17 +2149,17 @@ print(json.dumps({**found, 'pins': unit.pins, 'seeks': unit.seeks[:3], 'revs': s
 
 #[test]
 fn detection_reads_the_disk_or_image_as_its_page_would() {
-    let Some(engine) = engine() else { return };
+    let Some(tools) = tools() else { return };
     let dir = scratch("detect-options");
-    let disk = flux_of(&engine, &dir, "ibm.1440", 1_474_560);
+    let disk = flux_of(&tools, &dir, "ibm.1440", 1_474_560);
     // A flippy's side B, as a drive reads it without --reverse.
     let flipped = dir.join("flipped.scp");
     run(
-        &engine,
+        &tools,
         &["convert", "--reverse", &path(&disk), &path(&flipped)],
     );
     let job = finish(
-        start(&engine, DETECT, &["--reverse", &path(&flipped)]),
+        start(&tools, DETECT, &["--reverse", &path(&flipped)]),
         "detection",
     );
     assert_eq!(
@@ -2171,7 +2171,7 @@ fn detection_reads_the_disk_or_image_as_its_page_would() {
 
     let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
     let drive = |image: &Path, options: &[&str]| {
-        let out = std::process::Command::new(&engine.python)
+        let out = std::process::Command::new(&tools.python)
             .args(["-c", FAKE_DRIVE])
             .arg(&bridge)
             .arg(image)

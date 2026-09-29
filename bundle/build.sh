@@ -1,38 +1,38 @@
 #!/bin/sh
-# Builds the engine the app ships, a standalone Python with Greaseweazle, for
+# Builds the Greaseweazle Tools bundle the app ships, a standalone Python with gw, for
 # this computer or TRIPLE: gw's newest release, or the tag GREASEWEAZLE names
-# (engine/versions). Another processor's Python runs emulated (Rosetta, Windows
+# (bundle/versions). Another processor's Python runs emulated (Rosetta, Windows
 # on ARM, qemu) so pip builds gw's C code for it. Downloads Python, gw's
 # dependencies and, on Linux, gw's udev rule; needs curl, git and a C compiler
 # (zig on Linux, unless CC and LDSHARED name another).
 #
-#   engine/build.sh                                          # this computer
-#   engine/build.sh x86_64-pc-windows-msvc                   # another triple
-#   GREASEWEAZLE=v1.22 engine/build.sh                       # a given release
-#   GREASEWEAZLE_SOURCE=~/src/greaseweazle engine/build.sh   # a local clone
+#   bundle/build.sh                                          # this computer
+#   bundle/build.sh x86_64-pc-windows-msvc                   # another triple
+#   GREASEWEAZLE=v1.22 bundle/build.sh                       # a given release
+#   GREASEWEAZLE_SOURCE=~/src/greaseweazle bundle/build.sh   # a local clone
 set -eu
 cd "$(dirname "$0")/.."
-. engine/greaseweazle.sh
+. bundle/greaseweazle.sh
 triple=${1:-$(host)}
-dest=$(engine_dir "$triple")
+dest=$(bundle_dir "$triple")
 tag=$(wanted)
-echo "engine: building Greaseweazle $tag for $triple in $dest"
+echo "bundle: building Greaseweazle $tag for $triple in $dest"
 
 case "$triple" in
     aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-gnu | \
         x86_64-unknown-linux-gnu | aarch64-pc-windows-msvc | x86_64-pc-windows-msvc) ;;
-    *) echo "engine: no Python build for $triple" >&2; exit 1 ;;
+    *) echo "bundle: no Python build for $triple" >&2; exit 1 ;;
 esac
 
 name="cpython-$PYTHON+$PYTHON_RELEASE-$triple-install_only_stripped.tar.gz"
 url="https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_RELEASE/$(echo "$name" | sed 's/+/%2B/')"
-cache=target/engine-cache
+cache=target/bundle-cache
 mkdir -p "$cache"
 if [ ! -f "$cache/$name" ]; then
     curl -fL --retry 3 -o "$cache/$name.part" "$url"
     mv "$cache/$name.part" "$cache/$name"
 fi
-grep " $name\$" engine/python.sha256 | (cd "$cache" && shasum -a 256 -c -)
+grep " $name\$" bundle/python.sha256 | (cd "$cache" && shasum -a 256 -c -)
 
 rm -rf "$dest"
 mkdir -p "$dest"
@@ -71,12 +71,12 @@ case "$triple" in
             "$lib/lib-dynload/_tkinter"* "$lib/lib-dynload/_dbm"*
         ;;
 esac
-# The engine never changes once built, so its bytecode is not checked against
+# The bundle never changes once built, so its bytecode is not checked against
 # the sources' file times, which copies, zips and installers do not all keep.
 "$py" -m compileall -q -f --invalidation-mode unchecked-hash "$lib"
 
 # gw cannot run without its C extension, so it must load too.
-"$py" -c 'import greaseweazle.optimised.optimised, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
+"$py" -c 'import greaseweazle.optimised.optimised, sys; print("bundle: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
 
 # gw's udev rule, which the app offers when Linux refuses it the port.
 case "$triple" in *linux*)
@@ -88,7 +88,7 @@ case "$triple" in *linux*)
             "https://raw.githubusercontent.com/keirf/greaseweazle/$tag/$rule"
     fi ;;
 esac
-engine/caps.sh "$triple" "$dest"
+bundle/caps.sh "$triple" "$dest"
 "$py" -I -c 'import ctypes, sys, os
 name = {"darwin": "libcapsimage.dylib", "win32": "CAPSImg.dll"}.get(sys.platform, "libcapsimage.so.5")
 assert ctypes.cdll.LoadLibrary(os.path.join(sys.prefix, "caps", name)).CAPSInit() == 0'

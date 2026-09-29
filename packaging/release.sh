@@ -8,7 +8,7 @@ set -eu
 cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain)" ] || { echo "release: commit first" >&2; exit 1; }
 . packaging/release.env
-. engine/greaseweazle.sh
+. bundle/greaseweazle.sh
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 # Every machine builds the same gw release.
 GREASEWEAZLE=$(wanted)

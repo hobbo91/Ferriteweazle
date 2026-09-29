@@ -3,7 +3,6 @@
 use crate::command::{self, Values};
 use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
-use crate::engine::{self, Engine, Origin};
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
 use crate::presets::{self, Preset};
@@ -11,6 +10,7 @@ use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
 use crate::theme::{self, Palette};
+use crate::tools::{self, Origin, Tools};
 use crate::udev;
 use crate::update::{self, Install, Update};
 use eframe::egui::{
@@ -170,7 +170,7 @@ pub struct Settings {
     pub page: Page,
     pub theme: ThemePreference,
     /// A Python or `gw` to use instead of the one found automatically.
-    pub engine: Option<PathBuf>,
+    pub tools: Option<PathBuf>,
     /// Empty for gw's own choice.
     pub device: String,
     /// The type of device the card drives.
@@ -321,7 +321,7 @@ struct Cli {
 
 pub struct App {
     pub settings: Settings,
-    engine: Option<Engine>,
+    tools: Option<Tools>,
     service: Service,
     schema: Option<Arc<Schema>>,
     /// The latest gw's description, none once a gw fails to start. The sidebar
@@ -358,8 +358,8 @@ pub struct App {
     kept_drive: String,
     /// The device type and port as last kept in device_file().
     kept_device: (Kind, String),
-    /// The gw chosen in Settings as last kept in engine_file().
-    kept_engine: Option<PathBuf>,
+    /// The gw chosen in Settings as last kept in tools_file().
+    kept_tools: Option<PathBuf>,
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
@@ -396,19 +396,19 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let drive = kept_drive(&drive_file());
         let (kind, port) = kept_device(&device_file());
-        let engine = kept_engine(&engine_file());
+        let tools = kept_tools(&tools_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
-            engine: engine.clone(),
+            tools: tools.clone(),
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
         app.live = true;
         app.kept_drive = drive;
         app.kept_device = (kind, port);
-        app.kept_engine = engine;
+        app.kept_tools = tools;
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -426,14 +426,14 @@ impl App {
         app
     }
 
-    /// A window over a known schema, with no engine to run anything.
+    /// A window over a known schema, with no Greaseweazle Tools to run anything.
     pub fn offline(ctx: &egui::Context, settings: Settings, schema: Result<Schema, String>) -> App {
         theme::install(ctx);
         ctx.set_theme(settings.theme);
         let known = schema.as_ref().ok().cloned().map(Arc::new);
         App {
             settings,
-            engine: None,
+            tools: None,
             schema: known.clone(),
             listed: known,
             service: Service::offline(schema),
@@ -453,7 +453,7 @@ impl App {
             live: false,
             kept_drive: String::new(),
             kept_device: (Kind::Greaseweazle, String::new()),
-            kept_engine: None,
+            kept_tools: None,
             found_note: None,
             size_file: None,
             kept_size: WINDOW,
@@ -468,18 +468,18 @@ impl App {
             desktop_theme: None,
             framed: None,
             drawn: None,
-            udev_rule: engine::udev_rule(),
+            udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
         }
     }
 
     fn connect(&mut self, ctx: &egui::Context) {
         self.schema = None;
-        self.engine = Engine::find(self.settings.engine.as_deref());
+        self.tools = Tools::find(self.settings.tools.as_deref());
         // A new gw finds the same device, so the window keeps it meanwhile.
         let ports = self.service.known_ports().to_vec();
-        self.service = match (&self.engine, &self.settings.engine) {
-            (Some(engine), _) => Service::start(engine, repaint(ctx)),
+        self.service = match (&self.tools, &self.settings.tools) {
+            (Some(tools), _) => Service::start(tools, repaint(ctx)),
             (None, Some(path)) if path.exists() => Service::offline(Err(format!(
                 "{} is not Greaseweazle Tools.",
                 path.display()
@@ -492,15 +492,15 @@ impl App {
 
     /// Asks GitHub for newer releases of the built-in gw and of this app.
     fn look_for_updates(&mut self, ctx: &egui::Context) {
-        let Some(engine) = self.engine.as_ref().filter(|_| self.live) else {
+        let Some(tools) = self.tools.as_ref().filter(|_| self.live) else {
             return;
         };
         // An install under way keeps its answer.
-        if engine.origin == Origin::Bundled && !installing(&self.gw_update) {
-            self.gw_update = Update::check(engine, None, repaint(ctx));
+        if tools.origin == Origin::Bundled && !installing(&self.gw_update) {
+            self.gw_update = Update::check(tools, None, repaint(ctx));
         }
         // A standalone gw has no Python to ask GitHub with; the built-in one may.
-        if let Some(python) = engine.with_python().filter(|_| Install::this().is_some())
+        if let Some(python) = tools.with_python().filter(|_| Install::this().is_some())
             && !installing(&self.app_update)
         {
             self.app_update = Update::check(&python, Some(update::APP_REPO), repaint(ctx));
@@ -522,12 +522,12 @@ impl App {
             install.relaunch(tag.trim_start_matches('v'));
             ctx.send_viewport_cmd(ViewportCommand::Close);
         } else if matches!(self.app_update, Update::Failed(_))
-            && let Some(engine) = &self.engine
+            && let Some(tools) = &self.tools
             && let Some(ports) = self.gw_paused.take()
         {
             // The update stopped gw. Not connect(): its check for updates
             // would drop the reason the update failed.
-            self.service = Service::start(engine, repaint(ctx));
+            self.service = Service::start(tools, repaint(ctx));
             self.service.seed_ports(ports);
         }
     }
@@ -538,7 +538,7 @@ impl App {
         self.service.pin_ports(ports);
     }
 
-    /// gw's command line, once the engine has described it.
+    /// gw's command line, once gw has described it.
     pub fn schema(&self) -> Option<&Schema> {
         self.schema.as_deref()
     }
@@ -562,9 +562,9 @@ impl App {
             self.kept_device = (self.settings.kind, self.settings.device.clone());
             keep_device(&device_file(), self.settings.kind, &self.settings.device);
         }
-        if self.live && self.settings.engine != self.kept_engine {
-            self.kept_engine.clone_from(&self.settings.engine);
-            keep_engine(&engine_file(), self.kept_engine.as_deref());
+        if self.live && self.settings.tools != self.kept_tools {
+            self.kept_tools.clone_from(&self.settings.tools);
+            keep_tools(&tools_file(), self.kept_tools.as_deref());
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -901,7 +901,7 @@ impl App {
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
     fn cannot_detect(&self, page: &str) -> Option<Cow<'static, str>> {
-        if self.engine.as_ref().is_some_and(|e| e.standalone) {
+        if self.tools.as_ref().is_some_and(|e| e.standalone) {
             return Some(STANDALONE_DETECT.into());
         }
         if let Some(why) = self.busy() {
@@ -940,14 +940,8 @@ impl App {
         // None of the Device info page's options: --bootloader would switch
         // the device's mode every time.
         let args = self.argv(cmd, &self.device_only(cmd));
-        let Some(engine) = &self.engine else { return };
-        match Job::start(
-            engine,
-            self.settings.kind.name(),
-            "info",
-            args,
-            repaint(ctx),
-        ) {
+        let Some(tools) = &self.tools else { return };
+        match Job::start(tools, self.settings.kind.name(), "info", args, repaint(ctx)) {
             Ok(mut job) => {
                 self.log.begin(heading(&job), &mut job);
                 self.probe = Some(job);
@@ -988,7 +982,7 @@ impl App {
         if let Some(error) = &mut job.progress.error
             && error.contains("Could not find SPS/CAPS library")
         {
-            let advice = caps_advice(self.engine.as_ref());
+            let advice = caps_advice(self.tools.as_ref());
             error.push('\n');
             error.push_str(&advice);
             job.log.push(advice);
@@ -1803,7 +1797,7 @@ impl App {
             .map(|a| form::label(a).to_lowercase())
             .collect();
         let device = uses_device(schema, &cmd.name);
-        if self.engine.is_none() {
+        if self.tools.is_none() {
             Some(NO_GW.to_owned())
         } else if let Some(why) = self.busy() {
             Some(why.to_owned())
@@ -2035,7 +2029,7 @@ impl App {
 
     /// Starts gw; false if it did not start.
     fn run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) -> bool {
-        let Some(engine) = &self.engine else {
+        let Some(tools) = &self.tools else {
             return false;
         };
         // The image the job writes: gw's last argument, one per disk or image.
@@ -2047,7 +2041,7 @@ impl App {
             let _ = std::fs::create_dir_all(folder);
         }
         match Job::start(
-            engine,
+            tools,
             self.settings.kind.name(),
             command,
             args,
@@ -2541,12 +2535,12 @@ impl App {
             });
         });
         section(ui, "Greaseweazle Tools", |ui| {
-            match (&self.engine, &self.service.schema) {
+            match (&self.tools, &self.service.schema) {
                 _ if self.gw_paused.is_some() => {
                     ui.label(RichText::new(UPDATING).weak());
                 }
-                (Some(engine), Load::Ready(schema)) => {
-                    let bundled = match engine.origin {
+                (Some(tools), Load::Ready(schema)) => {
+                    let bundled = match tools.origin {
                         Origin::Bundled => " (bundled)",
                         _ => "",
                     };
@@ -2566,7 +2560,7 @@ impl App {
                 }
             }
             ui.add_space(4.0);
-            let origin = self.engine.as_ref().map(|e| e.origin);
+            let origin = self.tools.as_ref().map(|e| e.origin);
             let busy = match origin {
                 None => Some(NOT_FOUND),
                 Some(_) => self.busy(),
@@ -2598,9 +2592,9 @@ impl App {
                     .on_disabled_hover_text(&tip)
                     .clicked()
                     && let Update::Newer(tag) = &self.gw_update
-                    && let Some(engine) = &self.engine
+                    && let Some(tools) = &self.tools
                 {
-                    self.gw_update = Update::gw(engine, tag, repaint(ui.ctx()));
+                    self.gw_update = Update::gw(tools, tag, repaint(ui.ctx()));
                 }
             });
         });
@@ -2657,28 +2651,28 @@ impl App {
                 None => {}
             }
             ui.add_space(8.0);
-            let missing = (!engine::has_bundled()).then_some("No bundled version found.");
+            let missing = (!tools::has_bundled()).then_some("No bundled version found.");
             let default = (
                 "Use bundled version",
                 "Go back to the Greaseweazle Tools bundled with Ferriteweazle.",
                 missing,
             );
-            let python = self.engine.as_ref().map(|e| e.python.clone());
+            let python = self.tools.as_ref().map(|e| e.python.clone());
             let gw = python
-                .or_else(|| self.settings.engine.clone())
+                .or_else(|| self.settings.tools.clone())
                 .unwrap_or_default();
-            let back = self.settings.engine.is_some().then_some(default);
+            let back = self.settings.tools.is_some().then_some(default);
             let tip = "Select gw, gw.exe or a Python with Greaseweazle Tools installed.";
             let busy = self.busy();
             match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
                     if let Some(path) = form::file_dialog(&gw).pick_file() {
-                        self.settings.engine = Some(path);
+                        self.settings.tools = Some(path);
                         self.connect(ui.ctx());
                     }
                 }
                 Some(PathClick::Default) => {
-                    self.settings.engine = None;
+                    self.settings.tools = None;
                     self.connect(ui.ctx());
                 }
                 None => {}
@@ -3119,9 +3113,9 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked()
-                    && let (Update::Newer(tag), Some(engine), Some(install)) = (
+                    && let (Update::Newer(tag), Some(tools), Some(install)) = (
                         &self.app_update,
-                        self.engine.as_ref().and_then(Engine::with_python),
+                        self.tools.as_ref().and_then(Tools::with_python),
                         install.clone(),
                     )
                 {
@@ -3130,7 +3124,7 @@ impl App {
                         self.gw_paused = Some(self.service.known_ports().to_vec());
                         self.service = Service::offline(Err(UPDATING.into()));
                     }
-                    self.app_update = Update::app(&engine, install, tag, repaint(ui.ctx()));
+                    self.app_update = Update::app(&tools, install, tag, repaint(ui.ctx()));
                 }
             });
         });
@@ -3610,12 +3604,12 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
 
 /// Where Greaseweazle Tools looks for the SPS/CAPS library, which reads IPF and CTRaw
 /// images and which gw does not ship.
-fn caps_advice(engine: Option<&Engine>) -> String {
+fn caps_advice(tools: Option<&Tools>) -> String {
     if cfg!(target_os = "macos") {
         "Greaseweazle Tools looks for CAPSImage.framework or CAPSImg.framework in /Library/Frameworks.".into()
     } else if cfg!(windows) {
         // Python loads a DLL by name from python.exe's folder or System32.
-        let bundled = engine.filter(|e| e.origin == Origin::Bundled);
+        let bundled = tools.filter(|e| e.origin == Origin::Bundled);
         match bundled.and_then(|e| e.python.parent()) {
             Some(folder) => format!(
                 "Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in {} and in System32.",
@@ -4080,17 +4074,17 @@ fn save_log(path: &Path, log: &[String]) -> Option<String> {
 
 /// Where the gw chosen in Settings is kept between runs; the built-in or an
 /// installed gw keeps no file.
-fn engine_file() -> PathBuf {
+fn tools_file() -> PathBuf {
     crate::data_folder().join("gw.txt")
 }
 
-fn kept_engine(file: &Path) -> Option<PathBuf> {
+fn kept_tools(file: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(file).ok()?;
     Some(PathBuf::from(text.trim())).filter(|p| !p.as_os_str().is_empty())
 }
 
-fn keep_engine(file: &Path, engine: Option<&Path>) {
-    keep(file, engine.map(|p| p.to_string_lossy().into_owned()));
+fn keep_tools(file: &Path, tools: Option<&Path>) {
+    keep(file, tools.map(|p| p.to_string_lossy().into_owned()));
 }
 
 /// Where the drive identifier is kept between runs.
@@ -4534,9 +4528,9 @@ mod tests {
         }
     }
 
-    /// An engine with no Python behind it: no job starts.
-    fn no_gw() -> Engine {
-        Engine {
+    /// Greaseweazle Tools with no Python behind them: no job starts.
+    fn no_gw() -> Tools {
+        Tools {
             python: "/no/such/python".into(),
             origin: Origin::Custom,
             standalone: false,
@@ -4599,7 +4593,7 @@ mod tests {
     /// An offline app driving an Adafruit RP2040 on COM9, able to run.
     fn adafruit() -> App {
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.settings.kind = Kind::Adafruit;
         app.settings.device = "COM9".into();
         app.pin_ports(vec![Port {
@@ -5218,7 +5212,7 @@ mod tests {
             ..Settings::default()
         };
         let mut app = App::offline(&ctx, settings, Err(String::new()));
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.run(&ctx, "erase", Vec::new());
         app.detect_for = Some("convert".into());
         app.run(&ctx, DETECT, Vec::new());
@@ -5236,10 +5230,10 @@ mod tests {
         app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         assert!(app.connected());
         assert!(!sections(app.listed.as_deref()).is_empty());
-        app.settings.engine = Some("/no/such/gw".into());
+        app.settings.tools = Some("/no/such/gw".into());
         app.connect(&ctx);
         app.poll(&ctx);
-        assert!(app.engine.is_none());
+        assert!(app.tools.is_none());
         assert!(!app.connected(), "no gw will look for it");
         assert!(sections(app.listed.as_deref()).is_empty(), "no gw runs");
     }
@@ -5343,13 +5337,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_caps_library_goes_beside_the_built_in_gws_python() {
-        let engine = Engine {
+        let tools = Tools {
             python: r"C:\Program Files\Ferriteweazle\greaseweazle\python.exe".into(),
             origin: Origin::Bundled,
             standalone: false,
         };
         assert_eq!(
-            caps_advice(Some(&engine)),
+            caps_advice(Some(&tools)),
             r"Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\greaseweazle and in System32."
         );
     }
@@ -5374,7 +5368,7 @@ mod tests {
         let schema = schema();
         let info = schema.command("info").unwrap();
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         assert_eq!(app.why_not(&schema, info), None);
         app.gw_update = installing();
@@ -5389,7 +5383,7 @@ mod tests {
     fn a_port_list_gw_could_not_make_gives_its_reason_on_the_card_and_the_buttons() {
         use egui::accesskit::Role;
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.service = Service::start(&no_gw(), Box::new(|| {}));
         let asked = std::time::Instant::now();
         let why = loop {
@@ -5419,7 +5413,7 @@ mod tests {
     fn a_command_line_gw_cannot_take_holds_up_its_page_until_reset() {
         use egui::accesskit::Role;
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         app.settings.page = Page::Command("info".into());
         app.settings.drawer = Some(Drawer::Cli);
@@ -5452,7 +5446,7 @@ mod tests {
     fn gw_info_on_the_card_holds_up_only_the_pages_that_use_the_device() {
         let schema = schema();
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         app.probe = Some(running("info"));
         let why = |name| app.why_not(&schema, schema.command(name).unwrap());
@@ -5464,8 +5458,8 @@ mod tests {
     fn restart_and_the_gw_path_wait_while_a_job_runs_or_an_update_installs() {
         let mut app = offline();
         app.settings.page = Page::Settings;
-        app.settings.engine = Some("/no/such/gw".into());
-        app.engine = Some(no_gw());
+        app.settings.tools = Some("/no/such/gw".into());
+        app.tools = Some(no_gw());
         app.tool = Some(running("info"));
         let mut w = window(app);
         let greyed = |w: &Harness<'_, App>| {
@@ -5484,11 +5478,11 @@ mod tests {
     #[test]
     fn use_bundled_version_greys_where_there_is_none() {
         // A test program has no greaseweazle folder beside it.
-        assert!(!engine::has_bundled());
+        assert!(!tools::has_bundled());
         let mut app = offline();
         app.settings.page = Page::Settings;
-        app.settings.engine = Some("/no/such/gw".into());
-        app.engine = Some(no_gw());
+        app.settings.tools = Some("/no/such/gw".into());
+        app.tools = Some(no_gw());
         let w = window(app);
         let button = w.get_by_label("Use bundled version");
         assert!(button.accesskit_node().is_disabled());
@@ -5498,7 +5492,7 @@ mod tests {
     #[test]
     fn a_standalone_gw_greys_detect_and_says_why() {
         let mut app = offline();
-        app.engine = Some(Engine {
+        app.tools = Some(Tools {
             standalone: true,
             ..no_gw()
         });
@@ -5511,7 +5505,7 @@ mod tests {
             app.cannot_detect("convert").as_deref(),
             Some(STANDALONE_DETECT)
         );
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         assert_eq!(app.cannot_detect("convert"), None);
     }
 
@@ -5519,7 +5513,7 @@ mod tests {
     fn with_no_gw_restart_and_update_grey_and_say_why() {
         let settings = Settings {
             page: Page::Settings,
-            engine: Some("/no/such/gw".into()),
+            tools: Some("/no/such/gw".into()),
             ..Settings::default()
         };
         let app = App::with_settings(&egui::Context::default(), settings);
@@ -5540,7 +5534,7 @@ mod tests {
         w.state_mut().settings.page = Page::Settings;
         w.run_steps(2);
         // A gw of the person's own runs, but only the built-in one updates.
-        w.state_mut().engine = Some(no_gw());
+        w.state_mut().tools = Some(no_gw());
         w.run_steps(2);
         assert!(!greyed(&w, "Restart"));
         assert!(greyed(&w, "Update"));
@@ -5550,13 +5544,13 @@ mod tests {
     fn the_gw_chosen_in_settings_is_kept_and_the_built_in_one_keeps_no_file() {
         let dir = std::env::temp_dir().join(format!("ferriteweazle-gw-{}", std::process::id()));
         let file = dir.join("gw.txt");
-        assert_eq!(kept_engine(&file), None);
-        keep_engine(&file, Some(Path::new("C:\\Tools\\gw\\gw.exe")));
+        assert_eq!(kept_tools(&file), None);
+        keep_tools(&file, Some(Path::new("C:\\Tools\\gw\\gw.exe")));
         assert_eq!(
-            kept_engine(&file),
+            kept_tools(&file),
             Some(PathBuf::from("C:\\Tools\\gw\\gw.exe"))
         );
-        keep_engine(&file, None);
+        keep_tools(&file, None);
         assert!(!file.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5565,7 +5559,7 @@ mod tests {
     fn a_check_for_updates_leaves_an_install_under_way() {
         let mut app = offline();
         app.live = true;
-        app.engine = Some(Engine {
+        app.tools = Some(Tools {
             origin: Origin::Bundled,
             ..no_gw()
         });
@@ -5577,7 +5571,7 @@ mod tests {
     #[test]
     fn a_failed_windows_folder_update_starts_gw_again_and_keeps_its_reason() {
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         let port = greaseweazle("COM3", false);
         app.service = Service::offline(Err(UPDATING.into()));
         app.gw_paused = Some(vec![port.clone()]);
@@ -5603,7 +5597,7 @@ mod tests {
     fn a_session_whose_next_run_cannot_start_ends_and_names_no_other_job() {
         let ctx = egui::Context::default();
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.disk = Some(Job::replay("erase", ""));
         app.begin(&ctx, "read", reads(&["a.adf", "b.adf"]));
         assert!(app.session.is_none());
@@ -5715,7 +5709,7 @@ mod tests {
     fn the_card_runs_no_gw_info_once_the_window_is_closing() {
         let mut app = offline();
         app.live = true;
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         app.quitting = true;
         app.poll_probe(&egui::Context::default());
@@ -5976,7 +5970,7 @@ mod tests {
         let schema = schema();
         let write = schema.command("write").unwrap();
         let mut app = offline();
-        app.engine = Some(no_gw());
+        app.tools = Some(no_gw());
         let values = app.settings.values.entry("write".into()).or_default();
         values.set("file", "/no/such/Game.adf");
         let why = app.why_not(&schema, write);

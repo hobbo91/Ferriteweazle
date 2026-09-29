@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds dist/Ferriteweazle-VERSION-win-ARCH.zip, a folder that runs where it is
 # unzipped, and the .msi, which installs it for all users; ARCH is x64 or arm64,
-# this PC's if none. Both need Windows 10 or newer; the engine is rebuilt first if
+# this PC's if none. Both need Windows 10 or newer; the bundle is rebuilt first if
 # gw has a newer release. Runs in Git Bash; needs Visual Studio's C++ build tools
 # and WiX 5 (a .NET tool: install the .NET 8 SDK first) with its UI extension:
 #   dotnet tool install --global wix --version 5.0.2
@@ -9,7 +9,7 @@
 # TODO: code signing.
 set -eu
 cd "$(dirname "$0")/../.."
-. engine/greaseweazle.sh
+. bundle/greaseweazle.sh
 case "${1:-$(host)}" in
     x64 | x86_64-pc-windows-msvc) arch=x64 triple=x86_64-pc-windows-msvc ;;
     arm64 | aarch64-pc-windows-msvc) arch=arm64 triple=aarch64-pc-windows-msvc ;;
@@ -24,7 +24,7 @@ mkdir -p "$app" dist
 refresh "$triple"
 cargo build --release --locked --target "$triple"
 cp "target/$triple/release/ferriteweazle.exe" "$app/Ferriteweazle.exe"
-cp -a "$(engine_dir "$triple")" "$app/greaseweazle"
+cp -a "$(bundle_dir "$triple")" "$app/greaseweazle"
 packaging/notices.sh "$app/greaseweazle" "$triple" >"$stage/notices.txt"
 # CRLF, for Notepad before Windows 10 1809.
 sed 's/\r*$/\r/' "$stage/notices.txt" >"$app/THIRD-PARTY-NOTICES.txt"

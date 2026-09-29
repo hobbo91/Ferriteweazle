@@ -2,8 +2,8 @@
 //! installing it. The bridge talks to GitHub in the background, so no network
 //! trouble can hold up the window.
 
-use crate::engine::{self, Engine};
 use crate::service::Repaint;
+use crate::tools::{self, Tools};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,8 +35,8 @@ pub enum Update {
 
 impl Update {
     /// Asks GitHub for the newest release of `repo`, gw's if none.
-    pub fn check(engine: &Engine, repo: Option<&str>, repaint: Repaint) -> Update {
-        let mut cmd = engine.bridge("latest");
+    pub fn check(tools: &Tools, repo: Option<&str>, repaint: Repaint) -> Update {
+        let mut cmd = tools.bridge("latest");
         cmd.args(repo);
         Update::Checking(background(
             move || run(&mut cmd, Some(CHECK_LIMIT)),
@@ -45,14 +45,14 @@ impl Update {
     }
 
     /// Installs gw `tag` beside the built-in gw.
-    pub fn gw(engine: &Engine, tag: &str, repaint: Repaint) -> Update {
-        let Some(bundled) = engine.bundled_tag() else {
+    pub fn gw(tools: &Tools, tag: &str, repaint: Repaint) -> Update {
+        let Some(bundled) = tools.bundled_tag() else {
             return Update::Failed(
                 "The built-in Greaseweazle Tools has no version on record.".into(),
             );
         };
-        let folder = engine::updates();
-        let mut cmd = engine.bridge("update");
+        let folder = tools::updates();
+        let mut cmd = tools.bridge("update");
         cmd.arg(tag).arg(bundled).arg(&folder);
         let work = move || {
             std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
@@ -62,10 +62,10 @@ impl Update {
     }
 
     /// Downloads Ferriteweazle `tag` and puts it in place of this copy.
-    pub fn app(engine: &Engine, install: Install, tag: &str, repaint: Repaint) -> Update {
+    pub fn app(tools: &Tools, install: Install, tag: &str, repaint: Repaint) -> Update {
         let name = install.asset(bare(tag));
         let folder = install.downloads();
-        let mut cmd = engine.bridge("fetch");
+        let mut cmd = tools.bridge("fetch");
         cmd.arg(tag).arg(&name).arg(&folder);
         let done = tag.to_owned();
         let work = move || {
@@ -91,7 +91,7 @@ impl Update {
         let installing = matches!(self, Update::Installing(..));
         *self = match answer {
             Ok(tag) if installing => Update::Latest(tag),
-            Ok(tag) if engine::version(&tag) > engine::version(&format!("v{in_use}")) => {
+            Ok(tag) if tools::version(&tag) > tools::version(&format!("v{in_use}")) => {
                 Update::Newer(tag)
             }
             Ok(tag) => Update::Latest(tag),
@@ -175,7 +175,7 @@ impl Install {
         if msi_folder().is_some_and(|f| same_folder(f, dir)) {
             return Some(Install::Msi);
         }
-        dir.join(engine::DATA)
+        dir.join(tools::DATA)
             .is_dir()
             .then(|| Install::Folder(dir.to_path_buf()))
     }
@@ -244,7 +244,7 @@ impl Install {
             Install::Folder(dir) => {
                 let from = new.join("Ferriteweazle");
                 // The data first, as on Windows.
-                let pairs = [engine::DATA.to_owned(), program()]
+                let pairs = [tools::DATA.to_owned(), program()]
                     .map(|name| (dir.join(&name), from.join(&name)));
                 shell(&swap_script(&pairs), !writable(dir))
             }
@@ -275,7 +275,7 @@ pub fn tidy() {
         return;
     };
     if let Install::Folder(dir) = &install {
-        for name in [program(), engine::DATA.into()] {
+        for name in [program(), tools::DATA.into()] {
             let old = dir.join(format!("{name}.old"));
             remove(&old);
         }
@@ -294,7 +294,7 @@ fn msi_folder() -> Option<&'static Path> {
     static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     let read = || {
         let key = r"HKLM\SOFTWARE\Ferriteweazle";
-        let reg = engine::quiet(Command::new("reg"))
+        let reg = tools::quiet(Command::new("reg"))
             .args(["query", key, "/v", "InstallFolder"])
             .output()
             .ok()?;
@@ -333,7 +333,7 @@ fn appimage(exe: &Path, image: Option<OsString>, appdir: Option<OsString>) -> Op
 /// but will not delete it. The data goes first, since Windows will not move it
 /// while a gw runs from it; on failure the old program offers the update again.
 fn rename_in(dir: &Path, from: &Path, program: &str) -> Result<(), String> {
-    let names = [engine::DATA, program];
+    let names = [tools::DATA, program];
     if let Some(missing) = names.iter().map(|n| from.join(n)).find(|p| !p.exists()) {
         return Err(format!("{} is not in the download.", missing.display()));
     }
@@ -645,7 +645,7 @@ mod tests {
     fn a_folder_update_that_cannot_move_the_data_keeps_the_old_program() {
         let dir = scratch("rename");
         let from = dir.join("new");
-        std::fs::create_dir_all(from.join(engine::DATA)).unwrap();
+        std::fs::create_dir_all(from.join(tools::DATA)).unwrap();
         std::fs::write(from.join("fw.exe"), "new").unwrap();
         std::fs::write(dir.join("fw.exe"), "old").unwrap();
         // With no data folder to move aside, the rename fails as Windows'
@@ -653,10 +653,10 @@ mod tests {
         assert!(rename_in(&dir, &from, "fw.exe").is_err());
         assert_eq!(read(dir.join("fw.exe")), "old");
         // A renamed program has no match in the download, so nothing moves.
-        std::fs::create_dir_all(dir.join(engine::DATA)).unwrap();
+        std::fs::create_dir_all(dir.join(tools::DATA)).unwrap();
         let why = rename_in(&dir, &from, "mine.exe").unwrap_err();
         assert!(why.contains("mine.exe"), "{why}");
-        assert!(!dir.join(format!("{}.old", engine::DATA)).exists());
+        assert!(!dir.join(format!("{}.old", tools::DATA)).exists());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -668,13 +668,13 @@ mod tests {
         let dir = scratch("refused");
         let from = dir.join("new");
         for (root, text) in [(&dir, "old"), (&from, "new")] {
-            std::fs::create_dir_all(root.join(engine::DATA)).unwrap();
-            std::fs::write(root.join(engine::DATA).join("python.exe"), text).unwrap();
+            std::fs::create_dir_all(root.join(tools::DATA)).unwrap();
+            std::fs::write(root.join(tools::DATA).join("python.exe"), text).unwrap();
             std::fs::write(root.join("fw.exe"), text).unwrap();
         }
         // A file held open, as by a gw running from it, keeps its folder in
         // place: first the old data, then the new.
-        for held in [dir.join(engine::DATA), from.join(engine::DATA)] {
+        for held in [dir.join(tools::DATA), from.join(tools::DATA)] {
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .share_mode(FILE_SHARE_READ)
@@ -683,7 +683,7 @@ mod tests {
             assert!(rename_in(&dir, &from, "fw.exe").is_err(), "{held:?}");
             drop(file);
             assert_eq!(read(dir.join("fw.exe")), "old");
-            assert_eq!(read(dir.join(engine::DATA).join("python.exe")), "old");
+            assert_eq!(read(dir.join(tools::DATA).join("python.exe")), "old");
         }
         std::fs::remove_dir_all(dir).ok();
     }

@@ -1,9 +1,9 @@
-# Which Greaseweazle release to build, and where each engine goes. Sourced
-# from the repository root by engine/build.sh and the packaging scripts.
+# Which Greaseweazle release to build, and where each bundle goes. Sourced
+# from the repository root by bundle/build.sh and the packaging scripts.
 
-# A tag in the environment beats one in engine/versions.
+# A tag in the environment beats one in bundle/versions.
 pin=${GREASEWEAZLE:-}
-. engine/versions
+. bundle/versions
 GREASEWEAZLE=${pin:-$GREASEWEAZLE}
 source=${GREASEWEAZLE_SOURCE:-https://github.com/keirf/greaseweazle}
 
@@ -24,13 +24,13 @@ host() {
     esac
 }
 
-# The engine for TRIPLE: target/engine for this computer's own, which
-# `cargo run` finds, else target/engine-TRIPLE.
-engine_dir() {
+# The bundle for TRIPLE: target/greaseweazle-bundle for this computer's own, which
+# `cargo run` finds, else target/greaseweazle-bundle-TRIPLE.
+bundle_dir() {
     if [ -z "${1:-}" ] || [ "$1" = "$(host)" ]; then
-        echo target/engine
+        echo target/greaseweazle-bundle
     else
-        echo "target/engine-$1"
+        echo "target/greaseweazle-bundle-$1"
     fi
 }
 
@@ -55,23 +55,23 @@ wanted() {
     fi
     [ -n "$tag" ] || tag=$(git ls-remote --tags --refs "$source" | sed 's|.*refs/tags/||' | newest)
     if [ -z "$tag" ]; then
-        echo "engine: cannot find Greaseweazle's latest release; set GREASEWEAZLE to a tag" >&2
+        echo "bundle: cannot find Greaseweazle's latest release; set GREASEWEAZLE to a tag" >&2
         return 1
     fi
     echo "$tag"
 }
 
-# Builds TRIPLE's engine (this computer's if none) unless it holds the wanted
-# release, Python and SPS/CAPS library. Offline, an engine already built is kept.
+# Builds TRIPLE's bundle (this computer's if none) unless it holds the wanted
+# release, Python and SPS/CAPS library. Offline, a bundle already built is kept.
 refresh() {
-    dir=$(engine_dir "${1:-}")
+    dir=$(bundle_dir "${1:-}")
     if tag=$(wanted); then
         [ "$(cat "$dir/greaseweazle-version" 2>/dev/null)" = "$tag" ] &&
             [ "$(cat "$dir/python-version" 2>/dev/null)" = "$PYTHON+$PYTHON_RELEASE" ] &&
             [ "$(cat "$dir/caps-version" 2>/dev/null)" = "$CAPS_COMMIT" ] ||
-            GREASEWEAZLE=$tag engine/build.sh ${1:+"$1"}
+            GREASEWEAZLE=$tag bundle/build.sh ${1:+"$1"}
     else
         [ -f "$dir/greaseweazle-version" ] || return 1
-        echo "engine: keeping the Greaseweazle already built" >&2
+        echo "bundle: keeping the Greaseweazle already built" >&2
     fi
 }

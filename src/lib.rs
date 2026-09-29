@@ -8,7 +8,6 @@ mod app;
 pub mod command;
 pub mod device;
 mod diskmap;
-pub mod engine;
 pub mod form;
 pub mod job;
 #[cfg(target_os = "linux")]
@@ -19,6 +18,7 @@ pub mod schema;
 pub mod service;
 pub mod standalone;
 pub mod theme;
+pub mod tools;
 mod udev;
 pub mod update;
 

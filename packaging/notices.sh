@@ -1,14 +1,14 @@
 #!/bin/sh
 # Writes to stdout the THIRD-PARTY-NOTICES.txt a package carries: the licences
 # of the Rust crates built into the program for each TRIPLE, then of what the
-# engine at ENGINE holds: Python and the libraries linked into it, gw and its
+# bundle at BUNDLE holds: Python and the libraries linked into it, gw and its
 # Python packages, and the SPS/CAPS library. packaging/licences has the texts
 # their sources leave out.
 #
-#   packaging/notices.sh ENGINE TRIPLE...
+#   packaging/notices.sh BUNDLE TRIPLE...
 set -eu
 cd "$(dirname "$0")/.."
-engine=$1
+bundle=$1
 shift
 texts=packaging/licences
 registry=${CARGO_HOME:-$HOME/.cargo}/registry/src
@@ -113,11 +113,11 @@ if [ -s "$work/bare" ]; then
     done
 fi
 
-if [ ! -f "$engine/python-version" ]; then
-    echo "notices: $engine has no python-version; rebuild it with engine/build.sh" >&2
+if [ ! -f "$bundle/python-version" ]; then
+    echo "notices: $bundle has no python-version; rebuild it with bundle/build.sh" >&2
     exit 1
 fi
-python=$texts/python-$(cat "$engine/python-version").txt
+python=$texts/python-$(cat "$bundle/python-version").txt
 if [ ! -f "$python" ]; then
     echo "notices: no $python; run packaging/python-licences.sh" >&2
     exit 1
@@ -129,8 +129,8 @@ cat "$python"
 # wheel has none.
 section "Greaseweazle and its Python packages"
 packages=0
-for info in "$engine"/lib/python3.*/site-packages/*.dist-info \
-    "$engine"/Lib/site-packages/*.dist-info; do
+for info in "$bundle"/lib/python3.*/site-packages/*.dist-info \
+    "$bundle"/Lib/site-packages/*.dist-info; do
     [ -d "$info" ] || continue
     package=${info##*/}
     package=${package%.dist-info}
@@ -152,19 +152,19 @@ for info in "$engine"/lib/python3.*/site-packages/*.dist-info \
     packages=$((packages + 1))
 done
 if [ "$packages" -eq 0 ]; then
-    echo "notices: $engine holds no Python packages" >&2
+    echo "notices: $bundle holds no Python packages" >&2
     exit 1
 fi
 
-if [ ! -f "$engine/caps-version" ]; then
-    echo "notices: $engine has no SPS/CAPS library; rebuild it with engine/build.sh" >&2
+if [ ! -f "$bundle/caps-version" ]; then
+    echo "notices: $bundle has no SPS/CAPS library; rebuild it with bundle/build.sh" >&2
     exit 1
 fi
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 section "The SPS Decoder Library"
 echo
 fold -s -w 72 <<EOF | sed 's/ *$//'
-gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$engine/caps-version")), which is free for non-commercial use only.
+gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$bundle/caps-version")), which is free for non-commercial use only.
 EOF
 echo
-cat "$engine/caps/LICENCE.txt"
+cat "$bundle/caps/LICENCE.txt"

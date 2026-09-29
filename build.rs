@@ -12,7 +12,7 @@ fn main() {
     }
 }
 
-/// src/bridge.py, zlib-compressed and in base64, for engine.rs: raw, it would
+/// src/bridge.py, zlib-compressed and in base64, for tools.rs: raw, it would
 /// soon pass the 32,767 characters of a Windows command line.
 fn bridge() {
     const BRIDGE: &str = "src/bridge.py";

@@ -1,9 +1,9 @@
 //! The long-lived bridge that answers questions about gw: its schema,
 //! connected devices, disk formats, and whether a value is valid.
 
-use crate::engine::Engine;
 use crate::schema::{DiskDefs, FormatInfo, Port, Schema};
 use crate::standalone;
+use crate::tools::Tools;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -109,15 +109,15 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn start(engine: &Engine, repaint: Repaint) -> Service {
+    pub fn start(tools: &Tools, repaint: Repaint) -> Service {
         let (requests, rx) = mpsc::channel();
-        match engine.standalone {
+        match tools.standalone {
             true => {
-                let gw = engine.python.clone();
+                let gw = tools.python.clone();
                 std::thread::spawn(move || serve_standalone(&gw, rx, repaint));
             }
             false => {
-                let cmd = engine.bridge("serve");
+                let cmd = tools.bridge("serve");
                 std::thread::spawn(move || serve(cmd, rx, repaint));
             }
         }
@@ -126,7 +126,7 @@ impl Service {
         Service::new(requests, schema, ports)
     }
 
-    /// A service with no engine behind it: every question fails but the schema, if given.
+    /// A service with no Greaseweazle Tools behind it: every question fails but the schema, if given.
     pub fn offline(schema: Result<Schema, String>) -> Service {
         let (requests, _) = mpsc::channel();
         let schema = schema.map_or_else(Load::Failed, Load::Ready);
@@ -192,7 +192,7 @@ impl Service {
         &self.last_ports
     }
 
-    /// Why gw could not list the devices, such as its engine having stopped.
+    /// Why gw could not list the devices, such as its Python having stopped.
     pub fn ports_error(&self) -> Option<&str> {
         self.ports_error.as_deref()
     }
@@ -554,7 +554,7 @@ fn parse(line: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Origin;
+    use crate::tools::Origin;
 
     // A file added in the same tick as a listing leaves the folder's time as
     // it was; here the time is set back to show that.
@@ -598,14 +598,14 @@ mod tests {
     /// A bridge that answers every request with an empty list, and writes its
     /// process id beside itself.
     #[cfg(unix)]
-    fn fake_engine(dir: &std::path::Path) -> Engine {
+    fn fake_tools(dir: &std::path::Path) -> Tools {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("bridge");
         let text =
             "#!/bin/sh\necho $$ > \"$0.pid\"\nwhile read -r line; do echo '{\"ok\": []}'; done\n";
         std::fs::write(&script, text).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Engine {
+        Tools {
             python: script,
             origin: Origin::Custom,
             standalone: false,
@@ -614,7 +614,7 @@ mod tests {
 
     /// A standalone gw that prints gw 1.23's help as recorded.
     #[cfg(unix)]
-    fn recorded_gw(dir: &std::path::Path) -> Engine {
+    fn recorded_gw(dir: &std::path::Path) -> Tools {
         use std::os::unix::fs::PermissionsExt;
         let help = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/help-1.23");
         let text = format!(
@@ -626,7 +626,7 @@ mod tests {
         let script = dir.join("gw");
         std::fs::write(&script, text).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Engine::find(Some(&script)).expect("a program of its own")
+        Tools::find(Some(&script)).expect("a program of its own")
     }
 
     #[test]
@@ -660,12 +660,12 @@ mod tests {
 
     #[test]
     fn a_failed_device_list_keeps_its_reason() {
-        let engine = Engine {
+        let tools = Tools {
             python: std::env::temp_dir().join("ferriteweazle-no-such-python"),
             origin: Origin::Custom,
             standalone: false,
         };
-        let mut service = Service::start(&engine, Box::new(|| {}));
+        let mut service = Service::start(&tools, Box::new(|| {}));
         let why = wait_for("reason", || {
             service.poll();
             service.ports_error().map(str::to_owned)
@@ -705,7 +705,7 @@ mod tests {
         let repaint = Box::new(move || {
             count.fetch_add(1, Ordering::SeqCst);
         });
-        let _service = Service::start(&fake_engine(&dir), repaint);
+        let _service = Service::start(&fake_tools(&dir), repaint);
         // One wake for each of the first two replies, then one with nothing asked.
         wait_for("a wake", || {
             (wakes.load(Ordering::SeqCst) > 2).then_some(())
@@ -717,8 +717,8 @@ mod tests {
     #[test]
     fn a_dropped_service_leaves_no_bridge_behind() {
         let dir = scratch("reaped");
-        let engine = fake_engine(&dir);
-        let mut service = Service::start(&engine, Box::new(|| {}));
+        let tools = fake_tools(&dir);
+        let mut service = Service::start(&tools, Box::new(|| {}));
         wait_for("the devices", || {
             service.poll();
             service.ports.ready().map(|_| ())

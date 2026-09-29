@@ -3,8 +3,8 @@
 //! come from its help, and what help does not print (value types, options
 //! that exclude each other, image types) from gw 1.23's schema.
 
-use crate::engine::quiet;
 use crate::schema::{Arg, Command, Image, Port, Schema};
+use crate::tools::quiet;
 use std::collections::BTreeMap;
 use std::path::Path;
 

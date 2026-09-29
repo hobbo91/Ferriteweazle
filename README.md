@@ -46,9 +46,9 @@ options from gw's argument parsers, and the app builds its pages from them. A ne
 gw release works once it is bundled: its new options appear under **Advanced options**,
 and options it drops disappear.
 
-`engine/build.sh` bundles gw's latest release on GitHub, never a nightly build or a
-prerelease. The packaging scripts rebuild the engine first when gw has a newer
-release. To stay on one release, set `GREASEWEAZLE` in [`engine/versions`](engine/versions)
+`bundle/build.sh` bundles gw's latest release on GitHub, never a nightly build or a
+prerelease. The packaging scripts rebuild the bundle first when gw has a newer
+release. To stay on one release, set `GREASEWEAZLE` in [`bundle/versions`](bundle/versions)
 to its tag. `cargo build` never checks: a build script that went online would slow
 every build and fail offline.
 
@@ -76,11 +76,11 @@ You need [Rust](https://rustup.rs) 1.95 or later.
 ```sh
 git clone https://github.com/hobbo91/ferriteweazle
 cd ferriteweazle
-engine/build.sh     # optional: gw with its own Python
+bundle/build.sh     # optional: gw with its own Python
 cargo run --release
 ```
 
-Without the engine, the app uses an installed `gw`. `engine/build.sh` needs curl,
+Without the bundle, the app uses an installed `gw`. `bundle/build.sh` needs curl,
 git and a C/C++ compiler: Xcode's command line tools on macOS, zig on Linux, and on
 Windows Visual Studio's C++ build tools and LLVM, in Git Bash.
 

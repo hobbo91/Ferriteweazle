@@ -1,12 +1,12 @@
 #!/bin/sh
 # Builds dist/Ferriteweazle-VERSION-macos-universal.dmg: one app for Apple
 # Silicon and Intel Macs, macOS 10.15 on (the oldest the Intel Python runs
-# on), signed ad hoc, each engine rebuilt first if gw has a newer release.
+# on), signed ad hoc, each bundle rebuilt first if gw has a newer release.
 # Needs rustup's stable toolchain with both Mac targets, and Rosetta.
 # TODO: Developer ID signing and notarisation.
 set -eu
 cd "$(dirname "$0")/../.."
-. engine/greaseweazle.sh
+. bundle/greaseweazle.sh
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 stage=target/macos
 app=$stage/Ferriteweazle.app
@@ -25,26 +25,26 @@ lipo -create -output "$app/Contents/MacOS/ferriteweazle" \
     target/aarch64-apple-darwin/release/ferriteweazle target/x86_64-apple-darwin/release/ferriteweazle
 strip "$app/Contents/MacOS/ferriteweazle"
 
-# One engine for both: the Apple Silicon one, each program joined with its Intel
+# One bundle for both: the Apple Silicon one, each program joined with its Intel
 # twin (the rest differs only in build notes and bytecode) and signed again, as
-# Apple Silicon runs no unsigned code. pip resolves each engine's packages afresh.
-arm=$(engine_dir aarch64-apple-darwin)
-intel=$(engine_dir x86_64-apple-darwin)
+# Apple Silicon runs no unsigned code. pip resolves each bundle's packages afresh.
+arm=$(bundle_dir aarch64-apple-darwin)
+intel=$(bundle_dir x86_64-apple-darwin)
 versions() {
     cat "$1/python-version"
     "$1/bin/python3" -B -I -c 'import importlib.metadata as m
 print(sorted(d.name + " " + d.version for d in m.distributions()))'
 }
 [ "$(versions "$arm")" = "$(versions "$intel")" ] || {
-    echo "bundle: the two engines differ; rebuild each with engine/build.sh TRIPLE" >&2
+    echo "bundle: the two bundles differ; rebuild each with bundle/build.sh TRIPLE" >&2
     exit 1
 }
-engine=$app/Contents/Resources/greaseweazle
-ditto "$arm" "$engine"
-find "$engine" -type f | while read -r f; do
+bundle=$app/Contents/Resources/greaseweazle
+ditto "$arm" "$bundle"
+find "$bundle" -type f | while read -r f; do
     file -b "$f" | grep -q Mach-O || continue
     case "$(lipo -archs "$f")" in *x86_64*) continue ;; esac
-    lipo -create -output "$f.both" "$f" "$intel/${f#"$engine"/}"
+    lipo -create -output "$f.both" "$f" "$intel/${f#"$bundle"/}"
     mv "$f.both" "$f"
     codesign --force --sign - "$f"
 done
@@ -59,7 +59,7 @@ codesign --verify --deep --strict "$app"
 ln -s /Applications "$stage/Applications"
 cp packaging/macos/README.txt "$stage/README.txt"
 cp LICENSE "$stage/LICENSE.txt"
-packaging/notices.sh "$engine" aarch64-apple-darwin x86_64-apple-darwin \
+packaging/notices.sh "$bundle" aarch64-apple-darwin x86_64-apple-darwin \
     >"$stage/THIRD-PARTY-NOTICES.txt"
 # The disk shows the logo: made writable, given Finder's custom-icon flag,
 # then compressed.
