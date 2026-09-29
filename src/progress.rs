@@ -11,14 +11,14 @@ pub enum Status {
     Good,
     /// Some sectors missing.
     Partial,
-    /// No sectors found, or the write failed to verify.
+    /// No sectors found, or the write failed.
     Bad,
     /// Read or converted as flux, with nothing decoded.
     Flux,
     /// Written, with no verify reported.
     Written,
     Erased,
-    /// Outside the chosen format.
+    /// Outside the chosen format, or not in the input.
     Skipped,
 }
 
@@ -43,11 +43,43 @@ pub struct Progress {
     /// The track being worked on.
     pub current: Option<(u32, u32)>,
     pub error: Option<String>,
-    /// The lines that follow belong to the error.
-    fatal: bool,
-    /// Inside a Python traceback, whose last unindented line is the error.
-    traceback: bool,
+    /// gw's line on why a write left tracks unverified, such as "No tracks
+    /// verified (Reason: Verify unavailable)".
+    pub unverified: Option<String>,
+    /// gw's warnings about the job as a whole, such as a damaged input's.
+    pub warnings: Vec<String>,
+    /// A read with --raw: gw keeps the flux of tracks outside the format.
+    pub raw: bool,
+    /// The cylinders of gw's sector map, those it read. A conversion's
+    /// track lines name the tracks it writes.
+    columns: Vec<u32>,
+    /// What the lines that follow belong to.
+    block: Block,
 }
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Block {
+    /// gw's output as it goes.
+    #[default]
+    Output,
+    /// The error's message.
+    Error,
+    /// A Python traceback, whose last unindented lines are the error.
+    Traceback,
+    /// A list of what gw knows, such as its formats, after an error.
+    List,
+}
+
+/// Headings of the lists gw puts after some errors. Must match gw's messages.
+const LISTS: [&str; 4] = [
+    "Known formats:",
+    "Known suffixes:",
+    "Valid modes:",
+    "Valid types:",
+];
+
+/// How a traceback names gw's own errors, which it prints bare without --bt.
+const FATAL: &str = "greaseweazle.error.Fatal: ";
 
 impl Progress {
     /// Nothing done yet, on a disk of this size.
@@ -61,51 +93,60 @@ impl Progress {
 
     pub fn feed(&mut self, line: &str) {
         let line = line.trim_end();
-        if self.fatal {
-            // gw indents some lines, such as its bootloader warning's second.
-            let line = line.trim_start();
-            let error = self.error.get_or_insert_default();
-            if !line.is_empty() {
-                error.push_str(if error.is_empty() { "" } else { "\n" });
-                error.push_str(line);
+        match self.block {
+            Block::Output => {}
+            Block::Error => {
+                // gw indents some lines, such as its bootloader warning's second.
+                let line = line.trim_start();
+                if let Some(t) = line
+                    .strip_prefix("Failed to verify Track ")
+                    .and_then(key)
+                    .and_then(|k| self.tracks.get_mut(&k))
+                {
+                    t.status = Status::Bad;
+                } else if let Some((key, text)) = track_line(line) {
+                    // gw stopped before the track, as for sectors its input lacks.
+                    let t = self.tracks.entry(key).or_insert(Track {
+                        status: Status::Bad,
+                        retries: 0,
+                        text: String::new(),
+                    });
+                    t.status = Status::Bad;
+                    text.clone_into(&mut t.text);
+                }
+                return self.add_to_error(line);
             }
-            if let Some(t) = line
-                .strip_prefix("Failed to verify Track ")
-                .and_then(key)
-                .and_then(|k| self.tracks.get_mut(&k))
-            {
-                t.status = Status::Bad;
+            Block::Traceback if line.starts_with(' ') => {
+                // A frame or its code: the exception comes after the last.
+                self.error = None;
+                return;
             }
-            return;
-        }
-        if self.traceback {
-            if !line.is_empty() && !line.starts_with(' ') {
-                self.error = Some(line.to_owned());
-            }
-            return;
+            Block::Traceback => return self.add_to_error(line.strip_prefix(FATAL).unwrap_or(line)),
+            Block::List => return,
         }
         if line == "** FATAL ERROR:" {
-            self.fatal = true;
+            self.error.get_or_insert_default();
+            self.block = Block::Error;
         } else if let Some(e) = ["ERROR: ", "** UPDATE FAILED: "]
             .iter()
             .find_map(|p| line.strip_prefix(p))
         {
             // gw's advice, if any, follows on the next lines.
             self.error = Some(e.to_owned());
-            self.fatal = true;
+            self.block = Block::Error;
         } else if line == "Traceback (most recent call last):" {
-            self.traceback = true;
+            self.block = Block::Traceback;
         } else if let Some(e) = line
             .strip_prefix("Command Failed: ")
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
         {
             self.error = Some(e.to_owned());
-        } else if let Some(set) = ["Reading ", "Writing ", "Converting ", "Erasing "]
+        } else if let Some(rest) = ["Reading ", "Writing ", "Converting ", "Erasing "]
             .iter()
             .find_map(|p| line.strip_prefix(p))
-            .and_then(|rest| track_set(rest.split_whitespace().next()?.trim_end_matches(',')))
+            && let Some(tracks) = announced(rest)
         {
-            (self.cyls, self.heads) = set;
+            (self.columns, self.cyls, self.heads) = tracks;
         } else if line == "All tracks verified" {
             for t in self
                 .tracks
@@ -114,18 +155,51 @@ impl Progress {
             {
                 t.status = Status::Good;
             }
+        } else if line.starts_with("No tracks verified ")
+            || line.contains(" tracks *not* verified ")
+        {
+            self.unverified = Some(line.to_owned());
         } else if let Some(rest) = line.strip_prefix("Found ") {
             self.total = found(rest);
         } else if let Some((key, text)) = track_line(line) {
             self.track(key, text);
         } else if let Some((head, sector, cells)) = map_row(line) {
             self.map_row(head, sector, cells);
+        } else if line.contains("WARNING:") {
+            self.warnings.push(line.to_owned());
+        }
+    }
+
+    /// Adds a line to the error's message, which ends where a list begins.
+    fn add_to_error(&mut self, line: &str) {
+        if LISTS.contains(&line) {
+            self.block = Block::List;
+        } else if !line.is_empty() {
+            let error = self.error.get_or_insert_default();
+            if !error.is_empty() {
+                error.push('\n');
+            }
+            error.push_str(line);
         }
     }
 
     /// The job has ended.
     pub fn finish(&mut self) {
         self.current = None;
+    }
+
+    /// Marks the announced tracks gw has not reported as skipped: a write or
+    /// conversion passes over those its input lacks without a word.
+    pub fn skip_unreported(&mut self) {
+        for &cyl in &self.cyls {
+            for &head in &self.heads {
+                self.tracks.entry((cyl, head)).or_insert_with(|| Track {
+                    status: Status::Skipped,
+                    retries: 0,
+                    text: "Not in the input, so gw passed over it.".into(),
+                });
+            }
+        }
     }
 
     /// Cylinders and heads to draw: those gw announced, and any it visited.
@@ -171,13 +245,21 @@ impl Progress {
         if text.contains("(Retry #") || text.contains("(Verify Failure") {
             t.retries += 1;
         }
-        text.clone_into(&mut t.text);
-        // "Giving up" keeps the result of the last attempt.
+        // "Giving up" keeps the result of the last attempt, and adds to it.
         if text.starts_with("Giving up") {
+            if !t.text.is_empty() {
+                t.text.push('\n');
+            }
+            t.text.push_str(text);
             return;
         }
+        text.clone_into(&mut t.text);
         t.status = if text.starts_with("WARNING") {
-            Status::Skipped
+            // Outside the format: a read with --raw keeps its flux all the same.
+            match self.raw && text.contains("No format conversion applied") {
+                true => Status::Flux,
+                false => Status::Skipped,
+            }
         } else if text.starts_with("Erasing") {
             Status::Erased
         } else if text.starts_with("Writing") {
@@ -196,7 +278,7 @@ impl Progress {
     }
 
     fn map_row(&mut self, head: u32, sector: usize, cells: &str) {
-        for (&cyl, cell) in self.cyls.iter().zip(cells.chars()) {
+        for (&cyl, cell) in self.columns.iter().zip(cells.chars()) {
             let good = match cell {
                 '.' => true,
                 'X' => false,
@@ -264,6 +346,19 @@ fn map_row(line: &str) -> Option<(u32, usize, &str)> {
     let (id, cells) = line.split_once(": ")?;
     let (head, sector) = id.split_once('.')?;
     Some((head.parse().ok()?, sector.trim().parse().ok()?, cells))
+}
+
+/// The tracks gw announces, as `c=0-79:h=0-1 revs=2` or a conversion's
+/// `c=0-79:h=0-1 -> c=0-39:h=0-1`: the cylinders it reads, then the
+/// cylinders and heads its track lines name, which a conversion writes.
+fn announced(rest: &str) -> Option<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+    let mut words = rest.split_whitespace();
+    let (read, heads) = track_set(words.next()?.trim_end_matches(','))?;
+    let (cyls, heads) = match (words.next(), words.next()) {
+        (Some("->"), Some(out)) => track_set(out)?,
+        _ => (read.clone(), heads),
+    };
+    Some((read, cyls, heads))
 }
 
 /// Cylinders and heads from a printed track set such as `c=0-79:h=0-1`.
@@ -335,6 +430,7 @@ mod tests {
                 retries: 0
             }
         );
+        assert_eq!(p.warnings, ["SCP: WARNING: Bad image checksum"]);
     }
 
     #[test]
@@ -380,6 +476,12 @@ mod tests {
             Found 35 sectors of 36 (97%)");
         let t = &p.tracks[&(1, 0)];
         assert_eq!((t.status, t.retries), (Status::Partial, 2));
+        assert_eq!(
+            t.text,
+            "IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.2)\n\
+             Giving up: 1 sectors missing",
+            "the last attempt's result, then gw's"
+        );
         assert_eq!(p.sector_map[&(1, 0)], vec![Some(true), Some(false)]);
         assert_eq!(p.total, Some((35, 36)));
     }
@@ -418,6 +520,36 @@ mod tests {
         let p = fed("T3.0: Writing Track (Flux: 1)\n** FATAL ERROR:\nFailed to verify Track 3.0");
         assert_eq!(p.tracks[&(3, 0)].status, Status::Bad);
         assert_eq!(p.error.as_deref(), Some("Failed to verify Track 3.0"));
+    }
+
+    #[test]
+    fn a_track_gw_stops_at_before_writing_it_is_bad() {
+        let p = fed("Writing c=0-1:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            ** FATAL ERROR:\n\
+            T1.0: 3 missing sectors in input image");
+        let t = &p.tracks[&(1, 0)];
+        assert_eq!(t.status, Status::Bad);
+        assert_eq!(t.text, "3 missing sectors in input image");
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Written);
+        assert_eq!(
+            p.error.as_deref(),
+            Some("T1.0: 3 missing sectors in input image")
+        );
+    }
+
+    #[test]
+    fn gws_reason_for_leaving_tracks_unverified_is_kept() {
+        let written = "Writing c=0:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)";
+        for reason in [
+            "No tracks verified (Reason: Verify disabled)",
+            "2 tracks verified; 1 tracks *not* verified (Reason: Verify unavailable)",
+        ] {
+            let p = fed(&format!("{written}\n{reason}"));
+            assert_eq!(p.unverified.as_deref(), Some(reason));
+            assert_eq!(p.tracks[&(0, 0)].status, Status::Written);
+        }
     }
 
     #[test]
@@ -493,6 +625,48 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
     }
 
     #[test]
+    fn a_traceback_gives_all_of_gws_message_as_gw_prints_it_without_one() {
+        let p = fed(r#"Traceback (most recent call last):
+  File "greaseweazle/error.py", line 15, in check
+    raise Fatal(desc)
+greaseweazle.error.Fatal: out.hfe: Invalid file option: bogus
+Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
+        assert_eq!(
+            p.error.as_deref(),
+            Some(
+                "out.hfe: Invalid file option: bogus\n\
+                 Valid options: bitrate, version, interface, encoding, double_step, uniform"
+            )
+        );
+    }
+
+    #[test]
+    fn the_list_gw_gives_after_an_error_stays_in_the_log() {
+        let unknown = "Unknown format 'nosuch.fmt'";
+        let list = "Known formats:\n\
+            acorn.adfs.160            acorn.adfs.1600           acorn.adfs.320\n\
+            acorn.adfs.640            acorn.adfs.800            acorn.dfs.ds";
+        let fatal = fed(&format!("** FATAL ERROR:\n{unknown}\n{list}"));
+        assert_eq!(fatal.error.as_deref(), Some(unknown));
+        let traceback = fed(&format!(
+            "Traceback (most recent call last):\n  \
+             File \"greaseweazle/tools/convert.py\", line 170, in main\n    \
+             raise error.Fatal(\"\"\"\\\n    \
+             ...<3 lines>...\n\
+             greaseweazle.error.Fatal: {unknown}\n{list}"
+        ));
+        assert_eq!(traceback.error.as_deref(), Some(unknown));
+        let suffix = fed("** FATAL ERROR:\n\
+            a.xyz: Unrecognised file suffix '.xyz'\n\
+            Known suffixes:\n\
+            .a2r   .adf   .ads   .adm   .adl   .ctr   .d1m   .d2m   .d4m   .d64   .d71");
+        assert_eq!(
+            suffix.error.as_deref(),
+            Some("a.xyz: Unrecognised file suffix '.xyz'")
+        );
+    }
+
+    #[test]
     fn an_erase_announces_its_tracks() {
         let p = fed("Erasing c=0-81:h=0-1, revs=1");
         assert_eq!((p.cyls.len(), p.heads), (82, vec![0, 1]));
@@ -502,6 +676,7 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
     fn remarks_about_a_track_leave_it_as_it_was() {
         let p = fed(
             "T45.0: D88: Removed 2 duplicate sectors from oversized track\n\
+            T5.0: IBM: WARNING: Track is 7.50% too long\n\
             Writing c=0-1:h=0\n\
             T0.0: Writing Track (Flux: 1)\n\
             T0.0: Ignoring unexpected sector C:0 H:0 R:19 N:2\n\
@@ -509,6 +684,7 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
         );
         assert_eq!(p.tracks.keys().collect::<Vec<_>>(), [&(0, 0)]);
         assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
+        assert!(p.warnings.is_empty(), "the job's own warnings only");
     }
 
     #[test]
@@ -521,6 +697,50 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
     fn tracks_out_of_the_format_are_skipped() {
         let p = fed("T80.0: WARNING: Out of range for format 'ibm.1440': Track skipped");
         assert_eq!(p.tracks[&(80, 0)].status, Status::Skipped);
+    }
+
+    #[test]
+    fn a_raw_read_keeps_the_flux_of_a_track_outside_the_format() {
+        let line = "T80.0: WARNING: Out of range for format 'ibm.1440': \
+                    No format conversion applied: Raw Flux (149963 flux in 600.17ms)";
+        let mut raw = Progress {
+            raw: true,
+            ..Progress::default()
+        };
+        raw.feed(line);
+        assert_eq!(raw.tracks[&(80, 0)].status, Status::Flux);
+        let read = fed(line);
+        assert_eq!(
+            read.tracks[&(80, 0)].status,
+            Status::Skipped,
+            "no flux kept"
+        );
+    }
+
+    #[test]
+    fn a_conversion_maps_the_tracks_it_writes() {
+        // gw 1.23 converting with --out-tracks=c=5-9.
+        let tracks =
+            (5..=9).flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: IBM MFM (18/18 sectors)")));
+        let log = ["Format ibm.1440", "Converting c=0-79:h=0-1 -> c=5-9:h=0-1"]
+            .map(String::from)
+            .into_iter()
+            .chain(tracks)
+            .chain(["0. 0:      .....", "0. 1:      ..X.."].map(String::from))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = fed(&log);
+        assert_eq!((p.cyls, p.heads), ((5..=9).collect(), vec![0, 1]));
+        assert_eq!(p.sector_map[&(7, 0)], [Some(true), Some(false)]);
+        assert_eq!(p.sector_map.len(), 5, "side 1's rows are not given here");
+    }
+
+    #[test]
+    fn a_write_or_conversion_that_worked_skipped_the_tracks_it_did_not_report() {
+        let mut p = fed("Writing c=0-1:h=0\nT0.0: Writing Track (Flux: 1)\nAll tracks verified");
+        p.skip_unreported();
+        assert_eq!(p.tracks[&(1, 0)].status, Status::Skipped);
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
     }
 
     #[test]

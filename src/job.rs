@@ -1,13 +1,14 @@
 //! One gw command, run through the bridge, with its output as it arrives.
 
+use crate::device;
 use crate::engine::Engine;
 use crate::progress::Progress;
 use crate::service::Repaint;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 // Line prefixes for gw's questions and the bridge's result. Must match bridge.py.
@@ -39,6 +40,8 @@ pub struct Job {
     pub ended: Option<(Instant, Outcome)>,
     /// The image the job makes.
     pub output: Option<PathBuf>,
+    /// The job failed and its image is gone: gw deletes it.
+    pub no_image: bool,
     /// The job's disk format, if known.
     pub format: Option<String>,
     /// Formats that read the disk in full, best first, from a detect job.
@@ -48,6 +51,9 @@ pub struct Job {
     pub step: u32,
     /// Which disk of a session this is, counting from 1, and how many.
     pub part: Option<(usize, usize)>,
+    /// The line gw is printing, until it ends it: gw clean prints each
+    /// cylinder as the heads reach it.
+    pub partial: String,
     /// Lines of `log` the session log has taken.
     logged: usize,
     /// The line number of the job's heading in the session log, and the heading.
@@ -56,7 +62,7 @@ pub struct Job {
     /// None for a job replayed from its output.
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    lines: Receiver<String>,
+    lines: Receiver<Chunk>,
     eof: bool,
 }
 
@@ -79,22 +85,7 @@ impl Job {
         let stdin = child.stdin.take();
         let stderr = child.stderr.take().expect("stderr is piped");
         let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = Vec::new();
-            while matches!(reader.read_until(b'\n', &mut buf), Ok(1..)) {
-                let line = String::from_utf8_lossy(&buf)
-                    .trim_end_matches(['\n', '\r'])
-                    .to_owned();
-                buf.clear();
-                if tx.send(line).is_err() {
-                    break;
-                }
-                repaint();
-            }
-            drop(tx); // before the repaint, so the poll it wakes sees the end
-            repaint();
-        });
+        std::thread::spawn(move || relay(stderr, tx, repaint));
         Ok(Job {
             child: Some(child),
             stdin,
@@ -109,12 +100,11 @@ impl Job {
             ..Job::new(command, Vec::new(), mpsc::channel().1)
         };
         log.lines().for_each(|l| job.take(l.to_owned()));
-        let outcome = match job.progress.error {
-            Some(_) => Outcome::Failed,
-            None => Outcome::Succeeded,
+        let outcome = match job.worked(true) {
+            true => Outcome::Succeeded,
+            false => Outcome::Failed,
         };
-        job.ended = Some((job.started, outcome));
-        job.progress.finish();
+        job.end(job.started, outcome);
         job
     }
 
@@ -148,7 +138,11 @@ impl Job {
     pub fn poll(&mut self) {
         loop {
             match self.lines.try_recv() {
-                Ok(line) => self.take(line),
+                Ok(Chunk::Line(line)) => {
+                    self.partial.clear();
+                    self.take(line);
+                }
+                Ok(Chunk::Partial(text)) => self.partial = text,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.eof = true;
@@ -166,14 +160,23 @@ impl Job {
         {
             let outcome = if self.stopping.is_some() {
                 Outcome::Stopped
-            } else if status.success() && self.progress.error.is_none() {
+            } else if self.worked(status.success()) {
                 Outcome::Succeeded
             } else {
                 Outcome::Failed
             };
-            self.ended = Some((Instant::now(), outcome));
-            self.progress.finish();
+            self.end(Instant::now(), outcome);
             self.question = None;
+        }
+    }
+
+    /// Ends the job. A write or conversion that worked passed over the
+    /// tracks it did not report.
+    fn end(&mut self, at: Instant, outcome: Outcome) {
+        self.ended = Some((at, outcome));
+        self.progress.finish();
+        if outcome == Outcome::Succeeded && matches!(self.command.as_str(), "write" | "convert") {
+            self.progress.skip_unreported();
         }
     }
 
@@ -186,6 +189,18 @@ impl Job {
         }
     }
 
+    /// Whether a job that ran to its end worked. gw info exits 0 when it
+    /// finds no Greaseweazle, and 1 when its device has answered in full and
+    /// only the check online for newer firmware fails.
+    fn worked(&self, exited_ok: bool) -> bool {
+        let clean = exited_ok && self.progress.error.is_none();
+        match self.command.as_str() {
+            // USB ends gw info's report on the device.
+            "info" => device::parse(&self.log).is_some_and(|d| clean || d.get("USB").is_some()),
+            _ => clean,
+        }
+    }
+
     pub fn answer(&mut self, text: &str) {
         if let Some(stdin) = &mut self.stdin {
             let _ = writeln!(stdin, "answer {text}");
@@ -193,20 +208,24 @@ impl Job {
         self.question = None;
     }
 
-    fn new(command: &str, args: Vec<String>, lines: Receiver<String>) -> Job {
+    fn new(command: &str, args: Vec<String>, lines: Receiver<Chunk>) -> Job {
+        let mut progress = Progress::default();
+        progress.raw = command == "read" && args.iter().any(|a| a == "--raw");
         Job {
             command: command.to_owned(),
             args,
             log: Vec::new(),
-            progress: Progress::default(),
+            progress,
             question: None,
             started: Instant::now(),
             ended: None,
             output: None,
+            no_image: false,
             format: None,
             detected: Vec::new(),
             step: 1,
             part: None,
+            partial: String::new(),
             logged: 0,
             head: None,
             stopping: None,
@@ -231,10 +250,67 @@ impl Job {
                 .collect();
             self.step = result["step"].as_u64().map_or(1, |s| s.max(1) as u32);
         } else {
+            // With no --format, gw names the image type's own or the one it finds in the file.
+            if self.format.is_none() {
+                self.format = line
+                    .strip_prefix("Format ")
+                    .or_else(|| Some(line.split_once(": Image format ")?.1))
+                    .map(str::to_owned);
+            }
             self.progress.feed(&line);
             self.log.push(line);
         }
     }
+}
+
+/// What the reader passes on from gw's output.
+enum Chunk {
+    Line(String),
+    /// The line so far, where gw has not ended it yet.
+    Partial(String),
+}
+
+/// Passes on gw's output from `from` as it comes: each line, and a line not
+/// yet ended each time it grows.
+fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
+    let mut reader = BufReader::new(from);
+    let mut line = Vec::new();
+    loop {
+        let (used, ended) = match reader.fill_buf() {
+            Ok([]) if line.is_empty() => break,
+            // The end of the output ends the line too.
+            Ok([]) => (0, true),
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(end) => {
+                    line.extend_from_slice(&buf[..end]);
+                    (end + 1, true)
+                }
+                None => {
+                    line.extend_from_slice(buf);
+                    (buf.len(), false)
+                }
+            },
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        reader.consume(used);
+        let text = String::from_utf8_lossy(&line)
+            .trim_end_matches('\r')
+            .to_owned();
+        let chunk = match ended {
+            true => {
+                line.clear();
+                Chunk::Line(text)
+            }
+            false => Chunk::Partial(text),
+        };
+        if to.send(chunk).is_err() {
+            return;
+        }
+        repaint();
+    }
+    drop(to); // before the repaint, so the poll it wakes sees the end
+    repaint();
 }
 
 /// Most lines the session log keeps; it drops the oldest past this.
@@ -276,6 +352,14 @@ impl SessionLog {
     /// Whether `lines()[index]` heads a job.
     pub fn is_head(&self, index: usize) -> bool {
         self.heads.binary_search(&(self.dropped + index)).is_ok()
+    }
+
+    /// The line `job` has not ended yet, while its lines are the last here.
+    pub fn tail<'j>(&self, job: &'j Job) -> &'j str {
+        match &job.head {
+            Some((at, _)) if self.last == Some(*at) => &job.partial,
+            _ => "",
+        }
     }
 
     /// Starts a job's lines under `heading`.
@@ -455,5 +539,70 @@ mod tests {
         );
         let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
         assert_eq!(heads, [0, 3, 6, 10]);
+    }
+
+    /// Polls `job` until `done`, for up to five seconds.
+    fn poll_until(job: &mut Job, done: impl Fn(&Job) -> bool) {
+        let start = Instant::now();
+        while !done(job) {
+            assert!(start.elapsed() < Duration::from_secs(5), "{:?}", job.log);
+            std::thread::sleep(Duration::from_millis(5));
+            job.poll();
+        }
+    }
+
+    #[test]
+    fn a_line_gw_has_not_ended_shows_as_it_grows() {
+        let (from, mut gw) = std::io::pipe().unwrap();
+        let (to, lines) = mpsc::channel();
+        std::thread::spawn(move || relay(from, to, Box::new(|| ())));
+        let mut clean = Job::new("clean", Vec::new(), lines);
+        gw.write_all(b"Pass 0: 0 10 ").unwrap();
+        poll_until(&mut clean, |j| j.partial == "Pass 0: 0 10 ");
+        assert!(clean.log.is_empty());
+        gw.write_all(b"20\r\nPass 1: 0").unwrap();
+        poll_until(&mut clean, |j| j.partial == "Pass 1: 0");
+        assert_eq!(clean.log, ["Pass 0: 0 10 20"]);
+        drop(gw);
+        poll_until(&mut clean, |j| j.eof);
+        assert_eq!(
+            clean.log,
+            ["Pass 0: 0 10 20", "Pass 1: 0"],
+            "the end ends it"
+        );
+        assert_eq!(clean.partial, "");
+        let mut log = SessionLog::default();
+        log.begin("gw clean".into(), &mut clean);
+        clean.partial = "Pass 2: 0".into();
+        assert_eq!(log.tail(&clean), "Pass 2: 0");
+        log.begin("gw info".into(), &mut job("info"));
+        assert_eq!(log.tail(&clean), "", "another job's lines came after");
+    }
+
+    #[test]
+    fn the_format_gw_takes_from_the_image_is_the_jobs() {
+        let format = |log| Job::replay("convert", log).format;
+        let adf = "Format amiga.amigados\nConverting c=0-79:h=0-1 -> c=0-79:h=0-1";
+        assert_eq!(format(adf).as_deref(), Some("amiga.amigados"));
+        let nsi = "NSI: Image format northstar.fm.ss\nConverting c=0-34:h=0 -> c=0-34:h=0";
+        assert_eq!(format(nsi).as_deref(), Some("northstar.fm.ss"));
+    }
+
+    #[test]
+    fn gw_info_works_when_its_device_answers_in_full_and_fails_when_it_finds_none() {
+        let outcome = |log: &str| Job::replay("info", log).outcome();
+        // gw info exits 0 here.
+        let none = "Host Tools: 1.23\nDevice:\n  Not found";
+        assert_eq!(outcome(none), Some(Outcome::Failed));
+        // And 1 here, offline.
+        let report = "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem1\n  \
+                      Model:    Greaseweazle V4.1\n  Firmware: 1.6\n  Serial:   GW01\n  \
+                      USB:      Full Speed (12 Mbit/s), 128kB Buffer";
+        let offline = format!("{report}\n** FATAL ERROR:\nGitHub API Rate Limit exceeded");
+        assert_eq!(outcome(&offline), Some(Outcome::Succeeded));
+        assert_eq!(outcome(report), Some(Outcome::Succeeded));
+        let cut = "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem1\n\
+                   ** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        assert_eq!(outcome(cut), Some(Outcome::Failed));
     }
 }

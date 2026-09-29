@@ -11,6 +11,11 @@ pub type Window = Harness<'static, Option<App>>;
 
 pub const DAMAGED: &str = include_str!("../data/convert-damaged.log");
 
+/// DAMAGED as a read would print it: a read loads no .scp to warn about.
+pub fn damaged_read() -> String {
+    DAMAGED.replace("SCP: WARNING: Bad image checksum\n", "")
+}
+
 pub const FOUND: &str =
     "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
 

@@ -3,7 +3,8 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, greaseweazle, line, run_button, squares,
+    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
+    run_button, squares,
 };
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -607,7 +608,11 @@ fn smooth(settings: Settings) -> Window {
         .with_size(DEFAULT)
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(60);
-    let w = start(builder, settings, Some(Job::replay("read", DAMAGED)));
+    let w = start(
+        builder,
+        settings,
+        Some(Job::replay("read", &damaged_read())),
+    );
     // egui's own default: kittest turns animations off.
     w.ctx.all_styles_mut(|s| s.animation_time = 0.2);
     w
@@ -884,10 +889,21 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
         "** FATAL ERROR:\nFailed to verify Track 1.0",
     ]
     .join("\n");
+    // Flux with no format, which gw cannot verify.
+    let reason = "No tracks verified (Reason: Verify unavailable)";
+    let unverified = [header, &writing(0, 0), &writing(0, 1), reason].join("\n");
     let good = ("Good 2", "Every sector found, or written and verified.");
+    let skipped = ("Skipped 2", "Outside the format, or not in the input.");
     let written = ("Written 2", "Written, no verify reported.");
-    let bad = ("Bad 1", "No sectors found, or failed to verify.");
-    for (log, legend) in [(verified, vec![good]), (failed, vec![written, bad])] {
+    let bad = ("Bad 1", "No sectors found, or the write failed.");
+    // Once the write has worked, what gw passed over is known.
+    let passed = ("4 / 4 tracks", "Not in the input, so gw passed over it.");
+    let unreported = ("3 / 4 tracks", "gw has not reported this track.");
+    for (log, (count, hover), legend) in [
+        (verified, passed, vec![good, skipped]),
+        (failed, unreported, vec![written, bad]),
+        (unverified, passed, vec![("Written 2", reason), skipped]),
+    ] {
         let settings = Settings {
             page: Page::Command("write".into()),
             ..Settings::default()
@@ -897,12 +913,13 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
             settings,
             Some(Job::replay("write", &log)),
         );
+        w.get_by_label(count);
         // Side 0's squares, then side 1's: the last is cylinder 1, side 1.
         let never = squares(&w).last().expect("the map's squares").rect.center();
         w.hover_at(never);
         w.run();
         w.get_by_label("Cylinder 1, side 1");
-        w.get_by_label("gw has not reported this track.");
+        w.get_by_label(hover);
         for (entry, tip) in legend {
             // One tooltip at a time: the last must close first.
             w.event(egui::Event::PointerGone);
@@ -912,6 +929,69 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
             w.get_by_label(tip);
         }
     }
+}
+
+#[test]
+fn gws_warning_about_a_damaged_input_shows_in_the_status_pane() {
+    // The Log, which also shows it, is shut.
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("convert", DAMAGED)),
+    );
+    let pane = w.get_by_label("Disk status").rect().left();
+    let warning = w.get_by_label("SCP: WARNING: Bad image checksum").rect();
+    assert!(warning.left() >= pane, "{warning:?}");
+}
+
+#[test]
+fn a_square_names_the_rows_of_gws_sector_map_it_is_missing() {
+    let mut w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("read", &damaged_read())),
+    );
+    // Side 0's squares come first, one to a cylinder.
+    let square = squares(&w).nth(20).expect("cylinder 20").rect.center();
+    w.hover_at(square);
+    w.run();
+    w.get_by_label("Cylinder 20, side 0");
+    w.get_by_label("Missing in gw's sector map (S): 5");
+}
+
+#[test]
+fn a_track_outside_the_format_is_a_hole_in_the_map_not_one_to_come() {
+    let log = "Reading c=0-80:h=0 revs=2\n\
+               T0.0: IBM MFM (18/18 sectors) from Raw Flux (500 flux in 400.00ms)\n\
+               T80.0: WARNING: Out of range for format 'ibm.1440': \
+               No format conversion applied: Raw Flux (500 flux in 400.00ms)";
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("read", log)),
+    );
+    let squares: Vec<_> = squares(&w).collect();
+    let (to_come, outside) = (squares[1], squares[80]);
+    assert_ne!(outside.fill, to_come.fill);
+    assert!(outside.stroke.width > 0.0, "no outline");
+    w.get_by_label("Skipped 1");
+}
+
+#[test]
+fn a_write_names_the_format_gw_takes_from_the_image() {
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    };
+    let log = "Format amiga.amigados\nWriting c=0-79:h=0-1";
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(Job::replay("write", log)),
+    );
+    let pane = w.get_by_label("Disk status").rect().left();
+    let about = w.get_by_label_contains("amiga.amigados").rect();
+    assert!(about.left() >= pane, "not in the status pane: {about:?}");
 }
 
 #[test]
@@ -927,7 +1007,7 @@ fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
 
 #[test]
 fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.progress.error = Some("The drive did not answer. ".repeat(6));
     let builder = Harness::builder()
         .with_size(DEFAULT)
@@ -965,7 +1045,7 @@ fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() 
 
 #[test]
 fn a_stopped_read_says_so_and_what_it_left() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.ended = Some((job.started, Outcome::Stopped));
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
     w.get_by_label_contains("Stopped ·");
@@ -1100,6 +1180,55 @@ fn clear_empties_the_log() {
 }
 
 #[test]
+fn a_line_gw_is_still_printing_shows_under_the_result_and_in_the_log() {
+    let mut w = window(Settings {
+        page: Page::Command("clean".into()),
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    let app = app_mut(&mut w);
+    let mut job = Job::replay("clean", "");
+    job.ended = None;
+    app.log.begin("gw clean".into(), &mut job);
+    // gw clean prints each cylinder as the heads reach it, and ends the
+    // line with the pass.
+    job.partial = "Pass 0: 0 10 20".into();
+    app.tool = Some(job);
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(2);
+    assert_eq!(w.query_all_by_label("Pass 0: 0 10 20").count(), 2);
+}
+
+#[test]
+fn gws_question_and_its_answer_go_in_the_log_as_a_terminal_shows_them() {
+    let mut w = window(Settings {
+        page: Page::Command("seek".into()),
+        ..Settings::default()
+    });
+    let ask = "@ferriteweazle ask \"Seek to extreme cylinder 90, Yes/No? \"";
+    let mut job = Job::replay("seek", ask);
+    job.ended = None;
+    app_mut(&mut w).tool = Some(job);
+    w.run_steps(2);
+    w.get_by_role_and_label(Role::Button, "No").click();
+    w.run_steps(2);
+    let log = &app(&w).tool.as_ref().unwrap().log;
+    assert_eq!(log, &["Seek to extreme cylinder 90, Yes/No? No"]);
+}
+
+#[test]
+fn a_tool_that_printed_nothing_says_so() {
+    let mut w = window(Settings {
+        page: Page::Command("reset".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).tool = Some(Job::replay("reset", ""));
+    w.run();
+    w.get_by_label("gw printed nothing.");
+    assert!(w.query_by_label("gw's output appears here.").is_none());
+}
+
+#[test]
 fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
     let mut w = first_track_read(
         Harness::builder()
@@ -1135,7 +1264,7 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
     let w = build(
         Harness::builder().with_size(DEFAULT),
         settings,
-        Some(Job::replay("read", DAMAGED)),
+        Some(Job::replay("read", &damaged_read())),
     );
     let legend = w.get_by_label_contains("Good ").rect();
     let drawer = w.get_by_label("Copy").rect();
@@ -1178,7 +1307,7 @@ fn a_square_lit_after_a_pause_still_fades_from_empty() {
 
 #[test]
 fn a_long_job_description_wraps_within_the_status_pane() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.format = Some("commodore.1541".into());
     job.output = Some("/d/Summer Games II side B, the long one.d64".into());
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
@@ -1230,6 +1359,51 @@ fn device_info_fits_the_window_as_it_opens() {
         w.query_all_by_role(Role::ScrollBar).next().is_none(),
         "the page scrolls"
     );
+}
+
+#[test]
+fn device_info_gives_gws_steps_to_update_an_f1() {
+    // An F1 updates only with its jumper fitted, and gw says where.
+    let f1 = "Host Tools: 1.23\nDevice:\n  Port:     COM3\n  Model:    Greaseweazle F1\n  \
+              Firmware: 1.0\n  Serial:   GW01\n  USB:      Full Speed (12 Mbit/s)\n\n\
+              *** New firmware version 1.6 is available\n\
+              To perform an Update:\n \
+              - Disconnect from USB\n \
+              - Install the Update Jumper at pins DCLK-GND\n \
+              - Reconnect to USB\n \
+              - Run \"gw update\" to download and install latest firmware";
+    let settings = Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    };
+    let mut w = window(settings);
+    app_mut(&mut w).tool = Some(Job::replay("info", f1));
+    w.run();
+    w.get_by_label("Firmware 1.6 is available.");
+    w.get_by_label("- Install the Update Jumper at pins DCLK-GND");
+    w.get_by_label("- Run \"gw update\" to download and install latest firmware");
+}
+
+#[test]
+fn device_info_is_done_when_its_device_answers_and_failed_when_gw_finds_none() {
+    let settings = Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    };
+    let mut w = window(settings);
+    // gw info's report, then its check for newer firmware fails.
+    let offline = "Host Tools: 1.23\nDevice:\n  Model:    Greaseweazle V4.1\n  Firmware: 1.6\n  \
+                   USB:      Full Speed (12 Mbit/s), 128kB Buffer\n\
+                   ** FATAL ERROR:\nGitHub API Rate Limit exceeded";
+    app_mut(&mut w).tool = Some(Job::replay("info", offline));
+    w.run();
+    w.get_by_label("Done");
+    w.get_by_label("GitHub API Rate Limit exceeded");
+    w.get_by_label("Greaseweazle V4.1");
+    let none = "Host Tools: 1.23\nDevice:\n  Not found";
+    app_mut(&mut w).tool = Some(Job::replay("info", none));
+    w.run();
+    w.get_by_label("Failed");
 }
 
 #[test]

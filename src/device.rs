@@ -6,6 +6,8 @@ pub struct DeviceInfo {
     pub fields: Vec<(String, String)>,
     /// A newer firmware version, if gw found one.
     pub update: Option<String>,
+    /// gw's steps to update, as it prints them: `- Reconnect to USB`.
+    pub steps: Vec<String>,
 }
 
 impl DeviceInfo {
@@ -34,7 +36,18 @@ pub fn parse(log: &[String]) -> Option<DeviceInfo> {
             .strip_suffix(" is available")
             .map(str::to_owned)
     });
-    (!fields.is_empty()).then_some(DeviceInfo { fields, update })
+    let steps = log
+        .iter()
+        .skip_while(|l| l.trim_end() != "To perform an Update:")
+        .skip(1)
+        .take_while(|l| l.starts_with(" - "))
+        .map(|l| l.trim().to_owned())
+        .collect();
+    (!fields.is_empty()).then_some(DeviceInfo {
+        fields,
+        update,
+        steps,
+    })
 }
 
 #[cfg(test)]

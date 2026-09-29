@@ -3,7 +3,8 @@
 use crate::progress::{Progress, Status};
 use crate::theme::{self, Palette};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, pos2,
+    vec2,
 };
 
 /// Seconds a square takes to fade in.
@@ -120,7 +121,9 @@ pub fn show(
             let filled = fill(progress, key, p);
             let t = fade(ui, egui::Id::new(("square", &job, key)), filled.is_some());
             let colour = theme::lerp(p.pending, filled.unwrap_or(p.pending), t);
-            painter.rect_filled(square(i, cyl), radius, colour);
+            let status = progress.tracks.get(&key).map(|t| t.status);
+            let edge = edge(status == Some(Status::Skipped), p);
+            painter.rect(square(i, cyl), radius, colour, edge, StrokeKind::Inside);
             shown.extend(filled);
         }
     }
@@ -148,10 +151,13 @@ pub fn show(
                     ui.weak("gw has not reported this track.");
                 }
             }
+            if let Some(rows) = missing(progress, (cyl, head)) {
+                ui.label(format!("Missing in gw's sector map (S): {rows}"));
+            }
         });
     }
     ui.add_space(6.0);
-    legend(ui, &shown, progress.tally().retries, p);
+    legend(ui, &shown, progress, p);
 }
 
 /// How far a square has faded in, 0 to 1. Timed from the frame it lit up,
@@ -195,6 +201,18 @@ fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
     })
 }
 
+/// The rows of gw's sector map missing on a track that has others, such as
+/// `5, 9`. A row is a sector's place in the format's track, not its ID.
+fn missing(progress: &Progress, key: (u32, u32)) -> Option<String> {
+    let sectors = progress.sector_map.get(&key)?;
+    let rows: Vec<String> = (0..sectors.len())
+        .filter(|&s| sectors[s] == Some(false))
+        .map(|s| s.to_string())
+        .collect();
+    // With none found, the track's text says so.
+    (!rows.is_empty() && sectors.contains(&Some(true))).then(|| rows.join(", "))
+}
+
 fn side_name(head: u32) -> &'static str {
     match head {
         0 => "Side 0",
@@ -211,12 +229,24 @@ fn colour(status: Status, p: &Palette) -> Color32 {
         Status::Flux => p.flux,
         Status::Written => p.written,
         Status::Erased => p.erased,
-        Status::Skipped => p.pending,
+        Status::Skipped => p.bg,
+    }
+}
+
+/// A skipped track's square is a hole in the grid, outlined.
+fn edge(skipped: bool, p: &Palette) -> Stroke {
+    match skipped {
+        true => Stroke::new(1.0, p.line_strong),
+        false => Stroke::NONE,
     }
 }
 
 /// Each colour on the map with its track count, then the retries.
-fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
+fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, p: &Palette) {
+    let written = progress
+        .unverified
+        .as_deref()
+        .unwrap_or("Written, no verify reported.");
     ui.horizontal_wrapped(|ui| {
         for (status, name, tip) in [
             (
@@ -225,10 +255,15 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
                 "Every sector found, or written and verified.",
             ),
             (Status::Partial, "Short", "Some sectors missing."),
-            (Status::Bad, "Bad", "No sectors found, or failed to verify."),
+            (Status::Bad, "Bad", "No sectors found, or the write failed."),
             (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (Status::Written, "Written", "Written, no verify reported."),
+            (Status::Written, "Written", written),
             (Status::Erased, "Erased", "Erased."),
+            (
+                Status::Skipped,
+                "Skipped",
+                "Outside the format, or not in the input.",
+            ),
         ] {
             let swatch = colour(status, p);
             let tracks = shown.iter().filter(|&&c| c == swatch).count();
@@ -236,11 +271,14 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
                 continue;
             }
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(2), swatch);
+            let edge = edge(status == Status::Skipped, p);
+            ui.painter()
+                .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
             ui.label(RichText::new(format!("{name} {tracks}")).small())
                 .on_hover_text(tip);
             ui.add_space(6.0);
         }
+        let retries = progress.tally().retries;
         if retries > 0 {
             ui.label(RichText::new(retry_text(retries)).small().weak());
         }

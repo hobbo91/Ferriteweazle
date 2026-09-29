@@ -147,7 +147,8 @@ pub struct Settings {
     pub drive: String,
     /// Passes gw's `--bt` for Python tracebacks on errors.
     pub backtrace: bool,
-    /// Saves gw's output beside each image a job makes, as `name.ext.log`.
+    /// Saves the gw command and its output where a job puts its image, as
+    /// `name.ext.log`.
     pub save_logs: bool,
     /// Plays a sound when a job ends.
     pub sound: bool,
@@ -777,12 +778,20 @@ impl App {
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
         let outcome = job.outcome();
+        // gw deletes the image of a read or conversion that fails.
+        job.no_image =
+            outcome == Some(Outcome::Failed) && job.output.as_ref().is_some_and(|p| !p.exists());
         if self.settings.save_logs
-            && let Some(image) = job.output.as_ref().filter(|p| p.exists())
+            && let Some(image) = &job.output
         {
             let mut log = image.clone().into_os_string();
             log.push(".log");
-            if let Some(why) = save_log(Path::new(&log), &job.log) {
+            // As the Log has it, from the command line to how it ended.
+            let lines: Vec<String> = std::iter::once(heading(job))
+                .chain(job.log.iter().cloned())
+                .chain(std::iter::once(ending(job)))
+                .collect();
+            if let Some(why) = save_log(Path::new(&log), &lines) {
                 job.log.push(why);
             }
         }
@@ -1695,16 +1704,17 @@ impl App {
         if let Some(e) = &job.progress.error {
             ui.add_space(6.0);
             let refused = self.refused(job);
-            error_box(ui, p, |ui| match &refused {
+            error_box(ui, p.bad, |ui| match &refused {
                 Some(refused) => install = access(ui, refused),
                 None => {
                     ui.label(RichText::new(e).color(p.bad));
                 }
             });
         }
-        if let Some(left) = left_behind(job) {
+        let warnings = job.progress.warnings.iter().map(String::as_str);
+        for note in warnings.chain(left_behind(job)) {
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(left).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(note).color(p.partial)).wrap());
         }
         ui.add_space(8.0);
         let (budget, room) = room(ui);
@@ -1792,11 +1802,10 @@ impl App {
             .default_size(DRAWER)
             .size_range(DRAWER..=tallest)
             .show_collapsible(ui, &mut log, |ui| {
-                let log = &self.log;
-                let note = log.trimmed().then_some("Older lines were dropped.");
-                let lines = log.lines();
-                let heads = |i| log.is_head(i);
-                (clear, unsaved) = output(ui, "Log", note, lines, heads, None, true);
+                let jobs = [&self.disk, &self.tool].into_iter().flatten();
+                let tail = jobs.map(|j| self.log.tail(j)).find(|t| !t.is_empty());
+                let shown = Shown::Log(&self.log, tail.unwrap_or_default());
+                (clear, unsaved) = output(ui, shown);
             });
         if clear {
             self.log.clear();
@@ -2123,7 +2132,8 @@ impl App {
                 ui,
                 &mut self.settings.save_logs,
                 "Save gw's output beside each image it makes",
-                "Writes name.ext.log next to each image gw read or gw convert makes.",
+                "Writes the gw command and its output to name.ext.log where gw read or \
+                 gw convert puts its image.",
             );
             if cfg!(target_os = "macos") {
                 setting(
@@ -2590,6 +2600,7 @@ impl eframe::App for App {
 fn ask(ctx: &egui::Context, job: &mut Job) {
     let question = job.question.clone().unwrap_or_default();
     let id = Id::new("answer");
+    let mut answer = None;
     egui::Modal::new(Id::new("question")).show(ctx, |ui| {
         ui.set_width(400.0);
         dialog_heading(ui, "gw asks");
@@ -2597,11 +2608,10 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
         ui.add_space(10.0);
         if question.contains("Yes/No") {
             right(ui, |ui| {
-                if ui.add(dialog_plain("Yes")).clicked() {
-                    job.answer("Yes");
-                }
-                if ui.add(dialog_plain("No")).clicked() {
-                    job.answer("No");
+                for choice in ["Yes", "No"] {
+                    if ui.add(dialog_plain(choice)).clicked() {
+                        answer = Some(choice.to_owned());
+                    }
                 }
             });
         } else {
@@ -2609,11 +2619,16 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
             ui.add(form::edit(&mut text).desired_width(f32::INFINITY));
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if ui.add(dialog_plain("Answer")).clicked() {
-                job.answer(&text);
+                answer = Some(text);
                 ui.data_mut(|d| d.remove_temp::<String>(id));
             }
         }
     });
+    if let Some(answer) = answer {
+        // After the question, as a terminal shows it.
+        job.log.push(format!("{question}{answer}"));
+        job.answer(&answer);
+    }
 }
 
 /// How far a disk job has got, and the share done if known: sectors found
@@ -2664,17 +2679,34 @@ fn progress_bar(ui: &mut Ui, job: &Job, p: &Palette) {
 /// The progress bar's thickness.
 const PROGRESS_BAR: f32 = 6.0;
 
-fn log_line(line: &str, p: &Palette) -> RichText {
-    let text = RichText::new(line).monospace();
-    if line.starts_with("** FATAL")
+/// How gw's errors begin, which the log shows in red.
+const ERRORS: [&str; 5] = [
+    "** FATAL ERROR:",
+    "** UPDATE FAILED",
+    "ERROR: ",
+    "Command Failed",
+    "Traceback (most recent call last):",
+];
+
+/// A log line's colour: red for gw's errors and a fatal error's first
+/// line, which follows the line `before`; orange for warnings, retries
+/// and what an update leaves to do.
+fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> {
+    if ERRORS.iter().any(|e| line.starts_with(e))
         || line.contains(": error:")
-        || line.starts_with("Command Failed")
+        || before == Some("** FATAL ERROR:")
     {
-        text.color(p.bad)
-    } else if line.contains("WARNING") || line.contains("Giving up") || line.contains("(Retry #") {
-        text.color(p.partial)
+        Some(p.bad)
+    } else if ["WARNING", "Giving up", "Retry #"]
+        .iter()
+        .any(|w| line.contains(w))
+        || ["** SKIPPING UPDATE", "** Unplug device"]
+            .iter()
+            .any(|u| line.starts_with(u))
+    {
+        Some(p.partial)
     } else {
-        text
+        None
     }
 }
 
@@ -2838,6 +2870,10 @@ fn device_table(ui: &mut Ui, info: &DeviceInfo, p: &Palette) {
             if let Some(update) = &info.update {
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("Firmware {update} is available.")).color(p.accent));
+                // gw's own steps: an F1 needs its Update Jumper fitted first.
+                for step in &info.steps {
+                    ui.label(RichText::new(step).small().weak());
+                }
             }
         });
 }
@@ -2926,17 +2962,16 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
     }
 }
 
-/// What a disk job stopped part way leaves behind: gw keeps the tracks a
-/// read has done, and deletes a conversion's image.
+/// What a disk job that did not finish leaves behind: gw keeps the tracks a
+/// stopped read has done, and deletes a stopped conversion's image and
+/// that of a job that failed.
 fn left_behind(job: &Job) -> Option<&'static str> {
-    if job.outcome() != Some(Outcome::Stopped) {
-        return None;
-    }
-    match job.command.as_str() {
-        "read" => Some("Stopped: incomplete image."),
-        "write" => Some("Stopped: disk partly written."),
-        "erase" => Some("Stopped: disk partly erased."),
-        "convert" => Some("Stopped: no image made."),
+    match (job.outcome()?, job.command.as_str()) {
+        (Outcome::Failed, _) if job.no_image => Some("Failed: no image kept."),
+        (Outcome::Stopped, "read") => Some("Stopped: incomplete image."),
+        (Outcome::Stopped, "write") => Some("Stopped: disk partly written."),
+        (Outcome::Stopped, "erase") => Some("Stopped: disk partly erased."),
+        (Outcome::Stopped, "convert") => Some("Stopped: no image made."),
         _ => None,
     }
 }
@@ -2956,10 +2991,18 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
         });
     });
     match (&refused, &job.progress.error) {
-        (Some(refused), _) => error_box(ui, p, |ui| install = access(ui, refused)),
-        (None, Some(e)) => error_box(ui, p, |ui| {
-            ui.label(RichText::new(e).color(p.bad));
-        }),
+        (Some(refused), _) => error_box(ui, p.bad, |ui| install = access(ui, refused)),
+        (None, Some(e)) => {
+            // Orange for a job that worked all the same, as gw info does
+            // when only its check for newer firmware fails.
+            let colour = match job.outcome() {
+                Some(Outcome::Succeeded) => p.partial,
+                _ => p.bad,
+            };
+            error_box(ui, colour, |ui| {
+                ui.label(RichText::new(e).color(colour));
+            });
+        }
         (None, None) => {}
     }
     ui.add_space(4.0);
@@ -2970,8 +3013,7 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
     {
         device_table(ui, &info, p);
     } else {
-        let height = Some(260.0);
-        (_, unsaved) = output(ui, "Output", None, &job.log, |_| false, height, false);
+        (_, unsaved) = output(ui, Shown::Job(job));
     }
     (install, unsaved)
 }
@@ -3076,10 +3118,10 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
     pressed
 }
 
-/// A tinted box for what went wrong.
-fn error_box(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+/// A box tinted `colour`, for what went wrong.
+fn error_box(ui: &mut Ui, colour: Color32, add: impl FnOnce(&mut Ui)) {
     Frame::new()
-        .fill(p.bad.gamma_multiply(0.14))
+        .fill(colour.gamma_multiply(0.14))
         .corner_radius(8)
         .inner_margin(10)
         .show(ui, |ui| {
@@ -3088,25 +3130,35 @@ fn error_box(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
         });
 }
 
-/// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
-/// `height` tall or, with none, as tall as the room left. `head` picks the
-/// lines that head a job. Gives whether Clear was pressed, and why a save
-/// failed.
-fn output(
-    ui: &mut Ui,
-    heading: &str,
-    note: Option<&str>,
-    log: &[String],
-    head: impl Fn(usize) -> bool,
-    height: Option<f32>,
-    clearable: bool,
-) -> (bool, Option<String>) {
+/// What an output box shows.
+#[derive(Clone, Copy)]
+enum Shown<'a> {
+    /// Every job's output this session, and the line the last is still printing.
+    Log(&'a SessionLog, &'a str),
+    /// A job's output under its page.
+    Job(&'a Job),
+}
+
+/// A job's output box, in points.
+const OUTPUT_HEIGHT: f32 = 260.0;
+
+/// gw's output with Copy and Save: the Log as tall as the room left, with
+/// Clear, or a job's in a box of its own. Gives whether Clear was pressed,
+/// and why a save failed.
+fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
     let p = theme::palette(ui);
+    let (heading, log, tail) = match shown {
+        Shown::Log(log, tail) => ("Log", log.lines(), tail),
+        Shown::Job(job) => ("Output", job.log.as_slice(), job.partial.as_str()),
+    };
+    let drawer = matches!(shown, Shown::Log(..));
     let (mut clear, mut unsaved) = (false, None);
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).strong());
-        if let Some(note) = note {
-            ui.label(RichText::new(note).small().weak());
+        if let Shown::Log(log, _) = shown
+            && log.trimmed()
+        {
+            ui.label(RichText::new("Older lines were dropped.").small().weak());
         }
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
@@ -3129,7 +3181,7 @@ fn output(
             {
                 ui.ctx().copy_text(log.join("\n"));
             }
-            if clearable {
+            if drawer {
                 let button = ui.add_enabled(!log.is_empty(), egui::Button::new("Clear"));
                 clear = button
                     .on_hover_text("Clear the log.")
@@ -3146,16 +3198,25 @@ fn output(
     // Exactly the room left: a drawer a little taller than its contents
     // would shrink to them, frame by frame.
     let room = || ui.available_height() - frame.total_margin().sum().y;
-    let fill = height.is_none();
-    let height = height.unwrap_or_else(room).max(LOG_LINE);
+    let height = match drawer {
+        true => room(),
+        false => OUTPUT_HEIGHT,
+    }
+    .max(LOG_LINE);
     frame.show(ui, |ui| {
-        if log.is_empty() {
-            let least = if fill { height } else { height.min(80.0) };
+        if log.is_empty() && tail.is_empty() {
+            let least = if drawer { height } else { height.min(80.0) };
             ui.set_min_size(vec2(ui.available_width(), least));
-            ui.label(RichText::new("gw's output appears here.").weak());
+            let empty = match shown {
+                Shown::Job(job) if !job.running() => "gw printed nothing.",
+                _ => "gw's output appears here.",
+            };
+            ui.label(RichText::new(empty).weak());
             return;
         }
         let row = ui.text_style_height(&TextStyle::Monospace);
+        // A line gw has not ended yet comes last.
+        let lines = log.len() + usize::from(!tail.is_empty());
         // Bars drawn whenever there is more to see, as a text view's: a
         // floating one hides until hovered, and a wheel does not scroll
         // sideways. The theme paints an idle handle in the card's colour.
@@ -3167,12 +3228,18 @@ fn output(
             .auto_shrink([false, false])
             .max_height(height)
             .min_scrolled_height(height)
-            .show_rows(ui, row, log.len(), |ui, rows| {
+            .show_rows(ui, row, lines, |ui, rows| {
                 for i in rows {
-                    let text = match head(i) {
-                        true => RichText::new(&log[i]).monospace().color(p.accent),
-                        false => log_line(&log[i], p),
+                    let line = log.get(i).map_or(tail, String::as_str);
+                    let before = i.checked_sub(1).map(|b| log[b].as_str());
+                    let colour = match shown {
+                        Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
+                        _ => log_colour(line, before, p),
                     };
+                    let mut text = RichText::new(line).monospace();
+                    if let Some(colour) = colour {
+                        text = text.color(colour);
+                    }
                     ui.add(egui::Label::new(text).extend().selectable(true));
                 }
             });
@@ -4169,5 +4236,64 @@ mod tests {
         w.run();
         w.get_by_label("Second");
         std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn a_failed_read_says_it_kept_no_image_and_leaves_its_log_where_the_image_would_be() {
+        let dir = std::env::temp_dir().join(format!("fw-failed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("Game.img");
+        let mut app = offline();
+        app.settings.save_logs = true;
+        let mut job = Job::replay(
+            "read",
+            "Reading c=0-81:h=0-1 revs=3\n\
+             T0.0: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)\n\
+             Command Failed: GetFluxStatus: No Index",
+        );
+        job.args = vec!["read".into(), "--revs=3".into(), path(&image)];
+        job.output = Some(image.clone());
+        app.disk = Some(job);
+        app.ended(&egui::Context::default(), true);
+        let note = left_behind(app.disk.as_ref().unwrap());
+        assert_eq!(note, Some("Failed: no image kept."), "gw deleted it");
+        let log = std::fs::read_to_string(dir.join("Game.img.log")).expect("the log");
+        let lines: Vec<&str> = log.lines().collect();
+        let command = format!("gw read --revs=3 {}", command::quote(&path(&image)));
+        assert_eq!(lines.first(), Some(&command.as_str()), "{log}");
+        assert!(lines.contains(&"Command Failed: GetFluxStatus: No Index"));
+        assert_eq!(lines.last(), Some(&"Failed after 0:00."));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn path(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn the_log_shows_gws_errors_in_red_and_its_retries_and_warnings_in_orange() {
+        let p = &theme::DARK;
+        for line in [
+            "ERROR: Device is in Firmware Update Mode",
+            "ERROR: USB write data garbled (Host -> Device)",
+            "** UPDATE FAILED: Please retry!",
+            "Traceback (most recent call last):",
+            "Command Failed: GetFluxStatus: No Index",
+        ] {
+            assert_eq!(log_colour(line, None, p), Some(p.bad), "{line}");
+        }
+        let message = log_colour("Failed to verify Track 3.0", Some("** FATAL ERROR:"), p);
+        assert_eq!(message, Some(p.bad), "the fatal error's message");
+        for line in [
+            "T0.1: Writing Track (Verify Failure: Retry #1)",
+            "T1.0: IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.1)",
+            "** SKIPPING UPDATE:",
+            "** Unplug device and remove the Update Jumper",
+        ] {
+            assert_eq!(log_colour(line, None, p), Some(p.partial), "{line}");
+        }
+        let advice = " - The only available action is \"gw update\"";
+        let before = Some("ERROR: Device is in Firmware Update Mode");
+        assert_eq!(log_colour(advice, before, p), None);
     }
 }
