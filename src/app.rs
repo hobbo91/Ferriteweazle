@@ -2284,14 +2284,12 @@ impl App {
                 "Writes the gw command and its output to name.ext.log where gw read or \
                  gw convert puts its image.",
             );
-            if cfg!(target_os = "macos") {
-                setting(
-                    ui,
-                    &mut self.settings.sound,
-                    "Play a sound when a job ends",
-                    "Glass when it works, Basso when it fails.",
-                );
-            }
+            setting(
+                ui,
+                &mut self.settings.sound,
+                "Play a sound when a job ends",
+                SOUND_TIP,
+            );
         });
         section(ui, "Troubleshooting", |ui| {
             setting(
@@ -3209,21 +3207,81 @@ fn caps_advice(engine: Option<&Engine>) -> String {
     }
 }
 
-/// Plays a system sound for how a job ended, on macOS only.
+/// What Play a sound when a job ends plays, in each system's words.
+const SOUND_TIP: &str = if cfg!(target_os = "macos") {
+    "Glass when it works, Basso when it fails."
+} else if cfg!(windows) {
+    "The Notification sound when it works, Critical Stop when it fails."
+} else {
+    "The sound theme's complete sound when it works, dialog-error when it fails."
+};
+
+/// Plays the system's sound for how a job ended.
 fn chime(outcome: Option<Outcome>) {
-    let sound = match outcome {
-        Some(Outcome::Succeeded) => "Glass",
-        Some(Outcome::Failed) => "Basso",
-        _ => return,
+    let players = players(outcome);
+    if players.is_empty() {
+        return;
+    }
+    // A thread waits for the player, so it is reaped when it ends. The next
+    // is tried only if this one is not installed.
+    std::thread::spawn(move || {
+        for mut player in players {
+            let null = std::process::Stdio::null;
+            if player.stdout(null()).stderr(null()).status().is_ok() {
+                break;
+            }
+        }
+    });
+}
+
+/// The commands that play the system's sound for how a job ended, best
+/// first: none for a job that was stopped.
+fn players(outcome: Option<Outcome>) -> Vec<std::process::Command> {
+    use std::process::Command;
+    let worked = match outcome {
+        Some(Outcome::Succeeded) => true,
+        Some(Outcome::Failed) => false,
+        _ => return Vec::new(),
     };
     if cfg!(target_os = "macos") {
-        let file = format!("/System/Library/Sounds/{sound}.aiff");
-        // A thread waits for afplay, so it is reaped when it ends.
-        std::thread::spawn(move || {
-            std::process::Command::new("/usr/bin/afplay")
-                .arg(file)
-                .status()
+        let sound = if worked { "Glass" } else { "Basso" };
+        let mut afplay = Command::new("/usr/bin/afplay");
+        afplay.arg(format!("/System/Library/Sounds/{sound}.aiff"));
+        vec![afplay]
+    } else if cfg!(windows) {
+        // The file the sound scheme gives the event: none if turned off.
+        let event = if worked {
+            "Notification.Default"
+        } else {
+            "SystemHand"
+        };
+        let script = format!(
+            "$f = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty \
+             'HKCU:\\AppEvents\\Schemes\\Apps\\.Default\\{event}\\.Current').'(default)'); \
+             if ($f) {{ (New-Object Media.SoundPlayer $f).PlaySync() }}"
+        );
+        let mut powershell = Command::new("powershell");
+        powershell.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            powershell.creation_flags(CREATE_NO_WINDOW);
+        }
+        vec![powershell]
+    } else {
+        // The desktop's sound theme, which heeds its event sound setting,
+        // else the freedesktop theme's own file.
+        let id = if worked { "complete" } else { "dialog-error" };
+        let mut canberra = Command::new("canberra-gtk-play");
+        canberra.args(["--id", id, "--description", "Ferriteweazle"]);
+        let file = format!("/usr/share/sounds/freedesktop/stereo/{id}.oga");
+        let files = ["pw-play", "paplay"].map(|player| {
+            let mut player = Command::new(player);
+            player.arg(&file);
+            player
         });
+        std::iter::once(canberra).chain(files).collect()
     }
 }
 
@@ -4757,6 +4815,20 @@ mod tests {
             disks: 1,
         });
         window(app).get_by_label("Erase the disk in drive B?");
+    }
+
+    #[test]
+    fn a_job_that_works_or_fails_has_a_sound_on_every_system_and_a_stopped_one_none() {
+        let first = |outcome| {
+            let players = players(Some(outcome));
+            let args = players.first().map(|p| p.get_args().collect::<Vec<_>>());
+            args.map(|a| a.join(std::ffi::OsStr::new(" ")))
+        };
+        let (worked, failed) = (first(Outcome::Succeeded), first(Outcome::Failed));
+        assert!(worked.is_some() && failed.is_some());
+        assert_ne!(worked, failed, "one sound for both");
+        assert!(players(Some(Outcome::Stopped)).is_empty());
+        assert!(players(None).is_empty());
     }
 
     #[test]

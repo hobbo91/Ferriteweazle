@@ -1949,6 +1949,15 @@ fn settings_names_the_default_folders_it_goes_back_to() {
 }
 
 #[test]
+fn the_sound_setting_shows_on_every_system() {
+    let w = window(Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    });
+    w.get_by_label("Play a sound when a job ends");
+}
+
+#[test]
 fn settings_links_gws_getting_started_guide() {
     let settings = Settings {
         page: Page::Settings,
