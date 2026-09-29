@@ -1095,7 +1095,10 @@ impl<'a> Form<'a> {
                     }
                 }
             });
-            if !path.is_empty() {
+            if split_path(self.values.get(&a.dest)) {
+                let bad = theme::palette(ui).bad;
+                ui.label(RichText::new(COLONS_IN).small().color(bad));
+            } else if !path.is_empty() {
                 match self.schema.image(&path) {
                     Some((_, image)) => {
                         ui.label(RichText::new(image_name(&path, &image.name)).small().weak());
@@ -1354,6 +1357,8 @@ const TYPE_TIP: &str = "The kind of file to make. A disk format picks one.";
 
 const REPLACES_INPUT: &str = "This is the input file. Choose another type or name.";
 
+const COLONS_IN: &str = "gw reads :: in a path as options. Choose another image or folder.";
+
 const REPLACES_INPUTS: &str =
     "An image would replace its input. Choose another type, folder, prefix or suffix.";
 
@@ -1394,13 +1399,40 @@ pub fn blocked(
             _ => "The folder has no images gw can read.",
         });
     }
+    if BATCHES
+        .iter()
+        .any(|(c, dest)| *c == cmd.name && split_path(values.get(dest)))
+    {
+        return Some(COLONS_IN);
+    }
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
             return Some("Choose an image type first.");
         };
+        // Only a pasted command line gives one of these.
+        match schema.images.get(&out.ext) {
+            None => return Some("gw does not know this image type."),
+            Some(i) if !i.writable => return Some("gw cannot write this image type."),
+            Some(_) => {}
+        }
         if batch.is_none() && out.name.trim().is_empty() {
             return Some("Name the image first.");
+        }
+        let beside = cmd.arg("in_file").is_some() && out.beside_input;
+        if !beside && out.folder.trim().is_empty() {
+            return Some("Choose a folder first.");
+        }
+        // gw would take it in its own working folder, which the app never sets.
+        if !beside && !Path::new(out.folder.trim()).has_root() {
+            return Some("Type the folder's full path.");
+        }
+        let named = match batch {
+            None => out.name.contains("::"),
+            Some(_) => out.prefix.contains("::") || out.suffix.contains("::"),
+        };
+        if !beside && (named || out.folder.contains("::")) {
+            return Some("gw reads :: in a path as options. Choose another folder or name.");
         }
         if batch.is_some() {
             let files = service.known_folder(values.get(BATCH_FOLDER));
@@ -1448,7 +1480,7 @@ fn folder_row(ui: &mut Ui, folder: &mut String) {
     let (name, _) = row(ui, "Folder", |ui| {
         ui.horizontal(|ui| {
             let width = beside_button(ui, BROWSE_BUTTON);
-            ui.add(edit(folder).desired_width(width))
+            ui.add(edit(folder).hint_text("Required").desired_width(width))
                 .on_hover_text("Where the image is saved.");
             if browse_button(ui)
                 .on_hover_text("Choose a folder.")
@@ -1627,6 +1659,30 @@ pub fn diskdefs_for(service: &mut Service, values: &Values, format: &str) -> Str
 /// Where an output argument's folder, name and type are kept.
 pub fn output_key(command: &str, dest: &str) -> String {
     format!("{command}/{dest}")
+}
+
+/// Makes a pasted command's image paths whole, as a shell would: `~` is the
+/// home folder. A relative path is taken in `base`, since gw's working
+/// folder is whatever the app was started in.
+pub fn anchor_images(command: &str, values: &mut Values, base: &Path) {
+    let dests = OUTPUTS.iter().chain(BATCHES).filter(|(c, _)| *c == command);
+    for (_, dest) in dests {
+        let value = values.get(dest);
+        if value.is_empty() {
+            continue;
+        }
+        let path = match value.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => crate::home()
+                .unwrap_or_default()
+                .join(rest.trim_start_matches(['/', '\\'])),
+            _ => PathBuf::from(value),
+        };
+        let path = match path.has_root() {
+            true => path,
+            false => base.join(path),
+        };
+        values.set(dest, path.to_string_lossy());
+    }
 }
 
 /// The image file a command reads, if it reads one.
@@ -2033,6 +2089,14 @@ const KNOWN_IMAGES: &[(&str, &str)] = &[
     (".st", "Atari ST"),
     (".td0", "Teledisk"),
 ];
+
+/// Whether gw would split a path in `value` at a `::` in it: an option never
+/// holds a folder separator.
+fn split_path(value: &str) -> bool {
+    value
+        .split_once("::")
+        .is_some_and(|(_, opts)| opts.contains(['/', '\\']))
+}
 
 /// Splits gw's `path::name=value:flag` into the path and its options.
 fn split_opts(value: &str) -> (&str, BTreeMap<String, String>) {
@@ -2591,6 +2655,78 @@ mod tests {
         };
         outputs.insert(output_key("read", "file"), unnamed);
         assert_eq!(why(&outputs), Some("Name the image first."));
+    }
+
+    #[test]
+    fn a_pasted_output_path_becomes_folder_name_and_type() {
+        let out = Output::from_value("/disks/Game Disk.HFE::version=3");
+        assert_eq!(
+            (out.folder.as_str(), out.name.as_str(), out.ext.as_str()),
+            ("/disks", "Game Disk", ".hfe")
+        );
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(out.value(1), format!("/disks{sep}Game Disk.hfe::version=3"));
+    }
+
+    #[test]
+    fn an_output_needs_a_type_gw_writes_and_a_whole_folder() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |command: &str, out: Output| {
+            let (_, dest) = OUTPUTS.iter().find(|(c, _)| *c == command).unwrap();
+            let v = values(&[("format", "ibm.1440"), ("in_file", "/f/a.scp")]);
+            let outputs = BTreeMap::from([(output_key(command, dest), out)]);
+            blocked(&s, s.command(command).unwrap(), &v, &outputs, &service)
+        };
+        let ipf = Output::from_value("/f/b.ipf");
+        assert_eq!(
+            why("convert", ipf),
+            Some("gw cannot write this image type.")
+        );
+        let unknown = Output::from_value("/f/b.xyz");
+        assert_eq!(
+            why("convert", unknown),
+            Some("gw does not know this image type.")
+        );
+        let folder = |f: &str| Output {
+            folder: f.into(),
+            ..output(".img")
+        };
+        assert_eq!(why("read", folder(" ")), Some("Choose a folder first."));
+        for relative in ["Images", "~/Disks"] {
+            let full = Some("Type the folder's full path.");
+            assert_eq!(why("read", folder(relative)), full, "{relative}");
+        }
+        assert_eq!(why("read", output(".img")), None);
+    }
+
+    #[test]
+    fn a_path_gw_would_split_at_its_double_colon_cannot_run() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let read = s.command("read").unwrap();
+        let v = values(&[("format", "ibm.1440")]);
+        let why = |out: Output| {
+            let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+            blocked(&s, read, &v, &outputs, &service)
+        };
+        let colons = Some("gw reads :: in a path as options. Choose another folder or name.");
+        let folder = Output {
+            folder: "/Volumes/x::y".into(),
+            ..output(".img")
+        };
+        assert_eq!(why(folder), colons);
+        let name = Output {
+            name: "a::b".into(),
+            ..output(".img")
+        };
+        assert_eq!(why(name), colons);
+        let write = s.command("write").unwrap();
+        let v = values(&[("file", "/Volumes/x::y/Game.adf")]);
+        let none = BTreeMap::new();
+        assert_eq!(blocked(&s, write, &v, &none, &service), Some(COLONS_IN));
+        let v = values(&[("file", "/f/Game.hfe::bitrate=250")]);
+        assert_eq!(blocked(&s, write, &v, &none, &service), None, "options");
     }
 
     #[test]

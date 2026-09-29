@@ -8,7 +8,7 @@ use common::{
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
-use ferriteweazle::form::Output;
+use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, LOG_LINES, Outcome};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
@@ -127,7 +127,22 @@ fn typing_a_command_line_fills_in_its_page() {
     assert_eq!(values.get("drive"), "");
     assert_eq!(values.get("tracks"), "c=0-39:h=0");
     assert_eq!(values.get("no_verify"), "on");
-    assert_eq!(values.get("file"), "game.adf");
+    let file = form::images_folder().join("game.adf");
+    assert_eq!(values.get("file"), file.to_string_lossy());
+}
+
+#[test]
+fn a_pasted_line_takes_a_relative_path_in_the_images_folder_and_tilde_as_home() {
+    let mut w = window(Settings::default());
+    type_line(&mut w, "gw convert ~/in.scp out.img");
+    let app = app(&w);
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let input = std::path::PathBuf::from(home.unwrap()).join("in.scp");
+    let values = &app.settings.values["convert"];
+    assert_eq!(values.get("in_file"), input.to_string_lossy());
+    let out = &app.settings.outputs["convert/out_file"];
+    assert_eq!(std::path::Path::new(&out.folder), form::images_folder());
+    assert_eq!((out.name.as_str(), out.ext.as_str()), ("out", ".img"));
 }
 
 #[test]

@@ -2423,6 +2423,7 @@ impl App {
                 values.set(dest, "");
             }
         }
+        form::anchor_images(&name, &mut values, &self.images_folder());
         for (cmd, dest) in form::OUTPUTS.iter().filter(|(c, _)| *c == name) {
             let file = values.get(dest);
             let key = form::output_key(cmd, dest);
@@ -3710,17 +3711,6 @@ mod tests {
             "the page's own run"
         );
         assert_eq!(app.argv(info, &app.device_only(info)), ["info"]);
-    }
-
-    #[test]
-    fn a_pasted_output_path_becomes_folder_name_and_type() {
-        let out = Output::from_value("/disks/Game Disk.HFE::version=3");
-        assert_eq!(
-            (out.folder.as_str(), out.name.as_str(), out.ext.as_str()),
-            ("/disks", "Game Disk", ".hfe")
-        );
-        let sep = std::path::MAIN_SEPARATOR;
-        assert_eq!(out.value(1), format!("/disks{sep}Game Disk.hfe::version=3"));
     }
 
     #[test]
