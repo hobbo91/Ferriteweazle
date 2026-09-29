@@ -420,8 +420,9 @@ impl<'a> Form<'a> {
     }
 
     /// Another argument from the same exclusive group that is already set.
+    /// One that is set itself is never blocked, so it can be cleared.
     fn blocker(&self, a: &Arg) -> Option<&'a Arg> {
-        let group = a.group?;
+        let group = a.group.filter(|_| !self.values.on(&a.dest))?;
         self.cmd
             .args
             .iter()
@@ -468,9 +469,10 @@ impl<'a> Form<'a> {
             .as_deref()
             .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
         let shown = match (other, current.as_str()) {
-            (true, _) => OTHER,
-            (false, "") => default.as_str(),
-            (false, value) => value,
+            (true, _) => RichText::new(OTHER),
+            (false, "") if a.required => RichText::new("Required").color(theme::palette(ui).dim),
+            (false, "") => RichText::new(&default),
+            (false, value) => RichText::new(value),
         };
         let mut chosen = None;
         ui.horizontal(|ui| {
@@ -480,9 +482,10 @@ impl<'a> Form<'a> {
                     .truncate()
                     .width(SHORT_FIELD)
                     .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(!other && current.is_empty(), &default)
-                            .clicked()
+                        if !a.required
+                            && ui
+                                .selectable_label(!other && current.is_empty(), &default)
+                                .clicked()
                         {
                             chosen = Some((false, ""));
                         }
@@ -520,6 +523,7 @@ impl<'a> Form<'a> {
                 _ => ("Default", "gw's own choice."),
             };
             if a.default.is_none()
+                && !a.required
                 && ui
                     .selectable_label(current.is_empty(), unset)
                     .own_tip(tip)
@@ -1109,6 +1113,10 @@ impl<'a> Form<'a> {
             }
         });
         if changed {
+            // gw refuses an option the image's type does not take.
+            if let Some((_, image)) = self.schema.image(&path) {
+                opts.retain(|k, _| image.read_opts.iter().any(|o| o.name == *k));
+            }
             self.values.set(&a.dest, join_opts(&path, &opts));
         }
     }
@@ -2529,6 +2537,67 @@ mod tests {
             blocked(&s, convert, &v, &outputs, &service),
             Some(REPLACES_INPUT)
         );
+    }
+
+    #[test]
+    fn of_two_exclusive_options_set_at_once_either_can_be_cleared() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut outputs = BTreeMap::new();
+        let mut blocker = |v: &mut Values, dest: &str| {
+            let form = Form {
+                schema: &s,
+                cmd: read,
+                values: v,
+                outputs: &mut outputs,
+                service: &mut service,
+                cannot_detect: None,
+            };
+            form.blocker(read.arg(dest).unwrap())
+                .map(|b| b.dest.clone())
+        };
+        let mut v = values(&[("hard_sectors", ON)]);
+        assert_eq!(
+            blocker(&mut v, "fake_index").as_deref(),
+            Some("hard_sectors")
+        );
+        assert_eq!(blocker(&mut v, "hard_sectors"), None);
+        v.set("fake_index", "300rpm");
+        assert_eq!(blocker(&mut v, "fake_index"), None);
+        assert_eq!(blocker(&mut v, "hard_sectors"), None);
+    }
+
+    #[test]
+    fn an_image_of_another_type_drops_the_options_its_type_does_not_take() {
+        let v = values(&[("file", "/f/game.d88::index=1")]);
+        let mut h = page("write", v, BTreeMap::new());
+        let mut retype = |path: &str| {
+            h.get_all_by_role(Role::TextInput).next().unwrap().click();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.run();
+            h.event(egui::Event::Text(path.to_owned()));
+            h.run();
+            h.state().0.get("file").to_owned()
+        };
+        assert_eq!(retype("/f/disk.d88"), "/f/disk.d88::index=1");
+        assert_eq!(retype("/f/game.scp"), "/f/game.scp");
+    }
+
+    #[test]
+    fn a_required_argument_offers_no_default() {
+        let h = page("pin set", Values::default(), BTreeMap::new());
+        h.get_by_label("High");
+        assert!(h.query_by_label("Default").is_none());
+
+        let mut h = page("seek", Values::default(), BTreeMap::new());
+        let cylinder = h.get_by_role(Role::ComboBox);
+        assert_eq!(cylinder.value().as_deref(), Some("Required"));
+        cylinder.click();
+        h.run();
+        h.get_by_label("40");
+        assert!(h.query_by_label_contains("Default").is_none());
     }
 
     #[test]
