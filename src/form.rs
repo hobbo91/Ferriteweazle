@@ -236,6 +236,8 @@ pub const NAME_LIMIT: usize = 48;
 const LABEL_WIDTH: f32 = 112.0;
 const MIN_FIELD: f32 = 160.0;
 const MAX_FIELD: f32 = 400.0;
+/// A field in a page a very wide window gives more than its form's full width.
+const WIDE_FIELD: f32 = 800.0;
 /// Short lists and values.
 const SHORT_FIELD: f32 = 150.0;
 /// A number of two or three digits.
@@ -254,7 +256,7 @@ const SCROLL_GUTTER: f32 = 14.0;
 
 /// A field fills the room beside its label, up to a point.
 fn field_width(ui: &Ui) -> f32 {
-    ui.available_width().clamp(MIN_FIELD, MAX_FIELD)
+    ui.available_width().clamp(MIN_FIELD, WIDE_FIELD)
 }
 
 /// The width of a form's rows, from the room the page has: notices and
@@ -262,13 +264,18 @@ fn field_width(ui: &Ui) -> f32 {
 pub fn form_width(ui: &Ui) -> f32 {
     let gap = ui.spacing().item_spacing.x;
     let room = ui.available_width() - SCROLL_GUTTER;
-    let field = (room - LABEL_WIDTH - gap).clamp(MIN_FIELD, MAX_FIELD);
+    let field = (room - LABEL_WIDTH - gap).clamp(MIN_FIELD, WIDE_FIELD);
     LABEL_WIDTH + gap + field
 }
 
-/// A form's width when its fields are as wide as they get.
+/// A form's width when its fields are as wide as a page usually has them.
 pub fn full_width(ui: &Ui) -> f32 {
     LABEL_WIDTH + ui.spacing().item_spacing.x + MAX_FIELD + SCROLL_GUTTER
+}
+
+/// A form's width when its fields are as wide as they get.
+pub fn widest(ui: &Ui) -> f32 {
+    LABEL_WIDTH + ui.spacing().item_spacing.x + WIDE_FIELD + SCROLL_GUTTER
 }
 
 /// A one-line text field as tall as the lists and buttons beside it.
@@ -596,7 +603,7 @@ impl<'a> Form<'a> {
             if ui.add(edit).changed() {
                 self.values.set(&a.dest, value.as_str());
             }
-            if browse_button(ui).own_tip("Choose a file.").clicked() {
+            if browse_button(ui).own_tip("Select a file.").clicked() {
                 let mut dialog = file_dialog(Path::new(&value));
                 if let Some((name, exts)) = only {
                     dialog = dialog.add_filter(name, &both_cases(exts.iter().copied()));
@@ -683,7 +690,7 @@ impl<'a> Form<'a> {
                 };
                 RichText::new(format!("{} (from {from})", format_name(own))).color(dim)
             }
-            ("", None) => RichText::new("Choose disk format").color(dim),
+            ("", None) => RichText::new("Select disk format").color(dim),
             (chosen, _) if custom => RichText::new(format!("Custom · {chosen}")),
             (chosen, _) => RichText::new(format_name(chosen)),
         };
@@ -715,8 +722,8 @@ impl<'a> Form<'a> {
                     let detect = egui::Button::new("Detect")
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
                     let tip = match OUTPUTS.iter().any(|(c, _)| *c == self.cmd.name) {
-                        true => "Find the disk format and the image type that suits it.",
-                        false => "Find the disk format.",
+                        true => "Attempt to find the disk format and the image type that suits it.",
+                        false => "Attempt to find the disk format.",
                     };
                     if ui
                         .add_enabled(self.cannot_detect.is_none(), detect)
@@ -810,7 +817,7 @@ impl<'a> Form<'a> {
         } else {
             if ui
                 .selectable_label(current.is_empty(), "None")
-                .on_hover_text("Leave the format to gw: the images' own, if they have one.")
+                .on_hover_text("Use the image's own format, if it has one.")
                 .clicked()
             {
                 chosen = Some(String::new());
@@ -951,7 +958,7 @@ impl<'a> Form<'a> {
                         let on = sides.has_head(head, heads);
                         let r = ui
                             .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
-                            .on_disabled_hover_text("The format has one side.");
+                            .on_disabled_hover_text("This format is single sided.");
                         if fixed && r.contains_pointer() {
                             ui.data_mut(|d| d.insert_temp(own_tip_id(), true));
                         }
@@ -1022,7 +1029,7 @@ impl<'a> Form<'a> {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (on, name, tip) in [
-                (false, "File", "One image."),
+                (false, "File", "Single image"),
                 (
                     true,
                     "Folder",
@@ -1058,7 +1065,7 @@ impl<'a> Form<'a> {
                 .desired_width(beside_button(ui, BROWSE_BUTTON));
             ui.add(edit);
             if browse_button(ui)
-                .own_tip("Choose a folder of images.")
+                .own_tip("Select a folder containing multiple images.")
                 .clicked()
                 && let Some(f) = rfd::FileDialog::new().set_directory(&folder).pick_folder()
             {
@@ -1121,7 +1128,7 @@ impl<'a> Form<'a> {
                     .hint_text("Required")
                     .desired_width(beside_button(ui, BROWSE_BUTTON));
                 changed |= ui.add(edit).changed();
-                if browse_button(ui).own_tip("Choose an image.").clicked()
+                if browse_button(ui).own_tip("Select an image.").clicked()
                     && let Some(p) = image_dialog(self.schema, &path).pick_file()
                 {
                     path = p.to_string_lossy().into_owned();
@@ -1186,7 +1193,7 @@ impl<'a> Form<'a> {
         let mut picked = out.ext.clone();
         let (name, _) = row(ui, "Image type", |ui| {
             let shown = match picked.as_str() {
-                "" => RichText::new("Choose image type").color(p.dim),
+                "" => RichText::new("Select image type").color(p.dim),
                 e => RichText::new(image_name(
                     e,
                     schema.images.get(e).map_or("", |i| i.name.as_str()),
@@ -1253,7 +1260,7 @@ impl<'a> Form<'a> {
             let (text, tip) = match batch {
                 true => (
                     "Next to each input",
-                    "Save each image in its input's folder.",
+                    "Save each image in the same folder as the input image.",
                 ),
                 false => (
                     "Next to the input file",
@@ -1263,7 +1270,9 @@ impl<'a> Form<'a> {
             row(ui, "Save", |ui| {
                 ui.add_enabled_ui(!clash, |ui| checkbox(ui, &mut out.beside_input, text))
                     .response
-                    .on_disabled_hover_text("It would have the input's name and replace it.")
+                    .on_disabled_hover_text(
+                        "Conflicting file names between the input and output image.",
+                    )
             })
             .0
             .on_hover_text(tip);
@@ -1285,12 +1294,12 @@ impl<'a> Form<'a> {
                 (
                     "Prefix",
                     &mut out.prefix,
-                    "Text before each input's name, such as Backup_.",
+                    "Text before each input's file name, such as Backup_.",
                 ),
                 (
                     "Suffix",
                     &mut out.suffix,
-                    "Text after each input's name, such as _copy.",
+                    "Text after each input's file name, such as _copy.",
                 ),
             ] {
                 let (name, _) = row(ui, label, |ui| {
@@ -1313,9 +1322,9 @@ impl<'a> Form<'a> {
                         .hint_text("Required")
                         .desired_width(field_width(ui)),
                 )
-                .on_hover_text("The image's file name, without its type.");
+                .on_hover_text("The image's file name, extensions are handled by Image type.");
             });
-            name.on_hover_text("The image's file name, without its type.");
+            name.on_hover_text("The image's file name, extensions are handled by Image type.");
         }
 
         let value = match (batch, images.first()) {
@@ -1366,7 +1375,7 @@ impl<'a> Form<'a> {
             .id_salt(("disks", &self.cmd.name))
             .show_unindented(ui, |ui| {
                 ui.add_space(6.0);
-                let tip = "How many disks the set has, read one after another.";
+                let tip = "How many disks the set has, read sequentially.";
                 let (name, _) = row(ui, "Disks", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
                     ui.add_sized(
@@ -1386,7 +1395,7 @@ impl<'a> Form<'a> {
                         .on_disabled_hover_text("Needs more than one disk.");
                 });
                 name.on_hover_text(tip);
-                let tip = "The word before each disk number, such as Disk in Game_Disk1.";
+                let tip = "The text before each disk number, such as Disk in Samples_Disk1.";
                 let (name, _) = row(ui, "Label", |ui| {
                     ui.add_enabled(
                         out.disks > 1,
@@ -1415,7 +1424,8 @@ impl<'a> Form<'a> {
                 name.on_hover_text("Where each file's disk number goes.");
                 if out.disks > 1 {
                     row(ui, "", |ui| {
-                        let text = format!("Asks for each disk in turn: {}", out.preview_names());
+                        let text =
+                            format!("Asks for each disk sequentially: {}", out.preview_names());
                         ui.label(RichText::new(text).small().color(theme::palette(ui).dim));
                     });
                 }
@@ -1423,16 +1433,16 @@ impl<'a> Form<'a> {
     }
 }
 
-const TYPE_TIP: &str = "The kind of file to make. A disk format picks one.";
+const TYPE_TIP: &str = "The type of image to create. Disk format picks one.";
 
-const REPLACES_INPUT: &str = "This is the input file. Choose another type or name.";
+const REPLACES_INPUT: &str = "This is the input file. Select another type or name.";
 
-const COLONS_IN: &str = "gw reads :: in a path as options. Choose another image or folder.";
+const COLONS_IN: &str = "gw reads :: in a path as options. Select another image or folder.";
 
 const FOREIGN: &str = "An image has an option its type does not take.";
 
 const REPLACES_INPUTS: &str =
-    "An image would replace its input. Choose another type, folder, prefix or suffix.";
+    "An image would replace its input. Select another type, folder, prefix or suffix.";
 
 /// The most disks one session reads.
 const MAX_DISKS: u32 = 99;
@@ -1454,7 +1464,7 @@ pub fn blocked(
     if cmd.name == "update" {
         match Firmware::of(values) {
             Firmware::Release if !values.on("tag") => return Some("Type a release tag first."),
-            Firmware::File if !values.on("file") => return Some("Choose an update file first."),
+            Firmware::File if !values.on("file") => return Some("Select an update file first."),
             _ => {}
         }
     }
@@ -1479,14 +1489,14 @@ pub fn blocked(
             .image(input_file(cmd, values))
             .is_some_and(|(_, i)| i.needs_format)
     {
-        return Some("Choose a disk format first.");
+        return Some("Select a disk format first.");
     }
     let batch = batch_input(cmd, values);
     if let Some(dest) = batch
         && values.get(dest).is_empty()
     {
         return Some(match values.get(BATCH_FOLDER) {
-            "" => "Choose a folder of images first.",
+            "" => "Select a folder of images first.",
             _ => "The folder has no images gw can read.",
         });
     }
@@ -1506,7 +1516,7 @@ pub fn blocked(
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
-            return Some("Choose an image type first.");
+            return Some("Select an image type first.");
         };
         // Only a pasted command line gives one of these.
         let image = match schema.images.get(&out.ext) {
@@ -1522,7 +1532,7 @@ pub fn blocked(
         }
         let beside = cmd.arg("in_file").is_some() && out.beside_input;
         if !beside && out.folder.trim().is_empty() {
-            return Some("Choose a folder first.");
+            return Some("Select a folder first.");
         }
         // gw would take it in its own working folder, which the app never sets.
         if !beside && !Path::new(out.folder.trim()).has_root() {
@@ -1533,7 +1543,7 @@ pub fn blocked(
             Some(_) => out.prefix.contains("::") || out.suffix.contains("::"),
         };
         if !beside && (named || out.folder.contains("::")) {
-            return Some("gw reads :: in a path as options. Choose another folder or name.");
+            return Some("gw reads :: in a path as options. Select another folder or name.");
         }
         if batch.is_some() {
             let files = service.known_folder(values.get(BATCH_FOLDER));
@@ -1554,15 +1564,15 @@ pub fn blocked(
             && implied_format(schema, cmd, values, service).is_none()
         {
             return Some(if tracks {
-                "Choose a disk format first, or press Detect."
+                "Select a disk format first, or press Detect."
             } else {
-                "Choose a disk format first."
+                "Select a disk format first."
             });
         }
         // Raw keeps the flux as read, with no format: gw's sector and track
         // types refuse it, and HFE takes it only at a set bitrate.
         if values.on("raw") && !FLUX.contains(&out.ext.as_str()) {
-            return Some("With Raw on, choose SCP, HFE or KryoFlux.");
+            return Some("With Raw on, select SCP, HFE or KryoFlux.");
         }
         if values.on("raw") && out.ext == ".hfe" && !out.opts.contains_key("bitrate") {
             return Some("With Raw on, HFE needs a bitrate. See Image options.");
@@ -1631,7 +1641,7 @@ fn folder_row(ui: &mut Ui, folder: &mut String) {
             ui.add(edit(folder).hint_text("Required").desired_width(width))
                 .on_hover_text("Where the image is saved.");
             if browse_button(ui)
-                .on_hover_text("Choose a folder.")
+                .on_hover_text("Select a folder.")
                 .clicked()
                 && let Some(f) = rfd::FileDialog::new().set_directory(&*folder).pick_folder()
             {
@@ -2051,7 +2061,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "cyls", "How many cylinders the drive has."),
     ("reset", "delays", "Reset the delays as well."),
     ("", "densel", "Set the density select signal on pin 2."),
-    ("", "diskdefs", "A file of disk formats to add to gw's own."),
+    ("", "diskdefs", "File containing custom disk formats."),
     (
         "write",
         "erase_empty",
@@ -3064,7 +3074,7 @@ mod tests {
         };
         let mut bitrate = output(".hfe");
         bitrate.opts.insert("bitrate".into(), "250".into());
-        let needs = Some("Choose a disk format first, or press Detect.");
+        let needs = Some("Select a disk format first, or press Detect.");
         assert_eq!(why("read", "", output(".hfe")), needs);
         assert_eq!(why("read", "", bitrate), None);
         assert_eq!(why("read", "", output(".scp")), None, "flux kept as flux");
@@ -3086,7 +3096,7 @@ mod tests {
             let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
             blocked(&s, read, &v, &outputs, &service)
         };
-        let flux = Some("With Raw on, choose SCP, HFE or KryoFlux.");
+        let flux = Some("With Raw on, select SCP, HFE or KryoFlux.");
         assert_eq!(why(output(".img")), flux);
         assert_eq!(why(output(".imd")), flux);
         assert_eq!(why(output(".scp")), None);
@@ -3122,9 +3132,9 @@ mod tests {
             "its tracks have a bitrate"
         );
         assert_eq!(why("/f/a.edsk", output(".scp")), None);
-        let detect = Some("Choose a disk format first, or press Detect.");
+        let detect = Some("Select a disk format first, or press Detect.");
         assert_eq!(why("/f/a.imd", output(".img")), detect);
-        let sectors = Some("Choose a disk format first.");
+        let sectors = Some("Select a disk format first.");
         assert_eq!(
             why("/f/a.dsk", output(".scp")),
             sectors,
@@ -3145,7 +3155,7 @@ mod tests {
         let service = Service::offline(Ok(s.clone()));
         let none = BTreeMap::new();
         let why = |pairs: &[(&str, &str)]| blocked(&s, write, &values(pairs), &none, &service);
-        let needs = Some("Choose a disk format first.");
+        let needs = Some("Select a disk format first.");
         assert_eq!(why(&[("file", "/f/a.img")]), needs);
         assert_eq!(why(&[("file", "/f/a.st")]), needs);
         assert_eq!(why(&[("file", "/f/a.img"), ("format", "ibm.1440")]), None);
@@ -3205,7 +3215,7 @@ mod tests {
         let v = values(&[("format", "ibm.1440")]);
         let mut outputs = BTreeMap::new();
         let why = |outputs: &_| blocked(&s, read, &v, outputs, &service);
-        assert_eq!(why(&outputs), Some("Choose an image type first."));
+        assert_eq!(why(&outputs), Some("Select an image type first."));
         let unnamed = Output {
             name: " ".into(),
             ..output(".img")
@@ -3264,7 +3274,7 @@ mod tests {
             folder: f.into(),
             ..output(".img")
         };
-        assert_eq!(why("read", folder(" ")), Some("Choose a folder first."));
+        assert_eq!(why("read", folder(" ")), Some("Select a folder first."));
         for relative in ["Images", "~/Disks"] {
             let full = Some("Type the folder's full path.");
             assert_eq!(why("read", folder(relative)), full, "{relative}");
@@ -3282,7 +3292,7 @@ mod tests {
             let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
             blocked(&s, read, &v, &outputs, &service)
         };
-        let colons = Some("gw reads :: in a path as options. Choose another folder or name.");
+        let colons = Some("gw reads :: in a path as options. Select another folder or name.");
         let folder = Output {
             folder: "/Volumes/x::y".into(),
             ..output(".img")
@@ -3395,7 +3405,7 @@ mod tests {
         let mut h = page("write", values(&[("file", "/f/x.scp")]), BTreeMap::new());
         h.get_by_label("Detect").hover();
         h.run();
-        h.get_by_label("Find the disk format.");
+        h.get_by_label("Attempt to find the disk format.");
     }
 
     #[test]
@@ -3470,7 +3480,7 @@ mod tests {
         };
         assert_eq!(
             reason(&v, &service, &none),
-            Some("Choose a folder of images first.")
+            Some("Select a folder of images first.")
         );
         let dir = std::env::temp_dir().join(format!("ferriteweazle-batch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -3555,7 +3565,7 @@ mod tests {
         v.set("tag", "v1.6");
         assert_eq!(why(&v), None);
         v.set(FIRMWARE, "File");
-        assert_eq!(why(&v), Some("Choose an update file first."));
+        assert_eq!(why(&v), Some("Select an update file first."));
         v.set("file", "fw.upd");
         assert_eq!(why(&v), None);
         Firmware::only(&mut v);

@@ -224,7 +224,7 @@ def diskdefs(path):
             if (error := str(e) or type(e).__name__) not in errors:
                 errors.append(error)
     if not names:
-        errors.append('It defines no disks.')
+        errors.append('Defines no usable disk.')
     return {'formats': usable, 'failed': failed, 'errors': errors}
 
 
@@ -686,7 +686,7 @@ def steady_handshake():
             for _ in range(3):
                 with contextlib.suppress(struct.error):  # a short read: no reply
                     return connect(unit, ser)
-            raise error.Fatal('The Greaseweazle did not answer.')
+            raise error.Fatal('Greaseweazle interface did not answer.')
         finally:
             ser.timeout = wait
 

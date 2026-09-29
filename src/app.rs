@@ -71,8 +71,8 @@ const ABOUTS: &[(&str, &str)] = &[("pin get", "Read the level of a floppy interf
 
 /// Commands that ask first, and what they do to the disk.
 const DESTRUCTIVE: &[(&str, &str)] = &[
-    ("write", "The tracks written lose what they hold."),
-    ("erase", "The tracks erased lose what they hold."),
+    ("write", "Tracks on the disk will be erased and replaced."),
+    ("erase", "All tracks will be erased from the disk."),
 ];
 
 /// Why a command that uses the device cannot run.
@@ -95,17 +95,18 @@ const REPO: &str = "https://github.com/hobbo91/ferriteweazle";
 const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
 /// gw's guide to setting up a Greaseweazle, its drives and its cables.
 const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";
+const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 
 /// The window as it opens, in points: wide enough for the Read page's Folder
 /// field to show /Users/lhobson/Documents/Ferriteweazle/Images whole, and tall
-/// enough for the idle map's widest squares.
-pub const WINDOW: egui::Vec2 = egui::vec2(1123.0, 768.0);
+/// enough for the map's widest squares there.
+pub const WINDOW: egui::Vec2 = egui::vec2(1123.0, 809.0);
 /// The smallest window, which a 1024 by 768 screen holds beside a dock or a
 /// taskbar.
 pub const SMALLEST: egui::Vec2 = egui::vec2(960.0, 640.0);
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
-const STATUS_MIN: f32 = 300.0;
+const STATUS_MIN: f32 = 320.0;
 /// The sidebar logo's side.
 const LOGO_SIZE: f32 = 40.0;
 /// How far the logo reaches above the sidebar's margin.
@@ -127,6 +128,9 @@ const FADE_WAIT: u32 = 8;
 const LOG_LINE: f32 = 18.0;
 /// The drawer's height, margins included: the command line's, and the log's at first.
 const DRAWER: f32 = 124.0;
+/// A job's rows above the map, each on one line. The map's budget counts
+/// them with no job too, so its squares keep their size as a job starts.
+const JOB_ROWS: f32 = 101.0;
 /// Height the log leaves the page above it, however far it is dragged.
 const LOG_ROOM: f32 = 260.0;
 /// How long a drawer takes to slide open or shut, in seconds.
@@ -431,7 +435,7 @@ impl App {
                 path.display()
             ))),
             (None, None) => Service::offline(Err(
-                "Ferriteweazle could not find gw. Choose one in Settings.".into(),
+                "Ferriteweazle could not find gw. Select one in Settings.".into(),
             )),
         };
         self.service.seed_ports(ports);
@@ -540,10 +544,18 @@ impl App {
                 // Added first, so they span the page and the status pane.
                 self.drawers(ui, &name);
                 // The page takes up to its form's full width and the status
-                // pane the rest, down to STATUS_MIN.
-                let widest = (ui.available_width() - PAGE_MIN).max(STATUS_MIN);
-                let page_wants = form::full_width(ui) + page.inner_margin.sum().x;
-                let status = (ui.available_width() - page_wants).clamp(STATUS_MIN, widest);
+                // pane the rest, down to STATUS_MIN, or less where the page
+                // would fall short of PAGE_MIN. Past the map's widest, the page
+                // takes the rest up to its widest form.
+                let room = ui.available_width();
+                let margins = page.inner_margin.sum().x;
+                let map = diskmap::width_for(tall - DRAWER - JOB_ROWS)
+                    + status_frame.total_margin().sum().x
+                    + f32::from(STATUS_BAR);
+                let status = (room - form::full_width(ui) - margins)
+                    .min(map.max(room - form::widest(ui) - margins))
+                    .max(STATUS_MIN)
+                    .min(room - PAGE_MIN);
                 egui::Panel::right("status")
                     .resizable(false)
                     .exact_size(status)
@@ -1119,7 +1131,7 @@ impl App {
                 ui.add_space(4.0);
                 let shown = match &found {
                     Some(port) => RichText::new(short_port(&port.device)),
-                    None => RichText::new("Choose port").color(p.dim),
+                    None => RichText::new("Select port").color(p.dim),
                 };
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(shown)
@@ -1410,7 +1422,7 @@ impl App {
                     right(ui, |ui| {
                         if ui
                             .small_button("Dismiss")
-                            .on_hover_text("Hide this.")
+                            .on_hover_text("Acknowledge message")
                             .clicked()
                         {
                             self.notices.remove(page);
@@ -1425,10 +1437,10 @@ impl App {
         ui.vertical_centered(|ui| match self.service.schema.error() {
             None => {
                 ui.spinner();
-                ui.label(RichText::new("Starting gw…").weak());
+                ui.label(RichText::new("Starting Greaseweazle…").weak());
             }
             Some(e) => {
-                ui.label(RichText::new("gw is not ready").size(18.0).strong());
+                ui.label(RichText::new("Device not ready").size(18.0).strong());
                 ui.add_space(4.0);
                 ui.label(RichText::new(e).weak());
                 ui.add_space(10.0);
@@ -1549,7 +1561,7 @@ impl App {
             // The page holds the last line that parsed, not the one shown.
             Some(CLI_FAULT.to_owned())
         } else if !missing.is_empty() {
-            Some(format!("Choose the {} first.", missing.join(" and ")))
+            Some(format!("Select the {} first.", missing.join(" and ")))
         } else {
             // The page's own settings first: they can be made ready with no device.
             let no_device = device && !self.connected();
@@ -1769,11 +1781,13 @@ impl App {
         let p = theme::palette(ui);
         let blank = self.blank_map(page);
         let top = ui.cursor().top();
-        // Below the cursor: the room above a drawer of its least height, so
-        // opening one leaves the map be, and the room there is.
+        // The map's height above a drawer of its least height, below a job's
+        // rows whether or not there is a job, so its squares keep one size;
+        // and the room below those rows. Rows past them, a warning or a
+        // wrapped line, scroll the pane rather than shrink the squares.
         let room = |ui: &Ui| {
             let used = ui.cursor().top() - top;
-            (tall - DRAWER - used, full - used)
+            (tall - DRAWER - JOB_ROWS, full - used.min(JOB_ROWS))
         };
         // The job's state keeps to the top right, leaving the rows below to its name.
         egui::Sides::new().shrink_left().truncate().show(
@@ -1867,7 +1881,7 @@ impl App {
         let failed = match file.exists() {
             true => reveal(&file)
                 .err()
-                .map(|e| format!("Could not show {}: {e}", file.display())),
+                .map(|e| format!("Unable to show {}: {e}", file.display())),
             false => Some(format!("{} has been moved or deleted.", file.display())),
         };
         if let Some(why) = failed {
@@ -2008,7 +2022,7 @@ impl App {
                 }
                 let reset = ui.add_enabled(cli.text != line, egui::Button::new("Reset"));
                 if reset
-                    .on_hover_text("Put back the page's command line.")
+                    .on_hover_text("Reset the page's command line arguments.")
                     .on_disabled_hover_text("No changes.")
                     .clicked()
                 {
@@ -2253,7 +2267,7 @@ impl App {
                 ui,
                 "Images folder",
                 &images,
-                "Choose where new images go.",
+                "Select where new images go.",
                 back,
                 None,
             ) {
@@ -2277,7 +2291,7 @@ impl App {
                 ui,
                 "Presets folder",
                 &presets,
-                "Choose the presets folder.",
+                "Select the presets folder.",
                 back,
                 None,
             ) {
@@ -2300,7 +2314,7 @@ impl App {
                 .or_else(|| self.settings.engine.clone())
                 .unwrap_or_default();
             let back = self.settings.engine.is_some().then_some(default);
-            let tip = "Choose a gw, or a Python with greaseweazle.";
+            let tip = "Select a gw, or a Python with greaseweazle.";
             let busy = self.busy();
             match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
@@ -2341,6 +2355,19 @@ impl App {
         });
         section(ui, "Update", |ui| self.app_update(ui));
         section(ui, "About", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.hyperlink_to("Greaseweazle Tools", GW_REPO)
+                    .on_hover_text(GW_REPO);
+                ui.label(
+                    " is the brains of the operation, all credit goes to Keir Fraser and \
+                     anyone who contributed to the Greaseweazle project. This is merely a \
+                     fancy GUI front end.",
+                );
+            });
+            ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
+                .on_hover_text(GW_GUIDE);
+            ui.add_space(6.0);
             ui.label(concat!(
                 "Ferriteweazle ",
                 env!("CARGO_PKG_VERSION"),
@@ -2348,18 +2375,13 @@ impl App {
             ));
             ui.hyperlink_to("Source code and issues", REPO)
                 .on_hover_text(REPO);
-            ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.hyperlink_to("Greaseweazle Tools", GW_REPO)
-                    .on_hover_text(GW_REPO);
-                ui.label(
-                    " is the brains of the operation, all credit goes to Keir Fraser. \
-                     This is merely a fancy GUI front end.",
-                );
+                ui.label("If you find it useful, you can ");
+                ui.hyperlink_to("buy me a coffee", COFFEE)
+                    .on_hover_text(COFFEE);
+                ui.label(".");
             });
-            ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
-                .on_hover_text(GW_GUIDE);
         });
     }
 
@@ -2399,8 +2421,8 @@ impl App {
                     if flashes_bootloader(command, args) {
                         dialog_heading(ui, "Update the bootloader?");
                         ui.label(
-                            "If the flash fails, the Greaseweazle may need reflashing with a \
-                             programming adapter.",
+                            "Warning! If the flash fails, the Greaseweazle may need to be \
+                             reflashed with a programming adapter.",
                         );
                     } else {
                         let drive = match self.settings.drive.as_str() {
@@ -2420,7 +2442,7 @@ impl App {
                             .map_or("", |(_, w)| *w);
                         ui.label(why);
                         if disks > 1 {
-                            ui.label("It asks for each disk in turn.");
+                            ui.label("Each disk will be asked for sequentially.");
                         }
                     }
                     ui.add_space(10.0);
@@ -3654,7 +3676,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             let least = if drawer { height } else { height.min(80.0) };
             ui.set_min_size(vec2(ui.available_width(), least));
             let empty = match shown {
-                Shown::Job(job) if !job.running() => "gw printed nothing.",
+                Shown::Job(job) if !job.running() => "gw printed no output.",
                 _ => "gw's output appears here.",
             };
             ui.label(RichText::new(empty).weak());
@@ -3744,9 +3766,9 @@ fn short_port(device: &str) -> &str {
 fn found_note(formats: &[String], step: u32, undone: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {
-        note += " It is a 40-track disk in an 80-track drive, so Double step is on.";
+        note += " 40-track disk in an 80-track drive, enabling Double step.";
     } else if undone {
-        note += " It needs no double step, so Double step is off.";
+        note += " Disabling Double step, the disk does not require this.";
     }
     match &formats[1..] {
         [] => {}
@@ -3805,7 +3827,7 @@ fn path_row(
     ui.label(shown);
     ui.horizontal(|ui| {
         let why = busy.unwrap_or_default();
-        let choose = ui.add_enabled(busy.is_none(), egui::Button::new("Choose…"));
+        let choose = ui.add_enabled(busy.is_none(), egui::Button::new("Select…"));
         if choose
             .on_hover_text(tip)
             .on_disabled_hover_text(why)
@@ -4026,12 +4048,13 @@ mod tests {
             denied: false,
         }]);
         app.settings.device = "/dev/cu.debug-console".into();
-        let failed = "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        let failed =
+            "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nGreaseweazle interface did not answer.";
         app.probe = Some(Job::replay("info", failed));
         app.poll_probe(&egui::Context::default());
         assert_eq!(
             app.probe_failed.as_deref(),
-            Some("The Greaseweazle did not answer.")
+            Some("Greaseweazle interface did not answer.")
         );
         assert!(!app.answering(), "the dot stays green");
     }
@@ -4539,7 +4562,7 @@ mod tests {
         app.tool = Some(running("info"));
         let mut w = window(app);
         let greyed = |w: &Harness<'_, App>| {
-            let choose = w.get_all_by_label("Choose…").last().expect("the gw row's");
+            let choose = w.get_all_by_label("Select…").last().expect("the gw row's");
             [
                 w.get_by_label("Restart"),
                 w.get_by_label("Use the built-in gw"),
@@ -4792,7 +4815,8 @@ mod tests {
         let w = window(app);
         w.get_by_label("Update the bootloader?");
         w.get_by_label(
-            "If the flash fails, the Greaseweazle may need reflashing with a programming adapter.",
+            "Warning! If the flash fails, the Greaseweazle may need to be reflashed with a \
+             programming adapter.",
         );
         w.get_by_role_and_label(egui::accesskit::Role::Button, "Update");
     }
@@ -4982,7 +5006,7 @@ mod tests {
         app.found(vec!["ibm.1440".into()], 1);
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
-        assert!(note.contains("so Double step is off"), "{note}");
+        assert!(note.contains("Disabling Double step"), "{note}");
     }
 
     #[test]

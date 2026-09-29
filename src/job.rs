@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(outcome(&offline), Some(Outcome::Succeeded));
         assert_eq!(outcome(report), Some(Outcome::Succeeded));
         let cut = "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem1\n\
-                   ** FATAL ERROR:\nThe Greaseweazle did not answer.";
+                   ** FATAL ERROR:\nGreaseweazle interface did not answer.";
         assert_eq!(outcome(cut), Some(Outcome::Failed));
     }
 }

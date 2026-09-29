@@ -393,7 +393,7 @@ fn a_read_starts_with_no_format_or_image_type() {
         .get_all_by_role(Role::ComboBox)
         .map(|c| c.value().unwrap_or_default())
         .collect();
-    assert_eq!(shown[1..3], ["Choose disk format", "Choose image type"]);
+    assert_eq!(shown[1..3], ["Select disk format", "Select image type"]);
     assert_eq!(app(&w).settings.values["read"].get("file"), "");
 }
 
@@ -602,13 +602,13 @@ fn every_field_and_its_label_explain_themselves_on_hover() {
         (
             "Image type",
             combo(&w, 2).rect().center(),
-            "The kind of file to make. A disk format picks one.",
+            "The type of image to create. Disk format picks one.",
         ),
         ("Folder", inputs[0], "Where the image is saved."),
         (
             "Name",
             inputs[1],
-            "The image's file name, without its type.",
+            "The image's file name, extensions are handled by Image type.",
         ),
     ];
     for (label, field, tip) in rows {
@@ -630,7 +630,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
     w.run();
     w.get_by_label("Detect").hover();
     w.run();
-    w.get_by_label("Find the disk format and the image type that suits it.");
+    w.get_by_label("Attempt to find the disk format and the image type that suits it.");
     assert!(
         w.query_by_label_contains("The disk's format").is_none(),
         "two tooltips at once"
@@ -699,8 +699,13 @@ fn the_log_and_the_command_line_share_a_drawer_across_the_page_and_the_status_pa
 /// The window at its first size with a read done, a frame every 60th of a
 /// second, after its first frame, with egui's animations on as in the app.
 fn smooth(settings: Settings) -> Window {
+    smooth_at(DEFAULT, settings)
+}
+
+/// `smooth` in a window of `size`.
+fn smooth_at(size: egui::Vec2, settings: Settings) -> Window {
     let builder = Harness::builder()
-        .with_size(DEFAULT)
+        .with_size(size)
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(60);
     let w = start(
@@ -838,10 +843,12 @@ fn a_log_dragged_down_holds_at_its_least_height_before_it_shuts() {
 
 #[test]
 fn a_log_dragged_taller_stays_that_tall_and_the_map_shrinks_only_when_it_must() {
-    let mut w = smooth(Settings {
+    // Taller than DEFAULT, whose map fills the room to the Log exactly.
+    let settings = Settings {
         drawer: Some(Drawer::Log),
         ..chosen()
-    });
+    };
+    let mut w = smooth_at(DEFAULT + egui::vec2(0.0, 30.0), settings);
     w.run();
     let [open, legend] = edges(&w);
     // Less than the room the map leaves below it at this size.
@@ -1320,7 +1327,7 @@ fn a_tool_that_printed_nothing_says_so() {
     });
     app_mut(&mut w).tool = Some(Job::replay("reset", ""));
     w.run();
-    w.get_by_label("gw printed nothing.");
+    w.get_by_label("gw printed no output.");
     assert!(w.query_by_label("gw's output appears here.").is_none());
 }
 
@@ -2129,6 +2136,53 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
 }
 
 #[test]
+fn a_job_keeps_the_squares_the_window_opened_with() {
+    let jobs = [
+        None,
+        Some(Job::replay(
+            "write",
+            "Writing c=0-79:h=0-1\nT0.0: Wrote 11 sectors",
+        )),
+        Some(Job::replay("read", &damaged_read())),
+    ];
+    // Short enough that the height, not the width, sizes the squares.
+    let size = egui::vec2(DEFAULT.x, 768.0);
+    let sizes = jobs.map(|job| {
+        let settings = Settings {
+            page: Page::Command("write".into()),
+            ..chosen()
+        };
+        let mut w = start(Harness::builder().with_size(size), settings, job);
+        w.run();
+        squares(&w).next().unwrap().rect.width()
+    });
+    assert_eq!(
+        sizes, [sizes[0]; 3],
+        "no job, a write, a read with a warning"
+    );
+}
+
+#[test]
+fn a_very_wide_window_widens_the_page_once_the_map_is_as_large_as_it_gets() {
+    let size = egui::vec2(3440.0, 1290.0);
+    let settings = Settings {
+        page: Page::Command("read".into()),
+        ..chosen()
+    };
+    let mut w = start(Harness::builder().with_size(size), settings, None);
+    w.run();
+    let squares: Vec<_> = squares(&w).map(|s| s.rect).collect();
+    assert_eq!(squares[0].width(), 96.0);
+    let right = squares.iter().map(|r| r.right()).fold(0.0, f32::max);
+    assert!(size.x - right < 200.0, "the map ends at {right}");
+    let field = w.get_all_by_role(Role::TextInput).map(|n| n.rect().width());
+    assert!(
+        field.fold(0.0, f32::max) > 700.0,
+        "the fields stayed narrow"
+    );
+}
+
+#[test]
 fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
     let size = |window: egui::Vec2, cyls: u32, drawer: Option<Drawer>| {
         let settings = Settings {
@@ -2148,7 +2202,7 @@ fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
         w.run();
         squares(&w).next().unwrap().rect.width()
     };
-    for (window, cell) in [(DEFAULT, 20.0), (egui::vec2(1920.0, 1080.0), 46.0)] {
+    for (window, cell) in [(DEFAULT, 23.0), (egui::vec2(1920.0, 1080.0), 46.0)] {
         for cyls in [40, 80, 82, 90] {
             for drawer in [None, Some(Drawer::Log)] {
                 assert_eq!(

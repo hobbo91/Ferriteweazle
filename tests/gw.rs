@@ -143,7 +143,7 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
             "firmware 1.6 after 1 openings, then waits for ever: True",
             "firmware 1.6 after 2 openings, then waits for ever: True",
             "firmware 1.6 after 3 openings, then waits for ever: True",
-            "The Greaseweazle did not answer.",
+            "Greaseweazle interface did not answer.",
         ],
         "{}",
         String::from_utf8_lossy(&out.stderr)
@@ -1392,7 +1392,7 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
 
     side(&w, "1").hover();
     until_shown(&mut w, "why side 1 is greyed", |w| {
-        w.query_by_label("The format has one side.").is_some()
+        w.query_by_label("This format is single sided.").is_some()
     });
     assert!(w.query_by_label("Which tracks to read.").is_none());
 }

@@ -91,7 +91,8 @@ mod tests {
             parse(&lines("Host Tools: 1.23\nDevice:\n  Not found")),
             None
         );
-        let silent = "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        let silent =
+            "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nGreaseweazle interface did not answer.";
         assert_eq!(parse(&lines(silent)), None);
     }
 

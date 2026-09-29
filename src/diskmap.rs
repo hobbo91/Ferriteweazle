@@ -14,8 +14,8 @@ const FILL_TIME: f32 = 0.4;
 const ROW: u32 = 10;
 const GAP: f32 = 3.0;
 const MIN_CELL: f32 = 5.0;
-/// Room for a one-line legend under the map, until the legend has been drawn.
-const LEGEND: f32 = 28.0;
+/// Room for a legend of two lines: the squares keep one size as it fills in.
+const LEGEND: f32 = 42.0;
 /// The least square size wherever the pane has room for it.
 const CELL: f32 = 18.0;
 const MAX_CELL: f32 = 96.0;
@@ -28,6 +28,15 @@ const TITLE: f32 = 18.0;
 const SIZED_ROWS: u32 = 9;
 const SIDE_GAP: f32 = 28.0;
 const STACK_GAP: f32 = 8.0;
+
+/// The width a map of two sides side by side takes once a `budget` points
+/// tall, legend included, limits its squares: wider gains nothing.
+pub fn width_for(budget: f32) -> f32 {
+    let rows = SIZED_ROWS as f32;
+    let cell = ((budget - LEGEND - TITLE + GAP) / rows - GAP).clamp(MIN_CELL, MAX_CELL);
+    // A point spare, so rounding to whole pixels cannot take a pixel off.
+    2.0 * (LABEL + ROW as f32 * cell + (ROW - 1) as f32 * GAP) + SIDE_GAP + 1.0
+}
 
 /// Draws the map with squares of CELL points, smaller where `room`, the pane's
 /// height below its top, lacks space for them, larger where a map `budget`
@@ -56,7 +65,7 @@ pub fn show(
     let legend_id = ui.id().with("legend");
     let legend_height = ui.data(|d| d.get_temp(legend_id)).unwrap_or(LEGEND);
     let room = room - legend_height;
-    let wanted = (budget - legend_height).min(room);
+    let wanted = (budget - legend_height.max(LEGEND)).min(room);
     let cell_in = |across: bool, height: f32, rows: u32| {
         let (columns, stacked) = if across { (sides, 1.0) } else { (1.0, sides) };
         let each_width = (width - SIDE_GAP * (columns - 1.0)) / columns;
