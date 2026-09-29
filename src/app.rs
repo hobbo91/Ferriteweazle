@@ -90,6 +90,8 @@ const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", D
 
 const REPO: &str = "https://github.com/hobbo91/ferriteweazle";
 const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
+/// gw's guide to setting up a Greaseweazle, its drives and its cables.
+const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";
 
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
@@ -2246,6 +2248,8 @@ impl App {
                      This is merely a fancy GUI front end.",
                 );
             });
+            ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
+                .on_hover_text(GW_GUIDE);
         });
     }
 

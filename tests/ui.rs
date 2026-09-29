@@ -1875,6 +1875,20 @@ fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() 
 }
 
 #[test]
+fn settings_links_gws_getting_started_guide() {
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    // Tall enough to show About without scrolling.
+    let mut w = window_at(egui::vec2(1240.0, 1400.0), settings);
+    w.get_by_role_and_label(Role::Link, "Getting started with Greaseweazle")
+        .hover();
+    w.run();
+    w.get_by_label("https://github.com/keirf/greaseweazle/wiki/Getting-Started");
+}
+
+#[test]
 fn read_pin_says_it_reads_a_pin_and_set_pin_keeps_gws_words() {
     let page = |name: &str| {
         window(Settings {
