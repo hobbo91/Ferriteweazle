@@ -67,8 +67,8 @@ const NAMES: &[(&str, &str, &str)] = &[
 
 /// Commands that ask first, and what they do to the disk.
 const DESTRUCTIVE: &[(&str, &str)] = &[
-    ("write", "Everything on the disk will be replaced."),
-    ("erase", "Everything on the disk will be lost."),
+    ("write", "The tracks written lose what they hold."),
+    ("erase", "The tracks erased lose what they hold."),
 ];
 
 /// Why a command that uses the device cannot run.
@@ -387,7 +387,7 @@ impl App {
                 path.display()
             ))),
             (None, None) => Service::offline(Err(
-                "Ferriteweazle could not find Greaseweazle. Choose your gw in Settings.".into(),
+                "Ferriteweazle could not find gw. Choose one in Settings.".into(),
             )),
         };
         self.service.seed_ports(ports);
@@ -857,8 +857,17 @@ impl App {
         self.notices.insert(page, found_note(&formats, step));
     }
 
-    /// Closing the window while gw works asks first: gw stops the drive before
-    /// the window closes.
+    /// Whether `job` runs the drive's motor, which gw turns off as it stops.
+    /// gw seek runs it only with --motor-on.
+    fn runs_motor(&self, job: &Job) -> bool {
+        match job.command.as_str() {
+            "read" | "write" | "erase" | "clean" | "rpm" | "align" => true,
+            DETECT => self.detect_for.as_deref() == Some("read"),
+            _ => false,
+        }
+    }
+
+    /// Closing the window while gw works asks first.
     fn guard_close(&mut self, ctx: &egui::Context) {
         if self.running().is_some() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -1312,14 +1321,10 @@ impl App {
         ui.vertical_centered(|ui| match self.service.schema.error() {
             None => {
                 ui.spinner();
-                ui.label(RichText::new("Starting Greaseweazle…").weak());
+                ui.label(RichText::new("Starting gw…").weak());
             }
             Some(e) => {
-                ui.label(
-                    RichText::new("Greaseweazle is not ready")
-                        .size(18.0)
-                        .strong(),
-                );
+                ui.label(RichText::new("gw is not ready").size(18.0).strong());
                 ui.add_space(4.0);
                 ui.label(RichText::new(e).weak());
                 ui.add_space(10.0);
@@ -1347,8 +1352,11 @@ impl App {
                         "Stop"
                     };
                     let stop = ui.add_enabled(!job.stopping(), big_button(label, p.bad, p));
-                    let drive = job.command != DETECT || self.detect_for.as_deref() == Some("read");
-                    if stop.on_hover_text(stop_tip(&job.command, drive)).clicked() {
+                    let tip = match self.runs_motor(job) {
+                        true => "Stop gw and the drive's motor.",
+                        false => "Stop gw.",
+                    };
+                    if stop.on_hover_text(tip).clicked() {
                         self.stop();
                     }
                 }
@@ -1419,7 +1427,7 @@ impl App {
             .collect();
         let device = uses_device(schema, &cmd.name);
         if self.engine.is_none() {
-            Some("Greaseweazle is not set up. See Settings.".to_owned())
+            Some("gw is not set up. See Settings.".to_owned())
         } else if let Some(why) = self.busy() {
             Some(why.to_owned())
         } else if self.probe.is_some() && device {
@@ -1687,7 +1695,7 @@ impl App {
                 }
             });
         }
-        if let Some(left) = cancelled(job) {
+        if let Some(left) = left_behind(job) {
             ui.add_space(6.0);
             ui.add(egui::Label::new(RichText::new(left).color(p.partial)).wrap());
         }
@@ -1832,7 +1840,7 @@ impl App {
                 }
                 let reset = ui.add_enabled(cli.text != line, egui::Button::new("Reset"));
                 if reset
-                    .on_hover_text("Reset the CLI command.")
+                    .on_hover_text("Put back the page's command line.")
                     .on_disabled_hover_text("No changes.")
                     .clicked()
                 {
@@ -1878,7 +1886,7 @@ impl App {
                     .inner
             })
             .inner
-            .on_hover_text("Type or paste options. The page follows.");
+            .on_hover_text("Type or paste a gw command line. The page follows it.");
         let mut apply = None;
         if edit.changed() {
             match command::parse(&schema, &cli.text) {
@@ -1972,7 +1980,7 @@ impl App {
                 }
             });
         });
-        section(ui, "Greaseweazle", |ui| {
+        section(ui, "Greaseweazle Tools", |ui| {
             match (&self.engine, &self.service.schema) {
                 _ if self.gw_paused.is_some() => {
                     ui.label(RichText::new(UPDATING).weak());
@@ -1986,7 +1994,7 @@ impl App {
                         Origin::Installed => "installed on this computer",
                         Origin::Custom => "chosen here",
                     };
-                    ui.label(format!("Greaseweazle {}, {origin}.", schema.version));
+                    ui.label(format!("gw {}, {origin}.", schema.version));
                 }
                 (Some(_), Load::Waiting(_)) => {
                     ui.horizontal(|ui| {
@@ -2097,8 +2105,8 @@ impl App {
             setting(
                 ui,
                 &mut self.settings.save_logs,
-                "Save gw's output beside each image",
-                "Writes name.ext.log next to the image.",
+                "Save gw's output beside each image it makes",
+                "Writes name.ext.log next to each image gw read or gw convert makes.",
             );
             if cfg!(target_os = "macos") {
                 setting(
@@ -2171,10 +2179,9 @@ impl App {
                     args,
                     disks,
                 } => {
-                    let drive = if self.settings.drive.is_empty() {
-                        "A"
-                    } else {
-                        self.settings.drive.as_str()
+                    let drive = match self.settings.drive.as_str() {
+                        "" => self.default_drive(),
+                        drive => drive.to_owned(),
                     };
                     let verb = title(command);
                     let verb = verb.split(' ').next().unwrap_or_default();
@@ -2261,7 +2268,7 @@ impl App {
                     dialog_heading(ui, &format!("Insert disk {disk} of {total}"));
                     let p = theme::palette(ui);
                     if *failed {
-                        let text = format!("Disk {} failed. Its output says why.", *disk - 1);
+                        let text = format!("Disk {} failed. The Log says why.", *disk - 1);
                         ui.label(RichText::new(text).color(p.bad));
                     }
                     ui.label("Eject, then insert the next disk in the drive.");
@@ -2312,6 +2319,7 @@ impl App {
                         let text = if exists { "Replace" } else { "Save" };
                         if ui
                             .add_enabled(!name.is_empty(), dialog_button(text, p.accent, p))
+                            .on_disabled_hover_text("Type a name.")
                             .clicked()
                         {
                             let command = command.clone();
@@ -2343,11 +2351,13 @@ impl App {
                     });
                 }
                 Dialog::Quit => {
-                    let job = self
-                        .running()
-                        .map_or_else(String::new, |j| title(&j.command));
-                    dialog_heading(ui, &format!("Stop {job} and quit?"));
-                    ui.label("gw stops the drive first, then the window closes.");
+                    let job = self.running();
+                    let name = job.map_or_else(String::new, |j| title(&j.command));
+                    dialog_heading(ui, &format!("Stop {name} and quit?"));
+                    ui.label(match job.is_some_and(|j| self.runs_motor(j)) {
+                        true => "gw stops the drive first, then the window closes.",
+                        false => "gw stops, then the window closes.",
+                    });
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
@@ -2752,7 +2762,7 @@ fn ending(job: &Job) -> String {
     let how = match job.outcome() {
         Some(Outcome::Succeeded) => "Done in",
         Some(Outcome::Failed) => "Failed after",
-        _ => "Cancelled after",
+        _ => "Stopped after",
     };
     format!("{how} {}.", clock(job.elapsed()))
 }
@@ -2895,33 +2905,21 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
         None => ("Running", p.accent),
         Some(Outcome::Succeeded) => ("Done", p.good),
         Some(Outcome::Failed) => ("Failed", p.bad),
-        Some(Outcome::Stopped) => ("Cancelled", p.partial),
+        Some(Outcome::Stopped) => ("Stopped", p.partial),
     }
 }
 
-/// The Stop button's tip. Stopping a job that runs the drive turns its motor off.
-fn stop_tip(command: &str, drive: bool) -> &'static str {
-    match command {
-        "read" => "Stop read, this will also stop the drive's motor.",
-        "write" => "Stop write, this will also stop the drive's motor.",
-        "erase" => "Stop erase, this will also stop the drive's motor.",
-        "clean" | "seek" | "rpm" | "align" => "Stop, this will also stop the drive's motor.",
-        DETECT if drive => "Stop detect, this will also stop the drive's motor.",
-        _ => "Stop gw.",
-    }
-}
-
-/// What a disk job cancelled part way leaves behind: gw keeps the tracks a
+/// What a disk job stopped part way leaves behind: gw keeps the tracks a
 /// read has done, and deletes a conversion's image.
-fn cancelled(job: &Job) -> Option<&'static str> {
+fn left_behind(job: &Job) -> Option<&'static str> {
     if job.outcome() != Some(Outcome::Stopped) {
         return None;
     }
     match job.command.as_str() {
-        "read" => Some("Cancelled: incomplete image."),
-        "write" => Some("Cancelled: disk partly written."),
-        "erase" => Some("Cancelled: disk partly erased."),
-        "convert" => Some("Cancelled: no image made."),
+        "read" => Some("Stopped: incomplete image."),
+        "write" => Some("Stopped: disk partly written."),
+        "erase" => Some("Stopped: disk partly erased."),
+        "convert" => Some("Stopped: no image made."),
         _ => None,
     }
 }
@@ -2941,9 +2939,9 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> bool {
     });
     match (&refused, &job.progress.error) {
         (Some(refused), _) => error_box(ui, p, |ui| install = access(ui, refused)),
-        (None, Some(e)) => {
+        (None, Some(e)) => error_box(ui, p, |ui| {
             ui.label(RichText::new(e).color(p.bad));
-        }
+        }),
         (None, None) => {}
     }
     ui.add_space(4.0);
@@ -3103,7 +3101,10 @@ fn output(
         }
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
-            if save.on_hover_text("Save gw's output to a file.").clicked()
+            if save
+                .on_hover_text("Save gw's output to a file.")
+                .on_disabled_hover_text("No output.")
+                .clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_directory(crate::app_folder())
                     .set_file_name("gw.log")
@@ -3112,12 +3113,19 @@ fn output(
                 let _ = std::fs::write(&path, log.join("\n") + "\n");
             }
             let copy = ui.add_enabled(!log.is_empty(), egui::Button::new("Copy"));
-            if copy.on_hover_text("Copy gw's output.").clicked() {
+            if copy
+                .on_hover_text("Copy gw's output.")
+                .on_disabled_hover_text("No output.")
+                .clicked()
+            {
                 ui.ctx().copy_text(log.join("\n"));
             }
             if clearable {
                 let button = ui.add_enabled(!log.is_empty(), egui::Button::new("Clear"));
-                clear = button.on_hover_text("Clear the log.").clicked();
+                clear = button
+                    .on_hover_text("Clear the log.")
+                    .on_disabled_hover_text("No output.")
+                    .clicked();
             }
         });
     });
@@ -3212,9 +3220,11 @@ fn found_note(formats: &[String], step: u32) -> String {
         [] => {}
         [one] => note += &format!(" Disk also matches {one}."),
         more => {
-            let (last, rest) = more[..more.len().min(4)]
-                .split_last()
-                .expect("more has some");
+            let mut names: Vec<String> = more.iter().take(4).cloned().collect();
+            if more.len() > 4 {
+                names.push(format!("{} more", more.len() - 4));
+            }
+            let (last, rest) = names.split_last().expect("more has some");
             note += &format!(" Disk also matches {} and {last}.", rest.join(", "));
         }
     }
@@ -3456,6 +3466,16 @@ mod tests {
         Update::Installing(std::sync::mpsc::channel().1, "v1.24".into())
     }
 
+    /// The window after a couple of frames. Stepped, not run: a running job
+    /// keeps it repainting.
+    fn window(app: App) -> Harness<'static, App> {
+        let mut w = Harness::builder()
+            .with_size(vec2(1240.0, 780.0))
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        w.run_steps(2);
+        w
+    }
+
     #[test]
     fn a_port_that_does_not_answer_says_so_after_a_greaseweazle_did() {
         let mut app = offline();
@@ -3524,6 +3544,20 @@ mod tests {
         assert_eq!(
             found_note(&formats, 1),
             "Found akai.800. Disk also matches eagle.dsqd.800 and epson.qx10.400."
+        );
+        let atari = [
+            "atarist.720",
+            "ibm.360",
+            "ibm.720",
+            "msx.2d",
+            "msx.2dd",
+            "zx.3dos.ds80",
+            "zx.d80.ds80",
+        ]
+        .map(String::from);
+        assert_eq!(
+            found_note(&atari, 1),
+            "Found atarist.720. Disk also matches ibm.360, ibm.720, msx.2d, msx.2dd and 2 more."
         );
     }
 
@@ -3855,11 +3889,7 @@ mod tests {
         app.settings.page = Page::Settings;
         app.settings.engine = Some("/no/such/gw".into());
         app.tool = Some(running("info"));
-        // Stepped, not run: a running job keeps the window repainting.
-        let mut w = Harness::builder()
-            .with_size(vec2(1240.0, 780.0))
-            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-        w.run_steps(2);
+        let mut w = window(app);
         let greyed = |w: &Harness<'_, App>| {
             let choose = w.get_all_by_label("Choose…").last().expect("the gw row's");
             [
@@ -4083,5 +4113,35 @@ mod tests {
         let starting = App::offline(&ctx, Settings::default(), Err(String::new()));
         assert_eq!(ids(&starting), ids(&offline()));
         assert_eq!(ids(&starting), ["A", "B", "0", "1", "2", "3"]);
+    }
+
+    #[test]
+    fn quit_names_the_drive_only_for_a_job_that_runs_it() {
+        let mut app = offline();
+        app.disk = Some(running("convert"));
+        app.dialog = Some(Dialog::Quit);
+        let mut w = window(app);
+        w.get_by_label("Stop Convert image and quit?");
+        w.get_by_label("gw stops, then the window closes.");
+        w.state_mut().disk = Some(running("read"));
+        w.run_steps(2);
+        w.get_by_label("gw stops the drive first, then the window closes.");
+    }
+
+    #[test]
+    fn write_and_erase_ask_about_the_drive_the_card_shows() {
+        let mut schema = schema();
+        let drives = schema.commands.iter_mut().flat_map(|c| &mut c.args);
+        for arg in drives.filter(|a| a.dest == "drive") {
+            arg.default = Some("B".into());
+        }
+        let ctx = egui::Context::default();
+        let mut app = App::offline(&ctx, Settings::default(), Ok(schema));
+        app.dialog = Some(Dialog::Confirm {
+            command: "erase".into(),
+            args: Vec::new(),
+            disks: 1,
+        });
+        window(app).get_by_label("Erase the disk in drive B?");
     }
 }

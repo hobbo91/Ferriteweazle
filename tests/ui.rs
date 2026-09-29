@@ -933,12 +933,12 @@ fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() 
 }
 
 #[test]
-fn a_cancelled_read_says_so_and_what_it_left() {
+fn a_stopped_read_says_so_and_what_it_left() {
     let mut job = Job::replay("read", DAMAGED);
     job.ended = Some((job.started, Outcome::Stopped));
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
-    w.get_by_label_contains("Cancelled ·");
-    w.get_by_label("Cancelled: incomplete image.");
+    w.get_by_label_contains("Stopped ·");
+    w.get_by_label("Stopped: incomplete image.");
 }
 
 #[test]
