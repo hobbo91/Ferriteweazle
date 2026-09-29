@@ -73,6 +73,14 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
+/// Why nothing new can start while a job runs.
+const BUSY: &str = "Wait for the job that is running.";
+/// Why nothing new can start while gw or this app installs an update.
+const INSTALLING: &str = "Wait for the update to install.";
+/// Why a command that uses the device waits while the card runs gw info.
+const ASKING: &str = "Wait for gw info to finish.";
+/// Settings' gw line while a Windows folder copy replaces itself.
+const UPDATING: &str = "Updating Ferriteweazle\u{2026}";
 
 /// Commands the status pane shows. Others show their results under their page.
 const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", DETECT];
@@ -287,6 +295,9 @@ pub struct App {
     kept_drive: String,
     gw_update: Update,
     app_update: Update,
+    /// gw's bridge is stopped while a Windows folder copy replaces its data
+    /// folder: the ports it had listed.
+    gw_paused: Option<Vec<Port>>,
     logo: Option<egui::TextureHandle>,
     fade: Fade,
     /// The desktop's light or dark preference, where winit reports none.
@@ -353,6 +364,7 @@ impl App {
             kept_drive: String::new(),
             gw_update: Update::default(),
             app_update: Update::default(),
+            gw_paused: None,
             logo: None,
             fade: Fade::default(),
             desktop_theme: None,
@@ -387,11 +399,37 @@ impl App {
         let Some(engine) = self.engine.as_ref().filter(|_| self.live) else {
             return;
         };
-        if engine.origin == Origin::Bundled {
+        // An install under way keeps its answer.
+        if engine.origin == Origin::Bundled && !installing(&self.gw_update) {
             self.gw_update = Update::check(engine, None, repaint(ctx));
         }
-        if Install::this().is_some() {
+        if Install::this().is_some() && !installing(&self.app_update) {
             self.app_update = Update::check(engine, Some(update::APP_REPO), repaint(ctx));
+        }
+    }
+
+    /// Takes the updates' answers. A new gw restarts gw, and a new
+    /// Ferriteweazle opens in place of this window.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        if self
+            .gw_update
+            .poll(self.schema.as_deref().map(|s| s.version.as_str()))
+        {
+            self.connect(ctx);
+        }
+        if self.app_update.poll(Some(env!("CARGO_PKG_VERSION")))
+            && let (Update::Latest(tag), Some(install)) = (&self.app_update, Install::this())
+        {
+            install.relaunch(tag.trim_start_matches('v'));
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        } else if matches!(self.app_update, Update::Failed(_))
+            && let Some(engine) = &self.engine
+            && let Some(ports) = self.gw_paused.take()
+        {
+            // The update stopped gw. Not connect(): its check for updates
+            // would drop the reason the update failed.
+            self.service = Service::start(engine, repaint(ctx));
+            self.service.seed_ports(ports);
         }
     }
 
@@ -423,18 +461,7 @@ impl App {
         self.follow_desktop(&ctx);
         self.fade_theme(&ctx);
         self.poll(&ctx);
-        if self
-            .gw_update
-            .poll(self.schema.as_deref().map(|s| s.version.as_str()))
-        {
-            self.connect(&ctx);
-        }
-        if self.app_update.poll(Some(env!("CARGO_PKG_VERSION")))
-            && let (Update::Latest(tag), Some(install)) = (&self.app_update, Install::this())
-        {
-            install.relaunch(tag.trim_start_matches('v'));
-            ctx.send_viewport_cmd(ViewportCommand::Close);
-        }
+        self.poll_updates(&ctx);
         self.guard_close(&ctx);
         self.take_dropped_files(&ctx);
         let p = theme::palette(ui);
@@ -685,19 +712,25 @@ impl App {
         chosen_port(self.service.known_ports(), &self.settings.device).is_some()
     }
 
-    /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
-    fn cannot_detect(&self, page: &str) -> Option<&'static str> {
+    /// Why nothing new can start now: a job runs, or gw or this app installs
+    /// an update.
+    fn busy(&self) -> Option<&'static str> {
         if self.running().is_some() {
-            Some("Wait for the job that is running.")
-        } else if page != "read" {
-            None
-        } else if self.probe.is_some() {
-            Some("Wait while the device says what it is.")
-        } else if !self.connected() {
-            Some(NO_DEVICE)
+            Some(BUSY)
+        } else if installing(&self.gw_update) || installing(&self.app_update) {
+            Some(INSTALLING)
         } else {
             None
         }
+    }
+
+    /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
+    fn cannot_detect(&self, page: &str) -> Option<&'static str> {
+        self.busy().or(match page {
+            "read" if self.probe.is_some() => Some(ASKING),
+            "read" if !self.connected() => Some(NO_DEVICE),
+            _ => None,
+        })
     }
 
     /// Runs `gw info` for the device card, when nothing else is using the device.
@@ -923,7 +956,7 @@ impl App {
                             .on_hover_text("Look for the Greaseweazle again.")
                             .on_disabled_hover_text(match asking {
                                 true => "Asking the device…",
-                                false => "Wait for the job that is running.",
+                                false => BUSY,
                             })
                             .clicked();
                     });
@@ -973,7 +1006,7 @@ impl App {
                         ask |= ui
                             .add_enabled(idle, link)
                             .on_hover_text("Ask the Greaseweazle what it is.")
-                            .on_disabled_hover_text("Wait for the job that is running.")
+                            .on_disabled_hover_text(BUSY)
                             .clicked();
                     }
                 }
@@ -1178,7 +1211,7 @@ impl App {
                 bottom: 4,
             }))
             .show_separator_line(false)
-            .show(ui, |ui| self.run_bar(ui, cmd));
+            .show(ui, |ui| self.run_bar(ui, &schema, cmd));
         let cannot_detect = self.cannot_detect(name);
         let mut install = false;
         // Everything above the run bar scrolls, in no more than the room left,
@@ -1282,9 +1315,9 @@ impl App {
         });
     }
 
-    fn run_bar(&mut self, ui: &mut Ui, cmd: &Command) {
+    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command) {
         let p = theme::palette(ui);
-        let why = self.why_not(cmd);
+        let why = self.why_not(schema, cmd);
         ui.horizontal(|ui| {
             // The job this page started, or its format being found.
             let here = self.running().filter(|j| {
@@ -1359,7 +1392,7 @@ impl App {
     }
 
     /// Why this page cannot run now, if it cannot.
-    fn why_not(&self, cmd: &Command) -> Option<String> {
+    fn why_not(&self, schema: &Schema, cmd: &Command) -> Option<String> {
         let empty = Values::default();
         let values = self.settings.values.get(&cmd.name).unwrap_or(&empty);
         let output = |dest: &str| form::OUTPUTS.contains(&(cmd.name.as_str(), dest));
@@ -1369,20 +1402,18 @@ impl App {
             .filter(|a| form::batch_input(cmd, values) != Some(a.dest.as_str()))
             .map(|a| form::label(a).to_lowercase())
             .collect();
-        let Some(schema) = self.schema.as_deref() else {
-            return Some("Starting Greaseweazle…".to_owned());
-        };
+        let device = uses_device(schema, &cmd.name);
         if self.engine.is_none() {
             Some("Greaseweazle is not set up. See Settings.".to_owned())
-        } else if self.running().is_some() {
-            Some("Wait for the job that is running.".to_owned())
-        } else if self.probe.is_some() {
-            Some("Wait while the device says what it is.".to_owned())
+        } else if let Some(why) = self.busy() {
+            Some(why.to_owned())
+        } else if self.probe.is_some() && device {
+            Some(ASKING.to_owned())
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
             // The page's own settings first: they can be made ready with no device.
-            let no_device = uses_device(schema, &cmd.name) && !self.connected();
+            let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
             self.diskdefs_fault(values)
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
@@ -1923,6 +1954,9 @@ impl App {
         });
         section(ui, "Greaseweazle", |ui| {
             match (&self.engine, &self.service.schema) {
+                _ if self.gw_paused.is_some() => {
+                    ui.label(RichText::new(UPDATING).weak());
+                }
                 (Some(engine), Load::Ready(schema)) => {
                     let origin = match engine.origin {
                         Origin::Bundled if engine.update_in(&engine::updates()).is_some() => {
@@ -1945,10 +1979,12 @@ impl App {
                 }
             }
             ui.add_space(4.0);
+            let busy = self.busy();
             ui.horizontal(|ui| {
-                if ui
-                    .button("Restart")
+                let restart = ui.add_enabled(busy.is_none(), egui::Button::new("Restart"));
+                if restart
                     .on_hover_text("Start gw again, and check GitHub for a newer release.")
+                    .on_disabled_hover_text(busy.unwrap_or_default())
                     .clicked()
                 {
                     self.connect(ui.ctx());
@@ -1957,7 +1993,7 @@ impl App {
                 else {
                     return;
                 };
-                let (can, tip) = self.gw_update.button("Greaseweazle Tools");
+                let (can, tip) = self.update_button(&self.gw_update, "Greaseweazle Tools");
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
                 if update
                     .on_hover_text(&tip)
@@ -1979,6 +2015,7 @@ impl App {
                 &images,
                 "Choose where new images go.",
                 back,
+                None,
             ) {
                 Some(PathClick::Choose) => {
                     let chosen = rfd::FileDialog::new().set_directory(&images).pick_folder();
@@ -1999,6 +2036,7 @@ impl App {
                 &presets,
                 "Choose the presets folder.",
                 back,
+                None,
             ) {
                 Some(PathClick::Choose) => {
                     let chosen = rfd::FileDialog::new().set_directory(&presets).pick_folder();
@@ -2020,7 +2058,8 @@ impl App {
                 .unwrap_or_default();
             let back = self.settings.engine.is_some().then_some(default);
             let tip = "Choose a gw, or a Python with greaseweazle.";
-            match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back) {
+            let busy = self.busy();
+            match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.settings.engine = Some(path);
@@ -2366,21 +2405,20 @@ impl App {
             Some(_) => self.app_update.summary(env!("CARGO_PKG_VERSION")),
             None => ("This copy was built from source.".into(), None),
         };
-        let blocked = match &install {
+        let stuck = match &install {
             None => Some("Needs a copy installed from a release."),
             Some(install) => install.stuck(),
-        }
-        .or_else(|| {
-            self.running()
-                .is_some()
-                .then_some("Wait for the job that is running.")
-        });
-        let busy = matches!(
+        };
+        let (can, tip) = match stuck {
+            Some(why) => (false, why.to_owned()),
+            None => self.update_button(&self.app_update, "Ferriteweazle"),
+        };
+        let spin = matches!(
             self.app_update,
             Update::Checking(_) | Update::Installing(..)
         );
         ui.horizontal(|ui| {
-            if busy {
+            if spin {
                 ui.spinner();
             }
             let status = ui.label(line);
@@ -2388,10 +2426,6 @@ impl App {
                 status.on_hover_text(why);
             }
             right(ui, |ui| {
-                let (can, tip) = match blocked {
-                    Some(why) => (false, why.to_owned()),
-                    None => self.app_update.button("Ferriteweazle"),
-                };
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
                 if update
                     .on_hover_text(&tip)
@@ -2402,15 +2436,24 @@ impl App {
                 {
                     if cfg!(windows) && matches!(install, Install::Folder(_)) {
                         // Windows will not move the data folder while gw runs from it.
-                        self.service =
-                            Service::offline(Err("Updating Ferriteweazle\u{2026}".into()));
+                        self.gw_paused = Some(self.service.known_ports().to_vec());
+                        self.service = Service::offline(Err(UPDATING.into()));
                     }
                     self.app_update = Update::app(engine, install, tag, repaint(ui.ctx()));
                 }
             });
         });
-        if let (Some(why), Update::Newer(_)) = (blocked, &self.app_update) {
-            ui.label(RichText::new(why).small().weak());
+        if !can && matches!(self.app_update, Update::Newer(_)) {
+            ui.label(RichText::new(tip).small().weak());
+        }
+    }
+
+    /// Whether an Update button can run, and its tip: an update that could
+    /// install waits while a job runs or the other update installs.
+    fn update_button(&self, update: &Update, what: &str) -> (bool, String) {
+        match (update.button(what), self.busy()) {
+            ((true, _), Some(why)) => (false, why.to_owned()),
+            (button, _) => button,
         }
     }
 
@@ -2649,6 +2692,10 @@ fn runs(
 
 fn destructive(command: &str) -> bool {
     DESTRUCTIVE.iter().any(|(c, _)| *c == command)
+}
+
+fn installing(update: &Update) -> bool {
+    matches!(update, Update::Installing(..))
 }
 
 /// What the status pane says before any disk job, for this page.
@@ -3167,14 +3214,15 @@ enum PathClick {
     Default,
 }
 
-/// A path in Settings: its name, where it is, and Choose… with, where `back`
-/// is given, its button and tip for going back to the default.
+/// A path in Settings: its name, where it is, Choose…, and with `back` a
+/// button and tip that restore the default. Both wait while `busy` says why.
 fn path_row(
     ui: &mut Ui,
     name: &str,
     path: &Path,
     tip: &str,
     back: Option<(&str, &str)>,
+    busy: Option<&str>,
 ) -> Option<PathClick> {
     ui.label(name);
     let shown = match path.as_os_str().is_empty() {
@@ -3186,12 +3234,19 @@ fn path_row(
     };
     ui.label(shown);
     ui.horizontal(|ui| {
-        if ui.button("Choose…").on_hover_text(tip).clicked() {
+        let why = busy.unwrap_or_default();
+        let choose = ui.add_enabled(busy.is_none(), egui::Button::new("Choose…"));
+        if choose
+            .on_hover_text(tip)
+            .on_disabled_hover_text(why)
+            .clicked()
+        {
             return Some(PathClick::Choose);
         }
         let (text, tip) = back?;
-        ui.button(text)
+        ui.add_enabled(busy.is_none(), egui::Button::new(text))
             .on_hover_text(tip)
+            .on_disabled_hover_text(why)
             .clicked()
             .then_some(PathClick::Default)
     })
@@ -3336,10 +3391,47 @@ fn logo(ui: &mut Ui, texture: &mut Option<egui::TextureHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     fn offline() -> App {
         let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
         App::offline(&egui::Context::default(), Settings::default(), Ok(schema))
+    }
+
+    fn schema() -> Schema {
+        serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+    }
+
+    /// A Greaseweazle as gw lists it, on a made-up port.
+    fn greaseweazle(device: &str, denied: bool) -> Port {
+        Port {
+            device: device.into(),
+            name: Some("Greaseweazle".into()),
+            serial: None,
+            score: 20,
+            denied,
+        }
+    }
+
+    /// An engine with no Python behind it: no job starts.
+    fn no_gw() -> Engine {
+        Engine {
+            python: "/no/such/python".into(),
+            origin: Origin::Custom,
+        }
+    }
+
+    /// A job that runs until the test ends it.
+    fn running(command: &str) -> Job {
+        let mut job = Job::replay(command, "");
+        job.ended = None;
+        job
+    }
+
+    /// An install that has not answered yet.
+    fn installing() -> Update {
+        Update::Installing(std::sync::mpsc::channel().1, "v1.24".into())
     }
 
     #[test]
@@ -3395,8 +3487,7 @@ mod tests {
         let mut probe = Job::replay("info", "");
         probe.ended = None;
         app.probe = Some(probe);
-        let wait = Some("Wait while the device says what it is.");
-        assert_eq!(app.cannot_detect("read"), wait);
+        assert_eq!(app.cannot_detect("read"), Some(ASKING));
         assert_eq!(app.cannot_detect("convert"), None, "it reads a file");
     }
 
@@ -3706,5 +3797,92 @@ mod tests {
         ));
         app.poll_probe(&ctx);
         assert!(has_the_fix(app.log.lines()), "{:#?}", app.log.lines());
+    }
+
+    #[test]
+    fn no_job_starts_while_gw_or_this_app_installs_an_update() {
+        let schema = schema();
+        let info = schema.command("info").unwrap();
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        assert_eq!(app.why_not(&schema, info), None);
+        app.gw_update = installing();
+        assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
+        assert_eq!(app.cannot_detect("convert"), Some(INSTALLING));
+        app.gw_update = Update::Idle;
+        app.app_update = installing();
+        assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
+    }
+
+    #[test]
+    fn gw_info_on_the_card_holds_up_only_the_pages_that_use_the_device() {
+        let schema = schema();
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        app.probe = Some(running("info"));
+        let why = |name| app.why_not(&schema, schema.command(name).unwrap());
+        assert_eq!(why("info").as_deref(), Some(ASKING));
+        assert_ne!(why("convert").as_deref(), Some(ASKING), "it reads a file");
+    }
+
+    #[test]
+    fn restart_and_the_gw_path_wait_while_a_job_runs_or_an_update_installs() {
+        let mut app = offline();
+        app.settings.page = Page::Settings;
+        app.settings.engine = Some("/no/such/gw".into());
+        app.tool = Some(running("info"));
+        // Stepped, not run: a running job keeps the window repainting.
+        let mut w = Harness::builder()
+            .with_size(vec2(1240.0, 780.0))
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        w.run_steps(2);
+        let greyed = |w: &Harness<'_, App>| {
+            let choose = w.get_all_by_label("Choose…").last().expect("the gw row's");
+            [
+                w.get_by_label("Restart"),
+                w.get_by_label("Use the built-in gw"),
+                choose,
+            ]
+            .map(|b| b.accesskit_node().is_disabled())
+        };
+        assert_eq!(greyed(&w), [true; 3], "a job runs");
+        w.state_mut().tool = None;
+        w.run_steps(2);
+        assert_eq!(greyed(&w), [false; 3]);
+        w.state_mut().gw_update = installing();
+        w.run_steps(2);
+        assert_eq!(greyed(&w), [true; 3], "gw installs an update");
+    }
+
+    #[test]
+    fn a_check_for_updates_leaves_an_install_under_way() {
+        let mut app = offline();
+        app.live = true;
+        app.engine = Some(Engine {
+            origin: Origin::Bundled,
+            ..no_gw()
+        });
+        app.gw_update = installing();
+        app.look_for_updates(&egui::Context::default());
+        assert!(matches!(app.gw_update, Update::Installing(..)));
+    }
+
+    #[test]
+    fn a_failed_windows_folder_update_starts_gw_again_and_keeps_its_reason() {
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        let port = greaseweazle("COM3", false);
+        app.service = Service::offline(Err(UPDATING.into()));
+        app.gw_paused = Some(vec![port.clone()]);
+        let (send, answer) = std::sync::mpsc::channel();
+        let why = "GitHub did not answer in time.";
+        send.send(Err(why.to_owned())).unwrap();
+        app.app_update = Update::Installing(answer, "v0.9.1".into());
+        app.poll_updates(&egui::Context::default());
+        assert!(matches!(&app.app_update, Update::Failed(w) if w == why));
+        assert!(app.gw_paused.is_none());
+        assert_eq!(app.service.known_ports(), [port], "kept while gw starts");
     }
 }
