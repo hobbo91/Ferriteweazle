@@ -150,6 +150,54 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
     );
 }
 
+#[test]
+fn gw_on_the_adafruit_rp2040_does_what_its_firmware_allows_and_no_more() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("adafruit");
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&engine.python)
+        .arg(data.join("adafruit.py"))
+        .arg(&bridge)
+        .arg(dir.join("read.img"))
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "info --bootloader: SwitchFwMode: Bad Command",
+            "pin set 2 H before any drive: Command Failed: SetPin: Bad Command",
+            "seek 79:  [79]",
+            // The bridge stops it: the firmware would step to 79.
+            "seek 80: The Adafruit RP2040 reaches cylinders 0 to 79, not 80. [79]",
+            "seek 80 on a Greaseweazle: ",
+            "rpm drive B: Command Failed: Select: No drive unit selected",
+            "rpm drive 0: SLOWEST:  Rate: 72000.000 rpm ; Period: 0.833 ms",
+            "pin get 26: Pin 26 is High (5v)",
+            // GETPIN's refusal leaves a byte, which the next reply trips on.
+            "pin get 25: Command returned garbage (00 != 06)",
+            "pin set 2 H after a drive: Pin 2 is set High (5v)",
+            "pin set 4 H: Command Failed: SetPin: Invalid pin",
+            "delays: gw would wait for ever",
+            "reset: gw would wait for ever",
+            "erase: Command Failed: EraseFlux: Bad Command",
+            // gw takes the write as done, but the writer is given nothing.
+            "erase --hfreq: T0.0: Erasing Track",
+            "hfreq flux written after the writer starts: 0",
+            "ordinary flux written after the writer starts: 993",
+            "read --densel H: cannot access local variable 'prev_pin2' where it is not associated with a value",
+            "write --pre-erase: Command Failed: EraseFlux: Bad Command",
+            "write: No tracks verified (Reason: Verify disabled)",
+            "detect looks as far as cylinder 79: None (80, 0)",
+        ],
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Prints what the bridge in argv[1] uses that gw's oldest Python, 3.8,
 /// lacks: newer syntax fails to parse, and these came in 3.9 and 3.10.
 const NEWER_PYTHON: &str = r#"

@@ -358,6 +358,9 @@ pub struct Form<'a> {
     pub service: &'a mut Service,
     /// Why Detect cannot start now, if it cannot.
     pub cannot_detect: Option<&'a str>,
+    /// The device is an Adafruit RP2040: options its firmware cannot carry
+    /// out grey, and show off.
+    pub adafruit: bool,
 }
 
 /// Something the form asks of the app.
@@ -384,8 +387,14 @@ impl<'a> Form<'a> {
         }
         if !rest.is_empty() {
             ui.add_space(4.0);
-            // Set values go to gw while the header is shut.
-            let set = rest.iter().filter(|a| self.values.on(&a.dest)).count();
+            // Set values go to gw while the header is shut; the Adafruit
+            // RP2040's greyed ones do not.
+            let impossible =
+                |a: &Arg| self.adafruit && crate::device::adafruit::option(&self.cmd.name, &a.dest);
+            let set = rest
+                .iter()
+                .filter(|a| self.values.on(&a.dest) && !impossible(a))
+                .count();
             let title = match set {
                 0 => format!("Advanced options ({})", rest.len()),
                 n => format!("Advanced options ({}, {n} set)", rest.len()),
@@ -413,6 +422,7 @@ impl<'a> Form<'a> {
             return None;
         }
         let blocker = self.blocker(a);
+        let impossible = self.adafruit && crate::device::adafruit::option(&self.cmd.name, &a.dest);
         ui.data_mut(|d| d.remove_temp::<bool>(own_tip_id()));
         // "File" would name one of its own choices.
         let batchable = BATCHES.contains(&(self.cmd.name.as_str(), a.dest.as_str()));
@@ -420,10 +430,20 @@ impl<'a> Form<'a> {
             (true, "file") => "Image".to_owned(),
             _ => label(a),
         };
+        // Shown off, as it goes to gw, and kept for a Greaseweazle.
+        let kept = impossible.then(|| {
+            let kept = self.values.get(&a.dest).to_owned();
+            self.values.set(&a.dest, "");
+            kept
+        });
         let (name, (field, action)) = row(ui, &text, |ui| {
-            let r = ui.add_enabled_ui(blocker.is_none(), |ui| self.field(ui, a));
+            let enabled = blocker.is_none() && !impossible;
+            let r = ui.add_enabled_ui(enabled, |ui| self.field(ui, a));
             (r.response, r.inner)
         });
+        if let Some(kept) = kept {
+            self.values.set(&a.dest, kept);
+        }
         let tip = tip(&self.cmd.name, a);
         // gw's own help for values such as track lists, its columns kept.
         let grammar = grammar(self.schema, a);
@@ -439,7 +459,9 @@ impl<'a> Form<'a> {
         // it, unless that has a tooltip of its own.
         let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
         let quiet = ui.data_mut(|d| d.remove_temp::<bool>(own_tip_id()));
-        if let Some(b) = blocker {
+        if impossible {
+            over.on_hover_text(crate::device::adafruit::OPTION);
+        } else if let Some(b) = blocker {
             over.on_hover_text(format!("Cannot be used with {}.", label(b)));
         } else if quiet.is_none() {
             over.on_hover_ui(explain);
@@ -1058,7 +1080,7 @@ impl<'a> Form<'a> {
         let mut folder = self.values.get(BATCH_FOLDER).to_owned();
         ui.horizontal(|ui| {
             let edit = edit(&mut folder)
-                .hint_text("Input folder (Required)")
+                .hint_text("Image folder (Required)")
                 .desired_width(beside_button(ui, BROWSE_BUTTON));
             ui.add(edit);
             if browse_button(ui)
@@ -1122,7 +1144,7 @@ impl<'a> Form<'a> {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let edit = edit(&mut path)
-                    .hint_text("Input image (Required)")
+                    .hint_text("Image file (Required)")
                     .desired_width(beside_button(ui, BROWSE_BUTTON));
                 changed |= ui.add(edit).changed();
                 if browse_button(ui).own_tip("Select an image.").clicked()
@@ -2810,6 +2832,25 @@ pub fn with_step(tracks: &str, step: u32) -> String {
     spec.to_string()
 }
 
+/// The furthest physical cylinder of a track list over a format of `cyls`
+/// cylinders, as gw steps to it: None for a list the picker cannot read, such
+/// as one with head offsets.
+pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
+    let spec = TrackSpec::parse(tracks);
+    if !spec.other.is_empty() {
+        return None;
+    }
+    let last = match spec.c {
+        Some(_) => spec.cylinders()?.1,
+        None => cyls?.checked_sub(1)?,
+    };
+    let step = spec
+        .step
+        .as_deref()
+        .map_or(Some(1), |s| s.parse::<u32>().ok())?;
+    last.checked_mul(step)
+}
+
 /// Which tracks, in gw's notation: `c=0-79:h=0:step=2:hswap`.
 #[derive(Debug, Default, Clone, PartialEq)]
 struct TrackSpec {
@@ -3023,6 +3064,7 @@ mod tests {
                     outputs,
                     service: &mut service,
                     cannot_detect: None,
+                    adafruit: false,
                 };
                 form.show(ui);
             },
@@ -3361,6 +3403,7 @@ mod tests {
                 outputs: &mut outputs,
                 service: &mut service,
                 cannot_detect: None,
+                adafruit: false,
             };
             form.blocker(read.arg(dest).unwrap())
                 .map(|b| b.dest.clone())
@@ -3459,6 +3502,24 @@ mod tests {
             "4 images: disk1.ADF, Disk2.adf … Disk10.adf"
         );
         assert_eq!(listing(&images[..1]), "1 image: disk1.ADF");
+    }
+
+    #[test]
+    fn the_last_cylinder_a_track_list_steps_to_is_physical() {
+        assert_eq!(last_cylinder("", Some(80)), Some(79), "the format's own");
+        assert_eq!(last_cylinder("", Some(82)), Some(81));
+        assert_eq!(
+            last_cylinder("c=0-81", Some(80)),
+            Some(81),
+            "the list's own"
+        );
+        assert_eq!(last_cylinder("c=0-39:step=2", Some(40)), Some(78));
+        assert_eq!(last_cylinder("h=0:step=2", Some(42)), Some(82));
+        assert_eq!(last_cylinder("c=5", None), Some(5));
+        // gw's own reading of these: the bridge checks each seek instead.
+        assert_eq!(last_cylinder("c=0-9,20-29", Some(80)), None);
+        assert_eq!(last_cylinder("c=0-79:h1.off=8", Some(80)), None);
+        assert_eq!(last_cylinder("", None), None, "no format known");
     }
 
     #[test]

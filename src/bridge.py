@@ -1,6 +1,7 @@
 """Ferriteweazle's link to gw, through gw's own modules. gw is left as it is,
-but for a time limit on the first reply from the device (steady_handshake)
-and a package's own SPS/CAPS library (bundled_caps).
+but for a time limit on the first reply from the device (steady_handshake),
+a package's own SPS/CAPS library (bundled_caps), and the Adafruit RP2040's
+last cylinder (adafruit_seeks).
 
   python bridge.py serve        one JSON request per stdin line, one reply per stdout line
   python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
@@ -383,7 +384,8 @@ def detect(argv):
         try:
             if a.densel is not None:
                 usb.set_pin(2, a.densel)
-            util.with_drive_selected(lambda: found.append(probe(drive_reader(usb, a), a.diskdefs)),
+            last = ADAFRUIT_LAST if usb.hw_model == ADAFRUIT_MODEL else 83
+            util.with_drive_selected(lambda: found.append(probe(drive_reader(usb, a), a.diskdefs, last)),
                                      usb, util.Drive()(a.drive))
         finally:
             if pin2:
@@ -433,7 +435,7 @@ class Match(typing.NamedTuple):
     name: str
 
 
-def probe(read, diskdefs):
+def probe(read, diskdefs, last=83):
     """Formats ranked by the tracks `read(cyl, head)` returns, and the head
     step the disk needs.
 
@@ -470,7 +472,7 @@ def probe(read, diskdefs):
         # Only formats tied with the best need another track.
         best = min(m.misfit for m in leaders)
         close = [disks[m.name] for m in leaders if m.misfit <= best + FIT_TOLERANCE]
-        key = divergence(close, tracks, step, layouts)
+        key = divergence(close, tracks, step, layouts, last)
         if key is None:
             break
         tracks[key] = read(key[0] * step, key[1])
@@ -486,9 +488,9 @@ def stepping(disk, track):
     return 2 if at(1) > at(2) else 1
 
 
-def divergence(disks, tracks, step, layouts):
-    """The first unread track that tells apart two of these formats that
-    every track read so far leaves alike, or None."""
+def divergence(disks, tracks, step, layouts, last):
+    """The first unread track to physical cylinder `last` that tells apart
+    two of these formats that every track read so far leaves alike, or None."""
     def alike(a, b, key):
         return layout(a, key, layouts) == layout(b, key, layouts)
     pairs = [(a, b) for i, a in enumerate(disks) for b in disks[i + 1:]
@@ -496,7 +498,7 @@ def divergence(disks, tracks, step, layouts):
     if not pairs:
         return None
     for c in range(max(d.cyls for d in disks)):
-        if c * step > 83:
+        if c * step > last:
             break
         for h in range(2):
             if (c, h) not in tracks and any(not alike(a, b, (c, h)) for a, b in pairs):
@@ -716,9 +718,32 @@ def bundled_caps():
     caps.open_libcaps = bundled
 
 
+# Adafruit's Greaseweazle-compatible firmware reports gw's hardware model 8.
+# Its library clamps a seek to cylinder 79 and reports success: must match
+# device::adafruit::LAST_CYLINDER.
+ADAFRUIT_MODEL = 8
+ADAFRUIT_LAST = 79
+
+
+def adafruit_seeks():
+    """Stops a job that would seek an Adafruit RP2040 outside cylinders 0 to
+    79. Its firmware would step to 79 instead, or take a negative cylinder as
+    unsigned, and gw would read or write cylinder 79 under another number."""
+    from greaseweazle import error, usb
+    seek = usb.Unit.seek
+
+    def within(unit, cyl, head):
+        if unit.hw_model == ADAFRUIT_MODEL and not 0 <= cyl <= ADAFRUIT_LAST:
+            raise error.Fatal(f'The Adafruit RP2040 reaches cylinders 0 to {ADAFRUIT_LAST}, not {cyl}.')
+        return seek(unit, cyl, head)
+
+    usb.Unit.seek = within
+
+
 def gw(args):
     from greaseweazle import cli
     steady_handshake()
+    adafruit_seeks()
     sys.argv = ['gw'] + args
     return cli.main()
 
@@ -728,6 +753,7 @@ def detect_like_gw(args):
     sys.stdout = sys.stderr
     try:
         steady_handshake()
+        adafruit_seeks()
         return detect(args)
     except Exception as e:
         print('** FATAL ERROR:\n' + str(e))

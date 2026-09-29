@@ -10,6 +10,7 @@ use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
 use ferriteweazle::command::Values;
+use ferriteweazle::device::Kind;
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, LOG_LINES, Outcome};
 use ferriteweazle::presets::{self, Preset};
@@ -1791,6 +1792,87 @@ fn the_bottom_right_corner_puts_back_the_default_size_once_the_window_is_resized
     let commands = &w.output().viewport_output[&egui::ViewportId::ROOT].commands;
     let size = egui::ViewportCommand::InnerSize(ferriteweazle::WINDOW);
     assert!(commands.contains(&size), "{commands:?}");
+}
+
+#[test]
+fn the_device_list_picks_a_greaseweazle_or_an_adafruit_rp2040_then_its_port() {
+    let mut w = window(Settings::default());
+    let feather = Port {
+        device: "COM9".into(),
+        name: Some("Feather RP2040".into()),
+        score: 0,
+        denied: false,
+    };
+    app_mut(&mut w).pin_ports(vec![greaseweazle(), feather]);
+    app_mut(&mut w).settings.drive = "B".into();
+    w.run();
+    combo(&w, 0).click();
+    w.run();
+    let ticked = |w: &Window, name: &str| {
+        let item = w.get_by_role_and_label(Role::RadioButton, name);
+        item.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(ticked(&w, "Greaseweazle"), "gw's own, by default");
+    assert!(!ticked(&w, "Adafruit RP2040"));
+    w.get_by_label("Serial Port");
+    // gw names only its Greaseweazle.
+    w.get_by_label("COM9");
+    w.get_by_role_and_label(Role::RadioButton, "Adafruit RP2040")
+        .click();
+    w.run();
+    assert_eq!(app(&w).settings.kind, Kind::Adafruit);
+    assert_eq!(app(&w).settings.drive, "", "B gives way to A");
+    // gw cannot pick one out: the port is chosen.
+    assert_eq!(combo(&w, 0).value().as_deref(), Some("Select device"));
+    combo(&w, 0).click();
+    w.run();
+    assert!(ticked(&w, "Adafruit RP2040"));
+    w.get_by_label("COM9 · Feather RP2040").click();
+    w.run();
+    assert_eq!(app(&w).settings.device, "COM9");
+    // The sidebar's identifiers, not the page's sides.
+    let identifier = |id: &str| {
+        let mut buttons = w.get_all_by_role(Role::Button);
+        let node = buttons
+            .find(|n| n.rect().left() < 240.0 && n.accesskit_node().label().as_deref() == Some(id));
+        !node.expect("the identifier").accesskit_node().is_disabled()
+    };
+    for (id, possible) in [
+        ("A", true),
+        ("B", false),
+        ("0", true),
+        ("1", false),
+        ("3", false),
+    ] {
+        assert_eq!(identifier(id), possible, "{id}");
+    }
+}
+
+#[test]
+fn an_adafruit_rp2040_greys_what_it_cannot_do_shown_off_and_kept_for_a_greaseweazle() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        kind: Kind::Adafruit,
+        ..Settings::default()
+    };
+    set(&mut settings, "write", "pre_erase", "on");
+    let mut w = window_at(DEFAULT, settings);
+    // It goes to gw only for a Greaseweazle.
+    w.get_by_label("Advanced options (10)").click();
+    w.run();
+    let schema = schema();
+    let text = form::label(schema.command("write").unwrap().arg("pre_erase").unwrap());
+    let toggle = |w: &Window| {
+        let node = w.get_by_role_and_label(Role::CheckBox, &text);
+        let on = node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True);
+        (on, node.accesskit_node().is_disabled())
+    };
+    assert_eq!(toggle(&w), (false, true), "off, as gw gets it, and greyed");
+    assert_eq!(app(&w).settings.values["write"].get("pre_erase"), "on");
+    app_mut(&mut w).settings.kind = Kind::Greaseweazle;
+    w.run();
+    assert_eq!(toggle(&w), (true, false), "back on for a Greaseweazle");
+    w.get_by_label("Advanced options (10, 1 set)");
 }
 
 #[test]

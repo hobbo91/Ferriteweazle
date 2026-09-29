@@ -1,7 +1,7 @@
 //! The window: a sidebar, a page per gw command, and the disk's status beside it.
 
 use crate::command::{self, Values};
-use crate::device::{self, DeviceInfo};
+use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
 use crate::engine::{self, Engine, Origin};
 use crate::form::{self, Form, Output};
@@ -77,6 +77,9 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
+/// Why nothing that uses an Adafruit RP2040 can start, by whether a port is chosen.
+const NO_ADAFRUIT: &str = "Select the Adafruit RP2040's serial port.";
+const GONE_ADAFRUIT: &str = "Connect the Adafruit RP2040.";
 /// Why nothing new can start while a job runs.
 const BUSY: &str = "Wait for the running job to complete.";
 /// Why nothing new can start while gw or this app installs an update.
@@ -164,6 +167,8 @@ pub struct Settings {
     pub engine: Option<PathBuf>,
     /// Empty for gw's own choice.
     pub device: String,
+    /// The device the card drives.
+    pub kind: Kind,
     pub drive: String,
     /// Passes gw's `--bt` for Python tracebacks on errors.
     pub backtrace: bool,
@@ -341,6 +346,11 @@ pub struct App {
     live: bool,
     /// The drive as last kept in drive_file().
     kept_drive: String,
+    /// The device type and port as last kept in device_file().
+    kept_device: (Kind, String),
+    /// Detect's note on its page, and the format it chose: the note goes once
+    /// the page takes another.
+    found_note: Option<(String, String, String)>,
     /// Where the window's size is kept: size_file() in the real app.
     pub size_file: Option<PathBuf>,
     /// The window's size as last kept, or as it opened.
@@ -373,13 +383,17 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let drive = kept_drive(&drive_file());
+        let (kind, port) = kept_device(&device_file());
         let settings = Settings {
             drive: drive.clone(),
+            kind,
+            device: port.clone(),
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
         app.live = true;
         app.kept_drive = drive;
+        app.kept_device = (kind, port);
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -423,6 +437,8 @@ impl App {
             probed: None,
             live: false,
             kept_drive: String::new(),
+            kept_device: (Kind::Greaseweazle, String::new()),
+            found_note: None,
             size_file: None,
             kept_size: WINDOW,
             new_size: None,
@@ -524,6 +540,12 @@ impl App {
             self.kept_drive.clone_from(&self.settings.drive);
             keep_drive(&drive_file(), &self.kept_drive);
         }
+        let (kind, port) = &self.kept_device;
+        if self.live && (self.settings.kind != *kind || self.settings.device != *port) {
+            self.kept_device = (self.settings.kind, self.settings.device.clone());
+            keep_device(&device_file(), self.settings.kind, &self.settings.device);
+        }
+        self.drop_found_note();
         self.follow_desktop(&ctx);
         self.fade_theme(&ctx);
         self.poll(&ctx);
@@ -784,7 +806,11 @@ impl App {
                 self.device = Some(info);
             }
             if !probe.running() {
-                let port = chosen_port(self.service.known_ports(), &self.settings.device);
+                let port = chosen_port(
+                    self.service.known_ports(),
+                    &self.settings.device,
+                    self.settings.kind,
+                );
                 if let Some(port) = refused_port(probe, port) {
                     probe
                         .log
@@ -825,19 +851,32 @@ impl App {
     /// The Greaseweazle the sidebar shows.
     fn found_port(&mut self) -> Option<&Port> {
         self.service.ports();
-        chosen_port(self.service.known_ports(), &self.settings.device)
+        chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        )
     }
 
     /// Whether the chosen port is there, open to this account, and did not
     /// fail its last gw info: the device card's dot is green.
     fn answering(&self) -> bool {
-        let port = chosen_port(self.service.known_ports(), &self.settings.device);
+        let port = chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        );
         port.is_some_and(|p| !p.denied) && self.probe_failed.is_none()
     }
 
     /// Whether the sidebar shows a Greaseweazle, as last listed.
     fn connected(&self) -> bool {
-        chosen_port(self.service.known_ports(), &self.settings.device).is_some()
+        chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        )
+        .is_some()
     }
 
     /// Why nothing new can start now: a job runs, or gw or this app installs
@@ -867,9 +906,11 @@ impl App {
     /// Why the sidebar shows no Greaseweazle: gw's reason when it could not
     /// list the ports, else NO_DEVICE.
     fn no_device(&self) -> Cow<'static, str> {
-        match self.service.ports_error() {
-            Some(why) => why.to_owned().into(),
-            None => NO_DEVICE.into(),
+        match (self.service.ports_error(), self.settings.kind) {
+            (Some(why), _) => why.to_owned().into(),
+            (None, Kind::Greaseweazle) => NO_DEVICE.into(),
+            (None, Kind::Adafruit) if self.settings.device.is_empty() => NO_ADAFRUIT.into(),
+            (None, Kind::Adafruit) => GONE_ADAFRUIT.into(),
         }
     }
 
@@ -901,7 +942,12 @@ impl App {
 
     /// A job has just ended: save the log, and do whatever was waiting on it.
     fn ended(&mut self, ctx: &egui::Context, disk: bool) {
-        let port = chosen_port(self.service.known_ports(), &self.settings.device).cloned();
+        let port = chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        )
+        .cloned();
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
         let outcome = job.outcome();
@@ -1010,8 +1056,42 @@ impl App {
         let tracks = form::with_step(values.get("tracks"), step);
         let undone = step == 1 && tracks != values.get("tracks");
         values.set("tracks", tracks);
-        self.notices
-            .insert(page, found_note(&formats, step, undone));
+        let note = found_note(&formats, step, undone);
+        self.found_note = Some((page.clone(), best.clone(), note.clone()));
+        self.notices.insert(page, note);
+    }
+
+    /// Detect's note gives way once its page takes another format than the
+    /// one Detect chose.
+    fn drop_found_note(&mut self) {
+        let Some((page, format, note)) = &self.found_note else {
+            return;
+        };
+        let shown = self.notices.get(page) == Some(note);
+        let chosen = self
+            .settings
+            .values
+            .get(page)
+            .map_or("", |v| v.get("format"));
+        if shown && chosen != format {
+            self.notices.remove(page);
+        }
+        if !shown || chosen != format {
+            self.found_note = None;
+        }
+    }
+
+    /// Drives `kind` from now on. An Adafruit RP2040 has unit 0 alone, so a
+    /// drive it cannot select gives way to gw's default, A.
+    fn set_kind(&mut self, kind: Kind) {
+        self.settings.kind = kind;
+        let drive = match self.settings.drive.as_str() {
+            "" => self.default_drive(),
+            drive => drive.to_owned(),
+        };
+        if kind == Kind::Adafruit && !adafruit::DRIVES.contains(&drive.as_str()) {
+            self.settings.drive = String::new();
+        }
     }
 
     /// Whether `job` runs the drive's motor, which gw turns off as it stops.
@@ -1114,8 +1194,10 @@ impl App {
                 .is_some_and(|port| i.get("Port").is_none_or(|p| p == port.device))
         });
         let answering = self.answering();
+        let kind = self.settings.kind;
         let mut ask = false;
         let mut access = None;
+        let mut chose = None;
         Frame::new()
             .fill(p.card)
             .stroke(Stroke::new(1.0, p.line))
@@ -1131,7 +1213,10 @@ impl App {
                     let name = match (&found, info.and_then(|i| i.get("Model"))) {
                         (None, _) => "Disconnected",
                         (Some(_), Some(model)) => model,
-                        (Some(port), None) => port.name.as_deref().unwrap_or("Greaseweazle"),
+                        (Some(port), None) => match self.settings.kind {
+                            Kind::Greaseweazle => port.name.as_deref().unwrap_or("Greaseweazle"),
+                            Kind::Adafruit => adafruit::NAME,
+                        },
                     };
                     ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
                     right(ui, |ui| {
@@ -1199,18 +1284,37 @@ impl App {
                 ui.add_space(4.0);
                 let shown = match &found {
                     Some(port) => RichText::new(short_port(&port.device)),
-                    None => RichText::new("Select port").color(p.dim),
+                    None => RichText::new("Select device").color(p.dim),
                 };
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(shown)
                     .truncate()
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
+                        for (option, tip) in [
+                            (Kind::Greaseweazle, "A Greaseweazle: gw finds its port."),
+                            (
+                                Kind::Adafruit,
+                                "Adafruit's Greaseweazle-compatible firmware: select its port.",
+                            ),
+                        ] {
+                            if ticked(ui, kind == option, option.name())
+                                .on_hover_text(tip)
+                                .clicked()
+                            {
+                                chose = Some(option);
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Serial Port").small().weak());
                         if ports.is_empty() {
                             ui.label(RichText::new("No ports found.").weak());
                         }
                         for port in ports {
-                            let text = match (&port.name, port.score > 0) {
+                            // gw names only a Greaseweazle; an Adafruit RP2040
+                            // is known by the name its USB gives.
+                            let named = port.score > 0 || kind == Kind::Adafruit;
+                            let text = match (&port.name, named) {
                                 (Some(name), true) => {
                                     format!("{} · {name}", short_port(&port.device))
                                 }
@@ -1227,7 +1331,7 @@ impl App {
                         }
                     })
                     .response
-                    .on_hover_text("Which port the Greaseweazle is on.");
+                    .on_hover_text("The device, and the port it is on.");
                 ui.add_space(2.0);
                 ui.label(RichText::new("Identifier").small().weak())
                     .on_hover_text("The drive, by bus unit.");
@@ -1241,7 +1345,14 @@ impl App {
                     for (id, about) in &drives {
                         let button = egui::Button::selectable(current == *id, id.as_str())
                             .min_size(vec2(26.0, 24.0));
-                        if ui.add(button).on_hover_text(about.as_str()).clicked() {
+                        let possible =
+                            kind == Kind::Greaseweazle || adafruit::DRIVES.contains(&id.as_str());
+                        if ui
+                            .add_enabled(possible, button)
+                            .on_hover_text(about.as_str())
+                            .on_disabled_hover_text(adafruit::OPTION)
+                            .clicked()
+                        {
                             self.settings.drive = if *id == default_drive {
                                 String::new()
                             } else {
@@ -1259,6 +1370,9 @@ impl App {
         }
         if let Some(port) = access {
             self.dialog = Some(Dialog::Access { port });
+        }
+        if let Some(kind) = chose {
+            self.set_kind(kind);
         }
     }
 
@@ -1307,11 +1421,25 @@ impl App {
             .cloned()
             .unwrap_or_default();
         // The card's port, so gw opens the Greaseweazle the card names.
-        let device = chosen_port(self.service.known_ports(), &self.settings.device)
-            .map_or("", |p| p.device.as_str());
+        let device = chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        )
+        .map_or("", |p| p.device.as_str());
         for (dest, value) in [("device", device), ("drive", self.settings.drive.as_str())] {
             if cmd.arg(dest).is_some() {
                 values.set(dest, value);
+            }
+        }
+        // Options its firmware cannot carry out stay off, as the page shows them.
+        if self.settings.kind == Kind::Adafruit {
+            for a in cmd
+                .args
+                .iter()
+                .filter(|a| adafruit::option(&cmd.name, &a.dest))
+            {
+                values.set(&a.dest, "");
             }
         }
         // A definitions file goes to gw only with one of its own formats.
@@ -1444,6 +1572,7 @@ impl App {
                         outputs: &mut self.settings.outputs,
                         service: &mut self.service,
                         cannot_detect: cannot_detect.as_deref(),
+                        adafruit: self.settings.kind == Kind::Adafruit,
                     }
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
@@ -1624,6 +1753,8 @@ impl App {
         {
             // The page holds the last line that parsed, not the one shown.
             Some(CLI_FAULT.to_owned())
+        } else if let Some(why) = device.then(|| self.adafruit_fault(cmd, values)).flatten() {
+            Some(why.to_owned())
         } else if !missing.is_empty() {
             Some(format!("Select the {} first.", missing.join(" and ")))
         } else {
@@ -1638,6 +1769,68 @@ impl App {
                 Some(why) => Some(why.to_owned()),
                 None => no_device.then(|| self.no_device().into_owned()),
             }
+        }
+    }
+
+    /// Why the Adafruit RP2040 cannot run the page as it is set, when it is the device.
+    fn adafruit_fault(&self, cmd: &Command, values: &Values) -> Option<&'static str> {
+        if self.settings.kind != Kind::Adafruit {
+            return None;
+        }
+        if let Some(why) = adafruit::command(&cmd.name) {
+            return Some(why);
+        }
+        let drive = match self.settings.drive.as_str() {
+            "" => self.default_drive(),
+            drive => drive.to_owned(),
+        };
+        if cmd.arg("drive").is_some() && !adafruit::DRIVES.contains(&drive.as_str()) {
+            return Some("The Adafruit RP2040 has one drive: select A or 0.");
+        }
+        let pin = values.get("pin").trim().parse::<u32>().ok();
+        match cmd.name.as_str() {
+            "pin get" if pin.is_some_and(|p| p != adafruit::GET_PIN) => {
+                Some("The Adafruit RP2040 reads pin 26 alone.")
+            }
+            "pin set" if pin.is_some_and(|p| p != adafruit::SET_PIN) => {
+                Some("The Adafruit RP2040 sets pin 2 alone.")
+            }
+            _ => self
+                .last_cylinder(cmd, values)
+                .filter(|&c| c > adafruit::LAST_CYLINDER)
+                .map(|_| "The Adafruit RP2040 reaches cylinders 0 to 79."),
+        }
+    }
+
+    /// The furthest cylinder the page would seek to, where it says so plainly:
+    /// Seek's cylinder, Clean's last, or a simple track list over the chosen
+    /// format. The bridge refuses any other past the Adafruit RP2040's last.
+    fn last_cylinder(&self, cmd: &Command, values: &Values) -> Option<u32> {
+        let number = |dest: &str| {
+            let value = match values.get(dest) {
+                "" => cmd.arg(dest)?.default.as_deref()?,
+                value => value,
+            };
+            value.trim().parse::<u32>().ok()
+        };
+        match cmd.name.as_str() {
+            "seek" => number("cylinder"),
+            // gw clean goes as far as cyls - 1.
+            "clean" => number("cyls").map(|c| c.saturating_sub(1)),
+            _ if cmd.arg("tracks").is_some() => {
+                let format = values.get("format");
+                let custom = self.service.known_custom_formats(values.get("diskdefs"));
+                let diskdefs = match custom.iter().any(|f| f == format) {
+                    true => values.get("diskdefs"),
+                    false => "",
+                };
+                let cyls = (!format.is_empty())
+                    .then(|| self.service.known_format_info(diskdefs, format)?.ready())
+                    .flatten()
+                    .map(|i| i.cyls);
+                form::last_cylinder(values.get("tracks"), cyls)
+            }
+            _ => None,
         }
     }
 
@@ -1963,7 +2156,11 @@ impl App {
 
     /// The port Linux refused `job`, if it was refused one, and what can grant access.
     fn refused(&self, job: &Job) -> Option<Refused<'_>> {
-        let port = chosen_port(self.service.known_ports(), &self.settings.device);
+        let port = chosen_port(
+            self.service.known_ports(),
+            &self.settings.device,
+            self.settings.kind,
+        );
         Some(Refused {
             port: refused_port(job, port)?,
             rule: self.udev_rule.as_deref(),
@@ -3807,6 +4004,70 @@ fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
 }
 
+/// Where the device type is kept between runs, with an Adafruit RP2040's
+/// port, which gw cannot find by itself. A Greaseweazle keeps no file.
+fn device_file() -> PathBuf {
+    crate::data_folder().join("device.txt")
+}
+
+/// The device type and port kept in `file`.
+fn kept_device(file: &Path) -> (Kind, String) {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let mut lines = text.lines().map(str::trim);
+    match lines.next() {
+        Some("adafruit") => (Kind::Adafruit, lines.next().unwrap_or_default().to_owned()),
+        _ => (Kind::Greaseweazle, String::new()),
+    }
+}
+
+/// Keeps the device type in `file` and an Adafruit RP2040's `port`, or
+/// removes the file for a Greaseweazle.
+fn keep_device(file: &Path, kind: Kind, port: &str) {
+    let _ = match kind {
+        Kind::Greaseweazle => std::fs::remove_file(file),
+        Kind::Adafruit => file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(file, format!("adafruit\n{port}\n"))),
+    };
+}
+
+/// A menu row with a tick when it is the one chosen of its group.
+fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
+    let size = vec2(ui.available_width(), ui.spacing().interact_size.y);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, enabled, on, text)
+    });
+    if ui.is_rect_visible(rect) {
+        let p = theme::palette(ui);
+        let painter = ui.painter();
+        if response.hovered() {
+            painter.rect_filled(rect, 4, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        if on {
+            let tick = egui::Rect::from_center_size(
+                pos2(rect.left() + 11.0, rect.center().y),
+                vec2(12.0, 12.0),
+            );
+            let at = |x: f32, y: f32| tick.min + tick.size() * vec2(x, y);
+            let line = vec![at(0.1, 0.55), at(0.4, 0.85), at(0.95, 0.2)];
+            painter.add(egui::Shape::line(line, Stroke::new(2.0, p.accent)));
+        }
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let at = pos2(rect.left() + 24.0, rect.center().y);
+        painter.text(
+            at,
+            Align2::LEFT_CENTER,
+            text,
+            font,
+            ui.visuals().text_color(),
+        );
+    }
+    response
+}
+
 /// Where the window's size is kept between runs.
 fn size_file() -> PathBuf {
     crate::data_folder().join("window.txt")
@@ -3912,12 +4173,16 @@ fn keep_drive(file: &Path, drive: &str) {
     };
 }
 
-/// The port chosen while it is connected, else the best Greaseweazle.
-fn chosen_port<'p>(ports: &'p [Port], chosen: &str) -> Option<&'p Port> {
-    ports
+/// The port chosen while it is connected, else the best Greaseweazle. An
+/// Adafruit RP2040 has the one chosen alone: gw cannot pick it out.
+fn chosen_port<'p>(ports: &'p [Port], chosen: &str, kind: Kind) -> Option<&'p Port> {
+    let named = ports
         .iter()
-        .find(|p| !chosen.is_empty() && p.device == chosen)
-        .or_else(|| ports.iter().find(|p| p.score > 0))
+        .find(|p| !chosen.is_empty() && p.device == chosen);
+    match kind {
+        Kind::Greaseweazle => named.or_else(|| ports.iter().find(|p| p.score > 0)),
+        Kind::Adafruit => named,
+    }
 }
 
 /// A port as people know it: COM3, ttyACM0, cu.usbmodem14201.
@@ -4215,6 +4480,247 @@ mod tests {
         save_size(&file, WINDOW);
         assert!(!file.exists(), "the default is no file");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every option the Adafruit RP2040 greys, by gw 1.23's own names.
+    const ADAFRUIT_OPTIONS: &[(&str, &str)] = &[
+        ("read", "densel"),
+        ("read", "gen_tg43"),
+        ("read", "hard_sectors"),
+        ("write", "densel"),
+        ("write", "gen_tg43"),
+        ("write", "hard_sectors"),
+        ("write", "pre_erase"),
+        ("write", "erase_empty"),
+        ("info", "bootloader"),
+    ];
+
+    /// An offline app driving an Adafruit RP2040 on COM9, able to run.
+    fn adafruit() -> App {
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.settings.kind = Kind::Adafruit;
+        app.settings.device = "COM9".into();
+        app.pin_ports(vec![Port {
+            device: "COM9".into(),
+            name: Some("Feather RP2040".into()),
+            score: 0,
+            denied: false,
+        }]);
+        app
+    }
+
+    #[test]
+    fn every_option_the_adafruit_rp2040_greys_is_one_gw_has() {
+        let schema = schema();
+        for (command, dest) in ADAFRUIT_OPTIONS {
+            let cmd = schema.command(command).unwrap();
+            assert!(cmd.arg(dest).is_some(), "gw {command} has no {dest}");
+            assert!(adafruit::option(command, dest), "{command} {dest}");
+        }
+        for command in ["erase", "update", "delays", "reset", "pin get", "pin set"] {
+            assert!(schema.command(command).is_some(), "gw has no {command}");
+        }
+        for drive in adafruit::DRIVES {
+            assert!(
+                App::offline(
+                    &egui::Context::default(),
+                    Settings::default(),
+                    Ok(schema.clone())
+                )
+                .drives()
+                .iter()
+                .any(|(id, _)| id == drive)
+            );
+        }
+    }
+
+    #[test]
+    fn an_adafruit_rp2040_is_only_ever_the_port_chosen_for_it() {
+        let ports = [
+            greaseweazle("COM3", false),
+            Port {
+                score: 0,
+                ..greaseweazle("COM9", false)
+            },
+        ];
+        let chosen =
+            |chosen: &str, kind| chosen_port(&ports, chosen, kind).map(|p| p.device.as_str());
+        assert_eq!(chosen("", Kind::Greaseweazle), Some("COM3"), "gw's best");
+        assert_eq!(chosen("", Kind::Adafruit), None, "gw cannot pick one out");
+        assert_eq!(chosen("COM9", Kind::Adafruit), Some("COM9"));
+        assert_eq!(chosen("COM4", Kind::Adafruit), None, "not connected");
+        assert_eq!(chosen("COM4", Kind::Greaseweazle), Some("COM3"));
+    }
+
+    #[test]
+    fn the_adafruit_rp2040_and_its_port_are_kept_and_a_greaseweazle_keeps_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-device-{}", std::process::id()));
+        let file = dir.join("device.txt");
+        assert_eq!(kept_device(&file), (Kind::Greaseweazle, String::new()));
+        keep_device(&file, Kind::Adafruit, "/dev/cu.usbmodem1101");
+        assert_eq!(
+            kept_device(&file),
+            (Kind::Adafruit, "/dev/cu.usbmodem1101".to_owned())
+        );
+        keep_device(&file, Kind::Greaseweazle, "COM3");
+        assert!(!file.exists(), "gw finds a Greaseweazle by itself");
+        std::fs::write(&file, "something else\nCOM3").unwrap();
+        assert_eq!(kept_device(&file), (Kind::Greaseweazle, String::new()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_adafruit_rp2040_runs_without_the_options_it_greys_and_they_come_back_after() {
+        let schema = schema();
+        let mut app = adafruit();
+        for (command, dest) in ADAFRUIT_OPTIONS {
+            let arg = schema.command(command).unwrap().arg(dest).unwrap();
+            let value = if arg.switch { command::ON } else { "H" };
+            app.settings
+                .values
+                .entry((*command).to_owned())
+                .or_default()
+                .set(dest, value);
+        }
+        let flags = |app: &App, command: &str| {
+            let cmd = schema.command(command).unwrap();
+            let args = app.args(cmd);
+            ADAFRUIT_OPTIONS
+                .iter()
+                .filter(|(c, _)| *c == command)
+                .filter(|(_, d)| {
+                    args.iter()
+                        .any(|a| a.starts_with(&format!("--{}", d.replace('_', "-"))))
+                })
+                .count()
+        };
+        for command in ["read", "write", "info"] {
+            assert_eq!(flags(&app, command), 0, "{command}");
+        }
+        assert!(
+            app.args(schema.command("read").unwrap())
+                .contains(&"--device=COM9".to_owned())
+        );
+        app.settings.kind = Kind::Greaseweazle;
+        assert_eq!(flags(&app, "read"), 3);
+        assert_eq!(flags(&app, "write"), 5);
+        assert_eq!(flags(&app, "info"), 1);
+    }
+
+    #[test]
+    fn the_adafruit_rp2040_says_why_it_cannot_run_a_page() {
+        let schema = schema();
+        let mut app = adafruit();
+        let why = |app: &App, command: &str| {
+            let cmd = schema.command(command).unwrap();
+            app.why_not(&schema, cmd)
+        };
+        let set = |app: &mut App, command: &str, dest: &str, value: &str| {
+            app.settings
+                .values
+                .entry(command.to_owned())
+                .or_default()
+                .set(dest, value);
+        };
+        for command in ["erase", "update", "delays", "reset"] {
+            assert_eq!(
+                why(&app, command).as_deref(),
+                adafruit::command(command),
+                "{command}"
+            );
+        }
+        assert_eq!(why(&app, "rpm"), None);
+        assert_eq!(why(&app, "bandwidth"), None);
+
+        set(&mut app, "pin get", "pin", "25");
+        assert_eq!(
+            why(&app, "pin get").as_deref(),
+            Some("The Adafruit RP2040 reads pin 26 alone.")
+        );
+        set(&mut app, "pin get", "pin", "26");
+        assert_eq!(why(&app, "pin get"), None);
+        set(&mut app, "pin set", "pin", "4");
+        set(&mut app, "pin set", "level", "H");
+        assert_eq!(
+            why(&app, "pin set").as_deref(),
+            Some("The Adafruit RP2040 sets pin 2 alone.")
+        );
+        set(&mut app, "pin set", "pin", "2");
+        assert_eq!(why(&app, "pin set"), None);
+
+        let far = Some("The Adafruit RP2040 reaches cylinders 0 to 79.");
+        set(&mut app, "seek", "cylinder", "80");
+        assert_eq!(why(&app, "seek").as_deref(), far);
+        set(&mut app, "seek", "cylinder", "79");
+        assert_eq!(why(&app, "seek"), None);
+        assert_eq!(why(&app, "clean"), None, "gw's 80 cylinders end at 79");
+        set(&mut app, "clean", "cyls", "81");
+        assert_eq!(why(&app, "clean").as_deref(), far);
+        set(&mut app, "read", "format", "ibm.1440");
+        set(&mut app, "read", "tracks", "c=0-81");
+        assert_eq!(why(&app, "read").as_deref(), far);
+        set(&mut app, "read", "tracks", "c=0-79");
+        assert_ne!(why(&app, "read").as_deref(), far);
+
+        app.settings.drive = "B".into();
+        assert_eq!(
+            why(&app, "rpm").as_deref(),
+            Some("The Adafruit RP2040 has one drive: select A or 0.")
+        );
+        app.settings.drive = "0".into();
+        assert_eq!(why(&app, "rpm"), None);
+
+        app.settings.kind = Kind::Greaseweazle;
+        app.settings.drive = "B".into();
+        for command in ["erase", "seek", "clean", "pin get", "pin set", "rpm"] {
+            assert_eq!(why(&app, command), None, "{command} on a Greaseweazle");
+        }
+    }
+
+    #[test]
+    fn choosing_the_adafruit_rp2040_puts_a_drive_it_cannot_select_back_to_a() {
+        let mut app = offline();
+        app.settings.drive = "B".into();
+        app.set_kind(Kind::Adafruit);
+        assert_eq!(app.settings.drive, "", "gw's default, A");
+        app.settings.drive = "0".into();
+        app.set_kind(Kind::Greaseweazle);
+        app.set_kind(Kind::Adafruit);
+        assert_eq!(app.settings.drive, "0");
+    }
+
+    #[test]
+    fn detects_note_goes_once_its_page_takes_another_format() {
+        let mut app = offline();
+        app.detect_for = Some("read".into());
+        let formats = vec!["akai.800".to_owned(), "eagle.dsqd.800".to_owned()];
+        app.found(formats.clone(), 1);
+        assert!(
+            app.notices["read"].starts_with("Found akai.800. Disk also matches eagle.dsqd.800")
+        );
+        app.drop_found_note();
+        assert!(
+            app.notices.contains_key("read"),
+            "the format is Detect's own"
+        );
+        let values = app.settings.values.get_mut("read").unwrap();
+        values.set("format", "ibm.1440");
+        app.drop_found_note();
+        assert!(!app.notices.contains_key("read"));
+
+        // Another notice in its place stays.
+        app.detect_for = Some("read".into());
+        app.found(formats, 1);
+        app.notices
+            .insert("read".into(), "Read 2 of 2 disks.".into());
+        app.settings
+            .values
+            .get_mut("read")
+            .unwrap()
+            .set("format", "ibm.720");
+        app.drop_found_note();
+        assert_eq!(app.notices["read"], "Read 2 of 2 disks.");
     }
 
     #[test]
