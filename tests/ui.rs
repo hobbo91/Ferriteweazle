@@ -2508,7 +2508,7 @@ fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
         w.run();
         squares(&w).next().unwrap().rect.width()
     };
-    for (window, cell) in [(DEFAULT, 23.0), (egui::vec2(1920.0, 1080.0), 46.0)] {
+    for (window, cell) in [(DEFAULT, 21.0), (egui::vec2(1920.0, 1080.0), 46.0)] {
         for cyls in [40, 80, 82, 90] {
             for drawer in [None, Some(Drawer::Log)] {
                 assert_eq!(

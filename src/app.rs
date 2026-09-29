@@ -101,9 +101,9 @@ const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Start
 const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 
 /// The window as it opens, in points: wide enough for the Read page's Folder
-/// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and tall
-/// enough for the map's widest squares there.
-pub const WINDOW: egui::Vec2 = egui::vec2(1123.0, 809.0);
+/// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and as tall
+/// as 21-point squares need, which fits a 1920x1080 screen at 125% on Windows 11.
+pub const WINDOW: egui::Vec2 = egui::vec2(1116.0, 773.0);
 /// The smallest window, in points: fits a 1024 by 768 screen beside a dock or taskbar.
 pub const SMALLEST: egui::Vec2 = egui::vec2(960.0, 640.0);
 /// The page's minimum width: room for a label beside its field.
