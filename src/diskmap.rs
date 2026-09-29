@@ -3,7 +3,8 @@
 use crate::progress::{Progress, Status};
 use crate::theme::{self, Palette};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, StrokeKind, pos2,
+    vec2,
 };
 
 /// Seconds a square takes to fade in.
@@ -120,7 +121,9 @@ pub fn show(
             let filled = fill(progress, key, p);
             let t = fade(ui, egui::Id::new(("square", &job, key)), filled.is_some());
             let colour = theme::lerp(p.pending, filled.unwrap_or(p.pending), t);
-            painter.rect_filled(square(i, cyl), radius, colour);
+            let status = progress.tracks.get(&key).map(|t| t.status);
+            let edge = edge(status == Some(Status::Skipped), p);
+            painter.rect(square(i, cyl), radius, colour, edge, StrokeKind::Inside);
             shown.extend(filled);
         }
     }
@@ -211,7 +214,15 @@ fn colour(status: Status, p: &Palette) -> Color32 {
         Status::Flux => p.flux,
         Status::Written => p.written,
         Status::Erased => p.erased,
-        Status::Skipped => p.pending,
+        Status::Skipped => p.bg,
+    }
+}
+
+/// A skipped track's square is a hole in the grid, outlined.
+fn edge(skipped: bool, p: &Palette) -> Stroke {
+    match skipped {
+        true => Stroke::new(1.0, p.line_strong),
+        false => Stroke::NONE,
     }
 }
 
@@ -229,6 +240,11 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
             (Status::Flux, "Flux", "Read as flux, not decoded."),
             (Status::Written, "Written", "Written, no verify reported."),
             (Status::Erased, "Erased", "Erased."),
+            (
+                Status::Skipped,
+                "Skipped",
+                "Outside the format, or not in the input.",
+            ),
         ] {
             let swatch = colour(status, p);
             let tracks = shown.iter().filter(|&&c| c == swatch).count();
@@ -236,7 +252,9 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
                 continue;
             }
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(2), swatch);
+            let edge = edge(status == Status::Skipped, p);
+            ui.painter()
+                .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
             ui.label(RichText::new(format!("{name} {tracks}")).small())
                 .on_hover_text(tip);
             ui.add_space(6.0);

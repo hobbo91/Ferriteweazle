@@ -142,6 +142,23 @@ fn read_job() -> Job {
     job
 }
 
+/// A flux image of 80 cylinders written over gw's default 82: gw passes
+/// over the last two without a word, and cannot verify flux.
+fn write_job() -> Job {
+    let tracks = (0..80).flat_map(|c| {
+        (0..2).map(move |h| {
+            format!("T{c}.{h}: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)")
+        })
+    });
+    let log = std::iter::once("Writing c=0-81:h=0-1".to_owned())
+        .chain(tracks)
+        .chain(std::iter::once(
+            "No tracks verified (Reason: Verify unavailable)".to_owned(),
+        ))
+        .collect::<Vec<_>>();
+    Job::replay("write", &log.join("\n"))
+}
+
 /// A Greaseweazle on /dev/ttyACM0 that Linux denies this account, and gw's
 /// udev rule where the tarball keeps it.
 fn denied(w: &mut Window) {
@@ -296,6 +313,14 @@ fn screens() {
         ] {
             render(name, theme, settings(name, theme), job, |_| {});
         }
+        let written = Some(write_job());
+        render(
+            "write-done",
+            theme,
+            settings("write", theme),
+            written,
+            |_| {},
+        );
         let mut update = settings("update", theme);
         let firmware = "/Users/you/Downloads/greaseweazle-firmware-v1.7.upd";
         update

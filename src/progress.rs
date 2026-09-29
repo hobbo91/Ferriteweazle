@@ -18,7 +18,7 @@ pub enum Status {
     /// Written, with no verify reported.
     Written,
     Erased,
-    /// Outside the chosen format.
+    /// Outside the chosen format, or not in the input.
     Skipped,
 }
 
@@ -43,6 +43,11 @@ pub struct Progress {
     /// The track being worked on.
     pub current: Option<(u32, u32)>,
     pub error: Option<String>,
+    /// A read with --raw: gw keeps the flux of tracks outside the format.
+    pub raw: bool,
+    /// The cylinders of gw's sector map, those it read. A conversion's
+    /// track lines name the tracks it writes.
+    columns: Vec<u32>,
     /// What the lines that follow belong to.
     block: Block,
 }
@@ -122,12 +127,12 @@ impl Progress {
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
         {
             self.error = Some(e.to_owned());
-        } else if let Some(set) = ["Reading ", "Writing ", "Converting ", "Erasing "]
+        } else if let Some(rest) = ["Reading ", "Writing ", "Converting ", "Erasing "]
             .iter()
             .find_map(|p| line.strip_prefix(p))
-            .and_then(|rest| track_set(rest.split_whitespace().next()?.trim_end_matches(',')))
+            && let Some(tracks) = announced(rest)
         {
-            (self.cyls, self.heads) = set;
+            (self.columns, self.cyls, self.heads) = tracks;
         } else if line == "All tracks verified" {
             for t in self
                 .tracks
@@ -161,6 +166,20 @@ impl Progress {
     /// The job has ended.
     pub fn finish(&mut self) {
         self.current = None;
+    }
+
+    /// Marks the announced tracks gw has not reported as skipped: a write or
+    /// conversion passes over those its input lacks without a word.
+    pub fn skip_unreported(&mut self) {
+        for &cyl in &self.cyls {
+            for &head in &self.heads {
+                self.tracks.entry((cyl, head)).or_insert_with(|| Track {
+                    status: Status::Skipped,
+                    retries: 0,
+                    text: "Not in the input, so gw passed over it.".into(),
+                });
+            }
+        }
     }
 
     /// Cylinders and heads to draw: those gw announced, and any it visited.
@@ -212,7 +231,11 @@ impl Progress {
             return;
         }
         t.status = if text.starts_with("WARNING") {
-            Status::Skipped
+            // Outside the format: a read with --raw keeps its flux all the same.
+            match self.raw && text.contains("No format conversion applied") {
+                true => Status::Flux,
+                false => Status::Skipped,
+            }
         } else if text.starts_with("Erasing") {
             Status::Erased
         } else if text.starts_with("Writing") {
@@ -231,7 +254,7 @@ impl Progress {
     }
 
     fn map_row(&mut self, head: u32, sector: usize, cells: &str) {
-        for (&cyl, cell) in self.cyls.iter().zip(cells.chars()) {
+        for (&cyl, cell) in self.columns.iter().zip(cells.chars()) {
             let good = match cell {
                 '.' => true,
                 'X' => false,
@@ -299,6 +322,19 @@ fn map_row(line: &str) -> Option<(u32, usize, &str)> {
     let (id, cells) = line.split_once(": ")?;
     let (head, sector) = id.split_once('.')?;
     Some((head.parse().ok()?, sector.trim().parse().ok()?, cells))
+}
+
+/// The tracks gw announces, as `c=0-79:h=0-1 revs=2` or a conversion's
+/// `c=0-79:h=0-1 -> c=0-39:h=0-1`: the cylinders it reads, then the
+/// cylinders and heads its track lines name, which a conversion writes.
+fn announced(rest: &str) -> Option<(Vec<u32>, Vec<u32>, Vec<u32>)> {
+    let mut words = rest.split_whitespace();
+    let (read, heads) = track_set(words.next()?.trim_end_matches(','))?;
+    let (cyls, heads) = match (words.next(), words.next()) {
+        (Some("->"), Some(out)) => track_set(out)?,
+        _ => (read.clone(), heads),
+    };
+    Some((read, cyls, heads))
 }
 
 /// Cylinders and heads from a printed track set such as `c=0-79:h=0-1`.
@@ -598,6 +634,50 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
     fn tracks_out_of_the_format_are_skipped() {
         let p = fed("T80.0: WARNING: Out of range for format 'ibm.1440': Track skipped");
         assert_eq!(p.tracks[&(80, 0)].status, Status::Skipped);
+    }
+
+    #[test]
+    fn a_raw_read_keeps_the_flux_of_a_track_outside_the_format() {
+        let line = "T80.0: WARNING: Out of range for format 'ibm.1440': \
+                    No format conversion applied: Raw Flux (149963 flux in 600.17ms)";
+        let mut raw = Progress {
+            raw: true,
+            ..Progress::default()
+        };
+        raw.feed(line);
+        assert_eq!(raw.tracks[&(80, 0)].status, Status::Flux);
+        let read = fed(line);
+        assert_eq!(
+            read.tracks[&(80, 0)].status,
+            Status::Skipped,
+            "no flux kept"
+        );
+    }
+
+    #[test]
+    fn a_conversion_maps_the_tracks_it_writes() {
+        // gw 1.23 converting with --out-tracks=c=5-9.
+        let tracks =
+            (5..=9).flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: IBM MFM (18/18 sectors)")));
+        let log = ["Format ibm.1440", "Converting c=0-79:h=0-1 -> c=5-9:h=0-1"]
+            .map(String::from)
+            .into_iter()
+            .chain(tracks)
+            .chain(["0. 0:      .....", "0. 1:      ..X.."].map(String::from))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = fed(&log);
+        assert_eq!((p.cyls, p.heads), ((5..=9).collect(), vec![0, 1]));
+        assert_eq!(p.sector_map[&(7, 0)], [Some(true), Some(false)]);
+        assert_eq!(p.sector_map.len(), 5, "side 1's rows are not given here");
+    }
+
+    #[test]
+    fn a_write_or_conversion_that_worked_skipped_the_tracks_it_did_not_report() {
+        let mut p = fed("Writing c=0-1:h=0\nT0.0: Writing Track (Flux: 1)\nAll tracks verified");
+        p.skip_unreported();
+        assert_eq!(p.tracks[&(1, 0)].status, Status::Skipped);
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
     }
 
     #[test]

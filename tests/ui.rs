@@ -885,9 +885,16 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
     ]
     .join("\n");
     let good = ("Good 2", "Every sector found, or written and verified.");
+    let skipped = ("Skipped 2", "Outside the format, or not in the input.");
     let written = ("Written 2", "Written, no verify reported.");
     let bad = ("Bad 1", "No sectors found, or failed to verify.");
-    for (log, legend) in [(verified, vec![good]), (failed, vec![written, bad])] {
+    // Once the write has worked, what gw passed over is known.
+    let passed = ("4 / 4 tracks", "Not in the input, so gw passed over it.");
+    let unreported = ("3 / 4 tracks", "gw has not reported this track.");
+    for (log, (count, hover), legend) in [
+        (verified, passed, vec![good, skipped]),
+        (failed, unreported, vec![written, bad]),
+    ] {
         let settings = Settings {
             page: Page::Command("write".into()),
             ..Settings::default()
@@ -897,12 +904,13 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
             settings,
             Some(Job::replay("write", &log)),
         );
+        w.get_by_label(count);
         // Side 0's squares, then side 1's: the last is cylinder 1, side 1.
         let never = squares(&w).last().expect("the map's squares").rect.center();
         w.hover_at(never);
         w.run();
         w.get_by_label("Cylinder 1, side 1");
-        w.get_by_label("gw has not reported this track.");
+        w.get_by_label(hover);
         for (entry, tip) in legend {
             // One tooltip at a time: the last must close first.
             w.event(egui::Event::PointerGone);
@@ -912,6 +920,24 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
             w.get_by_label(tip);
         }
     }
+}
+
+#[test]
+fn a_track_outside_the_format_is_a_hole_in_the_map_not_one_to_come() {
+    let log = "Reading c=0-80:h=0 revs=2\n\
+               T0.0: IBM MFM (18/18 sectors) from Raw Flux (500 flux in 400.00ms)\n\
+               T80.0: WARNING: Out of range for format 'ibm.1440': \
+               No format conversion applied: Raw Flux (500 flux in 400.00ms)";
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("read", log)),
+    );
+    let squares: Vec<_> = squares(&w).collect();
+    let (to_come, outside) = (squares[1], squares[80]);
+    assert_ne!(outside.fill, to_come.fill);
+    assert!(outside.stroke.width > 0.0, "no outline");
+    w.get_by_label("Skipped 1");
 }
 
 #[test]

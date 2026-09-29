@@ -114,8 +114,7 @@ impl Job {
             true => Outcome::Succeeded,
             false => Outcome::Failed,
         };
-        job.ended = Some((job.started, outcome));
-        job.progress.finish();
+        job.end(job.started, outcome);
         job
     }
 
@@ -172,9 +171,18 @@ impl Job {
             } else {
                 Outcome::Failed
             };
-            self.ended = Some((Instant::now(), outcome));
-            self.progress.finish();
+            self.end(Instant::now(), outcome);
             self.question = None;
+        }
+    }
+
+    /// Ends the job. A write or conversion that worked passed over the
+    /// tracks it did not report.
+    fn end(&mut self, at: Instant, outcome: Outcome) {
+        self.ended = Some((at, outcome));
+        self.progress.finish();
+        if outcome == Outcome::Succeeded && matches!(self.command.as_str(), "write" | "convert") {
+            self.progress.skip_unreported();
         }
     }
 
@@ -207,11 +215,13 @@ impl Job {
     }
 
     fn new(command: &str, args: Vec<String>, lines: Receiver<String>) -> Job {
+        let mut progress = Progress::default();
+        progress.raw = command == "read" && args.iter().any(|a| a == "--raw");
         Job {
             command: command.to_owned(),
             args,
             log: Vec::new(),
-            progress: Progress::default(),
+            progress,
             question: None,
             started: Instant::now(),
             ended: None,
