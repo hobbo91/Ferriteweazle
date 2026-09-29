@@ -5,7 +5,7 @@
 A desktop app for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's
 floppy disk flux reader and writer. It runs on macOS, Windows and Linux.
 
-![Reading a disk](docs/images/screenshot.png)
+![Reading a disk](docs/images/read_image.png)
 
 ## What it does
 
