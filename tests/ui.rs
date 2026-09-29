@@ -1675,6 +1675,27 @@ fn next_to_each_input_greys_the_output_folder_and_a_batch_is_named_by_one_label(
 }
 
 #[test]
+fn the_page_ends_as_far_from_the_status_pane_as_it_starts_from_the_sidebar() {
+    let mut settings = chosen();
+    settings.page = Page::Command("read".into());
+    let w = window_at(DEFAULT, settings);
+    let heading = w.get_all_by_label("Read disk").map(|n| n.rect());
+    let heading = heading.min_by(|a, b| a.top().total_cmp(&b.top())).unwrap();
+    let presets = w.get_by_label("Presets").rect();
+    // The status pane's frame starts 18 points left of its heading.
+    let divider = w.get_by_label("Disk status").rect().left() - 18.0;
+    let left = heading.left() - 240.0;
+    let right = divider - presets.right();
+    assert!((left - right).abs() <= 1.0, "{left} left, {right} right");
+    let folder = w.get_by_label("Folder").rect();
+    let row = w
+        .get_all_by_role(Role::Button)
+        .filter(|b| (b.rect().center().y - folder.center().y).abs() < 4.0);
+    let end = row.map(|b| b.rect().right()).fold(0.0, f32::max);
+    assert_eq!(end, presets.right(), "the fields end where Presets does");
+}
+
+#[test]
 fn the_device_card_lines_up_with_the_pages_description() {
     let w = window_at(DEFAULT, Settings::default());
     let about = w

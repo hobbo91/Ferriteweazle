@@ -251,31 +251,28 @@ const DETECT_BUTTON: f32 = 68.0;
 /// The browse button, beside a path.
 const BROWSE_BUTTON: f32 = 34.0;
 const ROW_GAP: f32 = 12.0;
-/// Room kept right of a form for its scroll bar.
-const SCROLL_GUTTER: f32 = 14.0;
 
 /// A field fills the room beside its label, up to a point.
 fn field_width(ui: &Ui) -> f32 {
     ui.available_width().clamp(MIN_FIELD, WIDE_FIELD)
 }
 
-/// The width of a form's rows, from the room the page has: notices and
+/// The width of a form's rows, from the `room` the page has: notices and
 /// headings end where the fields do.
-pub fn form_width(ui: &Ui) -> f32 {
+pub fn form_width(ui: &Ui, room: f32) -> f32 {
     let gap = ui.spacing().item_spacing.x;
-    let room = ui.available_width() - SCROLL_GUTTER;
     let field = (room - LABEL_WIDTH - gap).clamp(MIN_FIELD, WIDE_FIELD);
     LABEL_WIDTH + gap + field
 }
 
 /// A form's width when its fields are as wide as a page usually has them.
 pub fn full_width(ui: &Ui) -> f32 {
-    LABEL_WIDTH + ui.spacing().item_spacing.x + MAX_FIELD + SCROLL_GUTTER
+    LABEL_WIDTH + ui.spacing().item_spacing.x + MAX_FIELD
 }
 
 /// A form's width when its fields are as wide as they get.
 pub fn widest(ui: &Ui) -> f32 {
-    LABEL_WIDTH + ui.spacing().item_spacing.x + WIDE_FIELD + SCROLL_GUTTER
+    LABEL_WIDTH + ui.spacing().item_spacing.x + WIDE_FIELD
 }
 
 /// A one-line text field as tall as the lists and buttons beside it.

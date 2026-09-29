@@ -139,6 +139,9 @@ const DRAWER_TIME: f32 = 0.2;
 const LOG_BUMP: f32 = 40.0;
 /// The status pane's strip for its scroll bar, taken from its right margin.
 const STATUS_BAR: i8 = 10;
+/// The page's strip for its scroll bar, taken from its right margin: the page
+/// ends as far from the status pane as from the sidebar.
+const PAGE_BAR: i8 = 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Page {
@@ -524,7 +527,7 @@ impl App {
             .show(ui, |ui| self.nav(ui));
         let page = Frame::new().fill(p.bg).inner_margin(Margin {
             left: 28,
-            right: 28,
+            right: 28 - PAGE_BAR,
             top: 22,
             bottom: 14,
         });
@@ -548,7 +551,7 @@ impl App {
                 // would fall short of PAGE_MIN. Past the map's widest, the page
                 // takes the rest up to its widest form.
                 let room = ui.available_width();
-                let margins = page.inner_margin.sum().x;
+                let margins = page.inner_margin.sum().x + f32::from(PAGE_BAR);
                 let map = diskmap::width_for(tall - DRAWER - JOB_ROWS)
                     + status_frame.total_margin().sum().x
                     + f32::from(STATUS_BAR);
@@ -1334,7 +1337,7 @@ impl App {
             ui.label(format!("gw {} has no {name} command.", schema.version));
             return;
         };
-        let width = form::form_width(ui);
+        let width = form::form_width(ui, ui.available_width() - f32::from(PAGE_BAR));
         egui::Panel::bottom("run-bar")
             .frame(Frame::new().inner_margin(Margin {
                 left: 0,
@@ -2186,7 +2189,10 @@ impl App {
     fn settings_page(&mut self, ui: &mut Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| self.settings_inner(ui));
+            .show(ui, |ui| {
+                ui.set_max_width(ui.available_width() - f32::from(PAGE_BAR));
+                self.settings_inner(ui)
+            });
     }
 
     fn settings_inner(&mut self, ui: &mut Ui) {
@@ -2372,7 +2378,7 @@ impl App {
             });
             ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
                 .on_hover_text(GW_GUIDE);
-            ui.add_space(6.0);
+            ui.separator();
             ui.label(
                 "Ferriteweazle is made with \u{2661} by Lee Hobson (@hobbo91), under the MIT \
                  license.",
