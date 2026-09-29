@@ -2239,22 +2239,50 @@ fn image_name(path: &str, name: &str) -> String {
     }
 }
 
-/// Plain names for the image types people meet most.
+/// Plain names for gw's image types, by the machine or program they are
+/// for. A type a newer gw adds shows gw's own name.
 const KNOWN_IMAGES: &[(&str, &str)] = &[
+    (".a2r", "Applesauce flux"),
     (".adf", "Amiga disk"),
+    (".adl", "Acorn ADFS L"),
+    (".adm", "Acorn ADFS M"),
+    (".ads", "Acorn ADFS S"),
+    (".ctr", "SPS CT Raw"),
+    (".d1m", "CMD FD2000 DD"),
+    (".d2m", "CMD FD2000 HD"),
+    (".d4m", "CMD FD4000 ED"),
     (".d64", "Commodore 1541"),
     (".d71", "Commodore 1571"),
     (".d81", "Commodore 1581"),
+    (".d88", "PC-98 D88"),
+    (".dcp", "PC-98 DCP"),
+    (".dim", "PC-98 DIM"),
+    (".dmk", "TRS-80 DMK"),
+    (".do", "Apple II DOS order"),
+    (".dsd", "Acorn DFS double-sided"),
+    // gw writes a plain sector image here, and reads a CPC one by its signature.
+    (".dsk", "Sector image"),
     (".edsk", "Extended DSK"),
+    (".fd", "Thomson"),
+    (".fdi", "PC-98 FDI"),
+    (".hdm", "PC-98 HDM"),
     (".hfe", "HxC floppy emulator"),
     (".ima", "Sector image"),
     (".img", "Sector image"),
     (".imd", "ImageDisk"),
     (".ipf", "SPS IPF"),
+    (".mgt", "SAM Coupé or +D"),
+    (".msa", "Atari ST MSA"),
+    (".nfd", "PC-98 NFD"),
+    (".nsi", "North Star"),
+    (".po", "Apple II ProDOS order"),
     (".raw", "KryoFlux stream"),
     (".scp", "SuperCard Pro flux"),
+    (".sf7", "Sega SF-7000"),
+    (".ssd", "Acorn DFS single-sided"),
     (".st", "Atari ST"),
     (".td0", "Teledisk"),
+    (".xdf", "PC-98 XDF"),
 ];
 
 /// Whether gw would split a path in `value` at a `::` in it: an option never
@@ -3691,6 +3719,16 @@ mod tests {
         let value = out.value(1);
         let path = format!("/f{sep}D.hfe");
         assert_eq!(split_opts(&value), (path.as_str(), out.opts.clone()));
+    }
+
+    #[test]
+    fn every_image_type_gw_knows_has_a_plain_name() {
+        let s = schema();
+        for ext in s.images.keys() {
+            assert!(KNOWN_IMAGES.iter().any(|(e, _)| e == ext), "{ext}");
+        }
+        assert_eq!(image_name(".dsk", "DSK"), "Sector image (.dsk)");
+        assert_eq!(image_name(".2d", "TwoD"), "TwoD (.2d)", "a newer gw's");
     }
 
     #[test]
