@@ -71,98 +71,18 @@ DOS 3.3.
 
 ## Building
 
-You need Rust 1.95 or later. The app itself builds with `cargo` alone:
+You need [Rust](https://rustup.rs) 1.95 or later.
 
 ```sh
+engine/build.sh     # optional: gw with its own Python, in target/engine
 cargo run --release
 ```
 
-It runs gw from the first of these it finds:
+Without `target/engine`, the app uses an installed `gw`.
 
-1. The engine in `target/engine`, if you built one (below).
-2. An installed `gw`: on the PATH, or in `~/.local/bin`, `/opt/homebrew/bin` or
-   `/usr/local/bin`.
-
-**Settings > Paths > gw** points it at any other gw.
-
-### The engine
-
-`engine/build.sh` builds `target/engine`, the gw that packages ship: a standalone
-Python from [python-build-standalone](https://github.com/astral-sh/python-build-standalone),
-gw's latest release installed into it with pip, and the SPS/CAPS library, which gw
-needs for IPF and CT Raw images, compiled from
-[its source](https://github.com/simonowen/capsimage). The downloads are checked
-against the hashes in `engine/`. The CAPS library's licence allows only
-non-commercial use.
-
-It needs curl, git, and C and C++ compilers:
-
-- macOS: Xcode's command line tools.
-- Windows, in Git Bash: Visual Studio's C++ build tools, and LLVM (clang++ and lld)
-  for the CAPS library.
-- Linux: [zig](https://ziglang.org), which builds gw's C code and the CAPS library
-  for glibc 2.17.
-
-```sh
-engine/build.sh                          # this computer
-engine/build.sh x86_64-apple-darwin      # another processor, run emulated
-GREASEWEAZLE=v1.23 engine/build.sh       # a given gw release
-```
-
-To stay on one gw release, set `GREASEWEAZLE` in [`engine/versions`](engine/versions)
-to its tag. `cargo build` never checks for a newer gw; the packaging scripts do,
-and rebuild the engine first.
-
-### Packages
-
-Each script writes to `dist`, where `VERSION` is the one in `Cargo.toml`.
-
-| Platform | Command | Packages |
-| --- | --- | --- |
-| macOS | `packaging/macos/bundle.sh` | `Ferriteweazle-VERSION-macos-universal.dmg` |
-| Windows | `packaging/windows/bundle.sh x64` or `arm64` | `Ferriteweazle-VERSION-win-ARCH.zip` and `.msi` |
-| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz` and `Ferriteweazle-VERSION-ARCH.AppImage` |
-
-**macOS.** One app for Apple Silicon and Intel Macs, macOS 10.15 or newer. It
-needs rustup's stable toolchain with both Mac targets, and Rosetta to build the
-Intel engine:
-
-```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-```
-
-The app is signed ad hoc, so it opens on the Mac that built it. Signed and
-notarised releases are still to do.
-
-**Windows.** Windows 10 or newer. Run the script in Git Bash. It needs Rust's
-`x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets, Visual Studio's C++
-build tools for the processor you build for, LLVM, and WiX 5, a .NET tool (install
-the .NET 8 SDK first):
-
-```sh
-dotnet tool install --global wix --version 5.0.2
-wix extension add --global WixToolset.UI.wixext/5.0.2
-```
-
-The zip holds a Ferriteweazle folder that runs where it is unzipped. The MSI
-installs the same for all users, in Program Files or a folder chosen in the
-installer. Keep the UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows
-Installer knows a new version of Ferriteweazle by it. Neither package is
-code-signed yet, so SmartScreen warns about a downloaded copy.
-
-**Linux.** glibc 2.17 or newer. It needs
-[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and zig, and
-downloads appimagetool and the AppImage runtime at the versions
-`packaging/linux/appimage.sha256` checks. Building for the other processor runs
-its Python emulated, so pip can build gw for it: qemu-user with that processor's
-libraries, or Rosetta in a Linux VM on a Mac.
-
-**All at once.** `packaging/release.sh`, on a Mac, builds every package of the
-commit checked out: the macOS one there, the Windows and Linux ones over SSH on
-the machines named in `packaging/release.env` (copy
-`packaging/release.env.example`). It adds the source of the LGPL code in the Linux
-packages, the CAPS library's source, and `Ferriteweazle-VERSION-SHA256SUMS.txt`,
-which the app's Update checks downloads against.
+`engine/build.sh` needs curl, git and a C/C++ compiler: Xcode's command line tools
+on macOS, [zig](https://ziglang.org) on Linux, and on Windows Visual Studio's C++
+build tools and LLVM, run from Git Bash.
 
 ## Tests
 
