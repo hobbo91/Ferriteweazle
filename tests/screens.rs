@@ -5,6 +5,9 @@
 //! Uses the gw it finds, as the app does, with a made-up Greaseweazle on
 //! /dev/cu.usbmodem14201 whatever is plugged in, and replays saved gw output.
 
+mod common;
+
+use common::{DAMAGED, DEFAULT, FOUND, REFUSED, Window, greaseweazle, run_button};
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -13,10 +16,6 @@ use ferriteweazle::job::{Job, Outcome};
 use ferriteweazle::schema::Port;
 use ferriteweazle::{App, Page, Settings};
 use std::time::Duration;
-
-type Window<'a> = Harness<'a, Option<App>>;
-
-const DAMAGED: &str = include_str!("data/convert-damaged.log");
 
 /// What gw info prints, as info.py formats it.
 const INFO: &str = "Host Tools: 1.23
@@ -31,16 +30,6 @@ Device:
 *** New firmware version 1.7 is available
 To perform an Update:
  - Run \"gw update\" to download and install latest firmware";
-
-const FOUND: &str =
-    "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
-
-/// What gw prints when Linux refuses it the port: pyserial's EACCES error.
-const REFUSED: &str = "** FATAL ERROR:
-[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
-
-/// main.rs's SIZE, the window as it opens and its smallest: must match.
-const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 /// `render_sized` at 1240 by 780 points.
 fn render(
@@ -68,16 +57,10 @@ fn render_sized(
         .with_theme(theme)
         .wgpu()
         .build_ui_state(
-            |ui, app: &mut Option<App>| {
+            move |ui, app: &mut Option<App>| {
                 let app = app.get_or_insert_with(|| {
                     let mut app = App::with_settings(ui.ctx(), settings.clone());
-                    app.pin_ports(vec![Port {
-                        device: "/dev/cu.usbmodem14201".into(),
-                        name: Some("Greaseweazle".into()),
-                        serial: Some("GW0123456789ABCDEF".into()),
-                        score: 20,
-                        denied: false,
-                    }]);
+                    app.pin_ports(vec![greaseweazle()]);
                     app
                 });
                 match job.take() {
@@ -166,10 +149,8 @@ fn denied(w: &mut Window) {
     app.udev_rule = Some("/home/you/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules".into());
     app.pin_ports(vec![Port {
         device: "/dev/ttyACM0".into(),
-        name: Some("Greaseweazle".into()),
-        serial: Some("GW0123456789ABCDEF".into()),
-        score: 20,
         denied: true,
+        ..greaseweazle()
     }]);
 }
 
@@ -250,10 +231,7 @@ fn screens() {
         });
         render("no-device", theme, settings("read", theme), None, |w| {
             w.state_mut().as_mut().unwrap().pin_ports(Vec::new());
-            w.get_all_by_role_and_label(Role::Button, "Read disk")
-                .last()
-                .expect("the run button")
-                .hover();
+            run_button(w, "Read disk").hover();
         });
         let mut disks = settings("read", theme);
         disks.outputs.get_mut("read/file").unwrap().disks = 3;
@@ -263,10 +241,7 @@ fn screens() {
         let mut replace = settings("read", theme);
         replace.outputs.get_mut("read/file").unwrap().folder = dir.to_string_lossy().into();
         render("overwrite", theme, replace, None, |w| {
-            w.get_all_by_role_and_label(Role::Button, "Read disk")
-                .last()
-                .expect("the run button")
-                .click();
+            run_button(w, "Read disk").click();
         });
         render(
             "cli",

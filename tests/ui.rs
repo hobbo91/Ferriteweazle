@@ -1,5 +1,10 @@
 //! The window driven the way a person would, over the gw 1.23 schema.
 
+mod common;
+
+use common::{
+    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, greaseweazle, line, run_button, squares,
+};
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
@@ -8,18 +13,8 @@ use ferriteweazle::job::{Job, LOG_LINES, Outcome};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
-type Window = Harness<'static, Option<App>>;
-
-const DAMAGED: &str = include_str!("data/convert-damaged.log");
-
-const FOUND: &str =
-    "Found akai.800. Disk also matches eagle.dsqd.800, epson.qx10.400 and zx.quorum.ds80.";
-
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
-
-/// main.rs's SIZE, the window as it opens and its smallest: must match.
-const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 fn schema() -> Schema {
     serde_json::from_str(include_str!("data/schema-1.23.json")).unwrap()
@@ -58,16 +53,6 @@ fn window_at(size: egui::Vec2, settings: Settings) -> Window {
 
 fn window(settings: Settings) -> Window {
     window_at(egui::vec2(1240.0, 780.0), settings)
-}
-
-fn app(w: &Window) -> &App {
-    w.state().as_ref().expect("the first frame made the app")
-}
-
-fn app_mut(w: &mut Window) -> &mut App {
-    w.state_mut()
-        .as_mut()
-        .expect("the first frame made the app")
 }
 
 fn set(settings: &mut Settings, command: &str, dest: &str, value: &str) {
@@ -116,30 +101,6 @@ fn type_line(w: &mut Window, line: &str) {
     w.run();
     type_text(w, line);
     w.run();
-}
-
-fn line(w: &Window) -> String {
-    w.get_by_role(Role::MultilineTextInput)
-        .value()
-        .unwrap_or_default()
-}
-
-/// The disk map's squares.
-fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
-    let left = w.get_by_label("Disk status").rect().left();
-    w.output()
-        .shapes
-        .iter()
-        .filter_map(move |c| match &c.shape {
-            egui::Shape::Rect(r)
-                if r.rect.left() > left
-                    && (r.rect.width() - r.rect.height()).abs() < 0.5
-                    && r.rect.width() > 8.0 =>
-            {
-                Some(r)
-            }
-            _ => None,
-        })
 }
 
 /// A read whose first track has just come in.
@@ -363,17 +324,6 @@ fn every_page_draws() {
     }
 }
 
-/// A Greaseweazle as gw lists it, on a made-up port.
-fn greaseweazle() -> Port {
-    Port {
-        device: "/dev/cu.usbmodem14201".into(),
-        name: Some("Greaseweazle".into()),
-        serial: Some("GW0123456789ABCDEF".into()),
-        score: 20,
-        denied: false,
-    }
-}
-
 /// The sidebar's entry for a page.
 fn entry<'w>(w: &'w Window, title: &'w str) -> Node<'w> {
     w.get_all_by_role_and_label(Role::Button, title)
@@ -401,13 +351,6 @@ const DEVICE_PAGES: [(&str, &str); 13] = [
     ("Reset", "Reset"),
     ("USB bandwidth", "Measure"),
 ];
-
-/// The page's run button, not the sidebar entry of the same name.
-fn run_button<'w>(w: &'w Window, name: &'w str) -> Node<'w> {
-    w.get_all_by_role_and_label(Role::Button, name)
-        .find(|n| n.rect().left() > 240.0)
-        .expect("the run button")
-}
 
 #[test]
 fn every_page_opens_without_a_device_but_cannot_run() {
@@ -625,11 +568,7 @@ fn the_log_and_the_command_line_share_a_drawer_across_the_page_and_the_status_pa
         copy.left() > status.left(),
         "it runs under the status pane: {copy:?}"
     );
-    let run = w
-        .get_all_by_role_and_label(Role::Button, "Read disk")
-        .last()
-        .unwrap()
-        .rect();
+    let run = run_button(&w, "Read disk").rect();
     assert!(
         log.top() > run.bottom(),
         "below the run button: {log:?}, {run:?}"
@@ -677,12 +616,8 @@ fn smooth(settings: Settings) -> Window {
 /// The tops of the page's run button and the map's legend. A sliding drawer
 /// is only painted where it goes, so the page above it shows where it is.
 fn edges(w: &Window) -> [f32; 2] {
-    let run = w
-        .get_all_by_role_and_label(Role::Button, "Read disk")
-        .last()
-        .unwrap();
     [
-        run.rect().top(),
+        run_button(w, "Read disk").rect().top(),
         w.get_by_label_contains("Good ").rect().top(),
     ]
 }
@@ -1576,11 +1511,7 @@ fn a_log_dragged_to_its_tallest_never_pushes_the_page_over_the_run_bar() {
     w.run();
     drag_log(&mut w, 600.0);
     w.run();
-    let run = w
-        .get_all_by_role_and_label(Role::Button, "Read disk")
-        .last()
-        .unwrap()
-        .rect();
+    let run = run_button(&w, "Read disk").rect();
     let status = w.get_by_label("Disk status").rect();
     let page = w
         .get_all_by_role(Role::ScrollBar)
@@ -1623,10 +1554,6 @@ fn a_result_wider_than_its_box_shows_a_scroll_bar_without_hovering() {
         .count();
     assert!(marked > 50, "the bar is not drawn: {marked} pixels");
 }
-
-/// What gw prints when Linux refuses it the port: pyserial's EACCES error.
-const REFUSED: &str = "** FATAL ERROR:
-[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
 
 const RULE: &str = "/opt/Ferriteweazle/ferriteweazle-data/49-greaseweazle.rules";
 
