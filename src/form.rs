@@ -211,14 +211,24 @@ const FAMILIES: &[(&str, &str)] = &[
     ("zx", "ZX Spectrum"),
 ];
 
-/// The image type for formats that gw pairs with none, by prefix.
+/// The image type for formats that gw pairs with none, by prefix; the first
+/// match wins.
 const TYPES: &[(&str, &str)] = &[
     ("atarist.", ".st"),
     ("amiga.", ".adf"),
     ("acorn.dfs.ss", ".ssd"),
     ("acorn.dfs.ds", ".dsd"),
+    // Physical sector order, which DOS order would scramble.
+    ("apple2.nofs", ".img"),
     ("apple2.", ".do"),
     ("commodore.", ".d64"),
+    // A scan keeps each track's layout, as gw's release notes pair it.
+    ("ibm.scan", ".edsk"),
+    ("northstar.", ".nsi"),
+    // Bitcells have no sectors for a sector image to hold.
+    ("raw.", ".hfe"),
+    // Side 0, then side 1, as Thomson emulators take them.
+    ("thomson.", ".fd"),
 ];
 
 /// Most characters a typed name takes: an image's name, a disk label, a preset's name.
@@ -3333,7 +3343,12 @@ mod tests {
         assert_eq!(t("atarist.720"), ".st");
         assert_eq!(t("acorn.dfs.ss80"), ".ssd");
         assert_eq!(t("apple2.prodos.140"), ".po");
+        assert_eq!(t("apple2.nofs.140"), ".img", "not DOS order");
         assert_eq!(t("ibm.800"), ".img", "not SAM Coupé's .mgt");
+        assert_eq!(t("ibm.scan"), ".edsk");
+        assert_eq!(t("northstar.mfm.ds"), ".nsi");
+        assert_eq!(t("raw.250"), ".hfe");
+        assert_eq!(t("thomson.2s320"), ".fd");
     }
 
     #[test]
