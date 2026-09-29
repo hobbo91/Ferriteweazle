@@ -9,8 +9,10 @@ use common::{
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
+use ferriteweazle::command::Values;
 use ferriteweazle::form::Output;
 use ferriteweazle::job::{Job, LOG_LINES, Outcome};
+use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
@@ -268,6 +270,89 @@ fn a_preset_is_a_file_that_brings_back_the_settings_it_saved() {
     w.run();
     assert_eq!(app(&w).settings.values["read"].get("revs"), "5");
     std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
+fn a_preset_is_deleted_from_its_menu_after_asking() {
+    let folder = std::env::temp_dir().join(format!("fw-ui-delete-{}", std::process::id()));
+    std::fs::remove_dir_all(&folder).ok();
+    let preset = Preset {
+        command: "read".into(),
+        ..Preset::default()
+    };
+    let file = presets::save(&folder, "Five revs", &preset).unwrap();
+    let mut w = window(Settings {
+        presets_folder: Some(folder.clone()),
+        ..Settings::default()
+    });
+    let choose = |w: &mut Window| {
+        w.get_by_label("Presets").click();
+        w.run();
+        w.get_by_label_contains("Delete").click();
+        w.run();
+        // The submenu's entry, after the one that loads the preset.
+        w.get_all_by_label("Five revs").last().unwrap().click();
+        w.run();
+    };
+    choose(&mut w);
+    w.get_by_label("Delete \"Five revs\"?");
+    w.get_by_label("This cannot be undone.");
+    w.get_by_label("Cancel").click();
+    w.run();
+    assert!(file.is_file(), "Cancel deleted it");
+    choose(&mut w);
+    w.get_by_role_and_label(Role::Button, "Delete").click();
+    w.run();
+    assert!(!file.exists());
+    w.get_by_label("Presets").click();
+    w.run();
+    w.get_by_label("No presets saved yet.");
+    assert!(
+        w.query_by_label_contains("Delete").is_none(),
+        "nothing to delete"
+    );
+    std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
+fn restore_defaults_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_choices() {
+    let mut settings = Settings {
+        images_folder: Some("/disks".into()),
+        drive: "B".into(),
+        ..chosen()
+    };
+    set(&mut settings, "read", "revs", "5");
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    out.name = "Game".into();
+    out.disks = 3;
+    let mut w = window(settings);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    fn restore(w: &Window) -> Node<'_> {
+        w.get_by_role_and_label(Role::Button, "Restore defaults")
+    }
+    w.get_by_label("Presets").click();
+    w.run();
+    restore(&w).click();
+    w.run();
+    let app = app(&w);
+    assert_eq!(app.settings.values["read"], Values::default());
+    let fresh = Output {
+        folder: "/disks".into(),
+        ..Output::default()
+    };
+    assert_eq!(app.settings.outputs["read/file"], fresh);
+    assert!(
+        app.notices.is_empty(),
+        "the detected format's notice stayed"
+    );
+    assert_eq!(app.settings.drive, "B");
+    w.get_by_label("Presets").click();
+    w.run();
+    assert!(restore(&w).accesskit_node().is_disabled());
+    restore(&w).hover();
+    w.run();
+    w.get_by_label("No changes.");
 }
 
 #[test]

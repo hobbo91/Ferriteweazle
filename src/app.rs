@@ -201,6 +201,12 @@ enum Dialog {
         command: String,
         name: String,
     },
+    DeletePreset {
+        /// The page that shows why the file could not be deleted.
+        command: String,
+        name: String,
+        path: PathBuf,
+    },
     /// How to give this account the port Linux refused it.
     Access {
         port: String,
@@ -249,6 +255,16 @@ struct Runs {
     args: Vec<Vec<String>>,
     images: Vec<String>,
     makes: Vec<PathBuf>,
+}
+
+/// A page's Presets menu while it is open, so the folder is read once, not
+/// every frame.
+struct PresetsMenu {
+    page: String,
+    /// The page's presets, by name.
+    saved: Vec<(String, PathBuf)>,
+    /// Whether the page differs from gw's defaults.
+    changed: bool,
 }
 
 /// The command line drawer's text, and why it does not parse.
@@ -300,9 +316,8 @@ pub struct App {
     kept_drive: String,
     gw_update: Update,
     app_update: Update,
-    /// The page's presets while its Presets menu is open, so the folder is
-    /// read once, not every frame.
-    presets: Option<(String, Vec<(String, PathBuf)>)>,
+    /// The Presets menu, while it is open.
+    presets: Option<PresetsMenu>,
     /// gw's bridge is stopped while a Windows folder copy replaces its data
     /// folder: the ports it had listed.
     gw_paused: Option<Vec<Port>>,
@@ -1942,18 +1957,22 @@ impl App {
     fn presets_menu(&mut self, ui: &mut Ui, command: &str) {
         let folder = self.presets_folder();
         let mut load = None;
-        let mut save = false;
-        let mut pick = false;
+        let mut delete = None;
+        let (mut save, mut pick, mut defaults) = (false, false, false);
         let menu = ui.menu_button("Presets", |ui| {
             ui.set_min_width(220.0);
-            let (_, saved) = match &mut self.presets {
-                Some(open) if open.0 == command => open,
-                slot => slot.insert((command.into(), presets::list(&folder, command))),
-            };
-            if saved.is_empty() {
+            if self.presets.as_ref().is_none_or(|m| m.page != command) {
+                self.presets = Some(PresetsMenu {
+                    page: command.to_owned(),
+                    saved: presets::list(&folder, command),
+                    changed: self.changed(command),
+                });
+            }
+            let Some(menu) = &self.presets else { return };
+            if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
-            for (name, path) in saved.iter() {
+            for (name, path) in &menu.saved {
                 if ui
                     .button(name.as_str())
                     .on_hover_text("Use these settings.")
@@ -1972,12 +1991,42 @@ impl App {
                 .button("Load…")
                 .on_hover_text("Load a preset from a file.")
                 .clicked();
-            if save || pick {
+            if !menu.saved.is_empty() {
+                ui.menu_button("Delete", |ui| {
+                    for (name, path) in &menu.saved {
+                        if ui
+                            .button(name.as_str())
+                            .on_hover_text("Delete this preset.")
+                            .clicked()
+                        {
+                            delete = Some((name.clone(), path.clone()));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            defaults = ui
+                .add_enabled(menu.changed, egui::Button::new("Restore defaults"))
+                .on_hover_text("Put this page's options back to gw's defaults.")
+                .on_disabled_hover_text("No changes.")
+                .clicked();
+            if save || pick || defaults {
                 ui.close();
             }
         });
         if menu.inner.is_none() {
             self.presets = None;
+        }
+        if defaults {
+            self.restore_defaults(command);
+        }
+        if let Some((name, path)) = delete {
+            self.dialog = Some(Dialog::DeletePreset {
+                command: command.to_owned(),
+                name,
+                path,
+            });
         }
         if save {
             self.dialog = Some(Dialog::SavePreset {
@@ -2382,6 +2431,28 @@ impl App {
                         }
                     });
                 }
+                Dialog::DeletePreset {
+                    command,
+                    name,
+                    path,
+                } => {
+                    dialog_heading(ui, &format!("Delete \"{name}\"?"));
+                    ui.label("This cannot be undone.");
+                    ui.add_space(10.0);
+                    right(ui, |ui| {
+                        let p = theme::palette(ui);
+                        if ui.add(dialog_button("Delete", p.bad, p)).clicked() {
+                            let (command, path) = (command.clone(), path.clone());
+                            action = Some(Box::new(move |app: &mut App| {
+                                app.delete_preset(&command, &path)
+                            }));
+                            close = true;
+                        }
+                        if ui.add(dialog_plain("Cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::Access { port } => {
                     let refused = Refused {
                         port: port.clone(),
@@ -2594,6 +2665,49 @@ impl App {
             let text = format!("Could not save the preset: {e}");
             self.notices.insert(command.to_owned(), text);
         }
+    }
+
+    /// Deletes a preset's file. A fault shows on `page`.
+    fn delete_preset(&mut self, page: &str, path: &Path) {
+        if let Err(e) = std::fs::remove_file(path) {
+            let text = format!("Could not delete the preset: {e}");
+            self.notices.insert(page.to_owned(), text);
+        }
+    }
+
+    /// Output settings as a new page has them: gw's defaults, and the
+    /// images folder.
+    fn fresh_output(&self) -> Output {
+        Output {
+            folder: self.images_folder().to_string_lossy().into_owned(),
+            ..Output::default()
+        }
+    }
+
+    /// Whether a page differs from what Restore defaults leaves.
+    fn changed(&self, command: &str) -> bool {
+        let fresh = self.fresh_output();
+        let mut keys = form::OUTPUTS
+            .iter()
+            .filter(|(c, _)| *c == command)
+            .map(|(c, dest)| form::output_key(c, dest));
+        let options = self.settings.values.get(command);
+        options.is_some_and(|v| *v != Values::default())
+            || keys.any(|k| self.settings.outputs.get(&k).is_some_and(|o| *o != fresh))
+    }
+
+    /// Puts a page's options and output settings back to gw's defaults. The
+    /// device and drive are the sidebar's, and stay.
+    fn restore_defaults(&mut self, command: &str) {
+        self.settings.values.remove(command);
+        for (c, dest) in form::OUTPUTS.iter().filter(|(c, _)| *c == command) {
+            let fresh = self.fresh_output();
+            self.settings
+                .outputs
+                .insert(form::output_key(c, dest), fresh);
+        }
+        // Such as the format detection found, which the page no longer has.
+        self.notices.remove(command);
     }
 
     /// Applies a preset file's settings and opens its page. A fault shows on `page`.
