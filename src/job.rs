@@ -40,6 +40,8 @@ pub struct Job {
     pub ended: Option<(Instant, Outcome)>,
     /// The image the job makes.
     pub output: Option<PathBuf>,
+    /// The job failed and its image is gone: gw deletes it.
+    pub no_image: bool,
     /// The job's disk format, if known.
     pub format: Option<String>,
     /// Formats that read the disk in full, best first, from a detect job.
@@ -226,6 +228,7 @@ impl Job {
             started: Instant::now(),
             ended: None,
             output: None,
+            no_image: false,
             format: None,
             detected: Vec::new(),
             step: 1,

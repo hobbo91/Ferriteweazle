@@ -147,7 +147,8 @@ pub struct Settings {
     pub drive: String,
     /// Passes gw's `--bt` for Python tracebacks on errors.
     pub backtrace: bool,
-    /// Saves gw's output beside each image a job makes, as `name.ext.log`.
+    /// Saves the gw command and its output where a job puts its image, as
+    /// `name.ext.log`.
     pub save_logs: bool,
     /// Plays a sound when a job ends.
     pub sound: bool,
@@ -777,12 +778,20 @@ impl App {
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
         let outcome = job.outcome();
+        // gw deletes the image of a read or conversion that fails.
+        job.no_image =
+            outcome == Some(Outcome::Failed) && job.output.as_ref().is_some_and(|p| !p.exists());
         if self.settings.save_logs
-            && let Some(image) = job.output.as_ref().filter(|p| p.exists())
+            && let Some(image) = &job.output
         {
             let mut log = image.clone().into_os_string();
             log.push(".log");
-            if let Some(why) = save_log(Path::new(&log), &job.log) {
+            // As the Log has it, from the command line to how it ended.
+            let lines: Vec<String> = std::iter::once(heading(job))
+                .chain(job.log.iter().cloned())
+                .chain(std::iter::once(ending(job)))
+                .collect();
+            if let Some(why) = save_log(Path::new(&log), &lines) {
                 job.log.push(why);
             }
         }
@@ -2124,7 +2133,8 @@ impl App {
                 ui,
                 &mut self.settings.save_logs,
                 "Save gw's output beside each image it makes",
-                "Writes name.ext.log next to each image gw read or gw convert makes.",
+                "Writes the gw command and its output to name.ext.log where gw read or \
+                 gw convert puts its image.",
             );
             if cfg!(target_os = "macos") {
                 setting(
@@ -2944,17 +2954,16 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
     }
 }
 
-/// What a disk job stopped part way leaves behind: gw keeps the tracks a
-/// read has done, and deletes a conversion's image.
+/// What a disk job that did not finish leaves behind: gw keeps the tracks a
+/// stopped read has done, and deletes a stopped conversion's image and
+/// that of a job that failed.
 fn left_behind(job: &Job) -> Option<&'static str> {
-    if job.outcome() != Some(Outcome::Stopped) {
-        return None;
-    }
-    match job.command.as_str() {
-        "read" => Some("Stopped: incomplete image."),
-        "write" => Some("Stopped: disk partly written."),
-        "erase" => Some("Stopped: disk partly erased."),
-        "convert" => Some("Stopped: no image made."),
+    match (job.outcome()?, job.command.as_str()) {
+        (Outcome::Failed, _) if job.no_image => Some("Failed: no image kept."),
+        (Outcome::Stopped, "read") => Some("Stopped: incomplete image."),
+        (Outcome::Stopped, "write") => Some("Stopped: disk partly written."),
+        (Outcome::Stopped, "erase") => Some("Stopped: disk partly erased."),
+        (Outcome::Stopped, "convert") => Some("Stopped: no image made."),
         _ => None,
     }
 }
@@ -4200,6 +4209,38 @@ mod tests {
         w.run();
         w.get_by_label("Second");
         std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn a_failed_read_says_it_kept_no_image_and_leaves_its_log_where_the_image_would_be() {
+        let dir = std::env::temp_dir().join(format!("fw-failed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("Game.img");
+        let mut app = offline();
+        app.settings.save_logs = true;
+        let mut job = Job::replay(
+            "read",
+            "Reading c=0-81:h=0-1 revs=3\n\
+             T0.0: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)\n\
+             Command Failed: GetFluxStatus: No Index",
+        );
+        job.args = vec!["read".into(), "--revs=3".into(), path(&image)];
+        job.output = Some(image.clone());
+        app.disk = Some(job);
+        app.ended(&egui::Context::default(), true);
+        let note = left_behind(app.disk.as_ref().unwrap());
+        assert_eq!(note, Some("Failed: no image kept."), "gw deleted it");
+        let log = std::fs::read_to_string(dir.join("Game.img.log")).expect("the log");
+        let lines: Vec<&str> = log.lines().collect();
+        let command = format!("gw read --revs=3 {}", path(&image));
+        assert_eq!(lines.first(), Some(&command.as_str()), "{log}");
+        assert!(lines.contains(&"Command Failed: GetFluxStatus: No Index"));
+        assert_eq!(lines.last(), Some(&"Failed after 0:00."));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn path(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
     }
 
     #[test]
