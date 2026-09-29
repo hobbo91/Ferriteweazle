@@ -53,6 +53,13 @@ while IFS='|' read -r crate expr; do
         exit 1
     fi
     found "$dir" >"$work/files"
+    # Offered a choice of licences, the program takes one that is no GPL.
+    case "$expr" in
+        *" OR "* | */*)
+            grep -v -i '/[^/]*gpl[^/]*$' "$work/files" >"$work/chosen" || true
+            [ ! -s "$work/chosen" ] || mv "$work/chosen" "$work/files"
+            ;;
+    esac
     own=
     while read -r file; do
         case ${file#"$dir"/} in */*) ;; *) own=1 ;; esac

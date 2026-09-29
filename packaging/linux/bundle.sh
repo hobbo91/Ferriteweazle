@@ -10,8 +10,8 @@
 set -eu
 cd "$(dirname "$0")/../.."
 . engine/greaseweazle.sh
+. packaging/linux/runtime.sh
 APPIMAGETOOL=1.9.1
-RUNTIME=20251108
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 arch=${1:-$(uname -m)}
 case "$arch" in
@@ -41,7 +41,9 @@ cp -a "$data" "$top/ferriteweazle-data"
 cp packaging/linux/ferriteweazle.desktop packaging/linux/README.txt "$top/"
 cp assets/logo.png "$top/ferriteweazle.png"
 cp LICENSE "$top/LICENSE.txt"
-packaging/notices.sh "$top/ferriteweazle-data" "$triple" >"$top/THIRD-PARTY-NOTICES.txt"
+notices=$top/THIRD-PARTY-NOTICES.txt
+packaging/notices.sh "$top/ferriteweazle-data" "$triple" >"$notices"
+sed "s/@VERSION@/$version/g" packaging/licences/linux-lgpl.txt >>"$notices"
 tarball=dist/Ferriteweazle-$version-linux-$arch.tar.gz
 tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$stage" Ferriteweazle
 
@@ -50,7 +52,10 @@ appdir=$stage/AppDir
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/doc/ferriteweazle"
 cp "$program" "$appdir/usr/bin/ferriteweazle"
 cp -a "$data" "$appdir/usr/bin/ferriteweazle-data"
-cp LICENSE "$top/THIRD-PARTY-NOTICES.txt" "$appdir/usr/share/doc/ferriteweazle/"
+cp LICENSE "$appdir/usr/share/doc/ferriteweazle/"
+# The AppImage also carries the runtime at its front.
+{ cat "$notices"; sed "s/@VERSION@/$version/g" "packaging/licences/appimage-runtime-$RUNTIME.txt"; } \
+    >"$appdir/usr/share/doc/ferriteweazle/THIRD-PARTY-NOTICES.txt"
 ln -s usr/bin/ferriteweazle "$appdir/AppRun"
 cp packaging/linux/ferriteweazle.desktop "$appdir/"
 cp assets/logo.png "$appdir/ferriteweazle.png"
@@ -60,18 +65,8 @@ cache=target/appimage-cache
 host=$(uname -m)
 tool=appimagetool-$APPIMAGETOOL-$host.AppImage
 runtime=runtime-$RUNTIME-$arch
-mkdir -p "$cache"
-for file in "$tool" "$runtime"; do
-    case "$file" in
-        appimagetool-*) url=https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL/appimagetool-$host.AppImage ;;
-        *) url=https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME/runtime-$arch ;;
-    esac
-    if [ ! -f "$cache/$file" ]; then
-        curl -fL --retry 3 -o "$cache/$file.part" "$url"
-        mv "$cache/$file.part" "$cache/$file"
-    fi
-    grep " $file\$" packaging/linux/appimage.sha256 | (cd "$cache" && sha256sum -c -)
-done
+fetch "$tool" "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL/appimagetool-$host.AppImage"
+fetch "$runtime" "https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME/runtime-$arch"
 # appimagetool is unpacked once and run from the cache: that needs no FUSE,
 # and leaves nothing in /tmp.
 unpacked=$cache/appimagetool-$APPIMAGETOOL-$host

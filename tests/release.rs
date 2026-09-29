@@ -403,6 +403,9 @@ fn stub_release(dir: &Path) -> String {
     let mac = "#!/bin/sh\nmkdir -p dist target\n\
         echo \"$GREASEWEAZLE\" >dist/Ferriteweazle-0.9.0-macos-universal.dmg\n";
     executable(&packaging.join("macos/bundle.sh"), mac);
+    std::fs::create_dir_all(packaging.join("linux")).unwrap();
+    let sources = "#!/bin/sh\necho sources >\"$1\"\n";
+    executable(&packaging.join("linux/lgpl-sources.sh"), sources);
     let ignore = "/dist\n/target\n/stubs\n/greaseweazle\n/*.log\n";
     std::fs::write(dir.join(".gitignore"), ignore).unwrap();
     clone(dir, &["v1.22", "v1.23"]);
@@ -448,7 +451,12 @@ fn a_release_builds_every_package_from_one_gw_release() {
 
     let sums = std::fs::read_to_string(dir.join("dist/Ferriteweazle-0.9.0-SHA256SUMS.txt"));
     let sums = sums.unwrap();
-    for file in ["macos-universal.dmg", "linux", "windows"] {
+    for file in [
+        "macos-universal.dmg",
+        "linux",
+        "windows",
+        "linux-lgpl-sources.tar",
+    ] {
         assert!(
             sums.contains(&format!("  Ferriteweazle-0.9.0-{file}\n")),
             "{sums}"
@@ -586,6 +594,26 @@ fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
     once("gw's Unlicense.");
     once("pyserial 3.5\n");
     once("pyserial's text.");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_crate_offered_under_a_choice_of_licences_shows_the_one_taken_not_the_gpl() {
+    let dir = repo("notices-choice", "");
+    let stubbed = stub_notices(&dir);
+    let cargo = dir.join("cargo");
+    let registry = cargo.join("registry/src/index/epsilon-1.0.0");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::write(registry.join("LICENSE-APACHE"), "Epsilon's Apache.\n").unwrap();
+    std::fs::write(registry.join("LICENSE-GPLv2"), "Epsilon's GPL.\n").unwrap();
+    let env = [
+        ("PATH", stubbed.as_str()),
+        ("CARGO_HOME", path(&cargo)),
+        ("EXTRA", "epsilon v1.0.0|Apache-2.0 OR GPL-2.0-only"),
+    ];
+    let notices = run(&dir, &env, "", "packaging/notices.sh data a-triple");
+    assert!(notices.contains("Epsilon's Apache."), "{notices}");
+    assert!(!notices.contains("Epsilon's GPL."), "{notices}");
     std::fs::remove_dir_all(dir).ok();
 }
 

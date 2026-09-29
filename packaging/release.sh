@@ -31,5 +31,8 @@ ssh $WINDOWS_SSH "\"C:\\Program Files\\Git\\bin\\bash.exe\" -lc \"cd \$(cygpath 
     packaging/windows/bundle.sh arm64 && tar -cf - dist\"" >target/windows-dist.tar
 tar -xf target/windows-dist.tar
 
+# The source of the LGPL code in the Linux packages, published with them.
+packaging/linux/lgpl-sources.sh "dist/Ferriteweazle-$version-linux-lgpl-sources.tar"
+
 (cd dist && shasum -a 256 Ferriteweazle-* >"Ferriteweazle-$version-SHA256SUMS.txt")
 ls -l dist
