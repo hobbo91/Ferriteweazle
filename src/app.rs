@@ -82,6 +82,8 @@ const BUSY: &str = "Wait for the job that is running.";
 const INSTALLING: &str = "Wait for the update to install.";
 /// Why a command that uses the device waits while the card runs gw info.
 const ASKING: &str = "Wait for gw info to finish.";
+/// Why a page cannot run while its command line shows what gw cannot take.
+const CLI_FAULT: &str = "Fix the command line or Reset it.";
 /// Settings' gw line while a Windows folder copy replaces itself.
 const UPDATING: &str = "Updating Ferriteweazle\u{2026}";
 
@@ -1483,6 +1485,12 @@ impl App {
             Some(why.to_owned())
         } else if self.probe.is_some() && device {
             Some(ASKING.to_owned())
+        } else if self.settings.drawer == Some(Drawer::Cli)
+            && self.cli.page == cmd.name
+            && self.cli.error.is_some()
+        {
+            // The page holds the last line that parsed, not the one shown.
+            Some(CLI_FAULT.to_owned())
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
@@ -4172,6 +4180,39 @@ mod tests {
         app.gw_update = Update::Idle;
         app.app_update = installing();
         assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
+    }
+
+    #[test]
+    fn a_command_line_gw_cannot_take_holds_up_its_page_until_reset() {
+        use egui::accesskit::Role;
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        app.settings.page = Page::Command("info".into());
+        app.settings.drawer = Some(Drawer::Cli);
+        let mut w = window(app);
+        let greyed = |w: &Harness<'_, App>| {
+            let run = w.get_by_role_and_label(Role::Button, "Get info");
+            run.accesskit_node().is_disabled()
+        };
+        assert!(!greyed(&w));
+        w.get_by_role(Role::MultilineTextInput).click();
+        w.run_steps(2);
+        w.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        w.event(egui::Event::Text("gw info --bogus".into()));
+        w.run_steps(2);
+        w.get_by_label("gw info has no option --bogus.");
+        assert!(greyed(&w), "Get info runs a line other than the one shown");
+        w.get_by_role_and_label(Role::Button, "Get info").hover();
+        w.run_steps(4);
+        w.get_by_label(CLI_FAULT);
+        let heading = w.get_by_label("Command line").rect().top();
+        let reset = w
+            .get_all_by_label("Reset")
+            .find(|b| b.rect().top() > heading - 10.0);
+        reset.expect("the command line's Reset").click();
+        w.run_steps(2);
+        assert!(!greyed(&w));
     }
 
     #[test]
