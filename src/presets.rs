@@ -36,7 +36,7 @@ pub fn list(folder: &Path, command: &str) -> Vec<(String, PathBuf)> {
         .filter(|p| load(p).is_ok_and(|preset| preset.command == command))
         .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
         .collect();
-    found.sort();
+    found.sort_by_cached_key(|(name, _)| name.to_lowercase());
     found
 }
 
@@ -49,10 +49,18 @@ pub fn load(path: &Path) -> Result<Preset, String> {
 }
 
 /// Where a preset of this name is saved. Characters Windows bans in file names
-/// become hyphens.
+/// become hyphens; a Windows device name, such as COM3, gains a leading one.
 pub fn path(folder: &Path, name: &str) -> PathBuf {
     let bad = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
     let safe = name.trim().replace(bad, "-");
+    // Windows 10 takes NUL.json, even NUL.old.json, for the device.
+    let stem = safe.split('.').next().unwrap_or_default();
+    let stem = stem.trim_end().to_ascii_uppercase();
+    let numbered = stem.len() == 4
+        && (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.ends_with(|c: char| c.is_ascii_digit());
+    let device = numbered || ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str());
+    let safe = if device { format!("-{safe}") } else { safe };
     folder.join(format!("{safe}.{EXTENSION}"))
 }
 
@@ -90,5 +98,31 @@ mod tests {
         assert_eq!(load(&saved).unwrap(), preset);
         assert!(load(&folder.join("notes.json")).is_err());
         std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn presets_list_in_name_order_whatever_the_case() {
+        let folder = std::env::temp_dir().join(format!("fw-presets-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let preset = Preset {
+            command: "read".into(),
+            ..Preset::default()
+        };
+        for name in ["PC 1.44", "atari st", "Amiga DD"] {
+            save(&folder, name, &preset).unwrap();
+        }
+        let names: Vec<String> = list(&folder, "read").into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["Amiga DD", "atari st", "PC 1.44"]);
+        std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn a_preset_named_as_a_windows_device_is_saved_as_a_file() {
+        let name = |n| path(Path::new("/p"), n).file_name().unwrap().to_owned();
+        assert_eq!(name("COM3"), "-COM3.json");
+        assert_eq!(name("nul.old"), "-nul.old.json");
+        assert_eq!(name("lpt1 "), "-lpt1.json");
+        assert_eq!(name("Console"), "Console.json");
+        assert_eq!(name("COM10"), "COM10.json");
     }
 }
