@@ -868,15 +868,24 @@ fn the_82_cylinders_gw_erases_add_a_row_not_smaller_squares() {
         let bottom = squares.iter().map(|r| r.bottom()).fold(f32::MIN, f32::max);
         (squares.len(), squares[0].width(), bottom)
     };
-    let tracks = |cyls: u32| {
-        (0..cyls)
-            .flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: Erasing Track")))
+    // gw's header for `cyls` cylinders, then the first `done` erased.
+    let log = |cyls: u32, done: u32| {
+        let header = format!("Erasing c=0-{}:h=0-1, revs=1", cyls - 1);
+        let tracks =
+            (0..done).flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: Erasing Track")));
+        std::iter::once(header)
+            .chain(tracks)
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let (eighty, cell, _) = size(&tracks(80));
-    let (all, wider, bottom) = size(&tracks(82));
+    let (eighty, cell, _) = size(&log(80, 80));
+    let (all, wider, bottom) = size(&log(82, 82));
     assert_eq!((eighty, all), (160, 164));
+    assert_eq!(
+        size(&log(82, 1)).0,
+        164,
+        "after the first cylinder, the map lacks the tracks to come"
+    );
     assert_eq!(wider, cell, "the squares shrank for two more cylinders");
     assert!(
         bottom < DEFAULT.y,

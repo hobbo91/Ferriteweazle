@@ -25,8 +25,6 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
     pub status: Status,
-    /// Sectors found and expected.
-    pub sectors: Option<(u32, u32)>,
     pub retries: u32,
     /// What gw last said about the track.
     pub text: String,
@@ -34,7 +32,7 @@ pub struct Track {
 
 #[derive(Debug, Default)]
 pub struct Progress {
-    /// The tracks gw said it would visit.
+    /// The cylinders gw said it would visit; `heads` the heads.
     pub cyls: Vec<u32>,
     pub heads: Vec<u32>,
     pub tracks: BTreeMap<(u32, u32), Track>,
@@ -102,10 +100,10 @@ impl Progress {
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
         {
             self.error = Some(e.to_owned());
-        } else if let Some(set) = ["Reading ", "Writing ", "Converting "]
+        } else if let Some(set) = ["Reading ", "Writing ", "Converting ", "Erasing "]
             .iter()
             .find_map(|p| line.strip_prefix(p))
-            .and_then(|rest| track_set(rest.split_whitespace().next()?))
+            .and_then(|rest| track_set(rest.split_whitespace().next()?.trim_end_matches(',')))
         {
             (self.cyls, self.heads) = set;
         } else if line == "All tracks verified" {
@@ -160,10 +158,13 @@ impl Progress {
     }
 
     fn track(&mut self, key: (u32, u32), text: &str) {
+        let count = sectors(text);
+        if count.is_none() && !RESULTS.iter().any(|r| text.starts_with(r)) {
+            return;
+        }
         self.current = Some(key);
         let t = self.tracks.entry(key).or_insert(Track {
             status: Status::Flux,
-            sectors: None,
             retries: 0,
             text: String::new(),
         });
@@ -181,8 +182,9 @@ impl Progress {
             Status::Erased
         } else if text.starts_with("Writing") {
             Status::Written
-        } else if let Some((good, all)) = sectors(text) {
-            t.sectors = Some((good, all));
+        } else if text.starts_with("IBM Empty") {
+            Status::Bad
+        } else if let Some((good, all)) = count {
             match good {
                 0 if all > 0 => Status::Bad,
                 g if g < all => Status::Partial,
@@ -216,6 +218,19 @@ pub struct Tally {
     pub bad: u32,
     pub retries: u32,
 }
+
+/// How a track's result begins when it gives no sector count. gw's other
+/// `T12.1:` lines are remarks, such as a codec's about a stray sector.
+const RESULTS: [&str; 8] = [
+    "WARNING",
+    "Erasing",
+    "Writing",
+    "Giving up",
+    "Raw Flux",
+    "Raw Bitcell",
+    "Bitcells",
+    "IBM Empty",
+];
 
 /// `12.1` as (cylinder, head).
 fn key(s: &str) -> Option<(u32, u32)> {
@@ -293,11 +308,7 @@ mod tests {
         let p = fed(include_str!("../tests/data/convert-img-to-scp.log"));
         assert_eq!((p.cyls.len(), p.heads), (80, vec![0, 1]));
         assert_eq!(p.tracks.len(), 160);
-        assert!(
-            p.tracks
-                .values()
-                .all(|t| t.status == Status::Good && t.sectors == Some((18, 18)))
-        );
+        assert!(p.tracks.values().all(|t| t.status == Status::Good));
         assert_eq!(p.total, Some((2880, 2880)));
         assert_eq!(p.error, None);
     }
@@ -308,7 +319,7 @@ mod tests {
         p.finish();
         let status = |c, h| p.tracks[&(c, h)].status;
         assert_eq!(status(20, 0), Status::Partial);
-        assert_eq!(p.tracks[&(55, 1)].sectors, Some((15, 18)));
+        assert_eq!(status(55, 1), Status::Partial);
         assert_eq!(status(75, 0), Status::Bad);
         assert_eq!(status(0, 0), Status::Good);
         assert_eq!(p.sector_map[&(20, 0)][5], Some(false));
@@ -358,7 +369,7 @@ mod tests {
     fn retries_and_giving_up_leave_a_partial_track() {
         let p = fed("Reading c=0-1:h=0 revs=2\n\
             T0.0: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)\n\
-            T1.0: IBM MFM (16/18 sectors) from Raw Flux (1 flux in 200.00ms)\n\
+            T1.0: IBM MFM (0/18 sectors) from Raw Flux (1 flux in 200.00ms)\n\
             T1.0: IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.1)\n\
             T1.0: IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.2)\n\
             T1.0: Giving up: 1 sectors missing\n\
@@ -368,10 +379,7 @@ mod tests {
             0. 1: .X\n\
             Found 35 sectors of 36 (97%)");
         let t = &p.tracks[&(1, 0)];
-        assert_eq!(
-            (t.status, t.sectors, t.retries),
-            (Status::Partial, Some((17, 18)), 2)
-        );
+        assert_eq!((t.status, t.retries), (Status::Partial, 2));
         assert_eq!(p.sector_map[&(1, 0)], vec![Some(true), Some(false)]);
         assert_eq!(p.total, Some((35, 36)));
     }
@@ -482,6 +490,31 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
             chained.error.as_deref(),
             Some("serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0")
         );
+    }
+
+    #[test]
+    fn an_erase_announces_its_tracks() {
+        let p = fed("Erasing c=0-81:h=0-1, revs=1");
+        assert_eq!((p.cyls.len(), p.heads), (82, vec![0, 1]));
+    }
+
+    #[test]
+    fn remarks_about_a_track_leave_it_as_it_was() {
+        let p = fed(
+            "T45.0: D88: Removed 2 duplicate sectors from oversized track\n\
+            Writing c=0-1:h=0\n\
+            T0.0: Writing Track (Flux: 1)\n\
+            T0.0: Ignoring unexpected sector C:0 H:0 R:19 N:2\n\
+            All tracks verified",
+        );
+        assert_eq!(p.tracks.keys().collect::<Vec<_>>(), [&(0, 0)]);
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
+    }
+
+    #[test]
+    fn a_scan_that_finds_no_sectors_is_bad() {
+        let p = fed("T40.0: IBM Empty from Raw Flux (1234 flux in 400.00ms)");
+        assert_eq!(p.tracks[&(40, 0)].status, Status::Bad);
     }
 
     #[test]
