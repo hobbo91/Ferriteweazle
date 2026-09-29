@@ -1875,6 +1875,31 @@ fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() 
 }
 
 #[test]
+fn settings_names_the_default_folders_it_goes_back_to() {
+    let mut w = window(Settings {
+        page: Page::Settings,
+        images_folder: Some("/elsewhere".into()),
+        presets_folder: Some("/elsewhere".into()),
+        ..Settings::default()
+    });
+    let defaults = [
+        ferriteweazle::form::images_folder(),
+        presets::default_folder(),
+    ];
+    for (n, folder) in defaults.iter().enumerate() {
+        // One tooltip at a time: the last must close first.
+        w.event(egui::Event::PointerGone);
+        w.run();
+        w.get_all_by_label("Use the default")
+            .nth(n)
+            .unwrap()
+            .hover();
+        w.run();
+        w.get_by_label(&format!("Go back to {}.", folder.display()));
+    }
+}
+
+#[test]
 fn settings_links_gws_getting_started_guide() {
     let settings = Settings {
         page: Page::Settings,

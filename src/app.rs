@@ -21,8 +21,8 @@ use eframe::egui::{
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// How long the device card waits for `gw info`.
@@ -2163,7 +2163,9 @@ impl App {
             });
         });
         section(ui, "Paths", |ui| {
-            let default = ("Use the default", "Documents/Ferriteweazle/Images.");
+            static IMAGES: OnceLock<String> = OnceLock::new();
+            static PRESETS: OnceLock<String> = OnceLock::new();
+            let default = ("Use the default", back_to(&IMAGES, form::images_folder));
             let images = self.images_folder();
             let back = self.settings.images_folder.is_some().then_some(default);
             match path_row(
@@ -2184,7 +2186,10 @@ impl App {
                 None => {}
             }
             ui.add_space(8.0);
-            let default = ("Use the default", "Documents/Ferriteweazle/Presets.");
+            let default = (
+                "Use the default",
+                back_to(&PRESETS, presets::default_folder),
+            );
             let presets = self.presets_folder();
             let back = self.settings.presets_folder.is_some().then_some(default);
             match path_row(
@@ -3549,6 +3554,12 @@ fn pill(ui: &mut Ui, text: &str, colour: Color32) {
 enum PathClick {
     Choose,
     Default,
+}
+
+/// "Go back to" a default folder, made once: the folder is fixed while the
+/// app runs.
+fn back_to(tip: &'static OnceLock<String>, folder: fn() -> PathBuf) -> &'static str {
+    tip.get_or_init(|| format!("Go back to {}.", folder().display()))
 }
 
 /// A path in Settings: its name, where it is, Choose…, and with `back` a
