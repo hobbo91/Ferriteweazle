@@ -669,7 +669,14 @@ impl App {
                         .log
                         .extend(udev::advice(&port, self.udev_rule.as_deref()));
                 }
-                self.log.end(probe, ending(probe));
+                // Only INFO_TIMEOUT stops the card's gw info.
+                let end = match probe.outcome() {
+                    Some(Outcome::Stopped) => {
+                        format!("Timed out after {}.", clock(probe.elapsed()))
+                    }
+                    _ => ending(probe),
+                };
+                self.log.end(probe, end);
                 self.probe_failed = match (device::parse(&probe.log), probe.outcome()) {
                     (Some(_), _) => None,
                     (None, Some(Outcome::Stopped)) => Some("No answer.".into()),
@@ -689,7 +696,7 @@ impl App {
             self.probed = None;
             self.device = None;
             self.probe_failed = None;
-        } else if self.live && port != self.probed {
+        } else if self.live && !self.quitting && port != self.probed {
             self.ask_device(ctx);
         }
     }
@@ -784,7 +791,10 @@ impl App {
         let detected = std::mem::take(&mut job.detected);
         let step = job.step;
         match command.as_str() {
-            "info" => self.device = device::parse(&job.log),
+            // With --bootloader, gw reports the bootloader's firmware.
+            "info" if !job.args.iter().any(|a| a == "--bootloader") => {
+                self.device = device::parse(&job.log);
+            }
             // New firmware changes what the device says about itself.
             "update" => self.probed = None,
             _ => {}
@@ -961,9 +971,9 @@ impl App {
                     right(ui, |ui| {
                         ask |= ui
                             .add_enabled(idle, refresh_button(p))
-                            .on_hover_text("Look for the Greaseweazle again.")
+                            .on_hover_text("List the ports again and run gw info.")
                             .on_disabled_hover_text(match asking {
-                                true => "Asking the device…",
+                                true => "Running gw info…",
                                 false => BUSY,
                             })
                             .clicked();
@@ -991,7 +1001,7 @@ impl App {
                     if info.is_none() && asking {
                         text_row(ui, |ui| {
                             ui.add(egui::Spinner::new().size(10.0));
-                            ui.label(RichText::new("Asking the device…").small().weak());
+                            ui.label(RichText::new("Running gw info…").small().weak());
                         });
                     } else if let Some(port) = denied.filter(|_| info.is_none()) {
                         // gw info says only that it found none; the port list says why.
@@ -1013,7 +1023,7 @@ impl App {
                         let link = egui::Link::new(RichText::new("Get info").small());
                         ask |= ui
                             .add_enabled(idle, link)
-                            .on_hover_text("Ask the Greaseweazle what it is.")
+                            .on_hover_text("Run gw info.")
                             .on_disabled_hover_text(BUSY)
                             .clicked();
                     }
@@ -1021,7 +1031,7 @@ impl App {
                 ui.add_space(4.0);
                 let shown = match &found {
                     Some(port) => RichText::new(short_port(&port.device)),
-                    None => RichText::new("Select device").color(p.dim),
+                    None => RichText::new("Choose port").color(p.dim),
                 };
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(shown)
@@ -1090,7 +1100,7 @@ impl App {
             .schema
             .as_ref()
             .and_then(|s| s.note("DRIVE"))
-            .unwrap_or("0 | 1 | 2 :: Shugart bus unit\nA | B :: IBM/PC bus unit");
+            .unwrap_or("0 | 1 | 2 | 3 :: Shugart bus unit\nA | B :: IBM/PC bus unit");
         let mut drives: Vec<(String, String)> = note
             .lines()
             .filter_map(|l| l.split_once("::"))
@@ -1128,12 +1138,9 @@ impl App {
             .get(&cmd.name)
             .cloned()
             .unwrap_or_default();
-        // A chosen port that has gone is left to gw, which finds the Greaseweazle.
-        let ports = self.service.known_ports();
-        let device = match ports.iter().any(|p| p.device == self.settings.device) {
-            true => self.settings.device.as_str(),
-            false => "",
-        };
+        // The card's port, so gw opens the Greaseweazle the card names.
+        let device = chosen_port(self.service.known_ports(), &self.settings.device)
+            .map_or("", |p| p.device.as_str());
         for (dest, value) in [("device", device), ("drive", self.settings.drive.as_str())] {
             if cmd.arg(dest).is_some() {
                 values.set(dest, value);
@@ -4003,5 +4010,78 @@ mod tests {
         assert_eq!(app.detect_for, None);
         assert!(app.notices.is_empty(), "{:?}", app.notices);
         assert!(!app.settings.values.contains_key("read"));
+    }
+
+    #[test]
+    fn gw_is_given_the_port_the_card_names() {
+        let schema = schema();
+        let read = schema.command("read").unwrap();
+        let mut app = offline();
+        app.pin_ports(vec![
+            greaseweazle("COM10", false),
+            greaseweazle("COM3", false),
+        ]);
+        assert_eq!(app.values_for(read).get("device"), "COM10");
+        app.settings.device = "COM7".into();
+        assert_eq!(app.values_for(read).get("device"), "COM10", "COM7 has gone");
+        app.settings.device = "COM3".into();
+        assert_eq!(app.values_for(read).get("device"), "COM3");
+    }
+
+    #[test]
+    fn the_card_runs_no_gw_info_once_the_window_is_closing() {
+        let mut app = offline();
+        app.live = true;
+        app.engine = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        app.quitting = true;
+        app.poll_probe(&egui::Context::default());
+        assert_eq!(app.probed, None);
+        assert_eq!(app.probe_failed, None, "gw info did not try to start");
+    }
+
+    #[test]
+    fn device_info_with_bootloader_leaves_the_card_as_it_was() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let info = |firmware: &str, args: &[&str]| {
+            let log = format!("Host Tools: 1.23\nDevice:\n  Firmware: {firmware}");
+            let mut job = Job::replay("info", &log);
+            job.args = args.iter().map(|a| a.to_string()).collect();
+            Some(job)
+        };
+        app.tool = info("1.6", &["info"]);
+        app.ended(&ctx, false);
+        app.tool = info("1.0 (Bootloader)", &["info", "--bootloader"]);
+        app.ended(&ctx, false);
+        let card = app.device.as_ref().and_then(|d| d.get("Firmware"));
+        assert_eq!(card, Some("1.6"));
+    }
+
+    #[test]
+    fn gw_info_the_card_gives_up_on_is_logged_as_timed_out() {
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        let mut probe = Job::replay("info", "Host Tools: 1.23\nDevice:");
+        probe.ended = Some((probe.started, Outcome::Stopped));
+        app.probe = Some(probe);
+        app.poll_probe(&egui::Context::default());
+        let last = app.log.lines().last().map(String::as_str);
+        assert_eq!(last, Some("Timed out after 0:00."));
+        assert_eq!(app.probe_failed.as_deref(), Some("No answer."));
+    }
+
+    #[test]
+    fn before_gw_describes_itself_the_card_offers_the_drives_gw_does() {
+        let ids = |app: &App| {
+            app.drives()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        let ctx = egui::Context::default();
+        let starting = App::offline(&ctx, Settings::default(), Err(String::new()));
+        assert_eq!(ids(&starting), ids(&offline()));
+        assert_eq!(ids(&starting), ["A", "B", "0", "1", "2", "3"]);
     }
 }
