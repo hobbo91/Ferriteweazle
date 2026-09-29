@@ -66,7 +66,7 @@ const NAMES: &[(&str, &str, &str)] = &[
     (DETECT, "Detect disk format", "Detect"),
 ];
 
-/// Page descriptions where gw's does not fit: gw gives pin get pin set's.
+/// Page descriptions in place of gw's: gw describes pin get in pin set's words.
 const ABOUTS: &[(&str, &str)] = &[("pin get", "Read the level of a floppy interface pin.")];
 
 /// Commands that ask first, and what they do to the disk.
@@ -835,7 +835,7 @@ impl App {
             job.log
                 .extend(udev::advice(&port, self.udev_rule.as_deref()));
         }
-        // gw's message points at its wiki, which knows nothing of this app's gw.
+        // gw's message cites its wiki, whose steps are for gw's own install.
         if let Some(error) = &mut job.progress.error
             && error.contains("Could not find SPS/CAPS library")
         {
@@ -3207,7 +3207,7 @@ fn caps_advice(engine: Option<&Engine>) -> String {
     }
 }
 
-/// What Play a sound when a job ends plays, in each system's words.
+/// The tip of Play a sound when a job ends: the sounds this system plays.
 const SOUND_TIP: &str = if cfg!(target_os = "macos") {
     "Glass when it works, Basso when it fails."
 } else if cfg!(windows) {
