@@ -83,8 +83,8 @@ pub struct FormatInfo {
     pub cyls: u32,
     pub heads: u32,
     pub encoding: Option<String>,
-    /// Sectors on the first track.
-    pub sectors: Option<u32>,
+    /// The fewest and most sectors on a track.
+    pub sectors: Option<(u32, u32)>,
     /// Size of a sector image of the whole disk.
     pub bytes: Option<u64>,
 }

@@ -311,6 +311,11 @@ impl Service {
             .or_insert_with(|| Load::Waiting(call(requests, body)))
     }
 
+    /// As `format_info`, from what gw has already said.
+    pub fn known_format_info(&self, diskdefs: &str, name: &str) -> Option<&Load<FormatInfo>> {
+        self.infos.get(&(diskdefs.to_owned(), name.to_owned()))
+    }
+
     /// As `fits`, the objection alone, from what gw has already said.
     pub fn known_fits(&self, diskdefs: &str, format: &str, ext: &str) -> Option<&str> {
         let load = self

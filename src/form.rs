@@ -1421,6 +1421,12 @@ pub fn blocked(
             _ => {}
         }
     }
+    // gw would stop at the format, once the drive is open.
+    let chosen = values.get("format");
+    let fault = service.known_format_info(known_diskdefs(service, values, chosen), chosen);
+    if fault.is_some_and(|f| f.error().is_some()) {
+        return Some("gw cannot use this disk format. See Disk format.");
+    }
     // gw would stop at the image before it opens the drive.
     if values.get("format").is_empty()
         && format_in_file(schema, cmd, values)
@@ -1528,9 +1534,7 @@ pub fn blocked(
             f => Some(f.to_owned()),
         };
         if let Some(format) = format.filter(|_| !values.on("raw")) {
-            let path = values.get("diskdefs");
-            let own = service.known_custom_formats(path).contains(&format);
-            let diskdefs = if own { path } else { "" };
+            let diskdefs = known_diskdefs(service, values, &format);
             if service.known_fits(diskdefs, &format, &out.ext).is_some() {
                 return Some("The image type cannot hold the disk format. See Image type.");
             }
@@ -1720,6 +1724,19 @@ pub fn diskdefs_for(service: &mut Service, values: &Values, format: &str) -> Str
     match service.custom_formats(path).iter().any(|f| f == format) {
         true => path.to_owned(),
         false => String::new(),
+    }
+}
+
+/// As `diskdefs_for`, from what gw has already said of the file.
+fn known_diskdefs<'v>(service: &Service, values: &'v Values, format: &str) -> &'v str {
+    let path = values.get("diskdefs");
+    match service
+        .known_custom_formats(path)
+        .iter()
+        .any(|f| f == format)
+    {
+        true => path,
+        false => "",
     }
 }
 
@@ -2123,9 +2140,14 @@ fn describe(info: &FormatInfo) -> String {
         format!("{} sides", info.heads)
     });
     // A format with no fixed sectors, such as ibm.scan, gives 0 of each.
-    let sectors = info.sectors.filter(|&s| s > 0);
     let bytes = info.bytes.filter(|&b| b > 0);
-    parts.extend(sectors.map(|s| format!("{s} sectors")));
+    parts.extend(match info.sectors {
+        Some((fewest, most)) if fewest == most && most > 0 => {
+            Some(format!("{most} sectors per track"))
+        }
+        Some((fewest, most)) if most > 0 => Some(format!("{fewest} to {most} sectors per track")),
+        _ => None,
+    });
     parts.extend(bytes.map(|b| format!("{} KB", b / 1024)));
     // A narrow field wraps between facts, never inside one: "1440 KB" stays whole.
     let whole: Vec<String> = parts.iter().map(|p| p.replace(' ', "\u{a0}")).collect();
@@ -3387,10 +3409,12 @@ mod tests {
         };
         let shown = |i| describe(&i).replace('\u{a0}', " ");
         assert_eq!(
-            shown(info(18, 1_474_560)),
-            "IBM MFM · 80 cylinders · 2 sides · 18 sectors · 1440 KB"
+            shown(info((18, 18), 1_474_560)),
+            "IBM MFM · 80 cylinders · 2 sides · 18 sectors per track · 1440 KB"
         );
-        assert_eq!(shown(info(0, 0)), "IBM MFM · 80 cylinders · 2 sides");
+        assert_eq!(shown(info((0, 0), 0)), "IBM MFM · 80 cylinders · 2 sides");
+        let zoned = shown(info((17, 21), 196_608));
+        assert!(zoned.contains("17 to 21 sectors per track"), "{zoned}");
     }
 
     #[test]

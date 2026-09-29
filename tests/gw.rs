@@ -329,7 +329,7 @@ fn the_service_describes_gw_and_checks_values() {
     });
     assert_eq!(
         (info.cyls, info.heads, info.sectors, info.bytes),
-        (80, 2, Some(11), Some(901_120))
+        (80, 2, Some((11, 11)), Some(901_120))
     );
     let complaint = wait("a check", || {
         service.poll();
@@ -1627,6 +1627,42 @@ fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
     read_button(&w).hover();
     until_shown(&mut w, "why it cannot read", |w| {
         w.query_by_label("The image type cannot hold the disk format. See Image type.")
+            .is_some()
+    });
+}
+
+#[test]
+fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut info = |name: &str| {
+        wait("format details", || {
+            service.poll();
+            match service.format_info("", name) {
+                Load::Ready(info) => Some(Ok(info.clone())),
+                Load::Failed(e) => Some(Err(e.clone())),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    let c64 = info("commodore.1541").unwrap();
+    assert_eq!(c64.sectors, Some((17, 21)));
+    let scan = info("ibm.scan").unwrap();
+    assert_eq!(scan.encoding.as_deref(), Some("IBM"), "not IBM Empty");
+    let broken = info("zx.rocky.ss40").unwrap_err();
+    assert!(broken.contains("cylinder out of range"), "{broken}");
+
+    let mut w = window(&engine, Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    choose_format(&mut w, "zx.rocky.ss40");
+    until_shown(&mut w, "gw's objection to the format", |w| {
+        w.query_by_label_contains("cylinder out of range").is_some()
+    });
+    w.run_steps(2);
+    assert!(read_button(&w).accesskit_node().is_disabled());
+    read_button(&w).hover();
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("gw cannot use this disk format. See Disk format.")
             .is_some()
     });
 }

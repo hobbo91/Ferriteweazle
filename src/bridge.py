@@ -193,8 +193,9 @@ def format_info(name, diskdefs=None):
     tracks = [t for c in range(d.cyls) for h in range(d.heads) if (t := d.mk_track(c, h))]
     info = {'cyls': d.cyls, 'heads': d.heads}
     if tracks:
-        info['encoding'] = re.sub(r'\s*\(.*', '', tracks[0].summary_string())
-        info['sectors'] = tracks[0].nsec
+        # A scan's tracks are empty until read: IBM, of any layout.
+        info['encoding'] = re.sub(r'\s*(\(.*|Empty)$', '', tracks[0].summary_string())
+        info['sectors'] = [min(t.nsec for t in tracks), max(t.nsec for t in tracks)]
         with contextlib.suppress(Exception):
             info['bytes'] = sum(len(t.get_img_track()) for t in tracks)
     return info
