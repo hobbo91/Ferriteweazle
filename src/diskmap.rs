@@ -157,7 +157,7 @@ pub fn show(
         });
     }
     ui.add_space(6.0);
-    legend(ui, &shown, progress.tally().retries, p);
+    legend(ui, &shown, progress, p);
 }
 
 /// How far a square has faded in, 0 to 1. Timed from the frame it lit up,
@@ -242,7 +242,11 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
 }
 
 /// Each colour on the map with its track count, then the retries.
-fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
+fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, p: &Palette) {
+    let written = progress
+        .unverified
+        .as_deref()
+        .unwrap_or("Written, no verify reported.");
     ui.horizontal_wrapped(|ui| {
         for (status, name, tip) in [
             (
@@ -251,9 +255,9 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
                 "Every sector found, or written and verified.",
             ),
             (Status::Partial, "Short", "Some sectors missing."),
-            (Status::Bad, "Bad", "No sectors found, or failed to verify."),
+            (Status::Bad, "Bad", "No sectors found, or the write failed."),
             (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (Status::Written, "Written", "Written, no verify reported."),
+            (Status::Written, "Written", written),
             (Status::Erased, "Erased", "Erased."),
             (
                 Status::Skipped,
@@ -274,6 +278,7 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
                 .on_hover_text(tip);
             ui.add_space(6.0);
         }
+        let retries = progress.tally().retries;
         if retries > 0 {
             ui.label(RichText::new(retry_text(retries)).small().weak());
         }

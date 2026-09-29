@@ -11,7 +11,7 @@ pub enum Status {
     Good,
     /// Some sectors missing.
     Partial,
-    /// No sectors found, or the write failed to verify.
+    /// No sectors found, or the write failed.
     Bad,
     /// Read or converted as flux, with nothing decoded.
     Flux,
@@ -43,6 +43,9 @@ pub struct Progress {
     /// The track being worked on.
     pub current: Option<(u32, u32)>,
     pub error: Option<String>,
+    /// gw's line on why a write left tracks unverified, such as "No tracks
+    /// verified (Reason: Verify unavailable)".
+    pub unverified: Option<String>,
     /// A read with --raw: gw keeps the flux of tracks outside the format.
     pub raw: bool,
     /// The cylinders of gw's sector map, those it read. A conversion's
@@ -99,6 +102,15 @@ impl Progress {
                     .and_then(|k| self.tracks.get_mut(&k))
                 {
                     t.status = Status::Bad;
+                } else if let Some((key, text)) = track_line(line) {
+                    // gw stopped before the track, as for sectors its input lacks.
+                    let t = self.tracks.entry(key).or_insert(Track {
+                        status: Status::Bad,
+                        retries: 0,
+                        text: String::new(),
+                    });
+                    t.status = Status::Bad;
+                    text.clone_into(&mut t.text);
                 }
                 return self.add_to_error(line);
             }
@@ -141,6 +153,10 @@ impl Progress {
             {
                 t.status = Status::Good;
             }
+        } else if line.starts_with("No tracks verified ")
+            || line.contains(" tracks *not* verified ")
+        {
+            self.unverified = Some(line.to_owned());
         } else if let Some(rest) = line.strip_prefix("Found ") {
             self.total = found(rest);
         } else if let Some((key, text)) = track_line(line) {
@@ -499,6 +515,36 @@ mod tests {
         let p = fed("T3.0: Writing Track (Flux: 1)\n** FATAL ERROR:\nFailed to verify Track 3.0");
         assert_eq!(p.tracks[&(3, 0)].status, Status::Bad);
         assert_eq!(p.error.as_deref(), Some("Failed to verify Track 3.0"));
+    }
+
+    #[test]
+    fn a_track_gw_stops_at_before_writing_it_is_bad() {
+        let p = fed("Writing c=0-1:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            ** FATAL ERROR:\n\
+            T1.0: 3 missing sectors in input image");
+        let t = &p.tracks[&(1, 0)];
+        assert_eq!(t.status, Status::Bad);
+        assert_eq!(t.text, "3 missing sectors in input image");
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Written);
+        assert_eq!(
+            p.error.as_deref(),
+            Some("T1.0: 3 missing sectors in input image")
+        );
+    }
+
+    #[test]
+    fn gws_reason_for_leaving_tracks_unverified_is_kept() {
+        let written = "Writing c=0:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)";
+        for reason in [
+            "No tracks verified (Reason: Verify disabled)",
+            "2 tracks verified; 1 tracks *not* verified (Reason: Verify unavailable)",
+        ] {
+            let p = fed(&format!("{written}\n{reason}"));
+            assert_eq!(p.unverified.as_deref(), Some(reason));
+            assert_eq!(p.tracks[&(0, 0)].status, Status::Written);
+        }
     }
 
     #[test]

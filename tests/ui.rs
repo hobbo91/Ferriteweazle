@@ -884,16 +884,20 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
         "** FATAL ERROR:\nFailed to verify Track 1.0",
     ]
     .join("\n");
+    // Flux with no format, which gw cannot verify.
+    let reason = "No tracks verified (Reason: Verify unavailable)";
+    let unverified = [header, &writing(0, 0), &writing(0, 1), reason].join("\n");
     let good = ("Good 2", "Every sector found, or written and verified.");
     let skipped = ("Skipped 2", "Outside the format, or not in the input.");
     let written = ("Written 2", "Written, no verify reported.");
-    let bad = ("Bad 1", "No sectors found, or failed to verify.");
+    let bad = ("Bad 1", "No sectors found, or the write failed.");
     // Once the write has worked, what gw passed over is known.
     let passed = ("4 / 4 tracks", "Not in the input, so gw passed over it.");
     let unreported = ("3 / 4 tracks", "gw has not reported this track.");
     for (log, (count, hover), legend) in [
         (verified, passed, vec![good, skipped]),
         (failed, unreported, vec![written, bad]),
+        (unverified, passed, vec![("Written 2", reason), skipped]),
     ] {
         let settings = Settings {
             page: Page::Command("write".into()),
