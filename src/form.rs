@@ -3465,6 +3465,9 @@ mod tests {
         );
 
         std::fs::write(dir.join("Game.img"), [0u8; 512]).unwrap();
+        // A service that has not listed the folder: one that has may keep
+        // its listing for FOLDER_EVERY where the folder's time is coarse.
+        let mut service = Service::offline(Ok(s.clone()));
         service.folder(&dir.to_string_lossy());
         v.set("in_file", dir.join("Game.img").to_string_lossy());
         v.set("format", "ibm.360");
