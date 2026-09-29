@@ -3,7 +3,8 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, greaseweazle, line, run_button, squares,
+    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
+    run_button, squares,
 };
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -607,7 +608,11 @@ fn smooth(settings: Settings) -> Window {
         .with_size(DEFAULT)
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(60);
-    let w = start(builder, settings, Some(Job::replay("read", DAMAGED)));
+    let w = start(
+        builder,
+        settings,
+        Some(Job::replay("read", &damaged_read())),
+    );
     // egui's own default: kittest turns animations off.
     w.ctx.all_styles_mut(|s| s.animation_time = 0.2);
     w
@@ -927,11 +932,24 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
 }
 
 #[test]
+fn gws_warning_about_a_damaged_input_shows_in_the_status_pane() {
+    // The Log, which also shows it, is shut.
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("convert", DAMAGED)),
+    );
+    let pane = w.get_by_label("Disk status").rect().left();
+    let warning = w.get_by_label("SCP: WARNING: Bad image checksum").rect();
+    assert!(warning.left() >= pane, "{warning:?}");
+}
+
+#[test]
 fn a_square_names_the_rows_of_gws_sector_map_it_is_missing() {
     let mut w = build(
         Harness::builder().with_size(DEFAULT),
         chosen(),
-        Some(Job::replay("read", DAMAGED)),
+        Some(Job::replay("read", &damaged_read())),
     );
     // Side 0's squares come first, one to a cylinder.
     let square = squares(&w).nth(20).expect("cylinder 20").rect.center();
@@ -989,7 +1007,7 @@ fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
 
 #[test]
 fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.progress.error = Some("The drive did not answer. ".repeat(6));
     let builder = Harness::builder()
         .with_size(DEFAULT)
@@ -1027,7 +1045,7 @@ fn with_too_little_room_the_status_pane_scrolls_and_its_rows_keep_their_width() 
 
 #[test]
 fn a_stopped_read_says_so_and_what_it_left() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.ended = Some((job.started, Outcome::Stopped));
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
     w.get_by_label_contains("Stopped ·");
@@ -1197,7 +1215,7 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
     let w = build(
         Harness::builder().with_size(DEFAULT),
         settings,
-        Some(Job::replay("read", DAMAGED)),
+        Some(Job::replay("read", &damaged_read())),
     );
     let legend = w.get_by_label_contains("Good ").rect();
     let drawer = w.get_by_label("Copy").rect();
@@ -1240,7 +1258,7 @@ fn a_square_lit_after_a_pause_still_fades_from_empty() {
 
 #[test]
 fn a_long_job_description_wraps_within_the_status_pane() {
-    let mut job = Job::replay("read", DAMAGED);
+    let mut job = Job::replay("read", &damaged_read());
     job.format = Some("commodore.1541".into());
     job.output = Some("/d/Summer Games II side B, the long one.d64".into());
     let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));

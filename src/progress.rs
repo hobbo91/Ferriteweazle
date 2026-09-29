@@ -46,6 +46,8 @@ pub struct Progress {
     /// gw's line on why a write left tracks unverified, such as "No tracks
     /// verified (Reason: Verify unavailable)".
     pub unverified: Option<String>,
+    /// gw's warnings about the job as a whole, such as a damaged input's.
+    pub warnings: Vec<String>,
     /// A read with --raw: gw keeps the flux of tracks outside the format.
     pub raw: bool,
     /// The cylinders of gw's sector map, those it read. A conversion's
@@ -163,6 +165,8 @@ impl Progress {
             self.track(key, text);
         } else if let Some((head, sector, cells)) = map_row(line) {
             self.map_row(head, sector, cells);
+        } else if line.contains("WARNING:") {
+            self.warnings.push(line.to_owned());
         }
     }
 
@@ -426,6 +430,7 @@ mod tests {
                 retries: 0
             }
         );
+        assert_eq!(p.warnings, ["SCP: WARNING: Bad image checksum"]);
     }
 
     #[test]
@@ -671,6 +676,7 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
     fn remarks_about_a_track_leave_it_as_it_was() {
         let p = fed(
             "T45.0: D88: Removed 2 duplicate sectors from oversized track\n\
+            T5.0: IBM: WARNING: Track is 7.50% too long\n\
             Writing c=0-1:h=0\n\
             T0.0: Writing Track (Flux: 1)\n\
             T0.0: Ignoring unexpected sector C:0 H:0 R:19 N:2\n\
@@ -678,6 +684,7 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
         );
         assert_eq!(p.tracks.keys().collect::<Vec<_>>(), [&(0, 0)]);
         assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
+        assert!(p.warnings.is_empty(), "the job's own warnings only");
     }
 
     #[test]

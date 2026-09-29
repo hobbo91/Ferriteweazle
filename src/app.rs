@@ -1702,9 +1702,10 @@ impl App {
                 }
             });
         }
-        if let Some(left) = left_behind(job) {
+        let warnings = job.progress.warnings.iter().map(String::as_str);
+        for note in warnings.chain(left_behind(job)) {
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(left).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(note).color(p.partial)).wrap());
         }
         ui.add_space(8.0);
         let (budget, room) = room(ui);

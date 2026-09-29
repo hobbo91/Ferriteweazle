@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{DAMAGED, DEFAULT, FOUND, REFUSED, Window, greaseweazle, run_button};
+use common::{DAMAGED, DEFAULT, FOUND, REFUSED, Window, damaged_read, greaseweazle, run_button};
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -122,8 +122,7 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
 /// The damaged conversion told as a read for the read page, with one track
 /// retried as gw does by default: three times, over three revolutions.
 fn read_job() -> Job {
-    let log = DAMAGED
-        .replace("SCP: WARNING: Bad image checksum\n", "")
+    let log = damaged_read()
         .replace(
             "Format ibm.1440\nConverting c=0-79:h=0-1 -> c=0-79:h=0-1",
             "Reading c=0-79:h=0-1 revs=2\nFormat ibm.1440",
