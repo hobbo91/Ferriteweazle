@@ -835,6 +835,15 @@ impl App {
             job.log
                 .extend(udev::advice(&port, self.udev_rule.as_deref()));
         }
+        // gw's message points at its wiki, which knows nothing of this app's gw.
+        if let Some(error) = &mut job.progress.error
+            && error.contains("Could not find SPS/CAPS library")
+        {
+            let advice = caps_advice(self.engine.as_ref());
+            error.push('\n');
+            error.push_str(&advice);
+            job.log.push(advice);
+        }
         self.log.end(job, ending(job));
         let command = job.command.clone();
         let detected = std::mem::take(&mut job.detected);
@@ -3144,6 +3153,30 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
     out
 }
 
+/// Where gw looks for the SPS/CAPS library, which reads IPF and CTRaw
+/// images and which gw does not ship.
+fn caps_advice(engine: Option<&Engine>) -> String {
+    if cfg!(target_os = "macos") {
+        "gw looks for CAPSImage.framework or CAPSImg.framework in /Library/Frameworks.".into()
+    } else if cfg!(windows) {
+        // Python loads a DLL by name from python.exe's folder or System32.
+        let bundled = engine.filter(|e| e.origin == Origin::Bundled);
+        match bundled.and_then(|e| e.python.parent()) {
+            Some(folder) => format!(
+                "This gw looks for CAPSImg_x64.dll or CAPSImg.dll in {} and in System32.",
+                folder.display()
+            ),
+            None => "gw looks for CAPSImg_x64.dll or CAPSImg.dll beside its python.exe and in \
+                     System32."
+                .into(),
+        }
+    } else {
+        "gw looks for libcapsimage.so.5 or libcapsimage.so.4 in the system's library folders, \
+         such as /usr/lib."
+            .into()
+    }
+}
+
 /// Plays a system sound for how a job ended, on macOS only.
 fn chime(outcome: Option<Outcome>) {
     let sound = match outcome {
@@ -4178,6 +4211,42 @@ mod tests {
         app.disk = Some(Job::replay("read", REFUSED));
         app.ended(&ctx, true);
         assert!(has_the_fix(app.log.lines()), "{:#?}", app.log.lines());
+    }
+
+    #[test]
+    fn an_image_that_needs_the_caps_library_says_where_this_gw_looks_for_it() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let missing = "** FATAL ERROR:\nCould not find SPS/CAPS library\n\
+                       For installation instructions please read the wiki:\n\
+                       <https://github.com/keirf/greaseweazle/wiki/IPF-Images>";
+        app.disk = Some(Job::replay("convert", missing));
+        app.ended(&ctx, true);
+        let place = match () {
+            _ if cfg!(target_os = "macos") => "/Library/Frameworks.",
+            _ if cfg!(windows) => "System32.",
+            _ => "/usr/lib.",
+        };
+        let advice = app.log.lines().iter().rev().nth(1).unwrap();
+        assert!(advice.ends_with(place), "{:#?}", app.log.lines());
+        let error = app.disk.unwrap().progress.error.unwrap_or_default();
+        assert!(
+            error.ends_with(advice.as_str()),
+            "the status pane lacks it: {error}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_caps_library_goes_beside_the_built_in_gws_python() {
+        let engine = Engine {
+            python: r"C:\Program Files\Ferriteweazle\ferriteweazle-data\python.exe".into(),
+            origin: Origin::Bundled,
+        };
+        assert_eq!(
+            caps_advice(Some(&engine)),
+            r"This gw looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\ferriteweazle-data and in System32."
+        );
     }
 
     #[test]
