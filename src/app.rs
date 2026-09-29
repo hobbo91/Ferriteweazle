@@ -187,13 +187,14 @@ enum Dialog {
         command: String,
         runs: Runs,
     },
-    /// Between the disks of a session.
+    /// Between the disks of a session. Disks count from 1.
     NextDisk {
         command: String,
-        disk: usize,
+        /// The disk to insert next: none when the one that failed was the last.
+        disk: Option<usize>,
         total: usize,
-        /// The disk before failed.
-        failed: bool,
+        /// The disk that failed, which can be tried again.
+        failed: Option<usize>,
         /// The image the next disk gets, when writing.
         image: Option<String>,
     },
@@ -835,18 +836,20 @@ impl App {
             if failed {
                 session.failed.push(session.next - 1);
             }
+            let total = session.runs.args.len();
+            let next = (session.next < total).then_some(session.next + 1);
+            // A batch of images goes on alone; a disk can be tried again.
+            let again = (failed && command != "convert").then_some(session.next);
             // Quit is asking: the window closes once this run has ended.
-            let more = session.next < session.runs.args.len()
-                && !matches!(self.dialog, Some(Dialog::Quit));
-            if !more {
+            if matches!(self.dialog, Some(Dialog::Quit)) || (next.is_none() && again.is_none()) {
                 self.end_session();
             } else if command == "convert" {
                 self.next_disk(ctx);
             } else {
                 self.dialog = Some(Dialog::NextDisk {
-                    disk: session.next + 1,
-                    total: session.runs.args.len(),
-                    failed,
+                    disk: next,
+                    total,
+                    failed: again,
                     image: session.runs.images.get(session.next).cloned(),
                     command: command.clone(),
                 });
@@ -1580,6 +1583,15 @@ impl App {
         } else if let Some(job) = &mut self.disk {
             job.part = Some(part);
         }
+    }
+
+    /// Runs the session's disk that failed again.
+    fn disk_again(&mut self, ctx: &egui::Context) {
+        if let Some(session) = &mut self.session {
+            session.next -= 1;
+            session.failed.pop();
+        }
+        self.next_disk(ctx);
     }
 
     /// Ends the session, saying on its page how it went.
@@ -2363,23 +2375,48 @@ impl App {
                     failed,
                     image,
                 } => {
-                    dialog_heading(ui, &format!("Insert disk {disk} of {total}"));
-                    let p = theme::palette(ui);
-                    if *failed {
-                        let text = format!("Disk {} failed. The Log says why.", *disk - 1);
+                    let (disk, failed) = (*disk, *failed);
+                    let (verb, p) = (run_label(command), theme::palette(ui));
+                    let heading = match disk {
+                        Some(disk) => format!("Insert disk {disk} of {total}"),
+                        None => format!("{verb} {total} again?"),
+                    };
+                    dialog_heading(ui, &heading);
+                    if let Some(failed) = failed {
+                        let text = format!("Disk {failed} failed. The Log says why.");
                         ui.label(RichText::new(text).color(p.bad));
                     }
-                    ui.label("Eject, then insert the next disk in the drive.");
+                    if disk.is_some() {
+                        ui.label("Eject, then insert the next disk in the drive.");
+                    }
                     if let Some(image) = image {
                         ui.label(RichText::new(format!("Next image: {image}")).color(p.dim));
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let next = format!("{} {disk}", run_label(command));
-                        if ui.add(dialog_button(&next, p.accent, p)).clicked() {
-                            let ctx = ctx.clone();
-                            action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
-                            close = true;
+                        if let Some(disk) = disk {
+                            let next = format!("{verb} {disk}");
+                            if ui.add(dialog_button(&next, p.accent, p)).clicked() {
+                                let ctx = ctx.clone();
+                                action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
+                                close = true;
+                            }
+                        }
+                        if let Some(failed) = failed {
+                            let again = format!("{verb} {failed} again");
+                            let button = match disk {
+                                Some(_) => dialog_plain(&again),
+                                None => dialog_button(&again, p.accent, p),
+                            };
+                            if ui
+                                .add(button)
+                                .on_hover_text("Try the disk that failed again.")
+                                .clicked()
+                            {
+                                let ctx = ctx.clone();
+                                action = Some(Box::new(move |app: &mut App| app.disk_again(&ctx)));
+                                close = true;
+                            }
                         }
                         let tip = match command.as_str() {
                             "read" => "End the session. The disks read so far are kept.",
@@ -3874,7 +3911,7 @@ mod tests {
             }) => (command.as_str(), *disk, image.as_deref()),
             _ => panic!("no next disk"),
         };
-        assert_eq!(next, ("write", 2, Some("b.adf")));
+        assert_eq!(next, ("write", Some(2), Some("b.adf")));
 
         app.dialog = None;
         app.session.as_mut().unwrap().next = 2;
@@ -3883,9 +3920,57 @@ mod tests {
             "Command Failed: GetFluxStatus: No Index",
         ));
         app.ended(&ctx, true);
-        assert!(app.session.is_none());
+        let again = matches!(
+            app.dialog,
+            Some(Dialog::NextDisk {
+                disk: None,
+                failed: Some(2),
+                ..
+            })
+        );
+        assert!(again, "it can be tried again");
+        // Stop here.
+        app.end_session();
         let note = "Wrote 1 of 2 disks. Failed: b.adf. The Log says why.";
         assert_eq!(app.notices["write"], note);
+    }
+
+    #[test]
+    fn a_disk_that_fails_can_be_tried_again_the_last_one_too() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.session = Some(Session {
+            command: "read".into(),
+            runs: reads(&["a.adf", "b.adf", "c.adf"]),
+            next: 2,
+            failed: Vec::new(),
+        });
+        let no_index = || {
+            Some(Job::replay(
+                "read",
+                "Command Failed: GetFluxStatus: No Index",
+            ))
+        };
+        app.disk = no_index();
+        app.ended(&ctx, true);
+        let mut w = window(app);
+        w.get_by_label("Insert disk 3 of 3");
+        w.get_by_label("Disk 2 failed. The Log says why.");
+        w.get_by_label("Read disk 3");
+        w.get_by_label("Read disk 2 again");
+
+        let app = w.state_mut();
+        app.dialog = None;
+        app.session.as_mut().unwrap().next = 3;
+        app.disk = no_index();
+        app.ended(&ctx, true);
+        assert!(app.session.is_some(), "the session ended");
+        w.run_steps(2);
+        w.get_by_label("Read disk 3 again?");
+        w.get_by_label("Disk 3 failed. The Log says why.");
+        w.get_by_role_and_label(egui::accesskit::Role::Button, "Read disk 3 again");
+        let next = "Eject, then insert the next disk in the drive.";
+        assert!(w.query_by_label(next).is_none(), "no disk is left");
     }
 
     #[test]
