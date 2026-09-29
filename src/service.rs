@@ -463,7 +463,6 @@ fn parse(line: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
     use crate::engine::Origin;
-    use std::path::Path;
 
     /// An empty folder of its own for `test`.
     fn scratch(test: &str) -> PathBuf {
@@ -487,7 +486,7 @@ mod tests {
     /// A bridge that answers every request with an empty list, and writes its
     /// process id beside itself.
     #[cfg(unix)]
-    fn fake_engine(dir: &Path) -> Engine {
+    fn fake_engine(dir: &std::path::Path) -> Engine {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("bridge");
         let text =
