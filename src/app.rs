@@ -246,6 +246,15 @@ struct Runs {
     args: Vec<Vec<String>>,
     images: Vec<String>,
     makes: Vec<PathBuf>,
+    /// Disks of the set read before these, when a read carries a set on.
+    before: usize,
+}
+
+impl Runs {
+    /// Run `run`'s disk number, counting from 1, and the set's last.
+    fn number(&self, run: usize) -> (usize, usize) {
+        (self.before + run + 1, self.before + self.args.len())
+    }
 }
 
 /// The command line drawer's text, and why it does not parse.
@@ -825,9 +834,10 @@ impl App {
             } else if command == "convert" {
                 self.next_disk(ctx);
             } else {
+                let (disk, total) = session.runs.number(session.next);
                 self.dialog = Some(Dialog::NextDisk {
-                    disk: session.next + 1,
-                    total: session.runs.args.len(),
+                    disk,
+                    total,
                     failed,
                     image: session.runs.images.get(session.next).cloned(),
                     command: command.clone(),
@@ -1401,7 +1411,7 @@ impl App {
                             .settings
                             .outputs
                             .get(&form::output_key("read", "file"))
-                            .is_some_and(|o| o.disks > 1);
+                            .is_some_and(|o| o.first_disk() < o.disks);
                     let batch = self
                         .settings
                         .values
@@ -1562,8 +1572,8 @@ impl App {
             self.session = None;
             return;
         };
+        let part = session.runs.number(session.next);
         session.next += 1;
-        let part = (session.next, session.runs.args.len());
         let command = session.command.clone();
         if !self.run(ctx, &command, args) {
             self.session = None;
@@ -1592,7 +1602,7 @@ impl App {
                     .images
                     .get(i)
                     .cloned()
-                    .unwrap_or_else(|| format!("disk {}", i + 1))
+                    .unwrap_or_else(|| format!("disk {}", session.runs.number(i).0))
             };
             let mut names: Vec<String> = session.failed.iter().take(4).map(name).collect();
             if session.failed.len() > 4 {
@@ -2466,7 +2476,7 @@ impl App {
                 .settings
                 .outputs
                 .get(&key)
-                .is_some_and(|o| o.value(1) == file);
+                .is_some_and(|o| o.value(o.first_disk()) == file);
             if !file.is_empty() && !same {
                 let mut out = Output::from_value(file);
                 // The name given holds while the input is the one given with it.
@@ -2782,7 +2792,7 @@ fn runs(
     }
     let (args, makes) = match out {
         Some((dest, out)) if cmd.name == "read" => {
-            let args = (1..=out.disks.max(1))
+            let args = (out.first_disk()..=out.disks.max(1))
                 .map(|d| {
                     values.set(dest, out.value(d));
                     argv(&values)
@@ -2796,6 +2806,7 @@ fn runs(
     Runs {
         args,
         makes,
+        before: out.map_or(0, |(_, o)| o.first_disk() as usize - 1),
         ..Runs::default()
     }
 }
@@ -3731,7 +3742,7 @@ mod tests {
                 vec!["write".into(), "b.adf".into()],
             ],
             images: vec!["a.adf".into(), "b.adf".into()],
-            makes: Vec::new(),
+            ..Runs::default()
         };
         app.begin(&ctx, "write", runs);
         assert!(matches!(app.dialog, Some(Dialog::Confirm { disks: 2, .. })));
@@ -4426,5 +4437,55 @@ mod tests {
             ["--tracks=hswap", "--hard-sectors", "--reverse", "/d/x.scp"]
         );
         assert_eq!(args("write"), ["/d/y.scp"], "they are for the disk written");
+    }
+
+    #[test]
+    fn a_read_that_carries_on_a_set_counts_its_disks_from_the_first() {
+        let schema = schema();
+        let read = schema.command("read").unwrap();
+        let out = Output {
+            folder: "/f".into(),
+            name: "Game".into(),
+            ext: ".adf".into(),
+            disks: 7,
+            first: 4,
+            ..Output::default()
+        };
+        let outputs = BTreeMap::from([("read/file".to_owned(), out)]);
+        let runs = runs(read, Values::default(), &outputs, &[], |v| {
+            command::argv(read, v)
+        });
+        let last: Vec<&str> = runs
+            .args
+            .iter()
+            .map(|r| r.last().unwrap().as_str())
+            .collect();
+        let sep = std::path::MAIN_SEPARATOR;
+        let expected: Vec<String> = (4..=7)
+            .map(|d| format!("/f{sep}Game_Disk{d}.adf"))
+            .collect();
+        assert_eq!(last, expected);
+        assert_eq!(runs.makes.len(), 4);
+        assert_eq!(runs.number(0), (4, 7), "Read disk 4 of 7");
+
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.session = Some(Session {
+            command: "read".into(),
+            runs,
+            next: 1,
+            failed: vec![0],
+        });
+        app.disk = Some(Job::replay("read", ""));
+        app.ended(&ctx, true);
+        let next = match &app.dialog {
+            Some(Dialog::NextDisk { disk, total, .. }) => (*disk, *total),
+            _ => panic!("no next disk"),
+        };
+        assert_eq!(next, (5, 7), "Insert disk 5 of 7");
+        app.session.as_mut().unwrap().next = 4;
+        app.end_session();
+        let note = "Read 3 of 4 disks. Failed: disk 4. The Log says why.";
+        assert_eq!(app.notices["read"], note);
     }
 }

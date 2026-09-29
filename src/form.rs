@@ -1305,7 +1305,7 @@ impl<'a> Form<'a> {
         let value = match (batch, images.first()) {
             (true, Some(first)) => out.batch_value(first),
             (true, None) => String::new(),
-            (false, _) => out.value(1),
+            (false, _) => out.value(out.first_disk()),
         };
         if !value.is_empty() {
             row(ui, "", |ui| {
@@ -1341,15 +1341,16 @@ impl<'a> Form<'a> {
             .outputs
             .entry(output_key(&self.cmd.name, "file"))
             .or_default();
-        let title = match out.disks {
-            0 | 1 => "Multiple disks".to_owned(),
-            n => format!("Multiple disks ({n})"),
+        let title = match (out.first_disk(), out.disks) {
+            (_, 0 | 1) => "Multiple disks".to_owned(),
+            (1, n) => format!("Multiple disks ({n})"),
+            (first, n) => format!("Multiple disks ({first} to {n})"),
         };
         egui::CollapsingHeader::new(RichText::new(title).strong())
             .id_salt(("disks", &self.cmd.name))
             .show_unindented(ui, |ui| {
                 ui.add_space(6.0);
-                let tip = "How many disks to read, one after another.";
+                let tip = "How many disks the set has, read one after another.";
                 let (name, _) = row(ui, "Disks", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
                     ui.add_sized(
@@ -1357,6 +1358,16 @@ impl<'a> Form<'a> {
                         egui::DragValue::new(&mut out.disks).range(1..=MAX_DISKS),
                     )
                     .on_hover_text(tip)
+                });
+                name.on_hover_text(tip);
+                let tip = "The number of the first disk to read, to carry on a set.";
+                let (name, _) = row(ui, "First disk", |ui| {
+                    let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
+                    let first = egui::DragValue::new(&mut out.first).range(1..=out.disks.max(1));
+                    ui.add_enabled_ui(out.disks > 1, |ui| ui.add_sized(size, first))
+                        .inner
+                        .on_hover_text(tip)
+                        .on_disabled_hover_text("Needs more than one disk.");
                 });
                 name.on_hover_text(tip);
                 let tip = "The word before each disk number, such as Disk in Game_Disk1.";
@@ -2595,6 +2606,8 @@ pub struct Output {
     pub name: String,
     /// Disks read one after another, each into its own numbered file.
     pub disks: u32,
+    /// The number of the first disk a session reads, to carry on a set.
+    pub first: u32,
     /// The word before each disk number: `Disk` in `Game_Disk1`.
     pub label: String,
     /// The disk number goes before the name, not after it.
@@ -2616,6 +2629,7 @@ impl Default for Output {
             folder: images_folder().to_string_lossy().into_owned(),
             name: "Floppy".into(),
             disks: 1,
+            first: 1,
             label: "Disk".into(),
             number_first: false,
             ext: String::new(),
@@ -2661,9 +2675,14 @@ impl Output {
         PathBuf::from(&self.folder).join(self.file_name(disk))
     }
 
+    /// The first disk a session reads, within the set.
+    pub fn first_disk(&self) -> u32 {
+        self.first.clamp(1, self.disks.max(1))
+    }
+
     /// Every file a session makes, in order.
     pub fn paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
-        (1..=self.disks.max(1)).map(|d| self.path(d))
+        (self.first_disk()..=self.disks.max(1)).map(|d| self.path(d))
     }
 
     /// The value gw takes for one disk: the path and any image options.
@@ -2711,24 +2730,26 @@ impl Output {
 
     /// The first file, and the last when there are several.
     fn preview(&self) -> String {
-        let first = self.path(1).to_string_lossy().into_owned();
-        match self.disks {
-            0 | 1 => first,
-            n => format!("{first} … {}", self.file_name(n)),
+        let (first, last) = (self.first_disk(), self.disks.max(1));
+        let path = self.path(first).to_string_lossy().into_owned();
+        match first == last {
+            true => path,
+            false => format!("{path} … {}", self.file_name(last)),
         }
     }
 
     fn preview_names(&self) -> String {
-        match self.disks {
-            0..=3 => {
-                let names: Vec<String> = (1..=self.disks).map(|d| self.file_name(d)).collect();
+        let (first, last) = (self.first_disk(), self.disks.max(1));
+        match last - first {
+            0..=2 => {
+                let names: Vec<String> = (first..=last).map(|d| self.file_name(d)).collect();
                 names.join(", ")
             }
-            n => format!(
+            _ => format!(
                 "{}, {} … {}",
-                self.file_name(1),
-                self.file_name(2),
-                self.file_name(n)
+                self.file_name(first),
+                self.file_name(first + 1),
+                self.file_name(last)
             ),
         }
     }
@@ -3995,5 +4016,28 @@ mod tests {
         assert_eq!(sentence("number of revolutions"), "Number of revolutions.");
         assert_eq!(sentence("pin level (H,L)"), "Pin level (H,L).");
         assert_eq!(sentence("Done."), "Done.");
+    }
+
+    #[test]
+    fn a_set_can_start_at_any_disk_and_keeps_the_sets_numbering() {
+        let mut out = Output {
+            folder: "/f".into(),
+            name: "Game".into(),
+            ext: ".adf".into(),
+            disks: 12,
+            first: 4,
+            ..Output::default()
+        };
+        let paths: Vec<_> = out.paths().collect();
+        let names = (4..=12).map(|d| PathBuf::from(format!("/f/Game_Disk{d:02}.adf")));
+        assert_eq!(paths, names.collect::<Vec<_>>());
+        assert_eq!(
+            out.preview_names(),
+            "Game_Disk04.adf, Game_Disk05.adf … Game_Disk12.adf"
+        );
+        out.first = 20;
+        assert_eq!(out.first_disk(), 12, "no further than the set's last");
+        let saved: Output = serde_json::from_str(r#"{"disks": 3}"#).unwrap();
+        assert_eq!(saved.first, 1, "a preset saved without it");
     }
 }

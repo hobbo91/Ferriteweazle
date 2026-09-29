@@ -1853,3 +1853,39 @@ fn a_typed_bt_turns_on_tracebacks_and_an_option_gw_lacks_is_refused() {
     type_line(&mut w, "gw --foo info");
     w.get_by_label("gw has no option --foo.");
 }
+
+#[test]
+fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line() {
+    let mut settings = Settings {
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    };
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    (out.disks, out.first) = (7, 4);
+    let mut w = window(settings);
+    let shown = line(&w);
+    assert!(shown.contains("Floppy_Disk4.adf"), "{shown}");
+    w.get_by_label("Multiple disks (4 to 7)").click();
+    w.run();
+    w.get_by_label_contains("Floppy_Disk4.adf, Floppy_Disk5.adf … Floppy_Disk7.adf");
+
+    type_line(&mut w, &format!("{shown} --revs=3"));
+    let app = app(&w);
+    assert_eq!(app.settings.values["read"].get("revs"), "3");
+    let out = &app.settings.outputs["read/file"];
+    assert_eq!((out.disks, out.first), (7, 4), "the set is kept");
+
+    app_mut(&mut w)
+        .settings
+        .outputs
+        .get_mut("read/file")
+        .unwrap()
+        .disks = 1;
+    w.run();
+    let label = w.get_by_label("First disk").rect();
+    let field = w
+        .get_all_by_role(Role::SpinButton)
+        .find(|f| (f.rect().center().y - label.center().y).abs() < 4.0)
+        .expect("the first disk's field");
+    assert!(field.accesskit_node().is_disabled(), "one disk is no set");
+}
