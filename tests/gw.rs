@@ -1555,7 +1555,10 @@ fn a_broken_definition_stops_only_a_page_that_uses_it() {
         w.query_by_label("mine.800").is_some()
     });
     w.get_by_label("mine.800").click();
-    w.run_steps(3);
+    // Its details move the page down as they come.
+    until_shown(&mut w, "the format's description", |w| {
+        w.query_by_label_contains("5\u{a0}sectors").is_some()
+    });
     w.get_by_label_contains("Advanced options").click();
     until_shown(&mut w, "gw's objection", |w| {
         w.query_by_label_contains("mixed.cfg, line 11").is_some()
