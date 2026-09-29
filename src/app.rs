@@ -77,6 +77,10 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
+/// Why Restart and Update grey when no gw is found.
+const NOT_FOUND: &str = "Ferriteweazle could not find Greaseweazle Tools.";
+/// When no gw is found, built in, installed or chosen.
+const NO_GW: &str = "Ferriteweazle could not find Greaseweazle Tools, update the path in Settings.";
 /// Why nothing that uses an Adafruit RP2040 can start, by whether a port is chosen.
 const NO_ADAFRUIT: &str = "Select the Adafruit RP2040's serial port.";
 const GONE_ADAFRUIT: &str = "Connect the Adafruit RP2040.";
@@ -352,6 +356,8 @@ pub struct App {
     kept_drive: String,
     /// The device type and port as last kept in device_file().
     kept_device: (Kind, String),
+    /// The gw chosen in Settings as last kept in engine_file().
+    kept_engine: Option<PathBuf>,
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
@@ -388,16 +394,19 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let drive = kept_drive(&drive_file());
         let (kind, port) = kept_device(&device_file());
+        let engine = kept_engine(&engine_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
+            engine: engine.clone(),
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
         app.live = true;
         app.kept_drive = drive;
         app.kept_device = (kind, port);
+        app.kept_engine = engine;
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -442,6 +451,7 @@ impl App {
             live: false,
             kept_drive: String::new(),
             kept_device: (Kind::Greaseweazle, String::new()),
+            kept_engine: None,
             found_note: None,
             size_file: None,
             kept_size: WINDOW,
@@ -468,13 +478,11 @@ impl App {
         let ports = self.service.known_ports().to_vec();
         self.service = match (&self.engine, &self.settings.engine) {
             (Some(engine), _) => Service::start(engine, repaint(ctx)),
-            (None, Some(path)) => Service::offline(Err(format!(
+            (None, Some(path)) if path.exists() => Service::offline(Err(format!(
                 "{} is neither a Python nor a gw launcher.",
                 path.display()
             ))),
-            (None, None) => Service::offline(Err(
-                "Ferriteweazle could not find gw. Select one in Settings.".into(),
-            )),
+            (None, _) => Service::offline(Err(NO_GW.into())),
         };
         self.service.seed_ports(ports);
         self.look_for_updates(ctx);
@@ -548,6 +556,10 @@ impl App {
         if self.live && (self.settings.kind != *kind || self.settings.device != *port) {
             self.kept_device = (self.settings.kind, self.settings.device.clone());
             keep_device(&device_file(), self.settings.kind, &self.settings.device);
+        }
+        if self.live && self.settings.engine != self.kept_engine {
+            self.kept_engine.clone_from(&self.settings.engine);
+            keep_engine(&engine_file(), self.kept_engine.as_deref());
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -2539,7 +2551,11 @@ impl App {
                 }
             }
             ui.add_space(4.0);
-            let busy = self.busy();
+            let origin = self.engine.as_ref().map(|e| e.origin);
+            let busy = match origin {
+                None => Some(NOT_FOUND),
+                Some(_) => self.busy(),
+            };
             ui.horizontal(|ui| {
                 let restart = ui.add_enabled(busy.is_none(), egui::Button::new("Restart"));
                 if restart
@@ -2549,17 +2565,23 @@ impl App {
                 {
                     self.connect(ui.ctx());
                 }
-                let Some(engine) = self.engine.as_ref().filter(|e| e.origin == Origin::Bundled)
-                else {
-                    return;
+                let (can, tip) = match origin {
+                    None => (false, NOT_FOUND.to_owned()),
+                    Some(Origin::Bundled) => {
+                        self.update_button(&self.gw_update, "Greaseweazle Tools")
+                    }
+                    Some(_) => (
+                        false,
+                        "Updates only the built-in Greaseweazle Tools.".into(),
+                    ),
                 };
-                let (can, tip) = self.update_button(&self.gw_update, "Greaseweazle Tools");
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
                 if update
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked()
                     && let Update::Newer(tag) = &self.gw_update
+                    && let Some(engine) = &self.engine
                 {
                     self.gw_update = Update::gw(engine, tag, repaint(ui.ctx()));
                 }
@@ -4029,6 +4051,21 @@ fn save_log(path: &Path, log: &[String]) -> Option<String> {
     Some(format!("Could not save {}: {failed}", path.display()))
 }
 
+/// Where the gw chosen in Settings is kept between runs; the built-in or an
+/// installed gw keeps no file.
+fn engine_file() -> PathBuf {
+    crate::data_folder().join("gw.txt")
+}
+
+fn kept_engine(file: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    Some(PathBuf::from(text.trim())).filter(|p| !p.as_os_str().is_empty())
+}
+
+fn keep_engine(file: &Path, engine: Option<&Path>) {
+    keep(file, engine.map(|p| p.to_string_lossy().into_owned()));
+}
+
 /// Where the drive identifier is kept between runs.
 fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
@@ -4267,7 +4304,7 @@ fn back_to(tip: &'static OnceLock<String>, folder: fn() -> PathBuf) -> &'static 
     tip.get_or_init(|| format!("Go back to {}.", folder().display()))
 }
 
-/// A path in Settings: its name, where it is, Select…, and with `back` a
+/// A path in Settings: its name, where it is, Browse…, and with `back` a
 /// button and tip that restore the default. Both wait while `busy` says why.
 fn path_row(
     ui: &mut Ui,
@@ -4288,7 +4325,7 @@ fn path_row(
     ui.label(shown);
     ui.horizontal(|ui| {
         let why = busy.unwrap_or_default();
-        let choose = ui.add_enabled(busy.is_none(), egui::Button::new("Select…"));
+        let choose = ui.add_enabled(busy.is_none(), egui::Button::new("Browse…"));
         if choose
             .on_hover_text(tip)
             .on_disabled_hover_text(why)
@@ -5394,10 +5431,11 @@ mod tests {
         let mut app = offline();
         app.settings.page = Page::Settings;
         app.settings.engine = Some("/no/such/gw".into());
+        app.engine = Some(no_gw());
         app.tool = Some(running("info"));
         let mut w = window(app);
         let greyed = |w: &Harness<'_, App>| {
-            let choose = w.get_all_by_label("Select…").last().expect("the gw row's");
+            let choose = w.get_all_by_label("Browse…").last().expect("the gw row's");
             [
                 w.get_by_label("Restart"),
                 w.get_by_label("Use the built-in gw"),
@@ -5412,6 +5450,47 @@ mod tests {
         w.state_mut().gw_update = installing();
         w.run_steps(2);
         assert_eq!(greyed(&w), [true; 3], "gw installs an update");
+    }
+
+    #[test]
+    fn with_no_gw_restart_and_update_grey_and_say_why() {
+        let settings = Settings {
+            page: Page::Settings,
+            engine: Some("/no/such/gw".into()),
+            ..Settings::default()
+        };
+        let app = App::with_settings(&egui::Context::default(), settings);
+        let mut w = window(app);
+        w.get_by_label(NO_GW);
+        // The first Update is gw's; the app's own comes later.
+        let greyed = |w: &Harness<'_, App>, name| {
+            w.get_all_by_label(name)
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
+                .expect(name)
+                .accesskit_node()
+                .is_disabled()
+        };
+        assert!(greyed(&w, "Restart") && greyed(&w, "Update"));
+        // A gw of the person's own runs, but only the built-in one updates.
+        w.state_mut().engine = Some(no_gw());
+        w.run_steps(2);
+        assert!(!greyed(&w, "Restart"));
+        assert!(greyed(&w, "Update"));
+    }
+
+    #[test]
+    fn the_gw_chosen_in_settings_is_kept_and_the_built_in_one_keeps_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-gw-{}", std::process::id()));
+        let file = dir.join("gw.txt");
+        assert_eq!(kept_engine(&file), None);
+        keep_engine(&file, Some(Path::new("C:\\Tools\\gw\\gw.exe")));
+        assert_eq!(
+            kept_engine(&file),
+            Some(PathBuf::from("C:\\Tools\\gw\\gw.exe"))
+        );
+        keep_engine(&file, None);
+        assert!(!file.exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
