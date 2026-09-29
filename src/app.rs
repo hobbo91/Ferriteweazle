@@ -261,6 +261,15 @@ struct Runs {
     args: Vec<Vec<String>>,
     images: Vec<String>,
     makes: Vec<PathBuf>,
+    /// Disks of the set read before these, when a read carries a set on.
+    before: usize,
+}
+
+impl Runs {
+    /// Run `run`'s disk number, counting from 1, and the set's last.
+    fn number(&self, run: usize) -> (usize, usize) {
+        (self.before + run + 1, self.before + self.args.len())
+    }
 }
 
 /// A page's Presets menu while it is open, so the folder is read once, not
@@ -872,10 +881,12 @@ impl App {
             } else if command == "convert" {
                 self.next_disk(ctx);
             } else {
+                // As the set numbers its disks, which may start past 1.
+                let number = |run: usize| session.runs.number(run);
                 self.dialog = Some(Dialog::NextDisk {
-                    disk: next,
-                    total,
-                    failed: again,
+                    disk: next.map(|_| number(session.next).0),
+                    total: number(0).1,
+                    failed: again.map(|_| number(session.next - 1).0),
                     image: session.runs.images.get(session.next).cloned(),
                     command: command.clone(),
                 });
@@ -1254,35 +1265,47 @@ impl App {
         self.argv(cmd, &self.values_for(cmd))
     }
 
-    /// What a detect job needs: the drive when reading, else the input file.
+    /// What a detect job needs: the drive and how the page reads it, or the
+    /// image and how the page takes it in. A write's drive settings are for
+    /// the disk it writes, not its image.
     fn detect_args(&self, cmd: &Command) -> Vec<String> {
         let mut values = self.values_for(cmd);
         // Detection tries a definitions file's formats beside gw's own.
         if let Some(page) = self.settings.values.get(&cmd.name) {
             values.set("diskdefs", page.get("diskdefs"));
         }
-        let mut args: Vec<String> = ["device", "drive", "diskdefs"]
-            .into_iter()
-            .filter(|d| cmd.name == "read" || *d == "diskdefs")
-            .filter(|d| !values.get(d).is_empty())
-            .map(|d| format!("--{d}={}", values.get(d)))
-            .collect();
+        let dests: &[&str] = match cmd.name.as_str() {
+            "write" => &["diskdefs"],
+            _ => &[
+                "device",
+                "drive",
+                "diskdefs",
+                "tracks",
+                "densel",
+                "gen_tg43",
+                "fake_index",
+                "hard_sectors",
+                "reverse",
+                "adjust_speed",
+            ],
+        };
+        let mut with = Values::default();
+        for dest in dests {
+            with.set(dest, values.get(dest));
+        }
         if cmd.name != "read" {
             let dest = if cmd.arg("in_file").is_some() {
                 "in_file"
             } else {
                 "file"
             };
-            args.push(
-                values
-                    .get(dest)
-                    .split("::")
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned(),
+            with.set(
+                dest,
+                values.get(dest).split("::").next().unwrap_or_default(),
             );
         }
-        args
+        // As gw spells them, less the command's name.
+        command::argv(cmd, &with).split_off(1)
     }
 
     fn page(&mut self, ui: &mut Ui, name: &str) {
@@ -1449,7 +1472,7 @@ impl App {
                             .settings
                             .outputs
                             .get(&form::output_key("read", "file"))
-                            .is_some_and(|o| o.disks > 1);
+                            .is_some_and(|o| o.first_disk() < o.disks);
                     let batch = self
                         .settings
                         .values
@@ -1619,8 +1642,8 @@ impl App {
             self.session = None;
             return;
         };
+        let part = session.runs.number(session.next);
         session.next += 1;
-        let part = (session.next, session.runs.args.len());
         let command = session.command.clone();
         if !self.run(ctx, &command, args) {
             self.session = None;
@@ -1658,7 +1681,7 @@ impl App {
                     .images
                     .get(i)
                     .cloned()
-                    .unwrap_or_else(|| format!("disk {}", i + 1))
+                    .unwrap_or_else(|| format!("disk {}", session.runs.number(i).0))
             };
             let mut names: Vec<String> = session.failed.iter().take(4).map(name).collect();
             if session.failed.len() > 4 {
@@ -1702,6 +1725,9 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
+                let schema = self.schema.as_deref();
+                job.progress.verifies = command == "write"
+                    && schema.is_some_and(|s| form::verifies(&mut self.service, s, &job.args));
                 self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
@@ -2037,7 +2063,9 @@ impl App {
         if let Some(e) = &cli.error {
             ui.label(RichText::new(e).small().color(p.bad));
         }
-        if let Some((name, values)) = apply {
+        if let Some((name, values, backtrace)) = apply {
+            // As with --device: given, it sets the setting; left out, it leaves it.
+            self.settings.backtrace |= backtrace;
             self.fill_in(name, values);
         }
     }
@@ -2656,7 +2684,7 @@ impl App {
                 .settings
                 .outputs
                 .get(&key)
-                .is_some_and(|o| o.value(1) == file);
+                .is_some_and(|o| o.value(o.first_disk()) == file);
             if !file.is_empty() && !same {
                 let mut out = Output::from_value(file);
                 // The name given holds while the input is the one given with it.
@@ -3015,7 +3043,7 @@ fn runs(
     }
     let (args, makes) = match out {
         Some((dest, out)) if cmd.name == "read" => {
-            let args = (1..=out.disks.max(1))
+            let args = (out.first_disk()..=out.disks.max(1))
                 .map(|d| {
                     values.set(dest, out.value(d));
                     argv(&values)
@@ -3029,6 +3057,7 @@ fn runs(
     Runs {
         args,
         makes,
+        before: out.map_or(0, |(_, o)| o.first_disk() as usize - 1),
         ..Runs::default()
     }
 }
@@ -3943,7 +3972,6 @@ mod tests {
         Port {
             device: device.into(),
             name: Some("Greaseweazle".into()),
-            serial: None,
             score: 20,
             denied,
         }
@@ -3989,7 +4017,6 @@ mod tests {
         app.pin_ports(vec![Port {
             device: "/dev/cu.debug-console".into(),
             name: None,
-            serial: None,
             score: 0,
             denied: false,
         }]);
@@ -4122,7 +4149,7 @@ mod tests {
                 vec!["write".into(), "b.adf".into()],
             ],
             images: vec!["a.adf".into(), "b.adf".into()],
-            makes: Vec::new(),
+            ..Runs::default()
         };
         app.begin(&ctx, "write", runs);
         assert!(matches!(app.dialog, Some(Dialog::Confirm { disks: 2, .. })));
@@ -4959,7 +4986,7 @@ mod tests {
         let read = schema.command("read").unwrap();
         let mut app = offline();
         let line = "gw read --format=ibm.1440 -n /d/x.img";
-        let (name, values) = command::parse(&schema, line).unwrap();
+        let (name, values, _) = command::parse(&schema, line).unwrap();
         app.fill_in(name, values);
         let args = app.args(read);
         assert!(args.iter().all(|a| a != "-n"), "{args:?}");
@@ -4970,9 +4997,159 @@ mod tests {
     fn a_pasted_conversion_keeps_the_name_it_gives_its_image() {
         let schema = schema();
         let mut app = offline();
-        let (name, values) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
+        let (name, values, _) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
         app.fill_in(name, values);
         let w = window(app);
         assert_eq!(w.state().settings.outputs["convert/out_file"].name, "b");
+    }
+
+    #[test]
+    fn detect_reads_as_its_page_does_but_takes_only_a_writes_image() {
+        let schema = schema();
+        let mut settings = Settings {
+            drive: "B".into(),
+            ..Settings::default()
+        };
+        let pages = [
+            (
+                "read",
+                &[
+                    ("tracks", "c=0-39:h0.off=+2:hswap"),
+                    ("fake_index", "300rpm"),
+                    ("adjust_speed", "360rpm"),
+                    ("densel", "H"),
+                    ("reverse", command::ON),
+                    ("revs", "5"),
+                ][..],
+            ),
+            (
+                "convert",
+                &[
+                    ("in_file", "/d/x.scp"),
+                    ("tracks", "hswap"),
+                    ("hard_sectors", command::ON),
+                    ("reverse", command::ON),
+                ],
+            ),
+            (
+                "write",
+                &[
+                    ("file", "/d/y.scp"),
+                    ("tracks", "hswap"),
+                    ("densel", "H"),
+                    ("reverse", command::ON),
+                ],
+            ),
+        ];
+        for (page, pairs) in pages {
+            let values = settings.values.entry(page.into()).or_default();
+            pairs
+                .iter()
+                .for_each(|(dest, value)| values.set(dest, *value));
+        }
+        let app = App::offline(&egui::Context::default(), settings, Ok(schema.clone()));
+        let args = |page| app.detect_args(schema.command(page).unwrap());
+        assert_eq!(
+            args("read"),
+            [
+                "--drive=B",
+                "--tracks=c=0-39:h0.off=+2:hswap",
+                "--fake-index=300rpm",
+                "--adjust-speed=360rpm",
+                "--densel=H",
+                "--reverse"
+            ]
+        );
+        assert_eq!(
+            args("convert"),
+            ["--tracks=hswap", "--hard-sectors", "--reverse", "/d/x.scp"]
+        );
+        assert_eq!(args("write"), ["/d/y.scp"], "they are for the disk written");
+    }
+
+    #[test]
+    fn a_read_that_carries_on_a_set_counts_its_disks_from_the_first() {
+        let schema = schema();
+        let read = schema.command("read").unwrap();
+        let out = Output {
+            folder: "/f".into(),
+            name: "Game".into(),
+            ext: ".adf".into(),
+            disks: 7,
+            first: 4,
+            ..Output::default()
+        };
+        let outputs = BTreeMap::from([("read/file".to_owned(), out)]);
+        let runs = runs(read, Values::default(), &outputs, &[], |v| {
+            command::argv(read, v)
+        });
+        let last: Vec<&str> = runs
+            .args
+            .iter()
+            .map(|r| r.last().unwrap().as_str())
+            .collect();
+        let sep = std::path::MAIN_SEPARATOR;
+        let expected: Vec<String> = (4..=7)
+            .map(|d| format!("/f{sep}Game_Disk{d}.adf"))
+            .collect();
+        assert_eq!(last, expected);
+        assert_eq!(runs.makes.len(), 4);
+        assert_eq!(runs.number(0), (4, 7), "Read disk 4 of 7");
+
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.session = Some(Session {
+            command: "read".into(),
+            runs,
+            next: 1,
+            failed: vec![0],
+        });
+        app.disk = Some(Job::replay("read", ""));
+        app.ended(&ctx, true);
+        let next = match &app.dialog {
+            Some(Dialog::NextDisk { disk, total, .. }) => (*disk, *total),
+            _ => panic!("no next disk"),
+        };
+        assert_eq!(next, (Some(5), 7), "Insert disk 5 of 7");
+        app.session.as_mut().unwrap().next = 4;
+        app.end_session();
+        let note = "Read 3 of 4 disks. Failed: disk 4. The Log says why.";
+        assert_eq!(app.notices["read"], note);
+    }
+
+    #[test]
+    fn a_set_carried_on_from_disk_4_offers_its_own_numbers_again_and_next() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let runs = Runs {
+            args: vec![vec!["read".into()]; 4],
+            before: 3,
+            ..Runs::default()
+        };
+        app.session = Some(Session {
+            command: "read".into(),
+            runs,
+            next: 2,
+            failed: Vec::new(),
+        });
+        app.disk = Some(Job::replay(
+            "read",
+            "Command Failed: GetFluxStatus: No Index",
+        ));
+        app.ended(&ctx, true);
+        let shown = match &app.dialog {
+            Some(Dialog::NextDisk {
+                disk,
+                total,
+                failed,
+                ..
+            }) => (*disk, *total, *failed),
+            _ => panic!("no next disk"),
+        };
+        assert_eq!(
+            shown,
+            (Some(6), 7, Some(5)),
+            "disk 5 failed; disk 6 of 7 is next"
+        );
     }
 }

@@ -93,6 +93,9 @@ pub struct FormatInfo {
     pub sectors: Option<(u32, u32)>,
     /// Size of a sector image of the whole disk.
     pub bytes: Option<u64>,
+    /// gw write verifies each track of this format before the next.
+    #[serde(default)]
+    pub verifies: bool,
 }
 
 /// What a disk definitions file adds, checked with gw's own parser.
@@ -111,7 +114,6 @@ pub struct DiskDefs {
 pub struct Port {
     pub device: String,
     pub name: Option<String>,
-    pub serial: Option<String>,
     /// gw's guess that this is a Greaseweazle: 0 if not.
     #[serde(default)]
     pub score: i32,

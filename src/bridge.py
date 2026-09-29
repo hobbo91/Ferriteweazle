@@ -244,6 +244,11 @@ def format_info(name, diskdefs=None):
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
+        # gw write checks a track only if its codec gives what it writes a
+        # verify, as all but bitcells do: one track of each kind shows it.
+        with quiet(), contextlib.suppress(Exception):
+            kinds = {type(t): t for t in tracks}.values()
+            info['verifies'] = all(t.master_track().verify is not None for t in kinds)
     return info
 
 
@@ -284,7 +289,7 @@ def ports():
     linux = sys.platform.startswith('linux')
     return [{'device': p.device,
              'name': next((n for n in (p.product, p.description) if n and n != 'n/a'), None),
-             'serial': p.serial_number, 'score': s,
+             'score': s,
              'denied': linux and not os.access(p.device, os.R_OK | os.W_OK)}
             for s, p in found]
 
@@ -341,31 +346,47 @@ def stop():
 
 def detect(argv):
     """Finds the format of the disk in the drive, or of a flux image, and
-    prints the formats that read it in full, best first, after RESULT."""
-    from greaseweazle.tools import util
+    prints the formats that read it in full, best first, after RESULT. The
+    drive is read as gw read reads it, a file as gw convert reads its input,
+    each with the options it takes."""
+    # convert imports gw's codecs, which gw 1.23's track image modules
+    # import in a circle.
+    from greaseweazle.tools import convert, util
     p = argparse.ArgumentParser(prog='detect')
     p.add_argument('--device')
     p.add_argument('--drive', default='A')
     p.add_argument('--diskdefs')
+    # gw's default. Only head offsets and hswap count: probe finds the step.
+    p.add_argument('--tracks', type=util.TrackSet, default='c=0-81:h=0-1')
+    p.add_argument('--densel', type=util.level)
+    p.add_argument('--gen-tg43', action='store_true')
+    p.add_argument('--fake-index', type=util.period)
+    p.add_argument('--hard-sectors', action='store_true')
+    p.add_argument('--reverse', action='store_true')
+    p.add_argument('--adjust-speed', type=util.period)
     p.add_argument('file', nargs='?')
     a = p.parse_args(argv)
+    a.tracks.step, a.fmt_cls = 1, None
     found = []
     if a.file:
-        # First: gw 1.23's track image modules import it in a circle.
-        importlib.import_module('greaseweazle.codec.codec')
         image = util.get_image_class(a.file).from_file(a.file, None, {})
-        found.append(probe(image.get_track, a.diskdefs))
-    else:
-        usb = util.usb_open(a.device)
 
         def read(c, h):
-            usb.seek(c, h)
-            flux = usb.read_track(revs=2)
-            print(f'T{c}.{h}: {flux.summary_string()}')
-            return flux
+            return convert.process_input_track(a, convert.TrackIdentity(a.tracks, c, h), image)
 
-        util.with_drive_selected(lambda: found.append(probe(read, a.diskdefs)), usb,
-                                 util.Drive()(a.drive))
+        found.append(probe(read, a.diskdefs))
+    else:
+        usb = util.usb_open(a.device)
+        pin2 = a.densel is not None or a.gen_tg43
+        level = usb.get_pin(2) if pin2 else None
+        try:
+            if a.densel is not None:
+                usb.set_pin(2, a.densel)
+            util.with_drive_selected(lambda: found.append(probe(drive_reader(usb, a), a.diskdefs)),
+                                     usb, util.Drive()(a.drive))
+        finally:
+            if pin2:
+                usb.set_pin(2, level)
     ranked, step = found[0]
     whole = [m.name for m in ranked if m.full]
     for m in ranked[:6]:
@@ -379,6 +400,23 @@ def detect(argv):
         return 1
     print(f'Format {whole[0]}')
     return 0
+
+
+def drive_reader(usb, a):
+    """read(c, h) for probe: a track of the drive, as gw read reads one."""
+    from greaseweazle.tools import convert, read
+    a.raw, a.revs, a.ticks, a.drive_ticks_per_rev = False, 2, 0, None
+    # As read_to_image: the fake index's period, or the drive's sector holes.
+    if a.fake_index is not None:
+        a.drive_ticks_per_rev = a.fake_index * usb.sample_freq
+    elif a.hard_sectors:
+        flux = usb.read_track(revs=0, ticks=int(usb.sample_freq / 2))
+        flux.identify_hard_sectors()
+        a.drive_ticks_per_rev = flux.ticks_per_rev
+        a.hard_sectors = len(flux.sector_list[-1])
+        print(f'Drive reports {a.hard_sectors} hard sectors')
+        a.revs = (a.hard_sectors + 1) * (a.revs + 1)
+    return lambda c, h: read.read_with_retry(usb, a, convert.TrackIdentity(a.tracks, c, h))[0]
 
 
 # Layouts whose sectors sit within 1% of a revolution of the best fit

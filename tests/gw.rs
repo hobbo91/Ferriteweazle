@@ -2,6 +2,9 @@
 //! built, else an installed one. They skip when there is neither. None opens
 //! a device.
 
+mod common;
+
+use common::{Window, app, app_mut, greaseweazle, line, run_button, squares};
 use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
@@ -549,8 +552,6 @@ fn a_question_from_gw_waits_for_an_answer() {
     assert!(job.log.is_empty(), "{:?}", job.log);
 }
 
-type Window = egui_kittest::Harness<'static, Option<App>>;
-
 /// The app's window on `engine`, stepped until gw has described itself.
 /// It sees no Greaseweazle, whatever is plugged in, until gw restarts.
 fn window(engine: &Engine, settings: Settings) -> Window {
@@ -616,7 +617,7 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
 
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(dir.join("Game.scp").is_file());
     let log =
@@ -659,7 +660,7 @@ fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went
         app.notices.contains_key("convert")
     });
 
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     assert_eq!(app.notices["convert"], "Converted 3 of 3 images.");
     let last = outputs.join("Backup_Game_Disk10.scp");
     assert_eq!(
@@ -700,7 +701,7 @@ fn a_job_that_would_replace_a_file_asks_first() {
     w.get_by_label("Overwrite \"Game.scp\"?");
     w.get_by_label("Cancel").click();
     w.run_steps(2);
-    assert!(w.state().as_ref().unwrap().disk.is_none(), "nothing ran");
+    assert!(app(&w).disk.is_none(), "nothing ran");
     assert_eq!(std::fs::read(dir.join("Game.scp")).unwrap(), b"keep me");
 
     w.get_by_label("Convert").click();
@@ -709,27 +710,14 @@ fn a_job_that_would_replace_a_file_asks_first() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(std::fs::metadata(dir.join("Game.scp")).unwrap().len() > 1000);
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// The page's run button, not the sidebar's entry of the same name.
-fn run_button<'w>(w: &'w Window, label: &'w str) -> egui_kittest::Node<'w> {
-    w.get_all_by_role_and_label(egui::accesskit::Role::Button, label)
-        .last()
-        .expect("a run button")
-}
-
 fn read_button(w: &Window) -> egui_kittest::Node<'_> {
     run_button(w, "Read disk")
-}
-
-fn app_mut(w: &mut Window) -> &mut App {
-    w.state_mut()
-        .as_mut()
-        .expect("the first frame made the app")
 }
 
 /// Starts `seek 90` as the tool job; it waits on gw's question, so it runs
@@ -739,17 +727,6 @@ fn waiting_tool(w: &mut Window, engine: &Engine) {
     until(w, "gw's question", |app| {
         app.tool.as_ref().is_some_and(|j| j.question.is_some())
     });
-}
-
-/// A Greaseweazle as gw lists it, on a made-up port.
-fn greaseweazle() -> Port {
-    Port {
-        device: "/dev/cu.usbmodem14201".into(),
-        name: Some("Greaseweazle".into()),
-        serial: Some("GW0123456789ABCDEF".into()),
-        score: 20,
-        denied: false,
-    }
 }
 
 #[test]
@@ -835,21 +812,15 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let mut w = window(&engine, settings);
     let before = entries(&w);
     assert!(before.contains(&"Erase disk".to_owned()), "{before:?}");
-    let version = format!(
-        "gw {}",
-        w.state().as_ref().unwrap().schema().unwrap().version
-    );
+    let version = format!("gw {}", app(&w).schema().unwrap().version);
     w.get_by_label("Restart").click();
     w.step();
-    assert!(
-        w.state().as_ref().unwrap().schema().is_none(),
-        "gw restarts"
-    );
+    assert!(app(&w).schema().is_none(), "gw restarts");
     wait("gw to start again", || {
         w.step();
         assert_eq!(entries(&w), before);
         assert!(painted(&w, &version), "the version beside Settings went");
-        w.state().as_ref().unwrap().schema().map(|_| ())
+        app(&w).schema().map(|_| ())
     });
     w.run_steps(2);
     assert_eq!(entries(&w), before);
@@ -896,7 +867,7 @@ fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
         app.tool.as_ref().is_some_and(|j| !j.running())
     });
     assert_eq!(
-        w.state().as_ref().unwrap().tool.as_ref().unwrap().outcome(),
+        app(&w).tool.as_ref().unwrap().outcome(),
         Some(Outcome::Stopped)
     );
     wait("the window to close", || {
@@ -1018,7 +989,7 @@ fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
     w.get_by_label("Detect").click();
     until(&mut w, "detection", ended(DETECT));
     w.run_steps(2);
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     assert_eq!(
         app.settings.values["convert"].get("format"),
         "amiga.amigados"
@@ -1083,7 +1054,7 @@ fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
     });
     w.run_steps(2);
 
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     let lines = app.log.lines();
     let at = |line: &str| {
         lines
@@ -1339,12 +1310,6 @@ fn until_shown(w: &mut Window, what: &str, shown: impl Fn(&Window) -> bool) {
     }
 }
 
-fn cli_line(w: &Window) -> String {
-    w.get_by_role(egui::accesskit::Role::MultilineTextInput)
-        .value()
-        .unwrap_or_default()
-}
-
 /// Chooses a format from the page's list by searching for it.
 fn choose_format(w: &mut Window, format: &str) {
     w.get_all_by_role(egui::accesskit::Role::ComboBox)
@@ -1405,23 +1370,6 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     assert!(w.query_by_label("Which tracks to read.").is_none());
 }
 
-/// The status pane's squares, one per track of the disk map.
-fn squares(w: &Window) -> usize {
-    let left = w.get_by_label("Disk status").rect().left();
-    w.output()
-        .shapes
-        .iter()
-        .filter(|c| match &c.shape {
-            egui::Shape::Rect(r) => {
-                r.rect.left() > left
-                    && (r.rect.width() - r.rect.height()).abs() < 0.5
-                    && r.rect.width() > 8.0
-            }
-            _ => false,
-        })
-        .count()
-}
-
 #[test]
 fn the_write_page_takes_a_north_star_images_format_from_gw() {
     let Some(engine) = engine() else { return };
@@ -1453,7 +1401,7 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         .nth(1)
         .and_then(|c| c.accesskit_node().numeric_value());
     assert_eq!(last, Some(34.0), "cylinders 0 to 34");
-    assert_eq!(squares(&w), 35, "the blank map is the disk's");
+    assert_eq!(squares(&w).count(), 35, "the blank map is the disk's");
 
     // The file is looked at again when it changes.
     std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();
@@ -1529,7 +1477,7 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(
         job.log.iter().any(|l| l.contains("northstar.mfm.ss")),
@@ -1564,23 +1512,23 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
     assert!(top("Custom disk definitions") < top("Acorn"));
     w.get_by_label("mine.800").click();
     w.run_steps(3);
-    let line = cli_line(&w);
+    let cli = line(&w);
     assert!(
-        line.contains(&format!("--diskdefs={}", defs.display())),
-        "{line}"
+        cli.contains(&format!("--diskdefs={}", defs.display())),
+        "{cli}"
     );
-    assert!(line.contains("--format=mine.800"), "{line}");
+    assert!(cli.contains("--format=mine.800"), "{cli}");
     // Non-breaking spaces keep each fact in the format's description whole.
     until_shown(&mut w, "the format's description", |w| {
         w.query_by_label_contains("5\u{a0}sectors").is_some()
     });
 
     choose_format(&mut w, "ibm.1440");
-    let line = cli_line(&w);
-    assert!(line.contains("--format=ibm.1440"), "{line}");
+    let cli = line(&w);
+    assert!(cli.contains("--format=ibm.1440"), "{cli}");
     assert!(
-        !line.contains("--diskdefs"),
-        "gw's own format needs no file: {line}"
+        !cli.contains("--diskdefs"),
+        "gw's own format needs no file: {cli}"
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -1704,7 +1652,7 @@ fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     for track in ["00.0", "39.1"] {
         assert!(dir.join(format!("Game{track}.raw")).is_file(), "{track}");
@@ -1890,7 +1838,7 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
     app_mut(&mut w).pin_ports(vec![port]);
     w.run_steps(2);
     let device = format!("--device={NO_SUCH_PORT}");
-    assert!(cli_line(&w).contains(&device), "{}", cli_line(&w));
+    assert!(line(&w).contains(&device), "{}", line(&w));
     run_button(&w, "Read disks").click();
     let reads = |app: &App| {
         let ended = app.disk.as_ref().is_some_and(|j| !j.running());
@@ -1907,5 +1855,133 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
     assert_eq!(job.output, Some(dir.join("Game_Disk1.img")));
     let error = job.progress.error.as_deref().unwrap_or_default();
     assert!(error.contains(NO_SUCH_PORT), "{:#?}", job.log);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let schema = wait("the schema", || {
+        service.poll();
+        service.schema.ready().cloned()
+    });
+    let mut info = |name: &str| {
+        wait(name, || {
+            service.poll();
+            service.format_info("", name).ready().cloned()
+        })
+    };
+    assert!(info("ibm.1440").verifies);
+    assert!(info("amiga.amigados").verifies);
+    assert!(!info("raw.250").verifies, "gw cannot check bitcells");
+    let mut verifies = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        form::verifies(&mut service, &schema, &args)
+    };
+    assert!(verifies(&["write", "--format=ibm.1440", "a.img"]));
+    assert!(verifies(&["write", "a.adf"]), "an .adf's own format");
+    assert!(!verifies(&[
+        "write",
+        "--format=ibm.1440",
+        "--no-verify",
+        "a.img"
+    ]));
+    assert!(!verifies(&["write", "--format=raw.250", "a.hfe"]));
+    assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
+}
+
+/// Runs the bridge's (argv[1]) detection with the options after argv[2] on
+/// a made-up Greaseweazle, whose drive holds the disk of the image argv[2]
+/// two cylinders out with its sides swapped and gives no index pulses when
+/// asked for none. Prints what it found and what it did to the drive.
+const FAKE_DRIVE: &str = r#"
+import contextlib, io, json, runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle.flux import Flux
+from greaseweazle.tools import util
+image = util.get_image_class(sys.argv[2]).from_file(sys.argv[2], None, {})
+
+class Unit:
+    sample_freq = image.get_track(0, 0).sample_freq
+    def __init__(self):
+        self.pin2, self.pins, self.seeks, self.revs = False, [], [], set()
+    def get_pin(self, pin):
+        return self.pin2
+    def set_pin(self, pin, level):
+        self.pin2 = level
+        self.pins.append(level)
+    def seek(self, c, h):
+        self.seeks.append([c, h])
+        self.at = c - 2, 1 - h
+    def read_track(self, revs, ticks=0):
+        self.revs.add(revs)
+        track = image.get_track(*self.at) if self.at[0] >= 0 else None
+        if track is None:
+            return Flux([], [], self.sample_freq, index_cued=False)
+        return Flux(track.index_list if revs else [], track.list, track.sample_freq, index_cued=False)
+    def __getattr__(self, name):  # selecting the drive, turning its motor
+        return lambda *args: None
+
+unit = Unit()
+util.usb_open = lambda device: unit
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    bridge['detect'](sys.argv[3:])
+result = next(l for l in out.getvalue().splitlines() if l.startswith(bridge['RESULT']))
+found = json.loads(result[len(bridge['RESULT']):])
+print(json.dumps({**found, 'pins': unit.pins, 'seeks': unit.seeks[:3], 'revs': sorted(unit.revs)}))
+"#;
+
+#[test]
+fn detection_reads_the_disk_or_image_as_its_page_would() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("detect-options");
+    let disk = flux_of(&engine, &dir, "ibm.1440", 1_474_560);
+    // A flippy's side B, as a drive reads it without --reverse.
+    let flipped = dir.join("flipped.scp");
+    run(
+        &engine,
+        &["convert", "--reverse", &path(&disk), &path(&flipped)],
+    );
+    let job = finish(
+        start(&engine, DETECT, &["--reverse", &path(&flipped)]),
+        "detection",
+    );
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("ibm.1440"),
+        "{:#?}",
+        job.log
+    );
+
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let drive = |image: &Path, options: &[&str]| {
+        let out = std::process::Command::new(&engine.python)
+            .args(["-c", FAKE_DRIVE])
+            .arg(&bridge)
+            .arg(image)
+            .arg("--tracks=h0.off=+2:h1.off=+2:hswap")
+            .args(options)
+            .output()
+            .expect("python runs");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)))
+    };
+    let flippy = drive(&flipped, &["--reverse", "--densel=H"]);
+    assert_eq!(flippy["formats"][0], "ibm.1440", "{flippy}");
+    assert_eq!(
+        flippy["pins"],
+        serde_json::json!([true, false]),
+        "pin 2 high, then as it was"
+    );
+    assert_eq!(flippy["seeks"], serde_json::json!([[2, 1], [2, 0], [4, 1]]));
+    let no_index = drive(&disk, &["--fake-index=300rpm"]);
+    assert_eq!(no_index["formats"][0], "ibm.1440", "{no_index}");
+    assert_eq!(
+        no_index["revs"],
+        serde_json::json!([0]),
+        "no index pulse waited for"
+    );
     std::fs::remove_dir_all(dir).ok();
 }

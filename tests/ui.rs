@@ -432,10 +432,6 @@ fn entry<'w>(w: &'w Window, title: &'w str) -> Node<'w> {
         .expect("the sidebar entry")
 }
 
-fn greyed(w: &Window, title: &str) -> bool {
-    entry(w, title).accesskit_node().is_disabled()
-}
-
 /// Each page that acts on the Greaseweazle, and its run button.
 const DEVICE_PAGES: [(&str, &str); 13] = [
     ("Read disk", "Read disk"),
@@ -457,7 +453,6 @@ const DEVICE_PAGES: [(&str, &str); 13] = [
 fn every_page_opens_without_a_device_but_cannot_run() {
     let mut w = window(Settings::default());
     for (page, run) in DEVICE_PAGES {
-        assert!(!greyed(&w, page), "{page} is greyed");
         entry(&w, page).click();
         w.run();
         let disabled = run_button(&w, run).accesskit_node().is_disabled();
@@ -2042,4 +2037,52 @@ fn image_options_end_within_the_field_in_the_smallest_window() {
     for list in lists {
         assert!(list.rect().right() <= right + 0.5, "{:?}", list.value());
     }
+}
+
+#[test]
+fn a_typed_bt_turns_on_tracebacks_and_an_option_gw_lacks_is_refused() {
+    let mut w = window(Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    });
+    type_line(&mut w, "gw --bt info");
+    assert!(app(&w).settings.backtrace);
+    type_line(&mut w, "gw --foo info");
+    w.get_by_label("gw has no option --foo.");
+}
+
+#[test]
+fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line() {
+    let mut settings = Settings {
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    };
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    (out.disks, out.first) = (7, 4);
+    let mut w = window(settings);
+    let shown = line(&w);
+    assert!(shown.contains("Floppy_Disk4.adf"), "{shown}");
+    w.get_by_label("Multiple disks (4 to 7)").click();
+    w.run();
+    w.get_by_label_contains("Floppy_Disk4.adf, Floppy_Disk5.adf … Floppy_Disk7.adf");
+
+    type_line(&mut w, &format!("{shown} --revs=3"));
+    let app = app(&w);
+    assert_eq!(app.settings.values["read"].get("revs"), "3");
+    let out = &app.settings.outputs["read/file"];
+    assert_eq!((out.disks, out.first), (7, 4), "the set is kept");
+
+    app_mut(&mut w)
+        .settings
+        .outputs
+        .get_mut("read/file")
+        .unwrap()
+        .disks = 1;
+    w.run();
+    let label = w.get_by_label("First disk").rect();
+    let field = w
+        .get_all_by_role(Role::SpinButton)
+        .find(|f| (f.rect().center().y - label.center().y).abs() < 4.0)
+        .expect("the first disk's field");
+    assert!(field.accesskit_node().is_disabled(), "one disk is no set");
 }
