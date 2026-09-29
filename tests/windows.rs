@@ -40,8 +40,12 @@ fn the_program_names_itself_its_version_and_its_licence() {
         ("ProductVersion", env!("CARGO_PKG_VERSION")),
         ("LegalCopyright", "Copyright 2026 Lee Hobson. MIT licence."),
     ] {
-        assert!(contains(&program, &utf16(key)), "{key}");
-        assert!(contains(&program, &utf16(value)), "{value}");
+        // A value follows its key's NUL, padded to 32 bits.
+        let entry = |gap: usize| [utf16(key), vec![0; gap], utf16(value)].concat();
+        assert!(
+            contains(&program, &entry(2)) || contains(&program, &entry(4)),
+            "{key}: {value}"
+        );
     }
 }
 
