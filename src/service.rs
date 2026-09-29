@@ -67,7 +67,7 @@ impl<T: DeserializeOwned> Pending<T> {
         match self.rx.try_recv() {
             Ok(r) => Some(r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("The Greaseweazle engine stopped.".into())),
+            Err(TryRecvError::Disconnected) => Some(Err("gw stopped.".into())),
         }
     }
 }
@@ -423,8 +423,8 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
         let _ = child.kill();
         let _ = child.wait();
         let why = match last_words.join().unwrap_or_default() {
-            last if last.is_empty() => "The Greaseweazle engine stopped.".to_owned(),
-            last => format!("The Greaseweazle engine stopped: {}", last.trim()),
+            last if last.is_empty() => "gw stopped.".to_owned(),
+            last => format!("gw stopped: {}", last.trim()),
         };
         let _ = r.reply.send(Err(why.clone()));
         return refuse(requests, &repaint, why);

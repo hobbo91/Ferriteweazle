@@ -155,6 +155,8 @@ mod tests {
         );
     }
 
+    // The commands quote Unix paths; on Windows a path quotes differently.
+    #[cfg(unix)]
     #[test]
     fn from_an_appimage_the_shell_reads_the_rule_for_sudo() {
         let mount = Path::new("/tmp/.mount_FerritcNdGCG");
