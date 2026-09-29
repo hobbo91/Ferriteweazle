@@ -40,6 +40,8 @@ pub struct Arg {
     pub required: bool,
     /// Arguments sharing a group are mutually exclusive.
     pub group: Option<usize>,
+    /// gw's name for the kind of value, such as TSPEC, which `Schema::note` explains.
+    pub metavar: Option<String>,
     #[serde(default)]
     pub help: String,
 }

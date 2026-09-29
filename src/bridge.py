@@ -61,12 +61,13 @@ def arg(a, groups, prog):
         'flags': a.option_strings,
         'dest': a.dest,
         'switch': a.nargs == 0 or None,
-        'multi': a.nargs in ('+', '*') or (type(a.nargs) is int and a.nargs > 1) or None,
         'type': type_name(a.type),
         'default': str(a.default) if type(a.default) in (str, int, float) else None,
         'choices': [str(c) for c in a.choices] if a.choices else None,
         'required': a.required or None,
         'group': groups.get(id(a)),
+        # The kind of value, such as TSPEC, whose help is in the schema's notes.
+        'metavar': a.metavar if isinstance(a.metavar, str) else None,
         'help': h.strip() or None,
     }
     return {k: v for k, v in d.items() if v is not None}

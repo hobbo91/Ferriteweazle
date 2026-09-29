@@ -296,6 +296,13 @@ fn screens() {
         ] {
             render(name, theme, settings(name, theme), job, |_| {});
         }
+        render("delays", theme, settings("delays", theme), None, |_| {});
+        let mut typed = settings("read", theme);
+        let read = typed.values.entry("read".into()).or_default();
+        read.set("tracks", "c=0-79:h=0-1:h1.off=-8");
+        render("tracks-help", theme, typed, None, |w| {
+            w.get_by_label("Tracks").hover();
+        });
         let mut update = settings("update", theme);
         let firmware = "/Users/you/Downloads/greaseweazle-firmware-v1.7.upd";
         update

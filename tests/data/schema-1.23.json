@@ -60,6 +60,7 @@
       "--revs"
      ],
      "help": "number of revolutions to read per track",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -68,6 +69,7 @@
       "--tracks"
      ],
      "help": "which tracks to read",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -85,6 +87,7 @@
      ],
      "group": 0,
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -102,6 +105,7 @@
       "--adjust-speed"
      ],
      "help": "scale track data to effective drive SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -111,6 +115,7 @@
       "--retries"
      ],
      "help": "number of retries per seek-retry",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -120,6 +125,7 @@
       "--seek-retries"
      ],
      "help": "number of seek retries",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -137,6 +143,7 @@
       "--pll"
      ],
      "help": "manual PLL parameter override",
+     "metavar": "PLLSPEC",
      "type": "PLL"
     },
     {
@@ -147,6 +154,7 @@
      ],
      "group": 1,
      "help": "drive interface density select on pin 2 (H,L)",
+     "metavar": "LEVEL",
      "type": "level"
     },
     {
@@ -214,6 +222,7 @@
       "--tracks"
      ],
      "help": "which tracks to write",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -239,6 +248,7 @@
      ],
      "group": 0,
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -265,6 +275,7 @@
       "--retries"
      ],
      "help": "number of retries on verify failure",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -291,6 +302,7 @@
      ],
      "group": 1,
      "help": "drive interface density select on pin 2 (H,L)",
+     "metavar": "LEVEL",
      "type": "level"
     },
     {
@@ -334,6 +346,7 @@
       "--tracks"
      ],
      "help": "which tracks to read & convert from input",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -342,6 +355,7 @@
       "--out-tracks"
      ],
      "help": "which tracks to output (default: --tracks)",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -350,6 +364,7 @@
       "--adjust-speed"
      ],
      "help": "scale track data to effective drive SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -367,6 +382,7 @@
       "--pll"
      ],
      "help": "manual PLL parameter override",
+     "metavar": "PLLSPEC",
      "type": "PLL"
     },
     {
@@ -426,6 +442,7 @@
       "--revs"
      ],
      "help": "number of revolutions to erase per track",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -434,6 +451,7 @@
       "--tracks"
      ],
      "help": "which tracks to erase",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -450,6 +468,7 @@
       "--fake-index"
      ],
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     }
    ],
@@ -481,6 +500,7 @@
       "--cyls"
      ],
      "help": "number of drive cylinders",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -490,6 +510,7 @@
       "--passes"
      ],
      "help": "number of passes across the cleaning disk",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -499,6 +520,7 @@
       "--linger"
      ],
      "help": "linger time per step, milliseconds",
+     "metavar": "N",
      "type": "min_int"
     }
    ],
@@ -565,6 +587,7 @@
       "--select"
      ],
      "help": "Select Delay (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -573,6 +596,7 @@
       "--step"
      ],
      "help": "Step Delay (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -581,6 +605,7 @@
       "--settle"
      ],
      "help": "Settle Time (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -589,6 +614,7 @@
       "--motor"
      ],
      "help": "Motor Delay (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -597,6 +623,7 @@
       "--watchdog"
      ],
      "help": "Watchdog (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -605,6 +632,7 @@
       "--pre-write"
      ],
      "help": "Pre-Write (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -613,6 +641,7 @@
       "--post-write"
      ],
      "help": "Post-Write (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -621,6 +650,7 @@
       "--index-mask"
      ],
      "help": "Index Mask (usecs)",
+     "metavar": "N",
      "type": "min_int"
     }
    ],
@@ -785,6 +815,7 @@
       "--nr"
      ],
      "help": "number of iterations",
+     "metavar": "N",
      "type": "min_int"
     }
    ],

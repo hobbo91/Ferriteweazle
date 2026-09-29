@@ -378,7 +378,13 @@ impl<'a> Form<'a> {
         }
         if !rest.is_empty() {
             ui.add_space(4.0);
-            let title = RichText::new(format!("Advanced options ({})", rest.len())).strong();
+            // Set values go to gw while the header is shut.
+            let set = rest.iter().filter(|a| self.values.on(&a.dest)).count();
+            let title = match set {
+                0 => format!("Advanced options ({})", rest.len()),
+                n => format!("Advanced options ({}, {n} set)", rest.len()),
+            };
+            let title = RichText::new(title).strong();
             egui::CollapsingHeader::new(title)
                 .id_salt(("more", &self.cmd.name))
                 .show_unindented(ui, |ui| {
@@ -413,7 +419,16 @@ impl<'a> Form<'a> {
             (r.response, r.inner)
         });
         let tip = tip(&self.cmd.name, a);
-        name.on_hover_text(&tip);
+        // gw's own help for values such as track lists, its columns kept.
+        let grammar = grammar(self.schema, a);
+        let explain = |ui: &mut Ui| {
+            ui.label(&tip);
+            if let Some(g) = grammar {
+                let text = RichText::new(g.trim_end()).monospace();
+                ui.add(egui::Label::new(text).extend());
+            }
+        };
+        name.on_hover_ui(explain);
         // Laid over the field, so it is hovered along with whatever is under
         // it, unless that has a tooltip of its own.
         let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
@@ -421,7 +436,7 @@ impl<'a> Form<'a> {
         if let Some(b) = blocker {
             over.on_hover_text(format!("Cannot be used with {}.", label(b)));
         } else if quiet.is_none() {
-            over.on_hover_text(tip);
+            over.on_hover_ui(explain);
         }
         action
     }
@@ -1923,7 +1938,15 @@ fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
             (first, rest)
         }
         None if args.len() <= 6 => (args, Vec::new()),
-        None => args.into_iter().partition(|a| a.positional() || a.required),
+        None => {
+            let (first, rest): (Vec<&Arg>, Vec<&Arg>) =
+                args.into_iter().partition(|a| a.positional() || a.required);
+            // A page never opens on a shut header alone.
+            match first.is_empty() {
+                true => (rest, first),
+                false => (first, rest),
+            }
+        }
     }
 }
 
@@ -2019,10 +2042,18 @@ const TIPS: &[(&str, &str, &str)] = &[
         "Erase by writing a high-frequency signal.",
     ),
     ("convert", "in_file", "The image to convert."),
-    ("delays", "index_mask", "Index mask, in microseconds."),
+    (
+        "delays",
+        "index_mask",
+        "Index post-trigger mask time, in microseconds.",
+    ),
     ("pin set", "level", "High or low."),
     ("clean", "linger", "Time on each step, in milliseconds."),
-    ("delays", "motor", "Motor delay, in milliseconds."),
+    (
+        "delays",
+        "motor",
+        "Delay after turning on the spindle motor, in milliseconds.",
+    ),
     ("seek", "motor_on", "Run the motor while seeking."),
     (
         "write",
@@ -2039,9 +2070,17 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "passes", "Passes across the cleaning disk."),
     ("", "pin", "The pin number."),
     ("", "pll", "Your own PLL settings for decoding flux."),
-    ("delays", "post_write", "Post-write delay, in microseconds."),
+    (
+        "delays",
+        "post_write",
+        "Least time from a write's end to a track change, in microseconds.",
+    ),
     ("write", "pre_erase", "Erase each track before writing it."),
-    ("delays", "pre_write", "Pre-write delay, in microseconds."),
+    (
+        "delays",
+        "pre_write",
+        "Least time from a track change to a write, in microseconds.",
+    ),
     ("write", "precomp", "Write precompensation, by cylinder."),
     (
         "read",
@@ -2070,16 +2109,42 @@ const TIPS: &[(&str, &str, &str)] = &[
         "seek_retries",
         "Times to seek to cylinder 0 and back when a track reads short.",
     ),
-    ("delays", "select", "Select delay, in microseconds."),
-    ("delays", "settle", "Settle time, in milliseconds."),
-    ("delays", "step", "Step delay, in microseconds."),
+    (
+        "delays",
+        "select",
+        "Delay after asserting drive select, in microseconds.",
+    ),
+    (
+        "delays",
+        "settle",
+        "Delay after a head seek completes, in milliseconds.",
+    ),
+    (
+        "delays",
+        "step",
+        "Delay after each head-step command, in microseconds.",
+    ),
     ("update", "tag", "The GitHub release tag to update to."),
     ("read", "tracks", "Which tracks to read."),
     ("write", "tracks", "Which tracks to write."),
     ("convert", "tracks", "Which tracks to read and convert."),
     ("erase", "tracks", "Which tracks to erase."),
-    ("delays", "watchdog", "Watchdog, in milliseconds."),
+    (
+        "delays",
+        "watchdog",
+        "Idle time before drives deselect and motors stop, in milliseconds.",
+    ),
 ];
+
+/// gw's help for the kind of value an argument takes, such as TSPEC's.
+fn grammar<'s>(schema: &'s Schema, a: &Arg) -> Option<&'s str> {
+    let name = match a.ty.as_deref() {
+        // gw 1.23 names this kind in its help but not on the argument.
+        Some("PrecompSpec") => "PRECOMP",
+        _ => a.metavar.as_deref()?,
+    };
+    schema.note(name)
+}
 
 /// gw's own example for a kind of value, such as `e.g. c=0-7,9-12:h=0-1` for TSPEC.
 fn example(schema: &Schema, metavar: &str) -> Option<String> {
@@ -3534,6 +3599,77 @@ mod tests {
             });
             assert!(found, "no gw {c} shows {d}");
         }
+    }
+
+    #[test]
+    fn a_value_gw_has_a_grammar_for_shows_it_on_hover() {
+        let typed = "c=0-39:h1.off=-8";
+        let mut h = page("read", values(&[("tracks", typed)]), BTreeMap::new());
+        h.get_by_label("Tracks").hover();
+        h.run();
+        h.get_by_label("Which tracks to read.");
+        h.get_by_label_contains("h[01].off");
+        h.event(egui::Event::PointerGone);
+        h.run();
+        h.get_all_by_role(Role::TextInput)
+            .find(|n| n.value().as_deref() == Some(typed))
+            .expect("the typed list")
+            .hover();
+        h.run();
+        h.get_by_label_contains("h[01].off");
+
+        h.get_by_label_contains("Advanced options").click();
+        h.run();
+        for (row, grammar) in [("PLL", "lowpass=USEC"), ("Fake index", "<N>scp")] {
+            h.event(egui::Event::PointerGone);
+            h.run();
+            h.get_by_label(row).hover();
+            h.run();
+            h.get_by_label_contains(grammar);
+        }
+    }
+
+    #[test]
+    fn delay_tips_say_what_gws_help_defines() {
+        let s = schema();
+        let delays = s.command("delays").unwrap();
+        let t = |dest: &str| tip("delays", delays.arg(dest).unwrap());
+        assert!(t("watchdog").contains("motors stop"), "{}", t("watchdog"));
+        assert!(t("pre_write").contains("track change"));
+        assert!(t("post_write").contains("track change"));
+        assert!(t("index_mask").contains("post-trigger"));
+        for a in delays.args.iter().filter(|a| a.dest != "device") {
+            assert!(
+                !t(&a.dest).starts_with(&label(a)),
+                "{} restates its label",
+                a.dest
+            );
+        }
+    }
+
+    #[test]
+    fn no_page_opens_with_all_its_fields_under_a_shut_header() {
+        let s = schema();
+        for cmd in &s.commands {
+            let (first, rest) = sections(cmd);
+            assert!(rest.is_empty() || !first.is_empty(), "gw {}", cmd.name);
+        }
+    }
+
+    #[test]
+    fn advanced_options_say_how_many_of_them_are_set() {
+        let header = |v: Values| {
+            let h = page("read", v, BTreeMap::new());
+            let node = h.get_by_label_contains("Advanced options");
+            node.accesskit_node()
+                .label()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let plain = header(Values::default());
+        assert!(!plain.contains("set"), "{plain}");
+        let set = header(values(&[("retries", "5"), ("raw", ON)]));
+        assert!(set.ends_with(", 2 set)"), "{set}");
     }
 
     #[test]
