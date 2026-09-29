@@ -141,7 +141,7 @@ fn split(line: &str) -> Result<Vec<String>, String> {
                 loop {
                     match chars.next() {
                         Some(q) if q == c => break,
-                        Some('\\') if c == '"' && matches!(chars.peek(), Some('"' | '\\')) => {
+                        Some('\\') if c == '"' && chars.peek() == Some(&'"') => {
                             w.extend(chars.next());
                         }
                         Some(ch) => w.push(ch),
@@ -149,9 +149,14 @@ fn split(line: &str) -> Result<Vec<String>, String> {
                     }
                 }
             }
-            // A backslash escapes only what a Windows path would not contain.
-            '\\' if matches!(chars.peek(), Some(' ' | '\'' | '"' | '\\')) => {
+            // A backslash escapes a space or a quote; any other stays, as in a Windows path.
+            '\\' if matches!(chars.peek(), Some(' ' | '\'' | '"')) => {
                 word.get_or_insert_default().extend(chars.next());
+            }
+            // A backslash ending a line joins the next to it, as in a shell.
+            '\\' if matches!(chars.peek(), Some('\n' | '\r')) => {
+                chars.next_if_eq(&'\r');
+                chars.next_if_eq(&'\n');
             }
             c if c.is_whitespace() => words.extend(word.take()),
             c => word.get_or_insert_default().push(c),
@@ -302,6 +307,30 @@ mod tests {
             parse(&s, "read --format=ibm.1440 x.img").unwrap_err(),
             "A command starts with gw."
         );
+    }
+
+    #[test]
+    fn a_windows_share_keeps_both_its_leading_backslashes() {
+        let s = schema();
+        for line in [
+            r#"gw convert "\\nas\f\x.scp" y.img"#,
+            r"gw convert \\nas\f\x.scp y.img",
+        ] {
+            let (_, v) = parse(&s, line).unwrap();
+            assert_eq!(v.get("in_file"), r"\\nas\f\x.scp", "{line}");
+        }
+    }
+
+    #[test]
+    fn a_line_ending_in_a_backslash_goes_on_to_the_next() {
+        let s = schema();
+        for line in [
+            "gw read --format=ibm.1440 \\\n  disk.img",
+            "gw read --format=ibm.1440 \\\r\n  disk.img",
+        ] {
+            let (_, v) = parse(&s, line).unwrap();
+            assert_eq!(v.get("file"), "disk.img", "{line:?}");
+        }
     }
 
     #[test]
