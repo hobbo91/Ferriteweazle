@@ -1203,7 +1203,8 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
         (vec!["mine.800".to_owned()], vec![])
     );
     let bad = read(&bad).unwrap();
-    assert_eq!(bad.formats, ["mine.bad", "mine.worse"]);
+    assert!(bad.formats.is_empty(), "{bad:?}");
+    assert_eq!(bad.failed, ["mine.bad", "mine.worse"]);
     assert!(
         bad.errors[0].ends_with("line 6: unrecognised track option bogus"),
         "{bad:?}"
@@ -1481,29 +1482,75 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
 }
 
 #[test]
-fn a_broken_disk_definitions_file_stops_the_page_and_says_why() {
+fn a_broken_definition_stops_only_a_page_that_uses_it() {
     let Some(engine) = engine() else { return };
     let dir = scratch("diskdefs-broken");
-    let bad = dir.join("bad.cfg");
-    std::fs::write(&bad, "disk mine.worse\n    cyls = eighty\nend\n").unwrap();
+    let defs = dir.join("mixed.cfg");
+    let sound = std::fs::read_to_string(custom_defs(&dir)).unwrap();
+    let later = "disk two.800\n    cyls = 80\n    heads = 2\nend\n";
+    let three = later.replace("two", "three");
+    std::fs::write(&defs, format!("{sound}garbage\n{later}{three}")).unwrap();
     let mut settings = Settings::default();
     let values = settings.values.entry("read".into()).or_default();
-    values.set("diskdefs", bad.to_string_lossy());
+    values.set("diskdefs", defs.to_string_lossy());
     let mut w = window(&engine, settings);
-    choose_format(&mut w, "amiga.amigados");
-    // The format's details move the rows below down as they arrive.
-    until_shown(&mut w, "the format's details", |w| {
-        w.query_by_label_contains("880\u{a0}KB").is_some()
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.get_all_by_role(egui::accesskit::Role::ComboBox)
+        .nth(1)
+        .expect("a format picker")
+        .click();
+    until_shown(&mut w, "the file's sound format", |w| {
+        w.query_by_label("mine.800").is_some()
     });
+    w.get_by_label("mine.800").click();
+    w.run_steps(3);
     w.get_by_label_contains("Advanced options").click();
     until_shown(&mut w, "gw's objection", |w| {
-        w.query_by_label_contains("bad.cfg, line 2").is_some()
+        w.query_by_label_contains("mixed.cfg, line 11").is_some()
     });
+    let objections = w.query_all_by_label_contains("line 11").count();
+    assert_eq!(objections, 1, "one error spoils two definitions, said once");
+    until_shown(&mut w, "Read ready", |w| {
+        !read_button(w).accesskit_node().is_disabled()
+    });
+
+    let values = app_mut(&mut w).settings.values.get_mut("read").unwrap();
+    values.set("format", "two.800");
+    w.run_steps(3);
     assert!(read_button(&w).accesskit_node().is_disabled());
     read_button(&w).hover();
-    w.run_steps(3);
-    w.get_by_label_contains("has errors");
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("The format's definition has errors. See Advanced options.")
+            .is_some()
+    });
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_disk_definitions_path_may_start_at_the_home_folder() {
+    let Some(engine) = engine() else { return };
+    let home = scratch("diskdefs-home");
+    custom_defs(&home);
+    let mut bridge = engine
+        .bridge("serve")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the bridge starts");
+    let mut input = bridge.stdin.take().unwrap();
+    let ask = b"{\"op\": \"diskdefs\", \"path\": \"~/mine.cfg\"}\n";
+    std::io::Write::write_all(&mut input, ask).unwrap();
+    drop(input);
+    let out = bridge.wait_with_output().unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        reply["ok"]["formats"],
+        serde_json::json!(["mine.800"]),
+        "{reply}"
+    );
+    std::fs::remove_dir_all(home).ok();
 }
 
 #[test]

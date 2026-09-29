@@ -98,8 +98,12 @@ pub struct FormatInfo {
 /// What a disk definitions file adds, checked with gw's own parser.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct DiskDefs {
+    /// The formats gw can use.
     pub formats: Vec<String>,
-    /// gw's objection to each definition it cannot use.
+    /// The formats it names that gw cannot use.
+    #[serde(default)]
+    pub failed: Vec<String>,
+    /// gw's objections to those, each once.
     pub errors: Vec<String>,
 }
 

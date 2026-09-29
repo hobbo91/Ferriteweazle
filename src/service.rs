@@ -204,14 +204,14 @@ impl Service {
             })
     }
 
-    /// The formats a disk definitions file adds, once gw has read it without
-    /// fault. Asks gw if it has not read this file yet.
+    /// The formats a disk definitions file adds that gw can use. Asks gw if
+    /// it has not read this file yet.
     pub fn custom_formats(&mut self, path: &str) -> &[String] {
         if path.is_empty() {
             return &[];
         }
         match self.diskdefs(path) {
-            Load::Ready(d) if d.errors.is_empty() => &d.formats,
+            Load::Ready(d) => &d.formats,
             _ => &[],
         }
     }
@@ -224,7 +224,7 @@ impl Service {
     /// As `custom_formats`, from what gw has already said.
     pub fn known_custom_formats(&self, path: &str) -> &[String] {
         match self.known_diskdefs(path) {
-            Some(Load::Ready(d)) if d.errors.is_empty() => &d.formats,
+            Some(Load::Ready(d)) => &d.formats,
             _ => &[],
         }
     }

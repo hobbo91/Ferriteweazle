@@ -627,13 +627,13 @@ impl<'a> Form<'a> {
             Load::Failed(e) => {
                 ui.label(small(sentence(e)).color(p.bad));
             }
-            Load::Ready(d) if d.errors.is_empty() => {
-                let n = d.formats.len();
-                let formats = if n == 1 { "format" } else { "formats" };
-                let text = format!("Adds {n} {formats} to the top of the format list.");
-                ui.label(small(text).weak());
-            }
             Load::Ready(d) => {
+                let n = d.formats.len();
+                if n > 0 {
+                    let formats = if n == 1 { "format" } else { "formats" };
+                    let text = format!("Adds {n} {formats} to the top of the format list.");
+                    ui.label(small(text).weak());
+                }
                 for e in d.errors.iter().take(3) {
                     ui.label(small(sentence(e)).color(p.bad));
                 }

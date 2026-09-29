@@ -207,22 +207,27 @@ def formats(diskdefs=None):
 
 
 def diskdefs(path):
-    """The formats a disk definitions file adds, and gw's error for each one
-    it cannot use."""
+    """The formats a disk definitions file adds that gw can use, those it
+    cannot, and gw's errors, each once. gw reads the file only as far as the
+    format asked for, so a broken definition spoils only those after it."""
     from greaseweazle.codec import codec
+    path = os.path.expanduser(path)  # as gw does
     if not os.path.isfile(path):
         raise ValueError('There is no such file.')
     names = formats(path)
-    errors = []
+    usable, failed, errors = [], [], []
     for name in names:
         try:
             with quiet():
                 codec.get_diskdef(name, path)
+            usable.append(name)
         except Exception as e:
-            errors.append(str(e) or type(e).__name__)
+            failed.append(name)
+            if (error := str(e) or type(e).__name__) not in errors:
+                errors.append(error)
     if not names:
         errors.append('It defines no disks.')
-    return {'formats': names, 'errors': errors}
+    return {'formats': usable, 'failed': failed, 'errors': errors}
 
 
 def format_info(name, diskdefs=None):

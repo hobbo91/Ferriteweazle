@@ -1468,8 +1468,9 @@ impl App {
         match self.service.known_diskdefs(path) {
             None | Some(Load::Waiting(_)) => Some("Checking the disk definitions file…"),
             Some(Load::Failed(_)) => Some("The disk definitions file cannot be read."),
-            Some(Load::Ready(d)) if !d.errors.is_empty() => {
-                Some("The disk definitions file has errors. See Advanced options.")
+            // gw reads the file only for one of its own formats.
+            Some(Load::Ready(d)) if d.failed.iter().any(|f| f == values.get("format")) => {
+                Some("The format's definition has errors. See Advanced options.")
             }
             Some(Load::Ready(_)) => None,
         }
