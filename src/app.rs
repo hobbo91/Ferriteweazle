@@ -1772,9 +1772,22 @@ impl App {
             .as_ref()
             .map(|f| format!("{} {f}", form::family_name(f).replace(' ', "\u{a0}")));
         let about: Vec<String> = format.into_iter().chain(file).collect();
+        let mut show = false;
         if !about.is_empty() {
-            let text = RichText::new(about.join("  ·  ")).small().color(p.dim);
-            ui.add(egui::Label::new(text).wrap());
+            // As tall as its text, and the link runs on after it.
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = 0.0;
+                ui.horizontal_wrapped(|ui| {
+                    let text = RichText::new(about.join("  ·  ")).small().color(p.dim);
+                    ui.add(egui::Label::new(text).wrap());
+                    if image_kept(job) {
+                        show = ui
+                            .link(RichText::new(REVEAL).small())
+                            .on_hover_text("Show the image in its folder.")
+                            .clicked();
+                    }
+                });
+            });
         }
         ui.add_space(6.0);
         progress_bar(ui, job, p);
@@ -1802,6 +1815,25 @@ impl App {
         }
         if install {
             self.install_rule(ui.ctx());
+        }
+        if show {
+            self.show_image(page);
+        }
+    }
+
+    /// Shows the disk job's image in the file manager. A fault shows on `page`.
+    fn show_image(&mut self, page: &str) {
+        let Some(file) = self.disk.as_ref().and_then(|j| j.output.clone()) else {
+            return;
+        };
+        let failed = match file.exists() {
+            true => reveal(&file)
+                .err()
+                .map(|e| format!("Could not show {}: {e}", file.display())),
+            false => Some(format!("{} has been moved or deleted.", file.display())),
+        };
+        if let Some(why) = failed {
+            self.notices.insert(page.to_owned(), why);
         }
     }
 
@@ -3234,6 +3266,56 @@ fn left_behind(job: &Job) -> Option<&'static str> {
         (Outcome::Stopped, "convert") => Some("Stopped: no image made."),
         _ => None,
     }
+}
+
+/// Whether a disk job has ended and left its image: gw deletes a failed
+/// job's, and a stopped conversion's.
+fn image_kept(job: &Job) -> bool {
+    job.output.is_some()
+        && match job.outcome() {
+            Some(Outcome::Succeeded) => true,
+            Some(Outcome::Failed) => !job.no_image,
+            Some(Outcome::Stopped) => job.command == "read",
+            None => false,
+        }
+}
+
+/// The file manager's own words for showing a file in it.
+const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in folder"
+};
+
+/// Shows `file` in the system's file manager: selected in Finder or
+/// Explorer, elsewhere by opening its folder.
+fn reveal(file: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("/usr/bin/open");
+        cmd.arg("-R").arg(file);
+        cmd
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("explorer");
+        // explorer reads /select, and the quoted path as one argument.
+        cmd.raw_arg(format!("/select,\"{}\"", file.display()));
+        cmd
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(file.parent().unwrap_or(file));
+        cmd
+    };
+    let mut child = cmd.spawn()?;
+    // Waited on, so it is reaped when it ends.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// What a command other than a disk job did, under its page. Gives whether

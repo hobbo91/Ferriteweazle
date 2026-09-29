@@ -1408,6 +1408,55 @@ fn a_long_job_description_wraps_within_the_status_pane() {
     );
 }
 
+/// The status pane's link to a job's image, in the file manager's own words.
+const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in folder"
+};
+
+#[test]
+fn an_image_a_job_left_can_be_shown_in_its_folder() {
+    let shown = |command: &str, outcome: Option<Outcome>, no_image: bool| {
+        let mut job = Job::replay(command, &damaged_read());
+        job.output = Some("/d/Game.img".into());
+        job.ended = outcome.map(|o| (job.started, o));
+        job.no_image = no_image;
+        let mut w = start(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        w.query_by_label(REVEAL).is_some()
+    };
+    assert!(shown("read", Some(Outcome::Succeeded), false));
+    assert!(
+        shown("read", Some(Outcome::Stopped), false),
+        "gw keeps what it read"
+    );
+    assert!(
+        !shown("convert", Some(Outcome::Stopped), false),
+        "gw deletes it"
+    );
+    assert!(!shown("read", Some(Outcome::Failed), true), "gw deleted it");
+    assert!(!shown("read", None, false), "it is still being read");
+}
+
+#[test]
+fn showing_an_image_that_has_gone_says_so() {
+    let gone = std::env::temp_dir().join("ferriteweazle-no-such-image.img");
+    std::fs::remove_file(&gone).ok();
+    let mut job = Job::replay("read", &damaged_read());
+    job.output = Some(gone.clone());
+    let mut w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    w.get_by_label(REVEAL).hover();
+    w.run();
+    w.get_by_label("Show the image in its folder.");
+    w.get_by_label(REVEAL).click();
+    w.run();
+    w.get_by_label(&format!("{} has been moved or deleted.", gone.display()));
+}
+
 #[test]
 fn at_its_smallest_the_window_shows_the_whole_sidebar() {
     let w = window_at(DEFAULT, Settings::default());
