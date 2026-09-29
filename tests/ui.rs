@@ -1627,6 +1627,54 @@ fn next_to_the_input_file_starts_off_and_greys_out_where_it_would_replace_the_in
 }
 
 #[test]
+fn next_to_each_input_greys_the_output_folder_and_a_batch_is_named_by_one_label() {
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..Settings::default()
+    };
+    set(&mut settings, "convert", form::BATCH, "on");
+    set(&mut settings, "convert", "format", "amiga.amigados");
+    let out = Output {
+        ext: ".adf".into(),
+        beside_input: true,
+        ..Output::default()
+    };
+    let folder = out.folder.clone();
+    settings.outputs.insert("convert/out_file".into(), out);
+    let mut w = window_at(DEFAULT, settings);
+    let greyed = |w: &Window| {
+        let field = w
+            .get_all_by_role(Role::TextInput)
+            .find(|n| n.value() == Some(folder.clone()));
+        field
+            .expect("the output folder shows")
+            .accesskit_node()
+            .is_disabled()
+    };
+    w.get_by_label("Output folder");
+    assert!(greyed(&w), "the folder is greyed, not hidden");
+    assert!(w.query_by_label("Prefix").is_none() && w.query_by_label("Suffix").is_none());
+    w.get_by_label("Label");
+    let after = w.get_by_label("After the name");
+    assert!(after.accesskit_node().is_disabled(), "no label to place");
+
+    let out = app_mut(&mut w)
+        .settings
+        .outputs
+        .get_mut("convert/out_file")
+        .unwrap();
+    out.beside_input = false;
+    out.batch_label = "Backup".into();
+    w.run();
+    assert!(!greyed(&w));
+    assert!(
+        !w.get_by_label("After the name")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
 fn the_device_card_lines_up_with_the_pages_description() {
     let w = window_at(DEFAULT, Settings::default());
     let about = w

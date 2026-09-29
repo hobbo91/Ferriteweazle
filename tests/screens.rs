@@ -308,7 +308,8 @@ fn screens() {
                 out.beside_input = false;
                 out.ext = ".adf".into();
                 out.folder = "/Users/you/Documents/Ferriteweazle/Images".into();
-                out.prefix = "Backup_".into();
+                out.batch_label = "Backup".into();
+                out.label_first = true;
             }
             render(&format!("{page}-batch"), theme, batch, None, |_| {});
         }

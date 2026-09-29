@@ -66,7 +66,7 @@ impl Firmware {
 
     fn tip(self) -> &'static str {
         match self {
-            Firmware::Latest => "Download the newest release.",
+            Firmware::Latest => "Download the latest release.",
             Firmware::Release => "Download a release by its tag.",
             Firmware::File => "Install an update file.",
         }
@@ -1033,7 +1033,7 @@ impl<'a> Form<'a> {
                 (
                     true,
                     "Folder",
-                    "Every image in a folder, one after another in name order.",
+                    "Every image in the folder, sequentially in order of name.",
                 ),
             ] {
                 if ui
@@ -1061,7 +1061,7 @@ impl<'a> Form<'a> {
         let mut folder = self.values.get(BATCH_FOLDER).to_owned();
         ui.horizontal(|ui| {
             let edit = edit(&mut folder)
-                .hint_text("Required")
+                .hint_text("Input folder (Required)")
                 .desired_width(beside_button(ui, BROWSE_BUTTON));
             ui.add(edit);
             if browse_button(ui)
@@ -1125,7 +1125,7 @@ impl<'a> Form<'a> {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let edit = edit(&mut path)
-                    .hint_text("Required")
+                    .hint_text("Input image (Required)")
                     .desired_width(beside_button(ui, BROWSE_BUTTON));
                 changed |= ui.add(edit).changed();
                 if browse_button(ui).own_tip("Select an image.").clicked()
@@ -1286,45 +1286,50 @@ impl<'a> Form<'a> {
         if beside && !batch && !input.is_empty() {
             out.folder = lossy(Path::new(&input).parent().map(Path::as_os_str));
         }
+        // Beside the input the folder and name are the input's: shown greyed.
+        let folder = if has_input { "Output folder" } else { "Folder" };
+        folder_row(ui, &mut out.folder, folder, !beside);
         if batch {
-            if !beside {
-                folder_row(ui, &mut out.folder);
-            }
-            for (label, text, tip) in [
-                (
-                    "Prefix",
-                    &mut out.prefix,
-                    "Text before each input's file name, such as Backup_.",
-                ),
-                (
-                    "Suffix",
-                    &mut out.suffix,
-                    "Text after each input's file name, such as _copy.",
-                ),
-            ] {
-                let (name, _) = row(ui, label, |ui| {
-                    ui.add(
-                        edit(text)
-                            .char_limit(NAME_LIMIT)
-                            .hint_text("None")
-                            .desired_width(SHORT_FIELD),
-                    )
-                    .on_hover_text(tip);
-                });
-                name.on_hover_text(tip);
-            }
-        } else if !beside {
-            folder_row(ui, &mut out.folder);
-            let (name, _) = row(ui, "Name", |ui| {
+            let tip = "Text added to each input's name, such as Backup in Backup_Game.";
+            let (name, _) = row(ui, "Label", |ui| {
                 ui.add(
+                    edit(&mut out.batch_label)
+                        .char_limit(NAME_LIMIT)
+                        .hint_text("None")
+                        .desired_width(SHORT_FIELD),
+                )
+                .on_hover_text(tip);
+            });
+            name.on_hover_text(tip);
+            let labelled = !out.batch_label.trim().is_empty();
+            let (name, _) = row(ui, "Position", |ui| {
+                ui.add_enabled_ui(labelled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.selectable_value(&mut out.label_first, false, "After the name")
+                            .on_hover_text("Game_Backup, Demo_Backup…");
+                        ui.selectable_value(&mut out.label_first, true, "Before the name")
+                            .on_hover_text("Backup_Game, Backup_Demo…");
+                    });
+                })
+                .response
+                .on_disabled_hover_text("Needs a label.");
+            });
+            name.on_hover_text("Where the label goes.");
+        } else {
+            let tip = "The image's file name, extensions are handled by Image type.";
+            let (name, _) = row(ui, "Name", |ui| {
+                ui.add_enabled(
+                    !beside,
                     edit(&mut out.name)
                         .char_limit(NAME_LIMIT)
                         .hint_text("Required")
                         .desired_width(field_width(ui)),
                 )
-                .on_hover_text("The image's file name, extensions are handled by Image type.");
+                .on_hover_text(tip)
+                .on_disabled_hover_text(BESIDE);
             });
-            name.on_hover_text("The image's file name, extensions are handled by Image type.");
+            name.on_hover_text(tip);
         }
 
         let value = match (batch, images.first()) {
@@ -1435,6 +1440,9 @@ impl<'a> Form<'a> {
 
 const TYPE_TIP: &str = "The type of image to create. Disk format picks one.";
 
+/// Why the folder and name are greyed beside the input.
+const BESIDE: &str = "Not used when saving next to the input.";
+
 const REPLACES_INPUT: &str = "This is the input file. Select another type or name.";
 
 const COLONS_IN: &str = "gw reads :: in a path as options. Select another image or folder.";
@@ -1442,7 +1450,7 @@ const COLONS_IN: &str = "gw reads :: in a path as options. Select another image 
 const FOREIGN: &str = "An image has an option its type does not take.";
 
 const REPLACES_INPUTS: &str =
-    "An image would replace its input. Select another type, folder, prefix or suffix.";
+    "An image would replace its input. Select another type, folder or label.";
 
 /// The most disks one session reads.
 const MAX_DISKS: u32 = 99;
@@ -1540,7 +1548,7 @@ pub fn blocked(
         }
         let named = match batch {
             None => out.name.contains("::"),
-            Some(_) => out.prefix.contains("::") || out.suffix.contains("::"),
+            Some(_) => out.batch_label.contains("::"),
         };
         if !beside && (named || out.folder.contains("::")) {
             return Some("gw reads :: in a path as options. Select another folder or name.");
@@ -1634,19 +1642,23 @@ fn both_cases<'e>(exts: impl Iterator<Item = &'e str>) -> Vec<String> {
 }
 
 /// Where a new image is saved.
-fn folder_row(ui: &mut Ui, folder: &mut String) {
-    let (name, _) = row(ui, "Folder", |ui| {
-        ui.horizontal(|ui| {
-            let width = beside_button(ui, BROWSE_BUTTON);
-            ui.add(edit(folder).hint_text("Required").desired_width(width))
-                .on_hover_text("Where the image is saved.");
-            if browse_button(ui)
-                .on_hover_text("Select a folder.")
-                .clicked()
-                && let Some(f) = rfd::FileDialog::new().set_directory(&*folder).pick_folder()
-            {
-                *folder = f.to_string_lossy().into_owned();
-            }
+fn folder_row(ui: &mut Ui, folder: &mut String, label: &str, enabled: bool) {
+    let (name, _) = row(ui, label, |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.horizontal(|ui| {
+                let width = beside_button(ui, BROWSE_BUTTON);
+                ui.add(edit(folder).hint_text("Required").desired_width(width))
+                    .on_hover_text("Where the image is saved.")
+                    .on_disabled_hover_text(BESIDE);
+                if browse_button(ui)
+                    .on_hover_text("Select a folder.")
+                    .on_disabled_hover_text(BESIDE)
+                    .clicked()
+                    && let Some(f) = rfd::FileDialog::new().set_directory(&*folder).pick_folder()
+                {
+                    *folder = f.to_string_lossy().into_owned();
+                }
+            });
         });
     });
     name.on_hover_text("Where the image is saved.");
@@ -2061,7 +2073,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "cyls", "How many cylinders the drive has."),
     ("reset", "delays", "Reset the delays as well."),
     ("", "densel", "Set the density select signal on pin 2."),
-    ("", "diskdefs", "File containing custom disk formats."),
+    ("", "diskdefs", "File containing custom disk definitions."),
     (
         "write",
         "erase_empty",
@@ -2643,9 +2655,10 @@ pub struct Output {
     pub opts: BTreeMap<String, String>,
     /// Take the folder and name from the input file, when there is one.
     pub beside_input: bool,
-    /// Around each input's name in a batch: `Backup_Disk1_copy`.
-    pub prefix: String,
-    pub suffix: String,
+    /// Added to each input's name in a batch: `Backup` in `Backup_Game`.
+    pub batch_label: String,
+    /// The batch label goes before the name, not after it.
+    pub label_first: bool,
     /// The input the name was taken from: a new input names the image again.
     pub named_for: String,
 }
@@ -2662,8 +2675,8 @@ impl Default for Output {
             ext: String::new(),
             opts: BTreeMap::new(),
             beside_input: false,
-            prefix: String::new(),
-            suffix: String::new(),
+            batch_label: String::new(),
+            label_first: false,
             named_for: String::new(),
         }
     }
@@ -2721,16 +2734,20 @@ impl Output {
         join_opts(&self.path(disk).to_string_lossy(), &self.opts)
     }
 
-    /// The file a batch makes from `input`: its name between the prefix and
-    /// the suffix, in the input's folder when beside it.
+    /// The file a batch makes from `input`: its name with the label before or
+    /// after it, in the input's folder when beside it.
     pub fn batch_path(&self, input: &Path) -> PathBuf {
         let folder = match self.beside_input {
             true => input.parent().unwrap_or(Path::new("")),
             false => Path::new(&self.folder),
         };
-        let (prefix, suffix) = (self.prefix.trim(), self.suffix.trim());
-        let stem = image_stem(input);
-        folder.join(typed_name(&format!("{prefix}{stem}{suffix}"), &self.ext))
+        let (label, stem) = (self.batch_label.trim(), image_stem(input));
+        let stem = match (label.is_empty(), self.label_first) {
+            (true, _) => stem,
+            (false, true) => format!("{label}_{stem}"),
+            (false, false) => format!("{stem}_{label}"),
+        };
+        folder.join(typed_name(&stem, &self.ext))
     }
 
     /// As `value`, for the image a batch makes from `input`.
@@ -3459,12 +3476,14 @@ mod tests {
             out.batch_path(input),
             Path::new("/out").join("Game_Disk1.hfe")
         );
-        out.prefix = "Backup_".into();
-        out.suffix = " _copy ".into();
-        let named = "Backup_Game_Disk1_copy.hfe";
-        assert_eq!(out.batch_path(input), Path::new("/out").join(named));
+        out.batch_label = " copy ".into();
+        let after = "Game_Disk1_copy.hfe";
+        assert_eq!(out.batch_path(input), Path::new("/out").join(after));
+        out.label_first = true;
+        let before = "copy_Game_Disk1.hfe";
+        assert_eq!(out.batch_path(input), Path::new("/out").join(before));
         out.beside_input = true;
-        assert_eq!(out.batch_path(input), Path::new("/in").join(named));
+        assert_eq!(out.batch_path(input), Path::new("/in").join(before));
     }
 
     #[test]
@@ -3505,7 +3524,7 @@ mod tests {
         };
         let mut outputs = BTreeMap::from([(output_key("convert", "out_file"), out)]);
         assert_eq!(reason(&v, &service, &outputs), Some(REPLACES_INPUTS));
-        outputs.get_mut("convert/out_file").unwrap().suffix = "_copy".into();
+        outputs.get_mut("convert/out_file").unwrap().batch_label = "copy".into();
         assert_eq!(reason(&v, &service, &outputs), None);
         std::fs::remove_dir_all(&dir).ok();
     }

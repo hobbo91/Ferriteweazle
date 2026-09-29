@@ -676,7 +676,8 @@ fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went
     let out = Output {
         folder: path(&outputs),
         ext: ".scp".into(),
-        prefix: "Backup_".into(),
+        batch_label: "Backup".into(),
+        label_first: true,
         ..Output::default()
     };
     settings.outputs.insert("convert/out_file".into(), out);

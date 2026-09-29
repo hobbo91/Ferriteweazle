@@ -1,6 +1,6 @@
 [package]
 name = "ferriteweazle"
-version = "0.9.0"
+version = "0.12.1"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"

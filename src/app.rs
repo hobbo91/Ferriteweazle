@@ -78,7 +78,7 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
 /// Why nothing new can start while a job runs.
-const BUSY: &str = "Wait for the job that is running.";
+const BUSY: &str = "Wait for the running job to complete.";
 /// Why nothing new can start while gw or this app installs an update.
 const INSTALLING: &str = "Wait for the update to install.";
 /// Why a command that uses the device waits while the card runs gw info.
@@ -1710,7 +1710,7 @@ impl App {
     }
 
     fn confirm_or_run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
-        if destructive(command) || flashes_bootloader(command, &args) {
+        if destructive(command) || command == "update" {
             self.dialog = Some(Dialog::Confirm {
                 command: command.to_owned(),
                 args,
@@ -2355,6 +2355,8 @@ impl App {
         });
         section(ui, "Update", |ui| self.app_update(ui));
         section(ui, "About", |ui| {
+            ui.label(RichText::new(concat!("Ferriteweazle ", env!("CARGO_PKG_VERSION"))).strong());
+            ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.hyperlink_to("Greaseweazle Tools", GW_REPO)
@@ -2368,11 +2370,10 @@ impl App {
             ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
                 .on_hover_text(GW_GUIDE);
             ui.add_space(6.0);
-            ui.label(concat!(
-                "Ferriteweazle ",
-                env!("CARGO_PKG_VERSION"),
-                " written with \u{2661} by Lee Hobson (@hobbo91), under the MIT license."
-            ));
+            ui.label(
+                "Ferriteweazle is made with \u{2661} by Lee Hobson (@hobbo91), under the MIT \
+                 license.",
+            );
             ui.hyperlink_to("Source code and issues", REPO)
                 .on_hover_text(REPO);
             ui.horizontal_wrapped(|ui| {
@@ -2424,6 +2425,9 @@ impl App {
                             "Warning! If the flash fails, the Greaseweazle may need to be \
                              reflashed with a programming adapter.",
                         );
+                    } else if command == "update" {
+                        dialog_heading(ui, "Update the firmware?");
+                        ui.label("Are you sure?");
                     } else {
                         let drive = match self.settings.drive.as_str() {
                             "" => self.default_drive(),
@@ -4149,7 +4153,7 @@ mod tests {
         let out = Output {
             folder: "/out".into(),
             ext: ".img".into(),
-            suffix: "_pc".into(),
+            batch_label: "pc".into(),
             ..Output::default()
         };
         let outputs = BTreeMap::from([("convert/out_file".to_owned(), out)]);
@@ -4800,13 +4804,18 @@ mod tests {
     }
 
     #[test]
-    fn an_update_of_the_bootloader_asks_first() {
+    fn every_update_asks_first_and_the_bootloader_warns() {
         let schema = schema();
         let update = schema.command("update").unwrap();
         let ctx = egui::Context::default();
         let mut app = offline();
         app.start(&ctx, update);
-        assert!(app.dialog.is_none(), "the main firmware updates at once");
+        let firmware = |args: &Vec<String>| !args.contains(&"--bootloader".to_owned());
+        assert!(matches!(&app.dialog, Some(Dialog::Confirm { args, .. }) if firmware(args)));
+        let w = window(app);
+        w.get_by_label("Update the firmware?");
+        w.get_by_label("Are you sure?");
+        let mut app = offline();
         let values = app.settings.values.entry("update".into()).or_default();
         values.set("bootloader", command::ON);
         app.start(&ctx, update);
