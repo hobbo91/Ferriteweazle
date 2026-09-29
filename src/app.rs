@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 /// How long the device card waits for `gw info`.
 const INFO_TIMEOUT: Duration = Duration::from_secs(12);
 
-/// Commands in the sidebar, by section. Commands a newer gw adds go under Other.
+/// Commands in the sidebar, by section; any a newer gw adds go under Other.
 const SECTIONS: &[(&str, &[&str])] = &[
     ("Disk", &["read", "write", "convert", "erase"]),
     ("Drive", &["clean", "seek", "rpm", "align"]),
@@ -101,11 +101,10 @@ const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Start
 const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 
 /// The window as it opens, in points: wide enough for the Read page's Folder
-/// field to show /Users/lhobson/Documents/Ferriteweazle/Images whole, and tall
+/// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and tall
 /// enough for the map's widest squares there.
 pub const WINDOW: egui::Vec2 = egui::vec2(1123.0, 809.0);
-/// The smallest window, which a 1024 by 768 screen holds beside a dock or a
-/// taskbar.
+/// The smallest window, in points: fits a 1024 by 768 screen beside a dock or taskbar.
 pub const SMALLEST: egui::Vec2 = egui::vec2(960.0, 640.0);
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
@@ -127,7 +126,7 @@ const FADE_TIME: f32 = 0.25;
 const FADE_STEP: f32 = 1.0 / 30.0;
 /// Frames to wait for the old theme's screenshot before changing at once.
 const FADE_WAIT: u32 = 8;
-/// One line of the log.
+/// A log line's height, in points.
 const LOG_LINE: f32 = 18.0;
 /// The drawer's height, margins included: the command line's, and the log's at first.
 const DRAWER: f32 = 124.0;
@@ -158,7 +157,7 @@ impl Default for Page {
     }
 }
 
-/// The choices made in the window. Nothing is saved: every run starts afresh.
+/// The choices made in the window; only the drive and device are kept between runs.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
@@ -167,13 +166,12 @@ pub struct Settings {
     pub engine: Option<PathBuf>,
     /// Empty for gw's own choice.
     pub device: String,
-    /// The device the card drives.
+    /// The type of device the card drives.
     pub kind: Kind,
     pub drive: String,
     /// Passes gw's `--bt` for Python tracebacks on errors.
     pub backtrace: bool,
-    /// Saves the gw command and its output where a job puts its image, as
-    /// `name.ext.log`.
+    /// Saves the gw command and its output where a job puts its image, as `name.ext.log`.
     pub save_logs: bool,
     /// Plays a sound when a job ends.
     pub sound: bool,
@@ -187,6 +185,13 @@ pub struct Settings {
     pub drawer: Option<Drawer>,
 }
 
+impl Settings {
+    /// The device's port among `ports`, as chosen_port picks it.
+    fn port<'p>(&self, ports: &'p [Port]) -> Option<&'p Port> {
+        chosen_port(ports, &self.device, self.kind)
+    }
+}
+
 /// What the drawer under the page and the status pane shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Drawer {
@@ -197,7 +202,7 @@ pub enum Drawer {
 }
 
 enum Dialog {
-    /// A disk job, or the first of a session of `disks`.
+    /// A job that asks first, or the first of a session of `disks`.
     Confirm {
         command: String,
         args: Vec<String>,
@@ -289,8 +294,7 @@ impl Runs {
     }
 }
 
-/// A page's Presets menu while it is open, so the folder is read once, not
-/// every frame.
+/// A page's Presets menu while it is open, so the folder is read once, not every frame.
 struct PresetsMenu {
     page: String,
     /// The page's presets, by name.
@@ -340,9 +344,8 @@ pub struct App {
     probe_failed: Option<String>,
     /// The port the card last asked about, and whether Linux denied it then.
     probed: Option<(String, bool)>,
-    /// The real app, not a test window: it keeps the drive in drive_file(),
-    /// runs gw info on each Greaseweazle that appears, and asks GitHub for
-    /// newer releases of gw and of this app.
+    /// The real app, not a test window: it keeps the drive and device in their files,
+    /// runs gw info on each Greaseweazle that appears, and checks GitHub for updates.
     live: bool,
     /// The drive as last kept in drive_file().
     kept_drive: String,
@@ -584,10 +587,9 @@ impl App {
                 let tall = ui.available_height() - status_frame.total_margin().sum().y;
                 // Added first, so they span the page and the status pane.
                 self.drawers(ui, &name);
-                // The page takes up to its form's full width and the status
-                // pane the rest, down to STATUS_MIN, or less where the page
-                // would fall short of PAGE_MIN. Past the map's widest, the page
-                // takes the rest up to its widest form.
+                // The page takes up to its form's full width and the status pane the rest,
+                // at least STATUS_MIN unless the page would drop below PAGE_MIN. Past the
+                // map's widest, the page takes the rest up to its widest form.
                 let room = ui.available_width();
                 let margins = page.inner_margin.sum().x + f32::from(PAGE_BAR);
                 let map = diskmap::width_for(tall - DRAWER - JOB_ROWS)
@@ -781,7 +783,7 @@ impl App {
         if let RuleInstall::Running(answer) = &self.install
             && let Ok(done) = answer.try_recv()
         {
-            // The port list says so once udev has granted access.
+            // Relist the ports to show the access udev has granted.
             self.service.refresh_ports();
             self.install = RuleInstall::Done(done);
         }
@@ -803,15 +805,12 @@ impl App {
                 ctx.request_repaint_after(wait);
             }
             // The device's fields come before gw looks online for firmware.
-            if let Some(info) = device::parse(&probe.log) {
-                self.device = Some(info);
+            let info = device::parse(&probe.log);
+            if info.is_some() {
+                self.device.clone_from(&info);
             }
             if !probe.running() {
-                let port = chosen_port(
-                    self.service.known_ports(),
-                    &self.settings.device,
-                    self.settings.kind,
-                );
+                let port = self.settings.port(self.service.known_ports());
                 if let Some(port) = refused_port(probe, port) {
                     probe
                         .log
@@ -825,8 +824,8 @@ impl App {
                     _ => ending(probe),
                 };
                 self.log.end(probe, end);
-                named = device::parse(&probe.log).and_then(|i| named_device(&i));
-                self.probe_failed = match (device::parse(&probe.log), probe.outcome()) {
+                named = info.as_ref().and_then(named_device);
+                self.probe_failed = match (info, probe.outcome()) {
                     (Some(_), _) => None,
                     (None, Some(Outcome::Stopped)) => Some("No answer.".into()),
                     (None, _) => Some(
@@ -856,36 +855,22 @@ impl App {
     /// The Greaseweazle the sidebar shows.
     fn found_port(&mut self) -> Option<&Port> {
         self.service.ports();
-        chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        )
+        self.settings.port(self.service.known_ports())
     }
 
     /// Whether the chosen port is there, open to this account, and did not
     /// fail its last gw info: the device card's dot is green.
     fn answering(&self) -> bool {
-        let port = chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        );
+        let port = self.settings.port(self.service.known_ports());
         port.is_some_and(|p| !p.denied) && self.probe_failed.is_none()
     }
 
     /// Whether the sidebar shows a Greaseweazle, as last listed.
     fn connected(&self) -> bool {
-        chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        )
-        .is_some()
+        self.settings.port(self.service.known_ports()).is_some()
     }
 
-    /// Why nothing new can start now: a job runs, or gw or this app installs
-    /// an update.
+    /// Why nothing new can start now: a job runs, or gw or this app installs an update.
     fn busy(&self) -> Option<&'static str> {
         if self.running().is_some() {
             Some(BUSY)
@@ -908,8 +893,8 @@ impl App {
         }
     }
 
-    /// Why the sidebar shows no Greaseweazle: gw's reason when it could not
-    /// list the ports, else NO_DEVICE.
+    /// Why the sidebar shows no device: gw's reason when it could not list the
+    /// ports, else NO_DEVICE or an Adafruit RP2040's.
     fn no_device(&self) -> Cow<'static, str> {
         match (self.service.ports_error(), self.settings.kind) {
             (Some(why), _) => why.to_owned().into(),
@@ -953,12 +938,7 @@ impl App {
 
     /// A job has just ended: save the log, and do whatever was waiting on it.
     fn ended(&mut self, ctx: &egui::Context, disk: bool) {
-        let port = chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        )
-        .cloned();
+        let port = self.settings.port(self.service.known_ports()).cloned();
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
         let outcome = job.outcome();
@@ -1075,8 +1055,7 @@ impl App {
         self.notices.insert(page, note);
     }
 
-    /// Detect's note gives way once its page takes another format than the
-    /// one Detect chose.
+    /// Detect's note gives way once its page takes another format than the one Detect chose.
     fn drop_found_note(&mut self) {
         let Some((page, format, note)) = &self.found_note else {
             return;
@@ -1098,8 +1077,7 @@ impl App {
     /// gw info found a `kind` on `port`. While that is the port chosen, the
     /// tick follows it, and with it what the pages allow.
     fn follow(&mut self, port: &str, kind: Kind) {
-        let known = self.service.known_ports();
-        let chosen = chosen_port(known, &self.settings.device, self.settings.kind);
+        let chosen = self.settings.port(self.service.known_ports());
         if chosen.is_some_and(|p| p.device == port) && kind != self.settings.kind {
             // An Adafruit RP2040 is only ever the port chosen for it.
             self.settings.device = port.to_owned();
@@ -1123,10 +1101,7 @@ impl App {
     /// drive it cannot select gives way to gw's default, A.
     fn set_kind(&mut self, kind: Kind) {
         self.settings.kind = kind;
-        let drive = match self.settings.drive.as_str() {
-            "" => self.default_drive(),
-            drive => drive.to_owned(),
-        };
+        let drive = self.drive();
         if kind == Kind::Adafruit && !adafruit::DRIVES.contains(&drive.as_str()) {
             self.settings.drive = String::new();
         }
@@ -1449,6 +1424,14 @@ impl App {
         drives
     }
 
+    /// The drive gw uses: the one chosen, else gw's default.
+    fn drive(&self) -> String {
+        match self.settings.drive.as_str() {
+            "" => self.default_drive(),
+            drive => drive.to_owned(),
+        }
+    }
+
     fn default_drive(&self) -> String {
         self.schema
             .as_ref()
@@ -1472,12 +1455,8 @@ impl App {
             .cloned()
             .unwrap_or_default();
         // The card's port, so gw opens the Greaseweazle the card names.
-        let device = chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        )
-        .map_or("", |p| p.device.as_str());
+        let device = self.settings.port(self.service.known_ports());
+        let device = device.map_or("", |p| p.device.as_str());
         for (dest, value) in [("device", device), ("drive", self.settings.drive.as_str())] {
             if cmd.arg(dest).is_some() {
                 values.set(dest, value);
@@ -1498,9 +1477,8 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
-        // The Overwrite question stands in for gw's -n, which would refuse
-        // once it is answered.
-        if form::OUTPUTS.iter().any(|(c, _)| *c == cmd.name) {
+        // The Overwrite question stands in for gw's -n, which would refuse once it is answered.
+        if form::has_output(&cmd.name) {
             values.set("no_clobber", "");
         }
         if cmd.name == "update" {
@@ -1647,7 +1625,7 @@ impl App {
             self.notices.insert(name.to_owned(), why);
         }
         if action == Some(form::Action::Detect) {
-            // The page's earlier answer goes while it looks again.
+            // The page's notice goes while Detect looks again.
             self.notices.remove(name);
             self.detect_for = Some(name.to_owned());
             let args = self.detect_args(cmd);
@@ -1835,10 +1813,7 @@ impl App {
         if let Some(why) = adafruit::command(&cmd.name) {
             return Some(why);
         }
-        let drive = match self.settings.drive.as_str() {
-            "" => self.default_drive(),
-            drive => drive.to_owned(),
-        };
+        let drive = self.drive();
         if cmd.arg("drive").is_some() && !adafruit::DRIVES.contains(&drive.as_str()) {
             return Some("The Adafruit RP2040 has one drive: select A or 0.");
         }
@@ -1874,11 +1849,7 @@ impl App {
             "clean" => number("cyls").map(|c| c.saturating_sub(1)),
             _ if cmd.arg("tracks").is_some() => {
                 let format = values.get("format");
-                let custom = self.service.known_custom_formats(values.get("diskdefs"));
-                let diskdefs = match custom.iter().any(|f| f == format) {
-                    true => values.get("diskdefs"),
-                    false => "",
-                };
+                let diskdefs = form::known_diskdefs(&self.service, values, format);
                 let cyls = (!format.is_empty())
                     .then(|| self.service.known_format_info(diskdefs, format)?.ready())
                     .flatten()
@@ -2041,7 +2012,7 @@ impl App {
         // The image the job writes: gw's last argument, one per disk or image.
         let output = args
             .last()
-            .filter(|_| form::OUTPUTS.iter().any(|(c, _)| *c == command))
+            .filter(|_| form::has_output(command))
             .map(|a| PathBuf::from(a.split("::").next().unwrap_or(a)));
         if let Some(folder) = output.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(folder);
@@ -2098,16 +2069,14 @@ impl App {
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
         let (format, blank) = self.blank_map(page);
-        // Detect's tracks stand for the format it chose: the page's own once
-        // another is chosen.
+        // Detect's tracks stand for the format it chose: the page's own once another is chosen.
         let shown = self.disk.as_ref().filter(|j| {
             j.running() || j.command != DETECT || j.format.as_deref() == format.as_deref()
         });
         let top = ui.cursor().top();
-        // The map's height above a drawer of its least height, below a job's
-        // rows whether or not there is a job, so its squares keep one size;
-        // and the room below those rows. Rows past them, a warning or a
-        // wrapped line, scroll the pane rather than shrink the squares.
+        // The map's height above a drawer at its least height and below a job's rows, even
+        // with no job, so its squares keep one size; and the room below those rows. Rows
+        // past them (a warning, a wrapped line) scroll the pane instead of shrinking the squares.
         let room = |ui: &Ui| {
             let used = ui.cursor().top() - top;
             (tall - DRAWER - JOB_ROWS, full - used.min(JOB_ROWS))
@@ -2128,7 +2097,7 @@ impl App {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
-            diskmap::show(ui, &blank, "blank", false, budget, room);
+            diskmap::show(ui, &blank, "blank", false, false, budget, room);
             return;
         };
         // These rows wrap, so the job shows in full.
@@ -2185,10 +2154,19 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, "blank", false, budget, room),
+            true => diskmap::show(ui, &blank, "blank", false, false, budget, room),
             false => {
                 let verifying = job.running() && job.progress.verifies;
-                diskmap::show(ui, &job.progress, job.started, verifying, budget, room);
+                let live = job.running();
+                diskmap::show(
+                    ui,
+                    &job.progress,
+                    job.started,
+                    live,
+                    verifying,
+                    budget,
+                    room,
+                );
             }
         }
         if install {
@@ -2217,11 +2195,7 @@ impl App {
 
     /// The port Linux refused `job`, if it was refused one, and what can grant access.
     fn refused(&self, job: &Job) -> Option<Refused<'_>> {
-        let port = chosen_port(
-            self.service.known_ports(),
-            &self.settings.device,
-            self.settings.kind,
-        );
+        let port = self.settings.port(self.service.known_ports());
         Some(Refused {
             port: refused_port(job, port)?,
             rule: self.udev_rule.as_deref(),
@@ -2238,8 +2212,7 @@ impl App {
         }
     }
 
-    /// An empty map the size of the page's format, or of a common disk.
-    /// The page's format, and its map with nothing read yet.
+    /// The page's format, and an empty map of its size, else of a common disk's.
     fn blank_map(&mut self, page: &str) -> (Option<String>, Progress) {
         let empty = Values::default();
         let values = self.settings.values.get(page).unwrap_or(&empty);
@@ -2763,10 +2736,7 @@ impl App {
                         dialog_heading(ui, "Update the firmware?");
                         ui.label("Are you sure?");
                     } else {
-                        let drive = match self.settings.drive.as_str() {
-                            "" => self.default_drive(),
-                            drive => drive.to_owned(),
-                        };
+                        let drive = self.drive();
                         let verb = title(command);
                         let verb = verb.split(' ').next().unwrap_or_default();
                         let heading = match disks {
@@ -3191,8 +3161,7 @@ impl App {
         }
     }
 
-    /// Output settings as a new page has them: gw's defaults, and the
-    /// images folder.
+    /// Output settings as a new page has them: gw's defaults, and the images folder.
     fn fresh_output(&self) -> Output {
         Output {
             folder: self.images_folder().to_string_lossy().into_owned(),
@@ -3222,7 +3191,7 @@ impl App {
                 .outputs
                 .insert(form::output_key(c, dest), fresh);
         }
-        // Such as the format detection found, which the page no longer has.
+        // A notice, such as Detect's, may name a format the page no longer has.
         self.notices.remove(command);
     }
 
@@ -3431,7 +3400,7 @@ fn destructive(command: &str) -> bool {
     DESTRUCTIVE.iter().any(|(c, _)| *c == command)
 }
 
-/// Whether gw update flashes the bootloader, which asks first.
+/// Whether the command is gw update --bootloader.
 fn flashes_bootloader(command: &str, args: &[String]) -> bool {
     command == "update" && args.iter().any(|a| a == "--bootloader")
 }
@@ -3718,9 +3687,8 @@ fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
     }
 }
 
-/// What a disk job that did not finish leaves behind: gw keeps the tracks a
-/// stopped read has done, and deletes a stopped conversion's image and
-/// that of a job that failed.
+/// What an unfinished disk job leaves behind: gw keeps a stopped read's tracks, and
+/// deletes a stopped conversion's image and a failed job's.
 fn left_behind(job: &Job) -> Option<&'static str> {
     match (job.outcome()?, job.command.as_str()) {
         (Outcome::Failed, _) if job.no_image => Some("Failed: no image kept."),
@@ -3945,7 +3913,7 @@ enum Shown<'a> {
     Job(&'a Job),
 }
 
-/// A job's output box, in points.
+/// The height of a job's output box, in points.
 const OUTPUT_HEIGHT: f32 = 260.0;
 
 /// gw's output with Copy and Save: the Log as tall as the room left, with
@@ -4090,13 +4058,10 @@ fn kept_device(file: &Path) -> (Kind, String) {
 /// Keeps the device type in `file` and an Adafruit RP2040's `port`, or
 /// removes the file for a Greaseweazle.
 fn keep_device(file: &Path, kind: Kind, port: &str) {
-    let _ = match kind {
-        Kind::Greaseweazle => std::fs::remove_file(file),
-        Kind::Adafruit => file
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(file, format!("adafruit\n{port}\n"))),
-    };
+    keep(
+        file,
+        (kind == Kind::Adafruit).then(|| format!("adafruit\n{port}\n")),
+    );
 }
 
 /// A menu row with a tick when it is the one chosen of its group.
@@ -4163,13 +4128,8 @@ fn kept_size(file: &Path) -> Option<egui::Vec2> {
 
 /// Keeps `size` in `file`, or removes the file for WINDOW.
 fn save_size(file: &Path, size: egui::Vec2) {
-    let _ = match same_size(size, WINDOW) {
-        true => std::fs::remove_file(file),
-        false => file
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(file, format!("{} {}", size.x.round(), size.y.round()))),
-    };
+    let text = format!("{} {}", size.x.round(), size.y.round());
+    keep(file, (!same_size(size, WINDOW)).then_some(text));
 }
 
 /// Sizes within half a point, as a window reports its size in pixels.
@@ -4231,12 +4191,17 @@ fn kept_drive(file: &Path) -> String {
 
 /// Keeps `drive` in `file`, or removes the file for gw's default.
 fn keep_drive(file: &Path, drive: &str) {
-    let _ = match drive {
-        "" => std::fs::remove_file(file),
-        _ => file
+    keep(file, (!drive.is_empty()).then(|| drive.to_owned()));
+}
+
+/// Writes `text` to `file`, making its folder, or removes the file for None.
+fn keep(file: &Path, text: Option<String>) {
+    let _ = match text {
+        None => std::fs::remove_file(file),
+        Some(text) => file
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(file, drive)),
+            .and_then(|()| std::fs::write(file, text)),
     };
 }
 
@@ -4296,13 +4261,12 @@ enum PathClick {
     Default,
 }
 
-/// "Go back to" a default folder, made once: the folder is fixed while the
-/// app runs.
+/// "Go back to" a default folder, made once: the folder is fixed while the app runs.
 fn back_to(tip: &'static OnceLock<String>, folder: fn() -> PathBuf) -> &'static str {
     tip.get_or_init(|| format!("Go back to {}.", folder().display()))
 }
 
-/// A path in Settings: its name, where it is, Choose…, and with `back` a
+/// A path in Settings: its name, where it is, Select…, and with `back` a
 /// button and tip that restore the default. Both wait while `busy` says why.
 fn path_row(
     ui: &mut Ui,
@@ -4419,10 +4383,10 @@ fn text_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// A small button with a painted circular arrow.
 /// The refresh button's side.
 const REFRESH: f32 = 22.0;
 
+/// A small button with a painted circular arrow.
 fn refresh_button(p: &'static Palette) -> impl egui::Widget {
     move |ui: &mut Ui| {
         let response = ui.add(
@@ -4523,8 +4487,7 @@ mod tests {
         Update::Installing(std::sync::mpsc::channel().1, "v1.24".into())
     }
 
-    /// The window after a couple of frames. Stepped, not run: a running job
-    /// keeps it repainting.
+    /// The window after two frames, stepped, not run: a running job keeps it repainting.
     fn window(app: App) -> Harness<'static, App> {
         let mut w = Harness::builder()
             .with_size(vec2(1240.0, 780.0))

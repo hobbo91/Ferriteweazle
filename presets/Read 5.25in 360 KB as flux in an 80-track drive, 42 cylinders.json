@@ -1,0 +1,11 @@
+{
+  "command": "read",
+  "values": {
+    "tracks": "c=0-41:h=0,1:step=2"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".scp"
+    }
+  }
+}

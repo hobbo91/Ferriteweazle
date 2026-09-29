@@ -1,8 +1,7 @@
-"""gw 1.23, through the bridge, against a stand-in for Adafruit's
-Greaseweazle-compatible firmware: Adafruit_Floppy 0.6.1's
-examples/greaseweazle/greaseweazle.ino, its replies ported command by command,
-and its library's rp2040 flux writer (greasepack.h's greaseunpack,
-arch_rp2.cpp's write_foreground). Prints what gw does with each.
+"""gw 1.23 through the bridge, against a stand-in for Adafruit_Floppy 0.6.1's
+Greaseweazle-compatible firmware: examples/greaseweazle/greaseweazle.ino ported
+command by command, and the library's rp2040 flux writer (greasepack.h's
+greaseunpack, arch_rp2.cpp's write_foreground). Prints what gw does with each.
 
     python adafruit.py BRIDGE SCRATCH_IMAGE_PATH
 """
@@ -16,9 +15,8 @@ IDX = bytes([0xFF, 1, 1, 1, 1, 1])  # the index op the firmware sends
 
 
 class Adafruit:
-    """Adafruit_Floppy's examples/greaseweazle.ino, 0.6.1, as gw sees it over
-    the port: its reply to each command, byte for byte. `model` 4 stands in
-    for a Greaseweazle V4, to show what the bridge leaves alone."""
+    """The firmware's reply to each command, byte for byte, as gw sees it;
+    `model` 4 stands in for a Greaseweazle V4, to show what the bridge leaves alone."""
 
     def __init__(self, model=8):
         self.model, self.floppy, self.track, self.out = model, False, -1, b''
@@ -121,9 +119,9 @@ def run(port, *args):
 
 
 def written_after_start(stream):
-    """Adafruit_Floppy's rp2040 write_foreground over greaseunpack: the flux
-    values it hands the writer once it starts, from `stream` less its last 7
-    bytes (greaseweazle.ino: fluxors - 7). Its TX FIFO takes 8 first."""
+    """Adafruit_Floppy's rp2040 write_foreground over greaseunpack: the 8 flux values
+    its TX FIFO takes first, and how many it hands the writer once it starts, from
+    `stream` less its last 7 bytes (greaseweazle.ino: fluxors - 7)."""
     buf, pos = stream[:len(stream) - 7], 0
 
     def unpack():

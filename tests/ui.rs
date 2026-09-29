@@ -88,7 +88,7 @@ fn combo(w: &Window, n: usize) -> Node<'_> {
         .expect("the drop-down")
 }
 
-/// Types into the focused field. A field takes the focus as it opens.
+/// Types into the focused field; a field takes the focus as it opens.
 fn type_text(w: &Window, text: &str) {
     w.event(egui::Event::Text(text.to_owned()));
 }
@@ -719,8 +719,8 @@ fn smooth_at(size: egui::Vec2, settings: Settings) -> Window {
     w
 }
 
-/// The tops of the page's run button and the map's legend. A sliding drawer
-/// is only painted where it goes, so the page above it shows where it is.
+/// The tops of the page's run button and the map's legend: a sliding drawer is
+/// painted only where it goes, so the page above it shows where it is.
 fn edges(w: &Window) -> [f32; 2] {
     [
         run_button(w, "Read disk").rect().top(),
@@ -762,7 +762,7 @@ fn a_drawer_slides_open_and_shut_and_the_map_stays_where_it_fits() {
         opening.iter().all(|f| f[1] == legend),
         "the map moved: {opening:?}"
     );
-    // The page's scroll bar, shown now the Log leaves the form too little room, fades in.
+    // The page's scroll bar fades in, as the Log leaves the form too little room.
     assert!(w.run() < 10, "the window keeps drawing");
 
     let shutting = toggle(&mut w, "Log");
@@ -1294,8 +1294,7 @@ fn a_line_gw_is_still_printing_shows_under_the_result_and_in_the_log() {
     let mut job = Job::replay("clean", "");
     job.ended = None;
     app.log.begin("gw clean".into(), &mut job);
-    // gw clean prints each cylinder as the heads reach it, and ends the
-    // line with the pass.
+    // gw clean prints each cylinder as the heads reach it, on one line per pass.
     job.partial = "Pass 0: 0 10 20".into();
     app.tool = Some(job);
     // Stepped, not run: a running job keeps the window repainting.
@@ -1340,7 +1339,7 @@ fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
             .with_step_dt(1.0 / 60.0)
             .with_max_steps(120),
     );
-    // Part way through, every square is its full size and nothing is drawn around one.
+    // Part way through, every square is full size, with no outline.
     w.run_steps(8);
     let rects: Vec<_> = squares(&w)
         .map(|r| {
@@ -1385,6 +1384,34 @@ fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
         "it changed at once: {written:?} to {good:?}"
     );
     assert_eq!(w.run(), 1, "the window keeps drawing when nothing changes");
+}
+
+#[test]
+fn detects_tracks_fade_in_as_it_reads_them() {
+    let mut job = Job::replay(DETECT, "");
+    job.ended = None;
+    let mut settings = chosen();
+    settings.page = Page::Command("read".into());
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = start(builder, settings, Some(job));
+    // Detect's map holds only the tracks it has read, so each square first shows lit.
+    let disk = app_mut(&mut w).disk.as_mut().unwrap();
+    disk.progress.feed("T0.0: Raw Flux (500 flux in 400.00ms)");
+    let first = |w: &Window| squares(w).next().unwrap().fill;
+    w.run_steps(1);
+    let start = first(&w);
+    // Half of FILL_TIME's 0.4 s, then past it.
+    w.run_steps(12);
+    let between = first(&w);
+    w.run_steps(24);
+    let lit = first(&w);
+    assert!(
+        start != lit && between != start && between != lit,
+        "it lit at once: {start:?}, {between:?}, {lit:?}"
+    );
 }
 
 #[test]
@@ -1822,7 +1849,7 @@ fn the_device_list_picks_a_greaseweazle_or_an_adafruit_rp2040_then_its_port() {
     w.run();
     assert_eq!(app(&w).settings.kind, Kind::Adafruit);
     assert_eq!(app(&w).settings.drive, "", "B gives way to A");
-    // gw cannot pick one out: the port is chosen.
+    // gw cannot pick one out, so the port must be chosen.
     assert_eq!(combo(&w, 0).value().as_deref(), Some("Select device"));
     combo(&w, 0).click();
     w.run();
@@ -1887,7 +1914,7 @@ fn an_adafruit_rp2040_greys_what_it_cannot_do_shown_off_and_kept_for_a_greasewea
     };
     set(&mut settings, "write", "pre_erase", "on");
     let mut w = window_at(DEFAULT, settings);
-    // It goes to gw only for a Greaseweazle.
+    // pre_erase goes to gw only for a Greaseweazle.
     w.get_by_label("Advanced options (10)").click();
     w.run();
     let schema = schema();
@@ -2014,7 +2041,7 @@ fn a_typed_update_command_chooses_its_firmware_source() {
     assert_eq!(line(&w), "gw update --tag v1.7");
 }
 
-/// Settings from `theme`, a frame every 60th of a second.
+/// The Settings page in `theme`, a frame every 60th of a second.
 fn settings_from(theme: ThemePreference, builder: HarnessBuilder<Option<App>>) -> Window {
     let settings = Settings {
         page: Page::Settings,

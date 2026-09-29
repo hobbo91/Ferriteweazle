@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds the SPS/CAPS library, which gw needs for IPF and CT Raw images, into
-# DEST/caps for TRIPLE. Only packages ship it (its licence forbids commercial
-# use); a source build leaves gw to find one the user installed. Downloads
-# the source, checked against engine/caps.sha256.
+# DEST/caps for TRIPLE, where the bridge points gw at it (its licence forbids
+# commercial use). A gw run outside an engine finds its own. Downloads the
+# source, checked against engine/caps.sha256.
 #
 #   engine/caps.sh TRIPLE DEST
 set -eu

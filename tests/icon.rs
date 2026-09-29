@@ -1,11 +1,9 @@
-//! Makes assets/ferriteweazle.png, the logo on a clear background, from
-//! artwork drawn on a flat placeholder colour (the colour of its corner).
+//! Makes assets/ferriteweazle.png, the logo on a clear background, from artwork
+//! on a flat placeholder colour (that of its corner), then the Windows icon and
+//! installer pictures from the logo; packaging/macos/icon.sh makes the Mac's sizes.
 //!
 //!     FERRITEWEAZLE_ARTWORK=path/to/art.png cargo test --test icon logo -- --ignored
-//!
-//! packaging/macos/icon.sh then makes the Mac's sizes from it, and
-//! `cargo test --test icon windows_art -- --ignored` the Windows icon and
-//! the installer's pictures.
+//!     cargo test --test icon windows_art -- --ignored
 
 use image::codecs::ico::{IcoEncoder, IcoFrame};
 use image::imageops::FilterType;
@@ -15,9 +13,8 @@ const WINDOWS_ICON: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/packaging/windows/ferriteweazle.ico"
 );
-/// The installer's pictures, at the sizes WiX's dialogs take: the first and
-/// last pages' background, whose left 164 pixels hold the picture, and the
-/// banner across the other pages.
+/// The installer's pictures at the sizes WiX takes: the first and last pages'
+/// background, whose left 164 pixels hold the picture, and the other pages' banner.
 const INSTALLER: [(&str, u32, u32); 2] = [
     (
         concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/windows/dialog.bmp"),
@@ -103,9 +100,8 @@ fn the_windows_icon_holds_every_size() {
     assert_eq!(sizes, WINDOWS_SIZES);
 }
 
-/// The artwork with its placeholder colour made clear. Edge pixels, where the
-/// outline fades into it, take the outline's colour at the fade's opacity, so
-/// no fringe of the placeholder is left.
+/// The artwork with its placeholder colour made clear; where the outline fades into
+/// it, pixels take the outline's colour at the fade's opacity, leaving no fringe.
 fn clear_background(art: &RgbaImage) -> RgbaImage {
     let key = rgb(art.get_pixel(0, 0));
     let (w, h) = art.dimensions();

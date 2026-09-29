@@ -13,9 +13,8 @@ app=$stage/Ferriteweazle.app
 rm -rf "$stage"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
 
-# Homebrew's Rust has no x86_64 library; rustup's stable toolchain has both.
-# Its rust-objcopy cannot find its LLVM library run this way, so Apple's
-# strip does the stripping, once the two are joined.
+# rustup's stable toolchain, as Homebrew's Rust has no x86_64 standard library.
+# Run this way its rust-objcopy cannot find libLLVM, so Apple's strip runs after lipo.
 rustc=$(rustup which --toolchain stable rustc)
 for triple in aarch64-apple-darwin x86_64-apple-darwin; do
     refresh "$triple"
@@ -26,11 +25,9 @@ lipo -create -output "$app/Contents/MacOS/ferriteweazle" \
     target/aarch64-apple-darwin/release/ferriteweazle target/x86_64-apple-darwin/release/ferriteweazle
 strip "$app/Contents/MacOS/ferriteweazle"
 
-# One engine for both: the Apple Silicon one, each program in it joined with
-# its Intel twin (the rest differs only in build notes and cached bytecode),
-# unless pip installed one built for both. Joining drops signatures, and
-# Apple Silicon will not run unsigned code. Both must hold the same Python
-# and packages, which pip resolves afresh for each build.
+# One engine for both: the Apple Silicon one, each program joined with its Intel
+# twin (the rest differs only in build notes and bytecode) and signed again, as
+# Apple Silicon runs no unsigned code. pip resolves each engine's packages afresh.
 arm=$(engine_dir aarch64-apple-darwin)
 intel=$(engine_dir x86_64-apple-darwin)
 versions() {

@@ -1,0 +1,13 @@
+{
+  "command": "read",
+  "values": {
+    "format": "commodore.1541",
+    "revs": "5",
+    "tracks": "c=0-39:h=0:step=2"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".d64"
+    }
+  }
+}

@@ -23,7 +23,7 @@ pub const FOUND: &str =
 pub const REFUSED: &str = "** FATAL ERROR:
 [Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
 
-/// The window as it opens.
+/// The window's size as it opens.
 pub const DEFAULT: egui::Vec2 = ferriteweazle::WINDOW;
 
 /// Shows `app` over the whole harness: kittest insets its ui by 8 points, so

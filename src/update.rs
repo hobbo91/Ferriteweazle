@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 /// Longest a look at GitHub may take; a slow DNS lookup counts as no answer.
 /// An install has no limit: the bridge gives up on a download that stalls.
 const CHECK_LIMIT: Duration = Duration::from_secs(20);
+/// Must match bridge.py's APP_REPO.
 pub const APP_REPO: &str = "hobbo91/ferriteweazle";
 
 type Answer = Receiver<Result<String, String>>;
@@ -157,7 +158,7 @@ pub enum Install {
 }
 
 impl Install {
-    /// This copy's; none when it runs from a build folder.
+    /// How this copy was installed; none when it runs from a build folder.
     pub fn this() -> Option<Install> {
         let exe = std::env::current_exe().ok()?;
         if cfg!(target_os = "macos") {
@@ -274,10 +275,15 @@ pub fn tidy() {
     if let Install::Folder(dir) = &install {
         for name in [program(), engine::DATA.into()] {
             let old = dir.join(format!("{name}.old"));
-            let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
+            remove(&old);
         }
     }
     let _ = std::fs::remove_dir_all(install.downloads());
+}
+
+/// Removes `path`, a folder or a file, if it is there.
+fn remove(path: &Path) {
+    let _ = std::fs::remove_dir_all(path).or_else(|_| std::fs::remove_file(path));
 }
 
 /// The AppImage `exe` runs from. The AppImage runtime sets APPIMAGE and
@@ -288,10 +294,9 @@ fn appimage(exe: &Path, image: Option<OsString>, appdir: Option<OsString>) -> Op
 }
 
 /// Puts the new data folder and `program` from `from` in place of those in
-/// `dir`, keeping each old one as NAME.old: Windows renames a running
-/// program but will not delete it. The data goes first, since Windows will
-/// not move it while a gw runs from it, and a failure then leaves the old
-/// program, which offers the update again.
+/// `dir`, keeping each old one as NAME.old: Windows renames a running program
+/// but will not delete it. The data goes first, since Windows will not move it
+/// while a gw runs from it; on failure the old program offers the update again.
 fn rename_in(dir: &Path, from: &Path, program: &str) -> Result<(), String> {
     let names = [engine::DATA, program];
     if let Some(missing) = names.iter().map(|n| from.join(n)).find(|p| !p.exists()) {
@@ -303,7 +308,7 @@ fn rename_in(dir: &Path, from: &Path, program: &str) -> Result<(), String> {
             dir.join(name),
             from.join(name),
         );
-        let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
+        remove(&old);
         std::fs::rename(&now, &old).map_err(|e| format!("{}: {e}", now.display()))?;
         if let Err(e) = std::fs::rename(&new, &now) {
             let _ = std::fs::rename(&old, &now);
@@ -340,8 +345,7 @@ fn swap_script(pairs: &[(PathBuf, PathBuf)]) -> String {
     )
 }
 
-/// Whether this account can make files in `dir`; if not, a swap there runs
-/// as root.
+/// Whether this account can make files in `dir`; if not, a swap there runs as root.
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".ferriteweazle-{}", std::process::id()));
     let made = std::fs::File::create(&probe).is_ok();

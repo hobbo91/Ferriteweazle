@@ -11,6 +11,7 @@ use ferriteweazle::command::quote;
 use ferriteweazle::engine::{Engine, Origin};
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, Outcome};
+use ferriteweazle::presets;
 use ferriteweazle::progress::Status;
 use ferriteweazle::schema::Port;
 use ferriteweazle::service::{Load, Service};
@@ -468,6 +469,53 @@ fn the_service_describes_gw_and_checks_values() {
 }
 
 #[test]
+fn every_value_of_the_example_presets_is_one_gws_own_parser_takes() {
+    let Some(engine) = engine() else { return };
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets");
+    let mut asked = Vec::new();
+    for entry in std::fs::read_dir(folder).unwrap().flatten() {
+        let preset = presets::load(&entry.path()).unwrap();
+        let values = serde_json::to_value(&preset.values).unwrap();
+        for (dest, value) in values.as_object().unwrap() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let op = match dest.as_str() {
+                "format" => serde_json::json!({"op": "format", "name": value}),
+                _ => {
+                    serde_json::json!({"op": "check", "command": preset.command, "dest": dest, "value": value})
+                }
+            };
+            asked.push((format!("{name}: {dest}={value}"), op));
+        }
+    }
+    let mut bridge = engine
+        .bridge("serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the bridge starts");
+    let mut input = bridge.stdin.take().unwrap();
+    for (_, op) in &asked {
+        std::io::Write::write_all(&mut input, format!("{op}\n").as_bytes()).unwrap();
+    }
+    drop(input);
+    let out = bridge.wait_with_output().unwrap();
+    let replies: Vec<serde_json::Value> = out
+        .stdout
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice(l).unwrap())
+        .collect();
+    assert_eq!(replies.len(), asked.len());
+    for ((what, op), reply) in asked.iter().zip(&replies) {
+        let fine = match op["op"].as_str() {
+            Some("format") => reply["ok"].is_object(),
+            _ => reply.get("ok").is_some_and(|ok| ok.is_null()),
+        };
+        assert!(fine, "{what}: {reply}");
+    }
+}
+
+#[test]
 fn format_details_describe_the_whole_disk_not_its_first_track() {
     let Some(engine) = engine() else { return };
     let mut service = Service::start(&engine, Box::new(|| {}));
@@ -637,8 +685,8 @@ fn a_question_from_gw_waits_for_an_answer() {
     assert!(job.log.is_empty(), "{:?}", job.log);
 }
 
-/// The app's window on `engine`, stepped until gw has described itself.
-/// It sees no Greaseweazle, whatever is plugged in, until gw restarts.
+/// The app's window on `engine` once gw has described itself, with no Greaseweazle
+/// listed, whatever is plugged in, until gw restarts.
 fn window(engine: &Engine, settings: Settings) -> Window {
     let settings = Settings {
         engine: Some(engine.python.clone()),
@@ -806,8 +854,7 @@ fn read_button(w: &Window) -> egui_kittest::Node<'_> {
     run_button(w, "Read disk")
 }
 
-/// Starts `seek 90` as the tool job; it waits on gw's question, so it runs
-/// until stopped.
+/// Starts `seek 90` as the tool job, which waits on gw's question until stopped.
 fn waiting_tool(w: &mut Window, engine: &Engine) {
     app_mut(w).tool = Some(start(engine, "seek", &["seek", "90"]));
     until(w, "gw's question", |app| {
@@ -1977,10 +2024,9 @@ fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
     assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
 }
 
-/// Runs the bridge's (argv[1]) detection with the options after argv[2] on
-/// a made-up Greaseweazle, whose drive holds the disk of the image argv[2]
-/// two cylinders out with its sides swapped and gives no index pulses when
-/// asked for none. Prints what it found and what it did to the drive.
+/// Runs the bridge's (argv[1]) detection with the options after argv[2] on a made-up
+/// Greaseweazle whose drive holds image argv[2]'s disk two cylinders out, sides swapped,
+/// with no index pulse when asked for none; prints what it found and did to the drive.
 const FAKE_DRIVE: &str = r#"
 import contextlib, io, json, runpy, sys
 bridge = runpy.run_path(sys.argv[1])

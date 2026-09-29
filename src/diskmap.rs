@@ -24,13 +24,13 @@ const LABEL: f32 = 24.0;
 /// Room for a side's name above its grid.
 const TITLE: f32 = 18.0;
 /// Rows the squares are sized for, 90 cylinders, past any drive: every disk
-/// gets one square size, which the least Log leaves be.
+/// gets one square size, which the Log at its least height does not shrink.
 const SIZED_ROWS: u32 = 9;
 const SIDE_GAP: f32 = 28.0;
 const STACK_GAP: f32 = 8.0;
 
-/// The width a map of two sides side by side takes once a `budget` points
-/// tall, legend included, limits its squares: wider gains nothing.
+/// The most width a map of two sides across can use when `budget` points tall,
+/// legend included: past it, the height limits the squares.
 pub fn width_for(budget: f32) -> f32 {
     let rows = SIZED_ROWS as f32;
     let cell = ((budget - LEGEND - TITLE + GAP) / rows - GAP).clamp(MIN_CELL, MAX_CELL);
@@ -38,14 +38,15 @@ pub fn width_for(budget: f32) -> f32 {
     2.0 * (LABEL + ROW as f32 * cell + (ROW - 1) as f32 * GAP) + SIDE_GAP + 1.0
 }
 
-/// Draws the map with squares of CELL points, smaller where `room`, the pane's
-/// height below its top, lacks space for them, larger where a map `budget`
-/// points tall (legend included) and the width allow. `job` keys the squares'
-/// fade-in, so each fills once per job; `verifying` as for `legend`.
+/// Draws the map with squares of CELL points: smaller if `room`, the pane's height
+/// below its top, lacks space; larger if a `budget`-point map (legend included) and
+/// the width allow. `job` keys the fade-in, so a square fills once per job; while
+/// it is `live`, a square that first shows lit fades in too.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
     job: impl std::hash::Hash + std::fmt::Debug,
+    live: bool,
     verifying: bool,
     budget: f32,
     room: f32,
@@ -131,7 +132,8 @@ pub fn show(
         for &cyl in &cyls {
             let key = (cyl, head);
             let filled = fill(progress, key, p);
-            let colour = shade(ui, egui::Id::new(("square", &job, key)), filled, p.pending);
+            let id = egui::Id::new(("square", &job, key));
+            let colour = shade(ui, id, filled, p.pending, live);
             let status = progress.tracks.get(&key).map(|t| t.status);
             let edge = edge(status == Some(Status::Skipped), p);
             painter.rect(square(i, cyl), radius, colour, edge, StrokeKind::Inside);
@@ -177,7 +179,7 @@ pub fn show(
     }
 }
 
-/// A square's fade: from the colour it showed when its own last changed.
+/// A square's fade from the colour it showed when its fill last changed.
 #[derive(Clone, Copy)]
 struct Shade {
     from: Color32,
@@ -195,17 +197,27 @@ impl Shade {
     }
 }
 
-/// A square's colour, fading over FILL_TIME from what it showed when `filled`
-/// last changed: as it lights up, and as a written track verifies. Timed from
-/// that frame, not by frame gaps, so one lit after an idle spell starts empty.
-/// A square filled when first seen shows at once.
-fn shade(ui: &egui::Ui, id: egui::Id, filled: Option<Color32>, pending: Color32) -> Color32 {
+/// A square's colour, fading over FILL_TIME from what it showed when `filled` last
+/// changed. Timed from that frame, not by frame gaps, so a square lit after an idle
+/// spell starts empty. One lit when first seen fades in while `live`, else shows at once.
+fn shade(
+    ui: &egui::Ui,
+    id: egui::Id,
+    filled: Option<Color32>,
+    pending: Color32,
+    live: bool,
+) -> Color32 {
     let now = ui.input(|i| i.time);
+    let fade_in = live && filled.is_some();
     let shade = ui.data_mut(|d| {
         let shade = d.get_temp_mut_or_insert_with(id, || Shade {
-            from: filled.unwrap_or(pending),
+            from: if fade_in {
+                pending
+            } else {
+                filled.unwrap_or(pending)
+            },
             to: filled,
-            at: f64::NEG_INFINITY,
+            at: if fade_in { now } else { f64::NEG_INFINITY },
         });
         if shade.to != filled {
             *shade = match filled {
@@ -285,9 +297,8 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
     }
 }
 
-/// Each colour on the map with its track count, then the retries.
-/// `verifying`: a write gw verifies is running, so its one written track is
-/// the one gw is checking.
+/// Each colour on the map with its track count, then the retries. `verifying`: a
+/// write gw verifies is running, so its one written track is the one gw checks.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
     let written = match verifying {
         true => "The track gw is writing and checking.",

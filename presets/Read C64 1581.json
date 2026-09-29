@@ -1,0 +1,12 @@
+{
+  "command": "read",
+  "values": {
+    "format": "commodore.1581",
+    "revs": "5"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".d81"
+    }
+  }
+}

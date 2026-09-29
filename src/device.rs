@@ -57,9 +57,8 @@ pub fn parse(log: &[String]) -> Option<DeviceInfo> {
     (!info.fields.is_empty()).then_some(info)
 }
 
-/// The device the card drives. gw finds a Greaseweazle by itself; an
-/// Adafruit RP2040 only on the port chosen for it, as its firmware names
-/// itself nothing gw looks for.
+/// The device the card drives. gw finds a Greaseweazle itself, an Adafruit RP2040
+/// only on the port chosen for it: its firmware names itself nothing gw looks for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]

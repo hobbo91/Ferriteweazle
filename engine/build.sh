@@ -1,11 +1,10 @@
 #!/bin/sh
 # Builds the engine the app ships, a standalone Python with Greaseweazle, for
-# this computer or for TRIPLE: gw's newest release, or the tag GREASEWEAZLE
-# names (engine/versions). Another processor's Python runs emulated (Rosetta,
-# Windows on ARM, qemu) so pip builds gw's C code for it; on Linux zig cc
-# compiles it for glibc 2.17 unless CC and LDSHARED name another compiler.
-# Downloads Python and gw's pip dependencies, and on Linux gw's udev rule;
-# needs curl, git and a C compiler (zig on Linux).
+# this computer or TRIPLE: gw's newest release, or the tag GREASEWEAZLE names
+# (engine/versions). Another processor's Python runs emulated (Rosetta, Windows
+# on ARM, qemu) so pip builds gw's C code for it. Downloads Python, gw's
+# dependencies and, on Linux, gw's udev rule; needs curl, git and a C compiler
+# (zig on Linux, unless CC and LDSHARED name another).
 #
 #   engine/build.sh                                          # this computer
 #   engine/build.sh x86_64-pc-windows-msvc                   # another triple
@@ -53,10 +52,9 @@ case "$source" in /*) source="file://$source" ;; esac
     --no-warn-script-location "git+$source@$tag"
 "$py" -m pip uninstall --quiet --yes pip
 
-# Drop what gw never uses, and what only building needed. On Linux and macOS
-# the interpreter is linked statically, so libpython goes too, as do
-# launchers whose #! line names this build folder. _dbm goes as well: on
-# Linux it holds Berkeley DB, whose licence wants its source offered.
+# Drop what gw never uses and what only the build needed. On Linux and macOS:
+# libpython (linked into the interpreter), launchers whose #! names this folder,
+# and _dbm (on Linux it holds Berkeley DB, whose licence wants source offered).
 rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/ensurepip" \
     "$lib/pydoc_data"
 case "$triple" in

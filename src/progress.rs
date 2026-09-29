@@ -142,7 +142,7 @@ impl Progress {
         } else if let Some(e) = line
             .strip_prefix("Command Failed: ")
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
-            // Detection's own parser, bridge.py's.
+            // bridge.py's detect parser.
             .or_else(|| line.strip_prefix("detect: error: "))
         {
             self.error = Some(e.to_owned());

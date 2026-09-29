@@ -1,29 +1,20 @@
-"""Ferriteweazle's link to gw, through gw's own modules. gw is left as it is,
-but for a time limit on the first reply from the device (steady_handshake),
-a package's own SPS/CAPS library (bundled_caps), and the Adafruit RP2040's
-last cylinder (adafruit_seeks).
+"""Ferriteweazle's link to gw, through gw's own modules, patched only by
+steady_handshake, bundled_caps and adafruit_seeks.
 
-  python bridge.py serve        one JSON request per stdin line, one reply per stdout line
-  python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
-  python bridge.py detect ARGS  finds the format of the disk in the drive, or of a flux file
-  python bridge.py latest [REPO] prints the tag of the newest release of REPO (gw's) on GitHub
-  python bridge.py update TAG BUNDLED DIR
-                                installs gw TAG in DIR/TAG, beside the bundled gw BUNDLED
-  python bridge.py fetch TAG NAME DIR
-                                downloads Ferriteweazle's release asset NAME into DIR, checked
-                                against the release's SHA256SUMS, unpacking a zip or tarball
-"""
+Modes: serve (one JSON request per stdin line, one reply per stdout line),
+run ARGS (`gw ARGS`; stdin takes 'answer TEXT', anything else stops it),
+detect ARGS, latest [REPO], update TAG BUNDLED DIR and fetch TAG NAME DIR."""
 import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
 
-# The variables point tests at a server of their own.
+# Tests point these at a server of their own.
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
 GITHUB_API = os.environ.get('FERRITEWEAZLE_GITHUB_API', 'https://api.github.com')
 GW_REPO = 'keirf/greaseweazle'
-APP_REPO = 'hobbo91/ferriteweazle'
+APP_REPO = 'hobbo91/ferriteweazle'  # must match update.rs's APP_REPO
 
 
 class Captured(Exception):
@@ -107,9 +98,8 @@ def opts_class(cls):
 
 
 def settings(o, names):
-    """File options with their defaults, and the names gw takes for one with
-    named values. A bool default marks a flag, which gw takes as `::name`
-    since any value it is given counts as true."""
+    """File options with their defaults and named values, if any. A bool
+    default marks a flag, set by `::name` since gw takes any value as true."""
     try:
         inst = o()
     except Exception:
@@ -184,9 +174,8 @@ def finds_format(cls):
 
 
 def image_format(path):
-    """The format gw takes from an image when none is chosen, opening it as
-    write and convert do: its type's own, or one found in the file. None if
-    one must be chosen."""
+    """The format gw write and convert take from an image when none is chosen:
+    its type's own, or one found in the file. None if one must be chosen."""
     from greaseweazle.tools import util
     cls = util.get_image_class(path)
     if cls.default_format or not finds_format(cls):
@@ -237,8 +226,7 @@ def format_info(name, diskdefs=None):
     tracks = [t for c in range(d.cyls) for h in range(d.heads) if (t := d.mk_track(c, h))]
     info = {'cyls': d.cyls, 'heads': d.heads}
     if tracks:
-        # Every encoding on the disk. A scan's tracks are empty until read:
-        # IBM, of any layout.
+        # Every encoding on the disk; a scan's "IBM Empty" tracks count as IBM.
         names = dict.fromkeys(re.sub(r'\s*(\(.*|Empty)$', '', t.summary_string()) for t in tracks)
         info['encoding'] = ' and '.join(names)
         if most := max(t.nsec for t in tracks):
@@ -246,7 +234,7 @@ def format_info(name, diskdefs=None):
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
-        # gw write checks a track only if its codec gives what it writes a
+        # gw write verifies a track only if its codec gives what it writes a
         # verify, as all but bitcells do: one track of each kind shows it.
         with quiet(), contextlib.suppress(Exception):
             kinds = {type(t): t for t in tracks}.values()
@@ -255,9 +243,8 @@ def format_info(name, diskdefs=None):
 
 
 def fits(ext, name, diskdefs=None):
-    """gw's objection to an image of type `ext` in format `name`, or None. It
-    is made in memory from the format's own tracks, as a read makes it, and
-    read back where gw reads the type as sectors."""
+    """gw's objection to an image of type `ext` in format `name`, or None, from
+    one made in memory as a read makes it, then read back if it holds sectors."""
     from greaseweazle.codec import codec
     from greaseweazle.image.img import IMG
     from greaseweazle.tools import util
@@ -276,7 +263,7 @@ def fits(ext, name, diskdefs=None):
             if issubclass(cls, IMG):
                 cls('x' + ext, d).from_bytes(data)
     except Exception as e:
-        # Some fail on an assertion, which says nothing.
+        # Some fail on an assert with no message.
         return str(e).strip().split('\n')[0] or 'gw cannot make this image type of the format.'
     return None if data else 'The image would be empty.'
 
@@ -347,10 +334,9 @@ def stop():
 
 
 def detect(argv):
-    """Finds the format of the disk in the drive, or of a flux image, and
-    prints the formats that read it in full, best first, after RESULT. The
-    drive is read as gw read reads it, a file as gw convert reads its input,
-    each with the options it takes."""
+    """Finds the formats that read the disk in the drive, or a flux image, in
+    full, and prints them best first after RESULT. It reads the drive as gw
+    read does and a file as gw convert does, each with the options it takes."""
     # convert imports gw's codecs, which gw 1.23's track image modules
     # import in a circle.
     from greaseweazle.tools import convert, util
@@ -437,13 +423,9 @@ class Match(typing.NamedTuple):
 
 def probe(read, diskdefs, last=83):
     """Formats ranked by the tracks `read(cyl, head)` returns, and the head
-    step the disk needs.
-
-    Decoding checks each sector's ID, size and data rate, which leaves 22
-    groups of formats alike in gw 1.23. The rest of gw's template tells them
-    apart: index mark, interleave, skew, gaps, length and unformatted tracks.
-    So formats rank by how far their sectors sit from where each writes them,
-    and tracks the leaders would write differently are read."""
+    step the disk needs. Decoding checks only sector IDs, sizes and data rate,
+    leaving 22 groups of formats alike in gw 1.23, so rank() weighs where the
+    sectors sit, and tracks that tell the leaders apart are read."""
     from greaseweazle.codec import codec
     disks = {}
     # gw's own formats, then a definitions file's, which win a shared name.
@@ -600,9 +582,8 @@ def rank(disks, tracks, decoded):
 
 def decode(tdef, key, track):
     """Sectors found and expected, and how far they sit from the format's
-    layout. Sectors on the disk that the format does not expect count as
-    expected and not found: a format that would drop them does not fit.
-    A track the image lacks is blank."""
+    layout. Sectors the format does not expect count as missing: a format that
+    would drop them does not fit. A track the image lacks is blank."""
     try:
         with quiet():
             t = tdef.mk_track(*key)
@@ -719,9 +700,9 @@ def bundled_caps():
     caps.open_libcaps = bundled
 
 
-# Adafruit's Greaseweazle-compatible firmware reports gw's hardware model 8.
-# Its library clamps a seek to cylinder 79 and reports success: must match
-# device::adafruit::LAST_CYLINDER.
+# Adafruit's Greaseweazle-compatible firmware reports gw's hardware model 8,
+# and clamps a seek to cylinder 79 while reporting success. ADAFRUIT_LAST
+# must match device::adafruit::LAST_CYLINDER.
 ADAFRUIT_MODEL = 8
 ADAFRUIT_LAST = 79
 
@@ -772,9 +753,9 @@ def latest(repo=GW_REPO):
 
 
 def fetch(tag, name, folder):
-    """Downloads a release asset of Ferriteweazle into folder, refusing one
-    whose SHA-256 is not the release's own; a zip or tarball is unpacked
-    into folder/unpacked. The path of what to install."""
+    """Downloads Ferriteweazle's release asset `name` into folder, checked
+    against the release's SHA-256 sums, and returns what to install: the file,
+    or folder/unpacked for a zip or tarball."""
     import hashlib, requests, shutil, tarfile, zipfile
     base = f'{GITHUB}/{APP_REPO}/releases/download/{tag}'
     sums = requests.get(f'{base}/Ferriteweazle-{tag.lstrip("v")}-SHA256SUMS.txt', timeout=(5, 30))

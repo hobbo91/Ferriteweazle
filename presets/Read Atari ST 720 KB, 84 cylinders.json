@@ -1,0 +1,12 @@
+{
+  "command": "read",
+  "values": {
+    "format": "atarist.720",
+    "tracks": "c=0-83"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".st"
+    }
+  }
+}

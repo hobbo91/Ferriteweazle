@@ -12,8 +12,8 @@ fn main() {
     }
 }
 
-/// src/bridge.py, zlib-compressed and in base64, for engine.rs: whole, it
-/// would soon pass the 32,767 characters of a Windows command line.
+/// src/bridge.py, zlib-compressed and in base64, for engine.rs: raw, it would
+/// soon pass the 32,767 characters of a Windows command line.
 fn bridge() {
     const BRIDGE: &str = "src/bridge.py";
     println!("cargo::rerun-if-changed={BRIDGE}");
@@ -52,10 +52,9 @@ fn windows() {
         .set("LegalCopyright", "Copyright 2026 Lee Hobson. MIT License.")
         .compile()
         .expect("the Windows SDK's rc.exe compiles the icon and version");
-    // The standard library calls ProcessPrng, which Windows 7 and 8 lack, so
-    // they would fail to load the program; subsystem version 10.0 has them
-    // refuse it with their own message instead. The subsystem must match
-    // main.rs's windows_subsystem.
+    // std calls ProcessPrng, which Windows 7 and 8 lack: subsystem version 10.0
+    // has them refuse the program with their own message, not fail to load it.
+    // The subsystem must match main.rs's windows_subsystem.
     let subsystem = match std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS") {
         Some(_) => "CONSOLE",
         None => "WINDOWS",

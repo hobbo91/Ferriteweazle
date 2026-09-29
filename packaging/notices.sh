@@ -25,8 +25,7 @@ heading() {
     line=----------------------------------------------------------------------
     printf '\n%s\n%s\n%s\n\n' "$line" "$(printf '%s\n' "$1" | fold -s -w 70 | sed 's/ *$//')" "$line"
 }
-# A crate's licence files: any beside its Cargo.toml, and below it any but
-# its tests' and examples', with the texts that come with its fonts.
+# A crate's licence files and fonts/*.txt, outside its tests, examples and benches.
 found() {
     find "$1" -type f \( -iname '*licen[cs]e*' -o -iname 'copying*' -o -iname 'notice*' \
         -o -iname 'copyright*' -o -path '*/fonts/*.txt' \) ! -name '*.rs' \
@@ -36,8 +35,7 @@ found() {
 echo "Ferriteweazle is MIT licensed (LICENSE.txt). It includes the software"
 echo "below, each under the licence given with it."
 
-# Each licence file is indexed by its checksum, so that each text is printed
-# once, under all the crates that carry it.
+# Licence files are indexed by checksum, to print each text once under all its crates.
 targets=
 for triple; do targets="$targets --target $triple"; done
 cargo tree --locked -e normal --prefix none --format '{p}|{l}' $targets >"$work/tree"
@@ -54,7 +52,7 @@ while IFS='|' read -r crate expr; do
         exit 1
     fi
     found "$dir" >"$work/files"
-    # Offered a choice of licences, the program takes one that is no GPL.
+    # Given a choice of licences, the program takes one that is not GPL.
     case "$expr" in
         *" OR "* | */*)
             grep -v -i '/[^/]*gpl[^/]*$' "$work/files" >"$work/chosen" || true

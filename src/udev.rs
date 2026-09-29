@@ -13,16 +13,15 @@ pub const RULE: &str = "49-greaseweazle.rules";
 /// gw's instructions for Linux, at the revision these commands follow.
 pub const WIKI: &str = "https://github.com/keirf/greaseweazle/wiki/Software-Installation/c575ff63bb40f37c7e75e42dd2e9858f89efbd8b";
 
-/// Installs the rule from its input and has udev apply it to a Greaseweazle
-/// already plugged in, waiting until it has. Runs as root, from pkexec.
+/// Installs the rule from stdin and has udev apply it to a Greaseweazle already
+/// plugged in, waiting until it has. Runs as root, from pkexec.
 const INSTALL: &str = "cat >/etc/udev/rules.d/49-greaseweazle.rules \
                        && udevadm control --reload-rules && udevadm trigger && udevadm settle";
 
 const RELOAD: &str = "sudo udevadm control --reload-rules && sudo udevadm trigger";
 
-/// The port pyserial may not open for want of permission (EACCES), from its
-/// error: "[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission
-/// denied: '/dev/ttyACM0'".
+/// The port pyserial may not open for want of permission (EACCES), from its error:
+/// `[Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'`.
 pub fn denied_port(error: &str) -> Option<&str> {
     let (port, why) = error
         .split_once("could not open port ")?
@@ -79,8 +78,7 @@ pub fn install(rule: &Path, repaint: Repaint) -> Receiver<Result<(), String>> {
     rx
 }
 
-/// The rule goes to root on INSTALL's input: root may not read it where an
-/// AppImage keeps it.
+/// The rule goes to root on stdin: root may not read an AppImage's FUSE mount.
 fn run_install(rule: &Path) -> Result<(), String> {
     let text =
         std::fs::read(rule).map_err(|e| format!("Could not read {}: {e}", rule.display()))?;

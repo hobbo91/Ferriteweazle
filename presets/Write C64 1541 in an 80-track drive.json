@@ -1,0 +1,8 @@
+{
+  "command": "write",
+  "values": {
+    "format": "commodore.1541",
+    "retries": "2",
+    "tracks": "c=0-34:h=0:step=2"
+  }
+}

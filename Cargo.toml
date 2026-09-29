@@ -31,8 +31,7 @@ zbus = { version = "5.19", default-features = false, features = ["async-io", "bl
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
-# Already built for eframe; tests/icon.rs makes the logo and the Windows icon
-# with it.
+# Already built for eframe; tests/icon.rs makes the logo and the Windows icon with it.
 image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 
 [profile.release]

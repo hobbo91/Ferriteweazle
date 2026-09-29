@@ -10,7 +10,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// keirf/greaseweazle's tags on 2026-09-28. "latest" is the nightly build.
+/// keirf/greaseweazle's tags on 2026-09-28; "latest" is the nightly build.
 const UPSTREAM: &str = "latest v0.1 v0.10 v0.11 v0.12 v0.13 v0.14 v0.15 v0.16 v0.17 v0.18 \
     v0.19 v0.2 v0.20 v0.21 v0.22 v0.23 v0.24 v0.25 v0.26 v0.27 v0.28 v0.29 v0.3 v0.30 v0.31 \
     v0.32 v0.33 v0.34 v0.35 v0.36 v0.37 v0.38 v0.39 v0.4 v0.40 v0.41 v0.42 v0.5 v0.6 v0.7 \
@@ -23,8 +23,7 @@ const PYTHON: &str = "3.14.7+1";
 const CAPS: &str = "c1";
 
 /// A folder with engine/greaseweazle.sh, a versions file pinning `pin` (or
-/// nothing) and naming [`PYTHON`] and [`CAPS`], and an engine/build.sh that
-/// logs the tag it was asked for.
+/// nothing), and an engine/build.sh that logs each tag it is asked for.
 fn repo(test: &str, pin: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ferriteweazle-release-{test}-{}",
@@ -48,7 +47,7 @@ fn executable(path: &Path, text: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A git repository beside `dir` with one commit carrying each of `tags`.
+/// A git repository in `dir`/greaseweazle whose one commit carries each of `tags`.
 fn clone(dir: &Path, tags: &[&str]) -> PathBuf {
     clone_with(dir, tags, &[])
 }
@@ -195,7 +194,7 @@ fn no_release_found_is_an_error_that_says_how_to_pin_one() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// Records in `dir`'s engine the gw tag and Python it was built from.
+/// Records the gw tag, Python and SPS/CAPS commit `dir`'s engine was built from.
 fn built(dir: &Path, tag: &str, python: &str, caps: &str) {
     let engine = dir.join("target/engine");
     std::fs::create_dir_all(&engine).unwrap();
@@ -265,10 +264,9 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// engine/build.sh in `dir`, and the PATH that finds its stubs: a download
-/// passes its check and holds its URL, and unpacks a Python that logs its
-/// arguments and the compiler it would build with; engine/caps.sh logs its
-/// arguments to caps.log.
+/// engine/build.sh in `dir` and the PATH to its stubs: a download holds its URL
+/// and passes its check, and unpacks a Python that logs its arguments, CC and
+/// LDSHARED to python.log; engine/caps.sh logs its arguments to caps.log.
 fn stub_build(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/build.sh");
     std::fs::copy(script, dir.join("engine/build.sh")).unwrap();
@@ -410,11 +408,9 @@ fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// packaging/release.sh in `dir`, committed with a clone whose newest release
-/// is v1.23, and the PATH that finds its ssh stub. The macOS bundle is a stub
-/// too. ssh logs each command to ssh.log, ending each with a "--" line; a
-/// build on "linux" or "windows" brings back a dist folder with one file,
-/// or fails with no output on the machine FAIL names.
+/// packaging/release.sh and a stub Mac build committed in `dir`, a clone tagged v1.22
+/// and v1.23, and the PATH to an ssh stub that logs each command and a "--" line to
+/// ssh.log; a remote build returns one file, or fails on the host in FAIL.
 fn stub_release(dir: &Path) -> String {
     let packaging = dir.join("packaging");
     std::fs::create_dir_all(packaging.join("macos")).unwrap();
@@ -525,10 +521,9 @@ fn a_failed_build_on_another_machine_stops_the_release() {
     }
 }
 
-/// packaging/notices.sh in `dir`, with packaging/licences, a scratch cargo
-/// registry, an engine in `dir`/data with two Python packages, and the PATH
-/// that finds a cargo stub. The stub logs its arguments to cargo.log and
-/// lists the crates, and the crate in EXTRA if set.
+/// packaging/notices.sh in `dir` with packaging/licences, a scratch cargo registry,
+/// an engine in `dir`/data with two Python packages, and the PATH to a cargo stub
+/// that logs its arguments to cargo.log and lists the crates, plus EXTRA if set.
 fn stub_notices(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/notices.sh");
     std::fs::create_dir_all(dir.join("packaging")).unwrap();
@@ -687,8 +682,7 @@ fn python_licences_keep_the_libraries_the_engine_ships_and_add_zstd() {
     let sums: String = names.iter().map(|n| format!("0  {n}\n")).collect();
     std::fs::write(dir.join("engine/python.sha256"), sums).unwrap();
 
-    // The downloads, already in the cache: the full build is a plain tar that
-    // the zstd stub passes through.
+    // Cached downloads: the full build is a plain tar the zstd stub passes through.
     let cache = dir.join("target/engine-cache");
     let licenses = dir.join("full/python/licenses");
     std::fs::create_dir_all(&licenses).unwrap();

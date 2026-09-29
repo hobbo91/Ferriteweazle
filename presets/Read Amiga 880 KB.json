@@ -1,0 +1,11 @@
+{
+  "command": "read",
+  "values": {
+    "format": "amiga.amigados"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".adf"
+    }
+  }
+}

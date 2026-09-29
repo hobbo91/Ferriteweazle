@@ -1,0 +1,12 @@
+{
+  "command": "read",
+  "values": {
+    "format": "ibm.1440",
+    "tracks": "c=0-83"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".img"
+    }
+  }
+}

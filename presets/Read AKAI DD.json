@@ -1,0 +1,11 @@
+{
+  "command": "read",
+  "values": {
+    "format": "akai.800"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".img"
+    }
+  }
+}

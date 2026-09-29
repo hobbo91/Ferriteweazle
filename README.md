@@ -3,9 +3,9 @@
 <img src="assets/ferriteweazle.png" alt="" width="160">
 
 A desktop app for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's
-floppy disk flux reader and writer. It runs on macOS and Windows; Linux is next.
+floppy disk flux reader and writer. It runs on macOS, Windows and Linux.
 
-![Reading a disk](docs/screenshot.png)
+![Reading a disk](docs/images/screenshot.png)
 
 ## What it does
 
@@ -26,8 +26,8 @@ floppy disk flux reader and writer. It runs on macOS and Windows; Linux is next.
 - Asks before replacing a file.
 - Shows the Greaseweazle's model and firmware as soon as it is connected.
 - Saves images and presets in Documents/Ferriteweazle, under Images and Presets,
-  or in folders chosen under **Settings > Paths**. Nothing else is kept: every
-  launch starts afresh.
+  or in folders chosen under **Settings > Paths**. Between runs it keeps only the
+  window size, the drive and the device: every other setting starts afresh.
 - Follows the system's light or dark mode, or keeps to either. Choosing one in
   Settings fades to it.
 - Takes image files by drag and drop.
@@ -71,56 +71,98 @@ DOS 3.3.
 
 ## Building
 
-You need Rust 1.95 or later, on macOS the Xcode command line tools, and on
-Windows Visual Studio's C++ build tools and Git Bash.
+You need Rust 1.95 or later. The app itself builds with `cargo` alone:
 
 ```sh
-engine/build.sh              # Python and gw's latest release, into target/engine
-cargo run                    # uses target/engine, or an installed gw
-packaging/macos/bundle.sh    # dist/Ferriteweazle-VERSION-macos-universal.dmg
+cargo run --release
+```
+
+It runs gw from the first of these it finds:
+
+1. The engine in `target/engine`, if you built one (below).
+2. An installed `gw`: on the PATH, or in `~/.local/bin`, `/opt/homebrew/bin` or
+   `/usr/local/bin`.
+
+**Settings > Paths > gw** points it at any other gw.
+
+### The engine
+
+`engine/build.sh` builds `target/engine`, the gw that packages ship: a standalone
+Python from [python-build-standalone](https://github.com/astral-sh/python-build-standalone),
+gw's latest release installed into it with pip, and the SPS/CAPS library, which gw
+needs for IPF and CT Raw images, compiled from
+[its source](https://github.com/simonowen/capsimage). The downloads are checked
+against the hashes in `engine/`. The CAPS library's licence allows only
+non-commercial use.
+
+It needs curl, git, and C and C++ compilers:
+
+- macOS: Xcode's command line tools.
+- Windows, in Git Bash: Visual Studio's C++ build tools, and LLVM (clang++ and lld)
+  for the CAPS library.
+- Linux: [zig](https://ziglang.org), which builds gw's C code and the CAPS library
+  for glibc 2.17.
+
+```sh
+engine/build.sh                          # this computer
+engine/build.sh x86_64-apple-darwin      # another processor, run emulated
+GREASEWEAZLE=v1.23 engine/build.sh       # a given gw release
+```
+
+To stay on one gw release, set `GREASEWEAZLE` in [`engine/versions`](engine/versions)
+to its tag. `cargo build` never checks for a newer gw; the packaging scripts do,
+and rebuild the engine first.
+
+### Packages
+
+Each script writes to `dist`, where `VERSION` is the one in `Cargo.toml`.
+
+| Platform | Command | Packages |
+| --- | --- | --- |
+| macOS | `packaging/macos/bundle.sh` | `Ferriteweazle-VERSION-macos-universal.dmg` |
+| Windows | `packaging/windows/bundle.sh x64` or `arm64` | `Ferriteweazle-VERSION-win-ARCH.zip` and `.msi` |
+| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz` and `Ferriteweazle-VERSION-ARCH.AppImage` |
+
+**macOS.** One app for Apple Silicon and Intel Macs, macOS 10.15 or newer. It
+needs rustup's stable toolchain with both Mac targets, and Rosetta to build the
+Intel engine:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 ```
 
 The app is signed ad hoc, so it opens on the Mac that built it. Signed and
 notarised releases are still to do.
 
-On Windows, `packaging/windows/bundle.sh x64` or `arm64` (this PC's if neither)
-writes two packages to `dist`:
-
-- `Ferriteweazle-VERSION-win-ARCH.zip`: a Ferriteweazle folder that runs where it
-  is unzipped, with gw's Python in `ferriteweazle-data` beside the program.
-- `Ferriteweazle-VERSION-win-ARCH.msi`: installs the same for all users, in
-  Program Files or a folder chosen in the installer, with a Start menu shortcut.
-  It replaces any older version in that version's folder, and refuses Windows
-  before 10.
-
-The installer needs WiX 5, a .NET tool (with the .NET 8 SDK):
+**Windows.** Windows 10 or newer. Run the script in Git Bash. It needs Rust's
+`x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets, Visual Studio's C++
+build tools for the processor you build for, LLVM, and WiX 5, a .NET tool (install
+the .NET 8 SDK first):
 
 ```sh
 dotnet tool install --global wix --version 5.0.2
 wix extension add --global WixToolset.UI.wixext/5.0.2
 ```
 
-Keep the UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows Installer
-knows a new version of Ferriteweazle by it. Neither package is code-signed yet, so
-SmartScreen warns about a downloaded copy. `packaging/windows/ferriteweazle.ico`
-comes from the logo with `cargo test --test icon windows_icon -- --ignored`.
+The zip holds a Ferriteweazle folder that runs where it is unzipped. The MSI
+installs the same for all users, in Program Files or a folder chosen in the
+installer. Keep the UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows
+Installer knows a new version of Ferriteweazle by it. Neither package is
+code-signed yet, so SmartScreen warns about a downloaded copy.
 
-On Linux, `packaging/linux/bundle.sh [x86_64|aarch64]` builds, for this computer's
-processor or the one named, `dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz` and
-`dist/Ferriteweazle-VERSION-ARCH.AppImage`. It needs
-[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and zig, which link
-the program against glibc 2.17, and downloads appimagetool and the AppImage runtime
-at the versions `packaging/linux/appimage.sha256` checks. Build each engine with zig
-as its compiler too, so gw's C code needs no newer glibc; another processor's engine
-runs its Python emulated (qemu or Rosetta):
+**Linux.** glibc 2.17 or newer. It needs
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) and zig, and
+downloads appimagetool and the AppImage runtime at the versions
+`packaging/linux/appimage.sha256` checks. Building for the other processor runs
+its Python emulated, so pip can build gw for it: qemu-user with that processor's
+libraries, or Rosetta in a Linux VM on a Mac.
 
-```sh
-CC="zig cc -target x86_64-linux-gnu.2.17" LDSHARED="zig cc -target x86_64-linux-gnu.2.17 -shared" \
-    engine/build.sh x86_64-unknown-linux-gnu
-```
-
-A Linux engine also holds gw's udev rule, `49-greaseweazle.rules`, which the app
-offers to install when Linux refuses it the Greaseweazle's port.
+**All at once.** `packaging/release.sh`, on a Mac, builds every package of the
+commit checked out: the macOS one there, the Windows and Linux ones over SSH on
+the machines named in `packaging/release.env` (copy
+`packaging/release.env.example`). It adds the source of the LGPL code in the Linux
+packages, the CAPS library's source, and `Ferriteweazle-VERSION-SHA256SUMS.txt`,
+which the app's Update checks downloads against.
 
 ## Tests
 

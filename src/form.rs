@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// Arguments set in the sidebar, for every command that has them.
 pub const GLOBAL: [&str; 2] = ["device", "drive"];
 
-/// Arguments a command shows first, in this order. The rest go under Advanced options.
+/// Arguments a command shows first, in order; the rest go under Advanced options.
 const FIRST: &[(&str, &[&str])] = &[
     ("read", &["format", "file", "tracks", "revs"]),
     ("write", &["file", "format", "tracks", "no_verify"]),
@@ -27,6 +27,11 @@ const FIRST: &[(&str, &[&str])] = &[
 
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
+
+/// Whether `command` makes an image the page names.
+pub fn has_output(command: &str) -> bool {
+    OUTPUTS.iter().any(|(c, _)| *c == command)
+}
 
 /// The update page's firmware source, kept with its settings. Not a gw argument.
 const FIRMWARE: &str = "firmware";
@@ -236,7 +241,7 @@ pub const NAME_LIMIT: usize = 48;
 const LABEL_WIDTH: f32 = 112.0;
 const MIN_FIELD: f32 = 160.0;
 const MAX_FIELD: f32 = 400.0;
-/// A field in a page a very wide window gives more than its form's full width.
+/// The widest a field grows, in a page wider than `full_width`.
 const WIDE_FIELD: f32 = 800.0;
 /// Short lists and values.
 const SHORT_FIELD: f32 = 150.0;
@@ -359,7 +364,7 @@ pub struct Form<'a> {
     /// Why Detect cannot start now, if it cannot.
     pub cannot_detect: Option<&'a str>,
     /// The device is an Adafruit RP2040: options its firmware cannot carry
-    /// out grey, and show off.
+    /// out are greyed and shown as off.
     pub adafruit: bool,
 }
 
@@ -424,13 +429,13 @@ impl<'a> Form<'a> {
         let blocker = self.blocker(a);
         let impossible = self.adafruit && crate::device::adafruit::option(&self.cmd.name, &a.dest);
         ui.data_mut(|d| d.remove_temp::<bool>(own_tip_id()));
-        // "File" would name one of its own choices.
+        // "File" is one of the row's own choices.
         let batchable = BATCHES.contains(&(self.cmd.name.as_str(), a.dest.as_str()));
         let text = match (batchable, a.dest.as_str()) {
             (true, "file") => "Image".to_owned(),
             _ => label(a),
         };
-        // Shown off, as it goes to gw, and kept for a Greaseweazle.
+        // Shown as off, as gw gets it, and kept for a Greaseweazle.
         let kept = impossible.then(|| {
             let kept = self.values.get(&a.dest).to_owned();
             self.values.set(&a.dest, "");
@@ -469,8 +474,8 @@ impl<'a> Form<'a> {
         action
     }
 
-    /// Another argument from the same exclusive group that is already set.
-    /// One that is set itself is never blocked, so it can be cleared.
+    /// Another argument of the same exclusive group that is set; one set itself is never
+    /// blocked, so it can be cleared.
     fn blocker(&self, a: &Arg) -> Option<&'a Arg> {
         let group = a.group.filter(|_| !self.values.on(&a.dest))?;
         self.cmd
@@ -558,7 +563,7 @@ impl<'a> Form<'a> {
         });
     }
 
-    /// Where gw update gets the firmware. The chosen source's field follows.
+    /// Where gw update gets the firmware; the chosen source's field follows.
     fn firmware(&mut self, ui: &mut Ui) {
         let chosen = Firmware::of(self.values);
         let cmd = self.cmd;
@@ -740,7 +745,7 @@ impl<'a> Form<'a> {
                 if can_detect {
                     let detect = egui::Button::new("Detect")
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
-                    let tip = match OUTPUTS.iter().any(|(c, _)| *c == self.cmd.name) {
+                    let tip = match has_output(&self.cmd.name) {
                         true => "Attempt to find the disk format and the image type that suits it.",
                         false => "Attempt to find the disk format.",
                     };
@@ -866,7 +871,7 @@ impl<'a> Form<'a> {
                     .max_height(320.0)
                     .show(ui, |ui| {
                         ui.set_width(170.0);
-                        // A scroll area lays out as its parent does, and this row is horizontal.
+                        // A scroll area takes its parent's layout, here horizontal.
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             for family in &families {
                                 let mut text = RichText::new(heading(family));
@@ -1028,8 +1033,7 @@ impl<'a> Form<'a> {
         });
     }
 
-    /// A file to read, with the image type it has and any options that type takes.
-    /// The image a page takes; on Write and Convert, or a folder of them.
+    /// The image to read, with its type and options; Write and Convert also take a folder.
     fn input(&mut self, ui: &mut Ui, a: &Arg) {
         let batchable = BATCHES.contains(&(self.cmd.name.as_str(), a.dest.as_str()));
         ui.vertical(|ui| {
@@ -1066,7 +1070,7 @@ impl<'a> Form<'a> {
                         let parent = Path::new(&file).parent().map(Path::as_os_str);
                         self.values.set(BATCH_FOLDER, lossy(parent));
                     }
-                    // The folder's first image is no choice of a file.
+                    // In a batch it holds the folder's first image, not a chosen file.
                     self.values.set(&a.dest, "");
                     self.values.set(BATCH, if on { ON } else { "" });
                 }
@@ -1074,8 +1078,8 @@ impl<'a> Form<'a> {
         });
     }
 
-    /// A folder of images. Its first stands for them all on the page: the
-    /// format, Detect and the command line go by it.
+    /// A folder of images, whose first stands for them all: the format, Detect and the
+    /// command line go by it.
     fn folder(&mut self, ui: &mut Ui, a: &Arg) {
         let mut folder = self.values.get(BATCH_FOLDER).to_owned();
         ui.horizontal(|ui| {
@@ -1511,7 +1515,7 @@ pub fn blocked(
     // gw opens a plain sector image only with a format; Read and Convert
     // wait for one below.
     if chosen.is_empty()
-        && !OUTPUTS.iter().any(|(c, _)| *c == cmd.name)
+        && !has_output(&cmd.name)
         && schema
             .image(input_file(cmd, values))
             .is_some_and(|(_, i)| i.needs_format)
@@ -1586,10 +1590,11 @@ pub fn blocked(
             || extension(input_file(cmd, values)).is_some_and(|e| RAW_FLUX.contains(&e.as_str()));
         let flux_out = FLUX.contains(&out.ext.as_str())
             && (out.ext != ".hfe" || out.opts.contains_key("bitrate") || !raw_flux);
-        if !(tracks && flux_out)
-            && values.get("format").is_empty()
-            && implied_format(schema, cmd, values, service).is_none()
-        {
+        let format = match values.get("format") {
+            "" => implied_format(schema, cmd, values, service),
+            f => Some(f.to_owned()),
+        };
+        if !(tracks && flux_out) && format.is_none() {
             return Some(if tracks {
                 "Select a disk format first, or press Detect."
             } else {
@@ -1605,10 +1610,6 @@ pub fn blocked(
             return Some("With Raw on, HFE needs a bitrate. See Image options.");
         }
         // gw would stop at the first track, or once the whole disk is read.
-        let format = match values.get("format") {
-            "" => implied_format(schema, cmd, values, service),
-            f => Some(f.to_owned()),
-        };
         if let Some(format) = format.filter(|_| !values.on("raw")) {
             let diskdefs = known_diskdefs(service, values, &format);
             if service.known_fits(diskdefs, &format, &out.ext).is_some() {
@@ -1653,8 +1654,7 @@ fn image_dialog(schema: &Schema, current: &str) -> rfd::FileDialog {
         .fold(dialog, |d, (name, exts)| d.add_filter(name, &exts))
 }
 
-/// Suffixes as a dialog filter takes them. GTK matches them by case, so
-/// each comes in upper case too: GAME.ADF as well as game.adf.
+/// Suffixes for a dialog filter, in upper and lower case: GTK matches them by case.
 fn both_cases<'e>(exts: impl Iterator<Item = &'e str>) -> Vec<String> {
     exts.flat_map(|e| [e.to_ascii_lowercase(), e.to_ascii_uppercase()])
         .collect()
@@ -1846,7 +1846,7 @@ pub fn diskdefs_for(service: &mut Service, values: &Values, format: &str) -> Str
 }
 
 /// As `diskdefs_for`, from what gw has already said of the file.
-fn known_diskdefs<'v>(service: &Service, values: &'v Values, format: &str) -> &'v str {
+pub fn known_diskdefs<'v>(service: &Service, values: &'v Values, format: &str) -> &'v str {
     let path = values.get("diskdefs");
     match service
         .known_custom_formats(path)
@@ -2016,8 +2016,7 @@ fn own_tip_id() -> egui::Id {
 /// The arguments shown first, and the rest.
 fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
     let shown = |a: &&Arg| {
-        !GLOBAL.contains(&a.dest.as_str())
-            && !(a.dest == "no_clobber" && OUTPUTS.iter().any(|(c, _)| *c == cmd.name))
+        !GLOBAL.contains(&a.dest.as_str()) && !(a.dest == "no_clobber" && has_output(&cmd.name))
     };
     let args: Vec<&Arg> = cmd.args.iter().filter(shown).collect();
     match FIRST.iter().find(|(c, _)| *c == cmd.name) {
@@ -2299,7 +2298,7 @@ fn format_name(format: &str) -> String {
 
 /// The image type that suits a format: the one gw pairs with it (.adf for
 /// Amiga, .d64 for the C64), else one for its family, else a sector image.
-fn type_for(schema: &Schema, format: &str) -> String {
+pub(crate) fn type_for(schema: &Schema, format: &str) -> String {
     let writable = |e: &str| schema.images.get(e).is_some_and(|i| i.writable);
     // gw pairs ibm.800 with .mgt, which is SAM Coupé's; PC disks want .img.
     let paired = schema.images.iter().find(|(e, i)| {
@@ -3516,7 +3515,7 @@ mod tests {
         assert_eq!(last_cylinder("c=0-39:step=2", Some(40)), Some(78));
         assert_eq!(last_cylinder("h=0:step=2", Some(42)), Some(82));
         assert_eq!(last_cylinder("c=5", None), Some(5));
-        // gw's own reading of these: the bridge checks each seek instead.
+        // Only gw reads these: the bridge checks each seek instead.
         assert_eq!(last_cylinder("c=0-9,20-29", Some(80)), None);
         assert_eq!(last_cylinder("c=0-79:h1.off=8", Some(80)), None);
         assert_eq!(last_cylinder("", None), None, "no format known");
@@ -3569,8 +3568,8 @@ mod tests {
         );
 
         std::fs::write(dir.join("Game.img"), [0u8; 512]).unwrap();
-        // A service that has not listed the folder: one that has may keep
-        // its listing for FOLDER_EVERY where the folder's time is coarse.
+        // A fresh service: one that listed the folder may keep that listing for
+        // FOLDER_EVERY where the folder's modified time is coarse.
         let mut service = Service::offline(Ok(s.clone()));
         service.folder(&dir.to_string_lossy());
         v.set("in_file", dir.join("Game.img").to_string_lossy());

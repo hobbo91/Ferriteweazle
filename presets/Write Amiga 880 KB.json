@@ -1,0 +1,6 @@
+{
+  "command": "write",
+  "values": {
+    "format": "amiga.amigados"
+  }
+}

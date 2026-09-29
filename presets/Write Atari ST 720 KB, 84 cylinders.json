@@ -1,0 +1,7 @@
+{
+  "command": "write",
+  "values": {
+    "format": "atarist.720",
+    "tracks": "c=0-83"
+  }
+}

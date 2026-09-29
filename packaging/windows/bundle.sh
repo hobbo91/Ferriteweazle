@@ -1,12 +1,9 @@
 #!/bin/sh
-# Builds the Windows packages for ARCH, x64 or arm64 (this PC's if none):
-#   dist/Ferriteweazle-VERSION-win-ARCH.zip, a Ferriteweazle folder that runs
-#     where it is unzipped;
-#   dist/Ferriteweazle-VERSION-win-ARCH.msi, which installs it for all users,
-#     in Program Files or a folder chosen in the installer.
-# Both need Windows 10 or newer. The engine is rebuilt first if gw has a newer
-# release. Runs in Git Bash; needs Visual Studio's C++ build tools, and WiX 5
-# (a .NET tool: install the .NET 8 SDK first) with its UI extension:
+# Builds dist/Ferriteweazle-VERSION-win-ARCH.zip, a folder that runs where it is
+# unzipped, and the .msi, which installs it for all users; ARCH is x64 or arm64,
+# this PC's if none. Both need Windows 10 or newer; the engine is rebuilt first if
+# gw has a newer release. Runs in Git Bash; needs Visual Studio's C++ build tools
+# and WiX 5 (a .NET tool: install the .NET 8 SDK first) with its UI extension:
 #   dotnet tool install --global wix --version 5.0.2
 #   wix extension add --global WixToolset.UI.wixext/5.0.2
 # TODO: code signing.

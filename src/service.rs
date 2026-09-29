@@ -117,8 +117,7 @@ impl Service {
         Service::new(requests, schema, ports)
     }
 
-    /// A service with no engine behind it. Every question fails, apart from
-    /// the schema if one is given.
+    /// A service with no engine behind it: every question fails but the schema, if given.
     pub fn offline(schema: Result<Schema, String>) -> Service {
         let (requests, _) = mpsc::channel();
         let schema = schema.map_or_else(Load::Failed, Load::Ready);
@@ -171,8 +170,7 @@ impl Service {
         }
     }
 
-    /// Every serial port, likeliest Greaseweazle first, refreshed every
-    /// PORTS_EVERY.
+    /// Every serial port, likeliest Greaseweazle first, refreshed every PORTS_EVERY.
     pub fn ports(&mut self) -> &[Port] {
         if self.ports_asked.elapsed() > PORTS_EVERY {
             self.refresh_ports();
@@ -339,9 +337,8 @@ impl Service {
             .and_then(|e| e.as_deref())
     }
 
-    /// When a file last changed, so gw looks at an edited file again. After
-    /// the first look it is `watch` that looks, so the window never waits on
-    /// a network mount that has stalled.
+    /// When a file last changed, so gw looks at an edited file again. After the
+    /// first look `watch` looks, so the window never waits on a stalled network mount.
     fn modified(&self, path: &str) -> Option<SystemTime> {
         if path.is_empty() {
             return None;

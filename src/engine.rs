@@ -58,8 +58,7 @@ impl Engine {
         Some(tag.trim().to_owned())
     }
 
-    /// The newest gw that Update installed in `folder`, if newer than the
-    /// bundled one.
+    /// The newest gw Update installed in `folder`, if newer than the bundled one.
     pub fn update_in(&self, folder: &Path) -> Option<PathBuf> {
         let bundled = version(&self.bundled_tag()?)?;
         std::fs::read_dir(folder)
@@ -78,8 +77,7 @@ impl Engine {
     pub fn bridge(&self, mode: &str) -> Command {
         let mut cmd = Command::new(&self.python);
         if self.origin == Origin::Bundled {
-            // The built-in gw, not one in the user's site-packages or on a
-            // path the environment names.
+            // Only the built-in gw: ignore the user's site-packages and Python paths.
             cmd.env("PYTHONNOUSERSITE", "1")
                 .env_remove("PYTHONPATH")
                 .env_remove("PYTHONHOME");

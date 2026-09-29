@@ -116,6 +116,70 @@ mod tests {
         std::fs::remove_dir_all(folder).ok();
     }
 
+    /// The repository's presets folder, each by name.
+    fn examples() -> Vec<(String, Preset)> {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("presets");
+        let mut paths: Vec<_> = std::fs::read_dir(folder)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|p| {
+                let name = p.file_stem().unwrap().to_string_lossy().into_owned();
+                (
+                    name,
+                    load(p).unwrap_or_else(|e| panic!("{}: {e}", p.display())),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_example_presets_set_what_gw_has_and_stay_within_83_cylinders() {
+        let schema: crate::schema::Schema =
+            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let examples = examples();
+        assert_eq!(examples.len(), 39);
+        for (name, preset) in &examples {
+            let cmd = schema.command(&preset.command).unwrap();
+            let page = if preset.command == "read" {
+                "Read "
+            } else {
+                "Write "
+            };
+            assert!(name.starts_with(page), "{name}: gw {}", preset.command);
+            let values = serde_json::to_value(&preset.values).unwrap();
+            for dest in values.as_object().unwrap().keys() {
+                assert!(
+                    cmd.arg(dest).is_some(),
+                    "{name}: gw {} has no {dest}",
+                    cmd.name
+                );
+            }
+            let format = preset.values.get("format");
+            assert!(
+                format.is_empty() || schema.formats.iter().any(|f| f == format),
+                "{name}"
+            );
+            let last = crate::form::last_cylinder(preset.values.get("tracks"), None);
+            assert!(
+                last.is_none_or(|c| c <= 83),
+                "{name} steps to cylinder {last:?}"
+            );
+            // A read makes the type the page picks for its format, or flux without one.
+            let ext = preset.outputs.get("read/file").map(|o| o.ext.as_str());
+            let wanted = match (preset.command.as_str(), format) {
+                ("read", "") => Some(".scp".to_owned()),
+                ("read", format) => Some(crate::form::type_for(&schema, format)),
+                _ => None,
+            };
+            assert_eq!(ext, wanted.as_deref(), "{name}");
+        }
+    }
+
     #[test]
     fn a_preset_named_as_a_windows_device_is_saved_as_a_file() {
         let name = |n| path(Path::new("/p"), n).file_name().unwrap().to_owned();

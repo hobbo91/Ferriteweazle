@@ -1,11 +1,10 @@
 #!/bin/sh
-# Writes packaging/licences/python-PYTHON+PYTHON_RELEASE.txt, the licences of
-# the Python engine/versions names: CPython's, python-build-standalone's for
-# the libraries it links in (the same texts on every platform) but those of
-# Tcl/Tk and X11 (tkinter), Berkeley DB (_dbm) and OpenSSL 1.1, none of which
-# the engine holds, and zstd's, which that build leaves out. Run it after
-# changing PYTHON or PYTHON_RELEASE; engine/python.sha256 must list the
-# downloads. Needs zstd.
+# Writes packaging/licences/python-PYTHON+PYTHON_RELEASE.txt: CPython's licence,
+# python-build-standalone's texts for the libraries it links (the same on every
+# platform) but Tcl/Tk and X11 (tkinter), Berkeley DB (_dbm) and OpenSSL 1.1,
+# which the engine lacks, and zstd's, which that build leaves out. Run it after
+# changing PYTHON or PYTHON_RELEASE in engine/versions; engine/python.sha256
+# must list the downloads. Needs zstd.
 set -eu
 cd "$(dirname "$0")/.."
 . engine/versions
@@ -35,7 +34,6 @@ zstd -dc "$cache/$full" | tar -xf - -C "$work" python/licenses
 [ -f "$work/python/licenses/LICENSE.openssl-3.txt" ] ||
     { echo "licences: $full holds no python/licenses" >&2; exit 1; }
 
-# A title between rules.
 heading() {
     rule=----------------------------------------------------------------------
     printf '\n%s\n%s\n%s\n\n' "$rule" "$1" "$rule"

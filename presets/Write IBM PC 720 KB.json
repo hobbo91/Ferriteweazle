@@ -1,0 +1,6 @@
+{
+  "command": "write",
+  "values": {
+    "format": "ibm.720"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "command": "read",
+  "values": {
+    "format": "ibm.720"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".img"
+    }
+  }
+}

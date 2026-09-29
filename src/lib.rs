@@ -33,8 +33,8 @@ fn home() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
-/// The folder an environment variable names, if a whole path: the XDG rules
-/// ignore an empty or relative one.
+/// The folder an environment variable names, if absolute: XDG ignores an empty
+/// or relative one.
 fn absolute(value: Option<OsString>) -> Option<PathBuf> {
     value.map(PathBuf::from).filter(|p| p.is_absolute())
 }
@@ -44,10 +44,12 @@ fn absolute(value: Option<OsString>) -> Option<PathBuf> {
 pub fn data_folder() -> PathBuf {
     let home = home().unwrap_or_default();
     let var = |name, or: &str| absolute(std::env::var_os(name)).unwrap_or_else(|| home.join(or));
-    let base = match () {
-        _ if cfg!(target_os = "macos") => home.join("Library/Application Support"),
-        _ if cfg!(windows) => var("LOCALAPPDATA", "AppData/Local"),
-        _ => var("XDG_DATA_HOME", ".local/share"),
+    let base = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support")
+    } else if cfg!(windows) {
+        var("LOCALAPPDATA", "AppData/Local")
+    } else {
+        var("XDG_DATA_HOME", ".local/share")
     };
     base.join("Ferriteweazle")
 }
@@ -80,8 +82,7 @@ fn documents() -> PathBuf {
     found.unwrap_or_else(|| home.join("Documents"))
 }
 
-/// XDG_DOCUMENTS_DIR in xdg-user-dirs' file: `"$HOME/Dokumente"`, or a
-/// whole path.
+/// XDG_DOCUMENTS_DIR in xdg-user-dirs' file: `"$HOME/Dokumente"` or an absolute path.
 #[cfg(not(windows))]
 fn xdg_documents(dirs: &str, home: &std::path::Path) -> Option<PathBuf> {
     let value = dirs
