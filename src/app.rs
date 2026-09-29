@@ -1002,6 +1002,9 @@ impl App {
         let Some(cmd) = schema.command(&page) else {
             return;
         };
+        if let Some(job) = self.disk.as_mut().filter(|j| j.command == DETECT) {
+            job.format = Some(best.clone());
+        }
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
         let tracks = form::with_step(values.get("tracks"), step);
@@ -1840,7 +1843,12 @@ impl App {
 
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
-        let blank = self.blank_map(page);
+        let (format, blank) = self.blank_map(page);
+        // Detect's tracks stand for the format it chose: the page's own once
+        // another is chosen.
+        let shown = self.disk.as_ref().filter(|j| {
+            j.running() || j.command != DETECT || j.format.as_deref() == format.as_deref()
+        });
         let top = ui.cursor().top();
         // The map's height above a drawer of its least height, below a job's
         // rows whether or not there is a job, so its squares keep one size;
@@ -1855,14 +1863,14 @@ impl App {
             ui,
             |ui| ui.label(RichText::new("Disk status").size(16.0).strong()),
             |ui| {
-                if let Some(job) = &self.disk {
+                if let Some(job) = shown {
                     let (text, colour) = state(job, p);
                     pill(ui, &format!("{text} · {}", clock(job.elapsed())), colour);
                 }
             },
         );
         ui.add_space(4.0);
-        let Some(job) = &self.disk else {
+        let Some(job) = shown else {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
@@ -1973,19 +1981,20 @@ impl App {
     }
 
     /// An empty map the size of the page's format, or of a common disk.
-    fn blank_map(&mut self, page: &str) -> Progress {
+    /// The page's format, and its map with nothing read yet.
+    fn blank_map(&mut self, page: &str) -> (Option<String>, Progress) {
         let empty = Values::default();
         let values = self.settings.values.get(page).unwrap_or(&empty);
         let format = self
             .schema
             .as_deref()
             .and_then(|s| form::effective_format(&mut self.service, s, s.command(page)?, values));
-        let info = format.and_then(|format| {
-            let diskdefs = form::diskdefs_for(&mut self.service, values, &format);
-            self.service.format_info(&diskdefs, &format).ready()
+        let info = format.as_ref().and_then(|format| {
+            let diskdefs = form::diskdefs_for(&mut self.service, values, format);
+            self.service.format_info(&diskdefs, format).ready()
         });
         let (cyls, heads) = info.map_or(form::USUAL_DISK, |i| (i.cyls, i.heads));
-        Progress::blank(cyls, heads)
+        (format, Progress::blank(cyls, heads))
     }
 
     /// The drawers under the page and the status pane: the command line and

@@ -11,7 +11,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
 use ferriteweazle::command::Values;
 use ferriteweazle::form::{self, Output};
-use ferriteweazle::job::{Job, LOG_LINES, Outcome};
+use ferriteweazle::job::{DETECT, Job, LOG_LINES, Outcome};
 use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
@@ -1384,6 +1384,29 @@ fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
         "it changed at once: {written:?} to {good:?}"
     );
     assert_eq!(w.run(), 1, "the window keeps drawing when nothing changes");
+}
+
+#[test]
+fn detects_tracks_give_way_to_the_pages_map_once_another_format_is_chosen() {
+    let mut job = Job::replay(DETECT, "T0.0: Raw Flux (500 flux in 400.00ms)");
+    job.format = Some("ibm.1440".into());
+    let mut settings = chosen();
+    settings.page = Page::Command("read".into());
+    set(&mut settings, "read", "format", "ibm.1440");
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Detect disk format");
+    assert_eq!(squares(&w).count(), 1, "the one track Detect read");
+
+    let values = app_mut(&mut w).settings.values.get_mut("read").unwrap();
+    values.set("format", "amiga.amigados");
+    w.run();
+    assert!(w.query_by_label("Detect disk format").is_none());
+    w.get_by_label("No disk read yet");
+    let blank = squares(&w).count();
+    assert!(
+        blank >= 160,
+        "{blank} squares, not a whole disk with nothing read"
+    );
 }
 
 #[test]
