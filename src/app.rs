@@ -794,20 +794,21 @@ impl App {
             if failed {
                 session.failed.push(session.next - 1);
             }
-            let more = session.next < session.runs.args.len();
-            match outcome {
-                Some(Outcome::Stopped) => self.session = None,
-                _ if more && command == "convert" => self.next_disk(ctx),
-                _ if more => {
-                    self.dialog = Some(Dialog::NextDisk {
-                        disk: session.next + 1,
-                        total: session.runs.args.len(),
-                        failed,
-                        image: session.runs.images.get(session.next).cloned(),
-                        command: command.clone(),
-                    });
-                }
-                _ => self.end_session(),
+            // Quit is asking: the window closes once this run has ended.
+            let more = session.next < session.runs.args.len()
+                && !matches!(self.dialog, Some(Dialog::Quit));
+            if !more {
+                self.end_session();
+            } else if command == "convert" {
+                self.next_disk(ctx);
+            } else {
+                self.dialog = Some(Dialog::NextDisk {
+                    disk: session.next + 1,
+                    total: session.runs.args.len(),
+                    failed,
+                    image: session.runs.images.get(session.next).cloned(),
+                    command: command.clone(),
+                });
             }
         }
         if self.settings.sound {
@@ -819,7 +820,10 @@ impl App {
             ));
         }
         if command == DETECT {
-            self.found(detected, step);
+            match outcome {
+                Some(Outcome::Stopped) => self.detect_for = None,
+                _ => self.found(detected, step),
+            }
         }
     }
 
@@ -856,6 +860,10 @@ impl App {
 
     /// A dropped file becomes the input of the Write page if it is open, else of Convert.
     fn take_dropped_files(&mut self, ctx: &egui::Context) {
+        // A dialog's action holds the page's values from when it opened.
+        if self.dialog.is_some() {
+            return;
+        }
         let dropped = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()));
         let Some(path) = dropped.filter(|p| !p.as_os_str().is_empty()) else {
             return;
@@ -1439,7 +1447,6 @@ impl App {
     }
 
     fn stop(&mut self) {
-        self.detect_for = None;
         self.session = None;
         for job in [&mut self.disk, &mut self.tool].into_iter().flatten() {
             job.stop();
@@ -1507,8 +1514,9 @@ impl App {
         session.next += 1;
         let part = (session.next, session.runs.args.len());
         let command = session.command.clone();
-        self.run(ctx, &command, args);
-        if let Some(job) = &mut self.disk {
+        if !self.run(ctx, &command, args) {
+            self.session = None;
+        } else if let Some(job) = &mut self.disk {
             job.part = Some(part);
         }
     }
@@ -1556,8 +1564,11 @@ impl App {
         }
     }
 
-    fn run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
-        let Some(engine) = &self.engine else { return };
+    /// Starts gw; false if it did not start.
+    fn run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
         // The image the job writes: gw's last argument, one per disk or image.
         let output = args
             .last()
@@ -1577,6 +1588,7 @@ impl App {
                 self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
+                true
             }
             Err(e) => {
                 // A detect job's page is the one it chooses the format on.
@@ -1587,6 +1599,7 @@ impl App {
                 let page = page.unwrap_or_else(|| command.to_owned());
                 self.notices
                     .insert(page, format!("Could not start gw: {e}"));
+                false
             }
         }
     }
@@ -2182,7 +2195,9 @@ impl App {
                         if ui.add(dialog_button(&text, p.bad, p)).clicked() {
                             let (ctx, command, args) = (ctx.clone(), command.clone(), args.clone());
                             action = Some(match disks {
-                                1 => Box::new(move |app: &mut App| app.run(&ctx, &command, args)),
+                                1 => Box::new(move |app: &mut App| {
+                                    app.run(&ctx, &command, args);
+                                }),
                                 _ => Box::new(move |app: &mut App| app.next_disk(&ctx)),
                             });
                             close = true;
@@ -3884,5 +3899,109 @@ mod tests {
         assert!(matches!(&app.app_update, Update::Failed(w) if w == why));
         assert!(app.gw_paused.is_none());
         assert_eq!(app.service.known_ports(), [port], "kept while gw starts");
+    }
+
+    fn reads(images: &[&str]) -> Runs {
+        let args = images.iter().map(|i| vec!["read".into(), (*i).into()]);
+        Runs {
+            args: args.collect(),
+            ..Runs::default()
+        }
+    }
+
+    #[test]
+    fn a_session_whose_next_run_cannot_start_ends_and_names_no_other_job() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.disk = Some(Job::replay("erase", ""));
+        app.begin(&ctx, "read", reads(&["a.adf", "b.adf"]));
+        assert!(app.session.is_none());
+        assert_eq!(
+            app.disk.as_ref().unwrap().part,
+            None,
+            "the erase is no disk 1"
+        );
+        assert!(app.notices["read"].starts_with("Could not start gw: "));
+    }
+
+    #[test]
+    fn a_disk_that_ends_while_quit_asks_ends_its_session_and_the_window_closes() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.session = Some(Session {
+            command: "read".into(),
+            runs: reads(&["a.adf", "b.adf"]),
+            next: 1,
+            failed: Vec::new(),
+        });
+        app.dialog = Some(Dialog::Quit);
+        app.disk = Some(Job::replay("read", ""));
+        app.ended(&ctx, true);
+        assert!(app.session.is_none());
+        app.dialogs(&ctx);
+        assert!(app.quitting, "no Insert disk 2 of 2");
+    }
+
+    /// A file dropped on the window.
+    #[derive(Debug)]
+    struct Dropped(PathBuf);
+
+    impl egui::DroppedFile for Dropped {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_file_dropped_while_a_dialog_asks_changes_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.settings.page = Page::Command("write".into());
+        let values = app.settings.values.entry("write".into()).or_default();
+        values.set("file", "a.img");
+        app.dialog = Some(Dialog::Confirm {
+            command: "write".into(),
+            args: vec!["write".into(), "a.img".into()],
+            disks: 1,
+        });
+        let drop = |app: &mut App| {
+            let input = egui::RawInput {
+                dropped_files: vec![Arc::new(Dropped("b.img".into()))],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.take_dropped_files(ui.ctx()));
+            out.textures_delta.clear(); // no painter here
+            app.settings.values["write"].get("file").to_owned()
+        };
+        assert_eq!(drop(&mut app), "a.img", "the dialog writes a.img");
+        app.dialog = None;
+        assert_eq!(drop(&mut app), "b.img");
+    }
+
+    #[test]
+    fn a_stopped_detect_keeps_its_page_until_it_ends_and_chooses_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.detect_for = Some("read".into());
+        app.disk = Some(running(DETECT));
+        app.stop();
+        assert_eq!(
+            app.detect_for.as_deref(),
+            Some("read"),
+            "its page shows Stopping"
+        );
+        let found = r#"@ferriteweazle result {"formats": ["ibm.720"], "step": 1}"#;
+        let mut job = Job::replay(DETECT, found);
+        job.ended = Some((job.started, Outcome::Stopped));
+        app.disk = Some(job);
+        app.ended(&ctx, true);
+        assert_eq!(app.detect_for, None);
+        assert!(app.notices.is_empty(), "{:?}", app.notices);
+        assert!(!app.settings.values.contains_key("read"));
     }
 }
