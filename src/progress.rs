@@ -43,11 +43,33 @@ pub struct Progress {
     /// The track being worked on.
     pub current: Option<(u32, u32)>,
     pub error: Option<String>,
-    /// The lines that follow belong to the error.
-    fatal: bool,
-    /// Inside a Python traceback, whose last unindented line is the error.
-    traceback: bool,
+    /// What the lines that follow belong to.
+    block: Block,
 }
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Block {
+    /// gw's output as it goes.
+    #[default]
+    Output,
+    /// The error's message.
+    Error,
+    /// A Python traceback, whose last unindented lines are the error.
+    Traceback,
+    /// A list of what gw knows, such as its formats, after an error.
+    List,
+}
+
+/// Headings of the lists gw puts after some errors. Must match gw's messages.
+const LISTS: [&str; 4] = [
+    "Known formats:",
+    "Known suffixes:",
+    "Valid modes:",
+    "Valid types:",
+];
+
+/// How a traceback names gw's own errors, which it prints bare without --bt.
+const FATAL: &str = "greaseweazle.error.Fatal: ";
 
 impl Progress {
     /// Nothing done yet, on a disk of this size.
@@ -61,40 +83,40 @@ impl Progress {
 
     pub fn feed(&mut self, line: &str) {
         let line = line.trim_end();
-        if self.fatal {
-            // gw indents some lines, such as its bootloader warning's second.
-            let line = line.trim_start();
-            let error = self.error.get_or_insert_default();
-            if !line.is_empty() {
-                error.push_str(if error.is_empty() { "" } else { "\n" });
-                error.push_str(line);
+        match self.block {
+            Block::Output => {}
+            Block::Error => {
+                // gw indents some lines, such as its bootloader warning's second.
+                let line = line.trim_start();
+                if let Some(t) = line
+                    .strip_prefix("Failed to verify Track ")
+                    .and_then(key)
+                    .and_then(|k| self.tracks.get_mut(&k))
+                {
+                    t.status = Status::Bad;
+                }
+                return self.add_to_error(line);
             }
-            if let Some(t) = line
-                .strip_prefix("Failed to verify Track ")
-                .and_then(key)
-                .and_then(|k| self.tracks.get_mut(&k))
-            {
-                t.status = Status::Bad;
+            Block::Traceback if line.starts_with(' ') => {
+                // A frame or its code: the exception comes after the last.
+                self.error = None;
+                return;
             }
-            return;
-        }
-        if self.traceback {
-            if !line.is_empty() && !line.starts_with(' ') {
-                self.error = Some(line.to_owned());
-            }
-            return;
+            Block::Traceback => return self.add_to_error(line.strip_prefix(FATAL).unwrap_or(line)),
+            Block::List => return,
         }
         if line == "** FATAL ERROR:" {
-            self.fatal = true;
+            self.error.get_or_insert_default();
+            self.block = Block::Error;
         } else if let Some(e) = ["ERROR: ", "** UPDATE FAILED: "]
             .iter()
             .find_map(|p| line.strip_prefix(p))
         {
             // gw's advice, if any, follows on the next lines.
             self.error = Some(e.to_owned());
-            self.fatal = true;
+            self.block = Block::Error;
         } else if line == "Traceback (most recent call last):" {
-            self.traceback = true;
+            self.block = Block::Traceback;
         } else if let Some(e) = line
             .strip_prefix("Command Failed: ")
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
@@ -120,6 +142,19 @@ impl Progress {
             self.track(key, text);
         } else if let Some((head, sector, cells)) = map_row(line) {
             self.map_row(head, sector, cells);
+        }
+    }
+
+    /// Adds a line to the error's message, which ends where a list begins.
+    fn add_to_error(&mut self, line: &str) {
+        if LISTS.contains(&line) {
+            self.block = Block::List;
+        } else if !line.is_empty() {
+            let error = self.error.get_or_insert_default();
+            if !error.is_empty() {
+                error.push('\n');
+            }
+            error.push_str(line);
         }
     }
 
@@ -489,6 +524,48 @@ serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#
         assert_eq!(
             chained.error.as_deref(),
             Some("serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0")
+        );
+    }
+
+    #[test]
+    fn a_traceback_gives_all_of_gws_message_as_gw_prints_it_without_one() {
+        let p = fed(r#"Traceback (most recent call last):
+  File "greaseweazle/error.py", line 15, in check
+    raise Fatal(desc)
+greaseweazle.error.Fatal: out.hfe: Invalid file option: bogus
+Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
+        assert_eq!(
+            p.error.as_deref(),
+            Some(
+                "out.hfe: Invalid file option: bogus\n\
+                 Valid options: bitrate, version, interface, encoding, double_step, uniform"
+            )
+        );
+    }
+
+    #[test]
+    fn the_list_gw_gives_after_an_error_stays_in_the_log() {
+        let unknown = "Unknown format 'nosuch.fmt'";
+        let list = "Known formats:\n\
+            acorn.adfs.160            acorn.adfs.1600           acorn.adfs.320\n\
+            acorn.adfs.640            acorn.adfs.800            acorn.dfs.ds";
+        let fatal = fed(&format!("** FATAL ERROR:\n{unknown}\n{list}"));
+        assert_eq!(fatal.error.as_deref(), Some(unknown));
+        let traceback = fed(&format!(
+            "Traceback (most recent call last):\n  \
+             File \"greaseweazle/tools/convert.py\", line 170, in main\n    \
+             raise error.Fatal(\"\"\"\\\n    \
+             ...<3 lines>...\n\
+             greaseweazle.error.Fatal: {unknown}\n{list}"
+        ));
+        assert_eq!(traceback.error.as_deref(), Some(unknown));
+        let suffix = fed("** FATAL ERROR:\n\
+            a.xyz: Unrecognised file suffix '.xyz'\n\
+            Known suffixes:\n\
+            .a2r   .adf   .ads   .adm   .adl   .ctr   .d1m   .d2m   .d4m   .d64   .d71");
+        assert_eq!(
+            suffix.error.as_deref(),
+            Some("a.xyz: Unrecognised file suffix '.xyz'")
         );
     }
 
