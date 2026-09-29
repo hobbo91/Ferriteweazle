@@ -18,7 +18,7 @@ const FOUND: &str =
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
 
-/// The window as the app first opens, and the smallest it goes.
+/// main.rs's SIZE, the window as it opens and its smallest: must match.
 const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 fn schema() -> Schema {
@@ -465,6 +465,11 @@ fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
     let mut w = window(Settings::default());
     app_mut(&mut w).notices.insert("read".into(), FOUND.into());
     w.run();
+    let notice = w.get_by_label(FOUND).rect();
+    assert!(
+        notice.height() > 20.0,
+        "it was cut short, not wrapped: {notice:?}"
+    );
     let dismiss = w.get_by_label("Dismiss").rect();
     let status = w.get_by_label("Disk status").rect();
     assert!(
@@ -544,12 +549,39 @@ fn fields_share_one_height_and_end_at_one_right_edge() {
 #[test]
 fn every_field_and_its_label_explain_themselves_on_hover() {
     let mut w = window(chosen());
-    w.get_by_label("Revolutions").hover();
-    w.run();
-    w.get_by_label("Revolutions to read per track.");
-    combo(&w, 3).hover();
-    w.run();
-    w.get_by_label("Revolutions to read per track.");
+    let inputs: Vec<_> = w
+        .get_all_by_role(Role::TextInput)
+        .map(|t| t.rect().center())
+        .collect();
+    // A schema argument, then the rows with hover text of their own.
+    let rows = [
+        (
+            "Revolutions",
+            combo(&w, 3).rect().center(),
+            "Revolutions to read per track.",
+        ),
+        (
+            "Image type",
+            combo(&w, 2).rect().center(),
+            "The kind of file to make. A disk format picks one.",
+        ),
+        ("Folder", inputs[0], "Where the image is saved."),
+        (
+            "Name",
+            inputs[1],
+            "The image's file name, without its type.",
+        ),
+    ];
+    for (label, field, tip) in rows {
+        for at in [w.get_by_label(label).rect().center(), field] {
+            // One tooltip at a time: the last must close first.
+            w.event(egui::Event::PointerGone);
+            w.run();
+            w.hover_at(at);
+            w.run();
+            w.get_by_label(tip);
+        }
+    }
 }
 
 #[test]
@@ -756,12 +788,14 @@ fn a_log_dragged_down_holds_at_its_least_height_before_it_shuts() {
         ..chosen()
     });
     w.run();
+    let [open, _] = edges(&w);
     drag_log(&mut w, -25.0);
     assert_eq!(
         app(&w).settings.drawer,
         Some(Drawer::Log),
         "a small pull shut it"
     );
+    assert_eq!(edges(&w)[0], open, "it went below its least height");
     drag_log(&mut w, -90.0);
     assert_eq!(app(&w).settings.drawer, None, "a long pull did not shut it");
 }
@@ -950,7 +984,8 @@ fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
     let left = |width: f32| {
         let w = window_at(egui::vec2(width, 780.0), chosen());
         let heading = w.get_by_label("Disk status").rect().left();
-        squares(&w).map(|s| s.rect.left()).fold(f32::MAX, f32::min) - heading
+        let map = squares(&w).map(|s| s.rect.left()).reduce(f32::min);
+        map.expect("the map's squares") - heading
     };
     assert_eq!(left(1340.0), left(1240.0));
 }
@@ -1008,13 +1043,15 @@ fn settings_keeps_every_path_under_paths() {
         page: Page::Settings,
         ..Settings::default()
     });
-    w.get_by_label("Paths");
+    let paths = w.get_by_label("Paths").rect().top();
+    let jobs = w.get_by_label("Jobs").rect().top();
     for name in [
         "Images folder",
         "Presets folder",
         "Greaseweazle Tools (gw cli)",
     ] {
-        w.get_by_label(name);
+        let at = w.get_by_label(name).rect().top();
+        assert!(paths < at && at < jobs, "{name} is outside Paths");
     }
     assert!(w.query_by_label("Presets").is_none());
 }
@@ -1037,10 +1074,23 @@ fn a_result_shows_all_its_output_and_the_page_scrolls_under_a_tall_log() {
     });
     app_mut(&mut w).tool = Some(Job::replay("bandwidth", BANDWIDTH));
     w.run();
+    // The log shows the same lines: only those above it are the result's.
+    let drawer = w.get_by_role_and_label(Role::Label, "Log").rect().top();
     for line in ["Write Bandwidth:", "-> Min. Ave. Flux: 1.289 us"] {
-        let shown = w.query_all_by_label_contains(line).next().is_some();
+        let shown = w
+            .query_all_by_label_contains(line)
+            .any(|n| n.rect().bottom() < drawer);
         assert!(shown, "{line} is not shown");
     }
+    let page_bar = |w: &Window| {
+        let run = run_button(w, "Measure").rect();
+        w.query_all_by_role(Role::ScrollBar)
+            .map(|b| b.rect())
+            .find(|r| r.height() > r.width() && r.bottom() <= run.top())
+    };
+    assert_eq!(page_bar(&w), None, "the page scrolls under a short log");
+    drag_log(&mut w, 400.0);
+    page_bar(&w).expect("the page does not scroll under a tall log");
 }
 
 #[test]
@@ -1174,13 +1224,6 @@ fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
         (side_1.center().y - cylinders.center().y).abs() < 2.0,
         "the sides wrap under the cylinders: {side_1:?}, {cylinders:?}"
     );
-    // With no device the card is a line short of its usual height.
-    let last = w.get_by_label("USB bandwidth").rect();
-    let settings = w.get_by_label("Settings").rect();
-    assert!(
-        last.bottom() + CARD_LINE <= settings.top(),
-        "the sidebar list is cut: {last:?}, {settings:?}"
-    );
 }
 
 #[test]
@@ -1219,6 +1262,7 @@ fn a_long_job_description_wraps_within_the_status_pane() {
 #[test]
 fn at_its_smallest_the_window_shows_the_whole_sidebar() {
     let w = window_at(DEFAULT, Settings::default());
+    // With no device the card is a line short of its usual height.
     let last = w.get_by_label("USB bandwidth").rect();
     let settings = w.get_by_label("Settings").rect();
     assert!(
@@ -1638,6 +1682,9 @@ fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() 
     w.run();
     let install = w.get_by_role_and_label(Role::Button, "Install udev rule");
     assert!(install.accesskit_node().is_disabled());
+    install.hover();
+    w.run();
+    w.get_by_label("No copy of the rule ships with this build.");
     w.get_by_label("sudo cp scripts/49-greaseweazle.rules /etc/udev/rules.d/");
 }
 

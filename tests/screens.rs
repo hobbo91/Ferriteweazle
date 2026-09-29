@@ -39,7 +39,7 @@ const FOUND: &str =
 const REFUSED: &str = "** FATAL ERROR:
 [Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
 
-/// The window as the app first opens, and the smallest it goes.
+/// main.rs's SIZE, the window as it opens and its smallest: must match.
 const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
 
 /// `render_sized` at 1240 by 780 points.
@@ -136,18 +136,21 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
     s
 }
 
-/// The damaged conversion, told as a read with a retry, for the read page.
+/// The damaged conversion told as a read for the read page, with one track
+/// retried as gw does by default: three times, over three revolutions.
 fn read_job() -> Job {
     let log = DAMAGED
         .replace("SCP: WARNING: Bad image checksum\n", "")
         .replace(
-            "Converting c=0-79:h=0-1 -> c=0-79:h=0-1",
-            "Reading c=0-79:h=0-1 revs=2",
+            "Format ibm.1440\nConverting c=0-79:h=0-1 -> c=0-79:h=0-1",
+            "Reading c=0-79:h=0-1 revs=2\nFormat ibm.1440",
         )
         .replace(
             "T21.1: IBM MFM (17/18 sectors) from Raw Flux (188470 flux in 400.80ms)",
             "T21.1: IBM MFM (16/18 sectors) from Raw Flux (188470 flux in 400.80ms)\n\
-             T21.1: IBM MFM (17/18 sectors) from Raw Flux (188471 flux in 400.80ms) (Retry #1.1)\n\
+             T21.1: IBM MFM (17/18 sectors) from Raw Flux (282706 flux in 601.20ms) (Retry #1.1)\n\
+             T21.1: IBM MFM (17/18 sectors) from Raw Flux (282691 flux in 601.19ms) (Retry #1.2)\n\
+             T21.1: IBM MFM (17/18 sectors) from Raw Flux (282712 flux in 601.21ms) (Retry #1.3)\n\
              T21.1: Giving up: 1 sectors missing",
         );
     let mut job = Job::replay("read", &log);
@@ -177,7 +180,7 @@ fn session(w: &mut Window) {
     for (heading, mut job, ending) in [
         ("gw info", Job::replay("info", INFO), "Done in 0:01."),
         (
-            "gw read --revs=2 --format=ibm.1440 /Users/you/Documents/Ferriteweazle/Images/Floppy.img",
+            "gw read --format=ibm.1440 --revs=2 /Users/you/Documents/Ferriteweazle/Images/Floppy.img",
             read_job(),
             "Done in 0:52.",
         ),

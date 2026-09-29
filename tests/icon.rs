@@ -16,7 +16,7 @@ const WINDOWS_ICON: &str = concat!(
     "/packaging/windows/ferriteweazle.ico"
 );
 /// The installer's pictures, at the sizes WiX's dialogs take: the first and
-/// last pages' background, whose left 164 points hold the picture, and the
+/// last pages' background, whose left 164 pixels hold the picture, and the
 /// banner across the other pages.
 const INSTALLER: [(&str, u32, u32); 2] = [
     (
