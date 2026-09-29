@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WixUI's own words where Ferriteweazle's differ. -->
+<WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <String Id="WelcomeDlgTitle"
+          Value="{\WixUI_Font_Bigger}[ProductName] [ProductVersion] Installation Wizard" />
+  <String Id="PrepareDlgTitle"
+          Value="{\WixUI_Font_Bigger}[ProductName] [ProductVersion] Installation Wizard" />
+  <String Id="MaintenanceWelcomeDlgTitle"
+          Value="{\WixUI_Font_Bigger}[ProductName] [ProductVersion] Installation Wizard" />
+</WixLocalization>

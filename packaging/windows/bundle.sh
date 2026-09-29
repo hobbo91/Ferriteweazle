@@ -46,6 +46,6 @@ msi=dist/Ferriteweazle-$version-win-$arch.msi
 tools=$(sed 's/^v//' "$app/greaseweazle/greaseweazle-version")
 wix build -arch "$arch" -ext WixToolset.UI.wixext -d Version="$version" -d Tools="$tools" \
     -d App="$(cygpath -w "$PWD/$app")" -d Licence="$(cygpath -w "$PWD/$stage/LICENSE.rtf")" \
-    -pdbtype none -o "$msi" \
+    -loc packaging/windows/ferriteweazle.wxl -pdbtype none -o "$msi" \
     packaging/windows/ferriteweazle.wxs
 du -sh "$zip" "$msi"
