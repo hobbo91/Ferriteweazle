@@ -295,6 +295,9 @@ pub struct App {
     kept_drive: String,
     gw_update: Update,
     app_update: Update,
+    /// The page's presets while its Presets menu is open, so the folder is
+    /// read once, not every frame.
+    presets: Option<(String, Vec<(String, PathBuf)>)>,
     /// gw's bridge is stopped while a Windows folder copy replaces its data
     /// folder: the ports it had listed.
     gw_paused: Option<Vec<Port>>,
@@ -364,6 +367,7 @@ impl App {
             kept_drive: String::new(),
             gw_update: Update::default(),
             app_update: Update::default(),
+            presets: None,
             gw_paused: None,
             logo: None,
             fade: Fade::default(),
@@ -777,9 +781,8 @@ impl App {
         {
             let mut log = image.clone().into_os_string();
             log.push(".log");
-            if let Err(e) = std::fs::write(&log, job.log.join("\n") + "\n") {
-                job.log
-                    .push(format!("Could not save this output beside the image: {e}"));
+            if let Some(why) = save_log(Path::new(&log), &job.log) {
+                job.log.push(why);
             }
         }
         if let Some(port) = refused_port(job, port.as_ref()) {
@@ -1238,6 +1241,7 @@ impl App {
             .show(ui, |ui| self.run_bar(ui, &schema, cmd));
         let cannot_detect = self.cannot_detect(name);
         let mut install = false;
+        let mut unsaved = None;
         // Everything above the run bar scrolls, in no more than the room left,
         // so a tall drawer never pushes the page over the bar.
         let action = egui::ScrollArea::vertical()
@@ -1267,7 +1271,7 @@ impl App {
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
                         ui.add_space(18.0);
-                        install = result(ui, job, self.refused(job));
+                        (install, unsaved) = result(ui, job, self.refused(job));
                     }
                     ui.add_space(12.0);
                     action
@@ -1277,6 +1281,9 @@ impl App {
             .inner;
         if install {
             self.install_rule(ui.ctx());
+        }
+        if let Some(why) = unsaved {
+            self.notices.insert(name.to_owned(), why);
         }
         if action == Some(form::Action::Detect) {
             // The page's earlier answer goes while it looks again.
@@ -1776,7 +1783,7 @@ impl App {
         let tallest = (ui.available_height() - LOG_ROOM).max(DRAWER);
         let bottom = ui.max_rect().bottom();
         let mut log = open == Some(Drawer::Log);
-        let mut clear = false;
+        let (mut clear, mut unsaved) = (false, None);
         egui::Panel::bottom("log")
             .frame(frame)
             .resizable(true)
@@ -1788,10 +1795,13 @@ impl App {
                 let note = log.trimmed().then_some("Older lines were dropped.");
                 let lines = log.lines();
                 let heads = |i| log.is_head(i);
-                clear = output(ui, "Log", note, lines, heads, p, None, true);
+                (clear, unsaved) = output(ui, "Log", note, lines, heads, None, true);
             });
         if clear {
             self.log.clear();
+        }
+        if let Some(why) = unsaved {
+            self.notices.insert(page.to_owned(), why);
         }
         // Dragged below its least height, the log holds there until pulled
         // LOG_BUMP further; a double-click on its edge shuts it at once.
@@ -1910,19 +1920,22 @@ impl App {
         let mut load = None;
         let mut save = false;
         let mut pick = false;
-        ui.menu_button("Presets", |ui| {
+        let menu = ui.menu_button("Presets", |ui| {
             ui.set_min_width(220.0);
-            let saved = presets::list(&folder, command);
+            let (_, saved) = match &mut self.presets {
+                Some(open) if open.0 == command => open,
+                slot => slot.insert((command.into(), presets::list(&folder, command))),
+            };
             if saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
-            for (name, path) in saved {
+            for (name, path) in saved.iter() {
                 if ui
-                    .button(name)
+                    .button(name.as_str())
                     .on_hover_text("Use these settings.")
                     .clicked()
                 {
-                    load = Some(path);
+                    load = Some(path.clone());
                     ui.close();
                 }
             }
@@ -1939,6 +1952,9 @@ impl App {
                 ui.close();
             }
         });
+        if menu.inner.is_none() {
+            self.presets = None;
+        }
         if save {
             self.dialog = Some(Dialog::SavePreset {
                 command: command.to_owned(),
@@ -2924,11 +2940,12 @@ fn left_behind(job: &Job) -> Option<&'static str> {
     }
 }
 
-/// What a command other than a disk job did, under its page. True when
-/// Install udev rule was pressed.
-fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> bool {
+/// What a command other than a disk job did, under its page. Gives whether
+/// Install udev rule was pressed, and why saving the output failed.
+fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<String>) {
     let p = theme::palette(ui);
     let mut install = false;
+    let mut unsaved = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Result").strong());
         let (text, colour) = state(job, p);
@@ -2952,18 +2969,10 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> bool {
     {
         device_table(ui, &info, p);
     } else {
-        output(
-            ui,
-            "Output",
-            None,
-            &job.log,
-            |_| false,
-            p,
-            Some(260.0),
-            false,
-        );
+        let height = Some(260.0);
+        (_, unsaved) = output(ui, "Output", None, &job.log, |_| false, height, false);
     }
-    install
+    (install, unsaved)
 }
 
 /// A port Linux refused gw, and what can grant this account access to it.
@@ -3081,19 +3090,19 @@ fn error_box(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
 
 /// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
 /// `height` tall or, with none, as tall as the room left. `head` picks the
-/// lines that head a job. True when Clear was pressed.
-#[allow(clippy::too_many_arguments)]
+/// lines that head a job. Gives whether Clear was pressed, and why a save
+/// failed.
 fn output(
     ui: &mut Ui,
     heading: &str,
     note: Option<&str>,
     log: &[String],
     head: impl Fn(usize) -> bool,
-    p: &Palette,
     height: Option<f32>,
     clearable: bool,
-) -> bool {
-    let mut clear = false;
+) -> (bool, Option<String>) {
+    let p = theme::palette(ui);
+    let (mut clear, mut unsaved) = (false, None);
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).strong());
         if let Some(note) = note {
@@ -3110,7 +3119,7 @@ fn output(
                     .set_file_name("gw.log")
                     .save_file()
             {
-                let _ = std::fs::write(&path, log.join("\n") + "\n");
+                unsaved = save_log(&path, log);
             }
             let copy = ui.add_enabled(!log.is_empty(), egui::Button::new("Copy"));
             if copy
@@ -3168,7 +3177,14 @@ fn output(
                 }
             });
     });
-    clear
+    (clear, unsaved)
+}
+
+/// Writes `log` to `path`, and says why if it cannot.
+fn save_log(path: &Path, log: &[String]) -> Option<String> {
+    let text = log.join("\n") + "\n";
+    let failed = std::fs::write(path, text).err()?;
+    Some(format!("Could not save {}: {failed}", path.display()))
 }
 
 /// Where the drive identifier is kept between runs: the one setting kept.
@@ -4143,5 +4159,39 @@ mod tests {
             disks: 1,
         });
         window(app).get_by_label("Erase the disk in drive B?");
+    }
+
+    #[test]
+    fn a_log_that_cannot_be_saved_says_why() {
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml/gw.log");
+        let why = save_log(&file, &["Done in 0:01.".into()]).expect("a file holds no folder");
+        let start = format!("Could not save {}: ", file.display());
+        assert!(why.starts_with(&start), "{why}");
+    }
+
+    #[test]
+    fn the_presets_menu_reads_its_folder_once_while_it_is_open() {
+        let folder = std::env::temp_dir().join(format!("fw-menu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let preset = Preset {
+            command: "read".into(),
+            ..Preset::default()
+        };
+        presets::save(&folder, "First", &preset).unwrap();
+        let mut app = offline();
+        app.settings.presets_folder = Some(folder.clone());
+        let mut w = window(app);
+        w.get_by_label("Presets").click();
+        w.run();
+        w.get_by_label("First");
+        presets::save(&folder, "Second", &preset).unwrap();
+        w.run();
+        assert!(w.query_by_label("Second").is_none(), "read again");
+        w.get_by_label("Presets").click();
+        w.run();
+        w.get_by_label("Presets").click();
+        w.run();
+        w.get_by_label("Second");
+        std::fs::remove_dir_all(folder).ok();
     }
 }
