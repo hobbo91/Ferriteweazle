@@ -58,7 +58,7 @@ pub fn parse(log: &[String]) -> Option<DeviceInfo> {
 }
 
 /// The device the card drives. gw finds a Greaseweazle itself, an Adafruit RP2040
-/// only on the port chosen for it: its firmware names itself nothing gw looks for.
+/// only on the port chosen for it: its firmware names itself nothing Greaseweazle Tools looks for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -116,7 +116,7 @@ pub mod adafruit {
             // decoder, which then writes nothing.
             "erase" => Some("The Adafruit RP2040 cannot erase disks."),
             // No SwitchFwMode, and no firmware for its hardware model, 8.
-            "update" => Some("gw cannot update the Adafruit RP2040's firmware."),
+            "update" => Some("Greaseweazle Tools cannot update the Adafruit RP2040's firmware."),
             // gw asks for 16 bytes of delays and steps down only on an error;
             // the firmware sends its 10 with none, so gw waits for ever.
             "delays" => Some("gw delays hangs on the Adafruit RP2040."),

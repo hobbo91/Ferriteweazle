@@ -1,0 +1,28 @@
+usage: gw erase [options]
+
+Erase a disk.
+
+options:
+  -h, --help          show this help message and exit
+  --device DEVICE     device name (COM/serial port)
+  --drive DRIVE       drive to read (default: A)
+  --revs N            number of revolutions to erase per track (default: 1)
+  --tracks TSPEC      which tracks to erase
+  --hfreq             erase by writing a high-frequency signal
+  --fake-index SPEED  fake index pulses at SPEED
+
+DRIVE: Drive (and bus) identifier:
+  0 | 1 | 2 | 3       :: Shugart bus unit
+  A | B               :: IBM/PC bus unit
+
+SPEED: Track rotation time specified as:
+  <N>rpm | <N>ms | <N>us | <N>ns | <N>scp | <N>
+
+TSPEC: Colon-separated list of:
+  c=SET               :: Set of cylinders to access
+  h=SET               :: Set of heads (sides) to access
+  step=[0-9]          :: # physical head steps between cylinders
+  hswap               :: Swap physical drive heads
+  h[01].off=[+-][0-9] :: Physical cylinder offsets per head
+  SET is a comma-separated list of integers and integer ranges
+  e.g. 'c=0-7,9-12:h=0-1'

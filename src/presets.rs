@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn the_example_presets_set_what_gw_has_and_stay_within_83_cylinders() {
         let schema: crate::schema::Schema =
-            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+            serde_json::from_str(include_str!("gw-1.23.json")).unwrap();
         let examples = examples();
         assert_eq!(examples.len(), 39);
         for (name, preset) in &examples {

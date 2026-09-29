@@ -201,7 +201,7 @@ impl Progress {
                 self.tracks.entry((cyl, head)).or_insert_with(|| Track {
                     status: Status::Skipped,
                     retries: 0,
-                    text: "Not in the input, so gw passed over it.".into(),
+                    text: "Not in the input, so Greaseweazle Tools passed over it.".into(),
                 });
             }
         }

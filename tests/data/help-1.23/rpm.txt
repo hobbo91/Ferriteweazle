@@ -1,0 +1,13 @@
+usage: gw rpm [options]
+
+Measure RPM of drive spindle.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  greaseweazle device name
+  --drive DRIVE    drive to read (default: A)
+  --nr N           number of iterations (default: 1)
+
+DRIVE: Drive (and bus) identifier:
+  0 | 1 | 2 | 3       :: Shugart bus unit
+  A | B               :: IBM/PC bus unit

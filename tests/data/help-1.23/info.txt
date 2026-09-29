@@ -1,0 +1,8 @@
+usage: gw info [options]
+
+Display information about the Greaseweazle setup.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)
+  --bootloader     display bootloader info (F7 only)

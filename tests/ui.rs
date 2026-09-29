@@ -21,7 +21,7 @@ use ferriteweazle::{App, Drawer, Page, Settings};
 const CARD_LINE: f32 = 21.0;
 
 fn schema() -> Schema {
-    serde_json::from_str(include_str!("data/schema-1.23.json")).unwrap()
+    serde_json::from_str(include_str!("../src/gw-1.23.json")).unwrap()
 }
 
 /// The app offline, run until it settles, with `disk` as its last disk job.
@@ -377,7 +377,8 @@ fn the_status_pane_says_what_has_not_happened_to_a_disk_yet() {
     w.get_by_label("Disk status");
     w.get_by_label("No disk read yet");
     assert!(
-        w.query_by_label("gw's output appears here.").is_none(),
+        w.query_by_label("Greaseweazle Tools' output appears here.")
+            .is_none(),
         "the log is in its own drawer"
     );
     let w = window(Settings {
@@ -659,7 +660,9 @@ fn the_log_and_the_command_line_share_a_drawer_across_the_page_and_the_status_pa
     let status = w.get_by_label("Disk status").rect();
     w.get_by_role_and_label(Role::Button, "Log").click();
     w.run();
-    let log = w.get_by_label("gw's output appears here.").rect();
+    let log = w
+        .get_by_label("Greaseweazle Tools' output appears here.")
+        .rect();
     let copy = w.get_by_label("Copy").rect();
     assert!(
         copy.left() > status.left(),
@@ -674,14 +677,17 @@ fn the_log_and_the_command_line_share_a_drawer_across_the_page_and_the_status_pa
     // It stays open from page to page.
     w.get_by_label("Write disk").click();
     w.run();
-    w.get_by_label("gw's output appears here.");
+    w.get_by_label("Greaseweazle Tools' output appears here.");
 
     // The command line takes its place: only one is open, at the same height.
     let log_top = w.get_by_label("Copy").rect().top();
     w.get_by_label("CLI").click();
     w.run();
     w.get_by_label("Command line");
-    assert!(w.query_by_label("gw's output appears here.").is_none());
+    assert!(
+        w.query_by_label("Greaseweazle Tools' output appears here.")
+            .is_none()
+    );
     let cli_top = w.get_by_label("Copy").rect().top();
     assert!(
         (log_top - cli_top).abs() < 1.0,
@@ -1001,8 +1007,14 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
     let written = ("Written 2", "Written, no verify reported.");
     let bad = ("Bad 1", "No sectors found, or the write failed.");
     // Once the write has worked, what gw passed over is known.
-    let passed = ("4 / 4 tracks", "Not in the input, so gw passed over it.");
-    let unreported = ("3 / 4 tracks", "gw has not reported this track.");
+    let passed = (
+        "4 / 4 tracks",
+        "Not in the input, so Greaseweazle Tools passed over it.",
+    );
+    let unreported = (
+        "3 / 4 tracks",
+        "Greaseweazle Tools has not reported this track.",
+    );
     for (log, (count, hover), legend) in [
         (verified, passed, vec![good, skipped]),
         (failed, unreported, vec![written, bad]),
@@ -1060,7 +1072,7 @@ fn a_square_names_the_rows_of_gws_sector_map_it_is_missing() {
     w.hover_at(square);
     w.run();
     w.get_by_label("Cylinder 20, side 0");
-    w.get_by_label("Missing in gw's sector map (S): 5");
+    w.get_by_label("Missing in Greaseweazle Tools' sector map (S): 5");
 }
 
 #[test]
@@ -1278,7 +1290,7 @@ fn clear_empties_the_log() {
     w.get_by_role_and_label(Role::Button, "Clear").click();
     w.run();
     assert!(w.query_by_label("Done in 0:01.").is_none());
-    w.get_by_label("gw's output appears here.");
+    w.get_by_label("Greaseweazle Tools' output appears here.");
     let clear = w.get_by_role_and_label(Role::Button, "Clear");
     assert!(clear.accesskit_node().is_disabled(), "nothing to clear");
 }
@@ -1327,8 +1339,11 @@ fn a_tool_that_printed_nothing_says_so() {
     });
     app_mut(&mut w).tool = Some(Job::replay("reset", ""));
     w.run();
-    w.get_by_label("gw printed no output.");
-    assert!(w.query_by_label("gw's output appears here.").is_none());
+    w.get_by_label("Greaseweazle Tools printed no output.");
+    assert!(
+        w.query_by_label("Greaseweazle Tools' output appears here.")
+            .is_none()
+    );
 }
 
 #[test]
@@ -2243,7 +2258,7 @@ fn shows_the_fix(w: &Window) {
     for command in COMMANDS {
         w.get_by_label(command);
     }
-    w.get_by_role_and_label(Role::Link, "gw's Linux instructions");
+    w.get_by_role_and_label(Role::Link, "Greaseweazle Tools' Linux instructions");
 }
 
 #[test]

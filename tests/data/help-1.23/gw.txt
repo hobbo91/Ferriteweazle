@@ -1,0 +1,17 @@
+Usage: gw [--time] [action] [-h] ...
+  --time      Print elapsed time after action is executed
+  -h, --help  Show help message for specified action
+Actions:
+  info        Display information about the Greaseweazle setup.
+  read        Read a disk to the specified image file.
+  write       Write a disk from the specified image file.
+  convert     Convert between image formats.
+  erase       Erase a disk.
+  clean       Clean a drive in a zig-zag pattern using a cleaning disk.
+  seek        Seek to the specified cylinder.
+  delays      Display (and optionally modify) drive-delay parameters.
+  update      Update the Greaseweazle device firmware to latest (or specified) version.
+  pin         Change the setting of a user-modifiable interface pin.
+  reset       Reset the Greaseweazle device to power-on default state.
+  bandwidth   Report the available USB bandwidth for the Greaseweazle device.
+  rpm         Measure RPM of drive spindle.

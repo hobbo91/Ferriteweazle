@@ -1,0 +1,16 @@
+usage: gw update [options]
+
+Update the Greaseweazle device firmware to latest (or specified) version.
+
+options:
+  -h, --help       show this help message and exit
+  --file FILE      use specified update file
+  --tag TAG        use specified GitHub release tag
+  --device DEVICE  device name (COM/serial port)
+  --force          force update even if firmware is older
+  --bootloader     update the bootloader (use with caution!)
+
+Examples:
+  gw update
+  gw update --force --tag v1.0
+  gw update --file greaseweazle-firmware-v1.0.upd

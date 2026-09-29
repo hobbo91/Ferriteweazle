@@ -13,7 +13,7 @@ use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
 use ferriteweazle::progress::Status;
-use ferriteweazle::schema::Port;
+use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::service::{Load, Service};
 use ferriteweazle::{App, Drawer, Page, Settings};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,7 @@ fn engine() -> Option<Engine> {
         Some(Engine {
             python,
             origin: Origin::Bundled,
+            standalone: false,
         })
     } else {
         Engine::find(None)
@@ -632,6 +633,87 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     assert!(p.tracks.values().all(|t| t.status == Status::Good));
     assert_eq!(p.total, Some((720, 720)));
     assert_eq!(p.sector_map.len(), 80);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A standalone gw: FERRITEWEAZLE_STANDALONE_GW, such as the gw.exe of gw's
+/// Windows download, else on Unix the engine's gw run by a script of its own,
+/// as the frozen gw.exe runs it in its own Python.
+fn standalone(engine: &Engine, dir: &Path) -> Option<Engine> {
+    if let Some(gw) = std::env::var_os("FERRITEWEAZLE_STANDALONE_GW") {
+        return Engine::find(Some(Path::new(&gw))).filter(|e| e.standalone);
+    }
+    script_gw(engine, dir)
+}
+
+#[cfg(not(unix))]
+fn script_gw(_: &Engine, _: &Path) -> Option<Engine> {
+    None
+}
+
+#[cfg(unix)]
+fn script_gw(engine: &Engine, dir: &Path) -> Option<Engine> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("gw");
+    let gw = "import sys; from greaseweazle import cli; sys.argv[0] = 'gw'; sys.exit(cli.main())";
+    let text = format!(
+        "#!/bin/sh\nexec '{}' -c \"{gw}\" \"$@\"\n",
+        path(&engine.python)
+    );
+    std::fs::write(&script, text).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Engine::find(Some(&script)).filter(|e| e.standalone)
+}
+
+#[test]
+fn a_standalone_gw_gets_its_pages_from_its_help_and_converts_as_it_is() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("standalone-gw");
+    let Some(gw) = standalone(&engine, &dir) else {
+        eprintln!("skipped: no standalone gw here");
+        return;
+    };
+    let schema = |engine: &Engine| {
+        let mut service = Service::start(engine, Box::new(|| {}));
+        wait("the schema", || {
+            service.poll();
+            service.schema.ready().cloned()
+        })
+    };
+    let (help, parsers) = (schema(&gw), schema(&engine));
+    let options = |s: &Schema| {
+        let dests =
+            |c: &ferriteweazle::schema::Command| c.args.iter().map(|a| a.dest.clone()).collect();
+        s.commands
+            .iter()
+            .map(|c| (c.name.clone(), dests(c)))
+            .collect::<Vec<(String, Vec<String>)>>()
+    };
+    assert_eq!(options(&help), options(&parsers));
+    assert_eq!(help.gw(), parsers.gw());
+
+    let (img, scp, back) = (dir.join("a.img"), dir.join("a.scp"), dir.join("b.img"));
+    std::fs::write(
+        &img,
+        (0..368_640u32).map(|i| (i % 253) as u8).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    run(
+        &gw,
+        &["convert", "--format=ibm.360", &path(&img), &path(&scp)],
+    );
+    let job = run(
+        &gw,
+        &["convert", "--format=ibm.360", &path(&scp), &path(&back)],
+    );
+    assert_eq!(std::fs::read(&img).unwrap(), std::fs::read(&back).unwrap());
+    assert!(
+        job.progress
+            .tracks
+            .values()
+            .all(|t| t.status == Status::Good)
+    );
+    assert_eq!(job.progress.total, Some((720, 720)));
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -1560,7 +1642,7 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         .expect("the run button")
         .hover();
     until_shown(&mut w, "why it cannot run", |w| {
-        w.query_by_label("gw cannot read this image. See Disk format.")
+        w.query_by_label("Greaseweazle Tools cannot read this image. See Disk format.")
             .is_some()
     });
     std::fs::remove_dir_all(dir).ok();
@@ -1898,7 +1980,7 @@ fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
     assert!(read_button(&w).accesskit_node().is_disabled());
     read_button(&w).hover();
     until_shown(&mut w, "why it cannot read", |w| {
-        w.query_by_label("gw cannot use this disk format. See Disk format.")
+        w.query_by_label("Greaseweazle Tools cannot use this disk format. See Disk format.")
             .is_some()
     });
 }

@@ -17,6 +17,7 @@ pub mod presets;
 pub mod progress;
 pub mod schema;
 pub mod service;
+pub mod standalone;
 pub mod theme;
 mod udev;
 pub mod update;

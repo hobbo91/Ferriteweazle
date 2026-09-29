@@ -385,7 +385,7 @@ def detect(argv):
         print('This is a 40-track disk in an 80-track drive: it needs double step.')
     print(RESULT + json.dumps({'formats': whole, 'step': step}), flush=True)
     if not whole:
-        print('** FATAL ERROR:\nNo format gw knows reads this disk in full. Choose one by hand.')
+        print('** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full. Choose one by hand.')
         return 1
     print(f'Format {whole[0]}')
     return 0
@@ -435,7 +435,7 @@ def probe(read, diskdefs, last=83):
                 continue
             with contextlib.suppress(Exception):
                 disks[name] = codec.get_diskdef(name, source)
-    print('Trying every format gw knows...')
+    print('Trying every format Greaseweazle Tools knows...')
     tracks = {k: read(*k) for k in [(0, 0), (0, 1)]}
     decoded = {}
     ranked = rank(disks, tracks, decoded)

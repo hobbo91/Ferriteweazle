@@ -1,7 +1,7 @@
 //! One gw command, run through the bridge, with its output as it arrives.
 
 use crate::device;
-use crate::engine::Engine;
+use crate::engine::{Engine, quiet};
 use crate::progress::Progress;
 use crate::service::Repaint;
 use serde_json::Value;
@@ -64,6 +64,8 @@ pub struct Job {
     stdin: Option<ChildStdin>,
     lines: Receiver<Chunk>,
     eof: bool,
+    /// A standalone gw, run as it is: it asks on its own output and stops when killed.
+    standalone: bool,
 }
 
 impl Job {
@@ -76,10 +78,19 @@ impl Job {
         repaint: Repaint,
     ) -> std::io::Result<Job> {
         let mode = if command == DETECT { "detect" } else { "run" };
-        let mut child = engine
-            .bridge(mode)
+        let mut cmd = match engine.standalone {
+            true if command == DETECT => {
+                return Err(std::io::Error::other(
+                    "Standalone Greaseweazle Tools cannot run Detect.",
+                ));
+            }
+            true => quiet(std::process::Command::new(&engine.python)),
+            false => engine.bridge(mode),
+        };
+        let mut child = cmd
             // The device the bridge's own messages name.
             .env("FERRITEWEAZLE_DEVICE", device)
+            .env("PYTHONIOENCODING", "utf-8")
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -92,6 +103,7 @@ impl Job {
         Ok(Job {
             child: Some(child),
             stdin,
+            standalone: engine.standalone,
             ..Job::new(command, args, lines)
         })
     }
@@ -145,7 +157,13 @@ impl Job {
                     self.partial.clear();
                     self.take(line);
                 }
-                Ok(Chunk::Partial(text)) => self.partial = text,
+                Ok(Chunk::Partial(text)) => {
+                    // gw's one question, `gw seek`'s, ends "Yes/No? " with no line end.
+                    if self.standalone && self.question.is_none() && text.ends_with("Yes/No? ") {
+                        self.question = Some(text.trim().to_owned());
+                    }
+                    self.partial = text;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.eof = true;
@@ -187,6 +205,11 @@ impl Job {
     pub fn stop(&mut self) {
         if self.running() && self.stopping.is_none() {
             self.stdin = None; // the bridge stops gw when its input closes
+            if self.standalone
+                && let Some(child) = &mut self.child
+            {
+                let _ = child.kill();
+            }
             self.stopping = Some(Instant::now());
             self.question = None;
         }
@@ -206,7 +229,10 @@ impl Job {
 
     pub fn answer(&mut self, text: &str) {
         if let Some(stdin) = &mut self.stdin {
-            let _ = writeln!(stdin, "answer {text}");
+            let _ = match self.standalone {
+                true => writeln!(stdin, "{text}"),
+                false => writeln!(stdin, "answer {text}"),
+            };
         }
         self.question = None;
     }
@@ -236,6 +262,7 @@ impl Job {
             stdin: None,
             lines,
             eof: false,
+            standalone: false,
         }
     }
 
@@ -428,6 +455,53 @@ mod tests {
 
     fn job(command: &str) -> Job {
         Job::new(command, Vec::new(), mpsc::channel().1)
+    }
+
+    /// A standalone gw that runs `body` in sh.
+    #[cfg(unix)]
+    fn standalone(test: &str, body: &str) -> (Engine, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("gw");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (Engine::find(Some(&script)).unwrap(), dir)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_standalone_gw_asks_on_its_output_and_takes_the_answer_on_its_input() {
+        let body = "printf 'Seek to extreme cylinder 90, Yes/No? ' >&2\nread answer\n\
+                    echo \"Seeking: $answer\" >&2\n";
+        let (gw, dir) = standalone("asks", body);
+        let args = vec!["seek".into(), "90".into()];
+        let mut job = Job::start(&gw, "Greaseweazle", "seek", args, Box::new(|| {})).unwrap();
+        poll_until(&mut job, |j| j.question.is_some());
+        let question = job.question.as_deref();
+        assert_eq!(question, Some("Seek to extreme cylinder 90, Yes/No?"));
+        job.answer("Yes");
+        poll_until(&mut job, |j| !j.running());
+        assert!(
+            job.log.iter().any(|l| l.ends_with("Seeking: Yes")),
+            "{:?}",
+            job.log
+        );
+        assert_eq!(job.outcome(), Some(Outcome::Succeeded));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stopping_a_standalone_gw_ends_it_at_once() {
+        let (gw, dir) = standalone("stops", "sleep 30\n");
+        let args = vec!["read".into(), "disk.scp".into()];
+        let mut job = Job::start(&gw, "Greaseweazle", "read", args, Box::new(|| {})).unwrap();
+        job.stop();
+        poll_until(&mut job, |j| !j.running());
+        assert_eq!(job.outcome(), Some(Outcome::Stopped));
+        assert!(job.elapsed() < GRACE, "it waited out the grace period");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

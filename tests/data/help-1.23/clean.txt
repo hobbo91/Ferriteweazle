@@ -1,0 +1,15 @@
+usage: gw clean [options]
+
+Clean a drive in a zig-zag pattern using a cleaning disk.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)
+  --drive DRIVE    drive to read (default: A)
+  --cyls N         number of drive cylinders (default: 80)
+  --passes N       number of passes across the cleaning disk (default: 3)
+  --linger N       linger time per step, milliseconds (default: 100)
+
+DRIVE: Drive (and bus) identifier:
+  0 | 1 | 2 | 3       :: Shugart bus unit
+  A | B               :: IBM/PC bus unit

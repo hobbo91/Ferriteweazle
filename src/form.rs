@@ -542,8 +542,8 @@ impl<'a> Form<'a> {
             ui.spacing_mut().item_spacing.x = 4.0;
             let current = self.values.get(&a.dest).to_owned();
             let (unset, tip) = match a.dest.as_str() {
-                "densel" => ("Auto", "gw leaves pin 2 as it is."),
-                _ => ("Default", "gw's own choice."),
+                "densel" => ("Auto", "Greaseweazle Tools leaves pin 2 as it is."),
+                _ => ("Default", "Greaseweazle Tools' own choice."),
             };
             if a.default.is_none()
                 && !a.required
@@ -1124,7 +1124,7 @@ impl<'a> Form<'a> {
                     .own_tip("Which of the folder's images to take.");
                 let p = theme::palette(ui);
                 let text = match taken.is_empty() {
-                    true => RichText::new("No images gw can read.").color(p.bad),
+                    true => RichText::new("No images Greaseweazle Tools can read.").color(p.bad),
                     false => RichText::new(listing(&taken)).weak(),
                 };
                 ui.add(egui::Label::new(text.small()).truncate());
@@ -1176,7 +1176,7 @@ impl<'a> Form<'a> {
                     }
                     None => {
                         ui.label(
-                            RichText::new("gw does not know this file type.")
+                            RichText::new("Greaseweazle Tools does not know this file type.")
                                 .small()
                                 .color(theme::palette(ui).bad),
                         );
@@ -1468,7 +1468,8 @@ const BESIDE: &str = "Not used when saving next to the input.";
 
 const REPLACES_INPUT: &str = "This is the input file. Select another type or name.";
 
-const COLONS_IN: &str = "gw reads :: in a path as options. Select another image or folder.";
+const COLONS_IN: &str =
+    "Greaseweazle Tools reads :: in a path as options. Select another image or folder.";
 
 const FOREIGN: &str = "An image has an option its type does not take.";
 
@@ -1503,14 +1504,14 @@ pub fn blocked(
     let chosen = values.get("format");
     let fault = service.known_format_info(known_diskdefs(service, values, chosen), chosen);
     if fault.is_some_and(|f| f.error().is_some()) {
-        return Some("gw cannot use this disk format. See Disk format.");
+        return Some("Greaseweazle Tools cannot use this disk format. See Disk format.");
     }
     // gw would stop at the image before it opens the drive.
     if chosen.is_empty()
         && format_in_file(schema, cmd, values)
         && service.image_fault(input_file(cmd, values)).is_some()
     {
-        return Some("gw cannot read this image. See Disk format.");
+        return Some("Greaseweazle Tools cannot read this image. See Disk format.");
     }
     // gw opens a plain sector image only with a format; Read and Convert
     // wait for one below.
@@ -1528,7 +1529,7 @@ pub fn blocked(
     {
         return Some(match values.get(BATCH_FOLDER) {
             "" => "Select a folder of images first.",
-            _ => "The folder has no images gw can read.",
+            _ => "The folder has no images Greaseweazle Tools can read.",
         });
     }
     if let Some((_, dest)) = BATCHES.iter().find(|(c, _)| *c == cmd.name) {
@@ -1551,8 +1552,10 @@ pub fn blocked(
         };
         // Only a pasted command line gives one of these.
         let image = match schema.images.get(&out.ext) {
-            None => return Some("gw does not know this image type."),
-            Some(i) if !i.writable => return Some("gw cannot write this image type."),
+            None => return Some("Greaseweazle Tools does not know this image type."),
+            Some(i) if !i.writable => {
+                return Some("Greaseweazle Tools cannot write this image type.");
+            }
             Some(i) => i,
         };
         if !foreign(&out.opts, &image.write_opts).is_empty() {
@@ -1574,7 +1577,9 @@ pub fn blocked(
             Some(_) => out.batch_label.contains("::"),
         };
         if !beside && (named || out.folder.contains("::")) {
-            return Some("gw reads :: in a path as options. Select another folder or name.");
+            return Some(
+                "Greaseweazle Tools reads :: in a path as options. Select another folder or name.",
+            );
         }
         if batch.is_some() {
             let files = service.known_folder(values.get(BATCH_FOLDER));
@@ -2529,7 +2534,7 @@ const OPTION_VALUES: &[(&str, &[&str])] = &[
 const OPTION_TIPS: &[(&str, &str)] = &[
     (
         "bitrate",
-        "Bit rate, in kbit/s. Unset, gw takes it from the format.",
+        "Bit rate, in kbit/s. Unset, the format gives it.",
     ),
     ("disktype", "Disk type in the SCP header."),
     (
@@ -3025,7 +3030,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     fn schema() -> Schema {
-        serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+        serde_json::from_str(include_str!("gw-1.23.json")).unwrap()
     }
 
     fn values(pairs: &[(&str, &str)]) -> Values {
@@ -3318,12 +3323,12 @@ mod tests {
         let ipf = Output::from_value("/f/b.ipf");
         assert_eq!(
             why("convert", ipf),
-            Some("gw cannot write this image type.")
+            Some("Greaseweazle Tools cannot write this image type.")
         );
         let unknown = Output::from_value("/f/b.xyz");
         assert_eq!(
             why("convert", unknown),
-            Some("gw does not know this image type.")
+            Some("Greaseweazle Tools does not know this image type.")
         );
         let folder = |f: &str| Output {
             folder: f.into(),
@@ -3347,7 +3352,9 @@ mod tests {
             let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
             blocked(&s, read, &v, &outputs, &service)
         };
-        let colons = Some("gw reads :: in a path as options. Select another folder or name.");
+        let colons = Some(
+            "Greaseweazle Tools reads :: in a path as options. Select another folder or name.",
+        );
         let folder = Output {
             folder: "/Volumes/x::y".into(),
             ..output(".img")
@@ -3564,7 +3571,7 @@ mod tests {
         service.folder(&dir.to_string_lossy());
         assert_eq!(
             reason(&v, &service, &none),
-            Some("The folder has no images gw can read.")
+            Some("The folder has no images Greaseweazle Tools can read.")
         );
 
         std::fs::write(dir.join("Game.img"), [0u8; 512]).unwrap();

@@ -1,0 +1,25 @@
+usage: gw delays [options]
+
+Display (and optionally modify) drive-delay parameters.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)
+  --select N       Select Delay (usecs)
+  --step N         Step Delay (usecs)
+  --settle N       Settle Time (msecs)
+  --motor N        Motor Delay (msecs)
+  --watchdog N     Watchdog (msecs)
+  --pre-write N    Pre-Write (usecs)
+  --post-write N   Post-Write (usecs)
+  --index-mask N   Index Mask (usecs)
+
+Select Delay: (usec) Delay after asserting drive select
+Step Delay:   (usec) Delay after issuing a head-step command
+Settle Time:  (msec) Delay after completing a head-seek operation
+Motor Delay:  (msec) Delay after turning on drive spindle motor
+Watchdog:     (msec) Timeout since last command upon which all drives
+                     are deselected and spindle motors turned off
+Pre-Write:    (usec) Min. time from track change to write start
+Post-Write:   (usec) Min. time from write end to track change
+Index Mask:   (usec) Index post-trigger mask time

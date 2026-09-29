@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     fn schema() -> Schema {
-        serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+        serde_json::from_str(include_str!("gw-1.23.json")).unwrap()
     }
 
     fn values(pairs: &[(&str, &str)]) -> Values {

@@ -77,6 +77,8 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
+/// Why Detect greys for a gw with no Python the bridge can run in.
+const STANDALONE_DETECT: &str = "Standalone Greaseweazle Tools cannot run Detect.";
 /// Why Restart and Update grey when no gw is found.
 const NOT_FOUND: &str = "Ferriteweazle could not find Greaseweazle Tools.";
 /// When no gw is found, built in, installed or chosen.
@@ -479,7 +481,7 @@ impl App {
         self.service = match (&self.engine, &self.settings.engine) {
             (Some(engine), _) => Service::start(engine, repaint(ctx)),
             (None, Some(path)) if path.exists() => Service::offline(Err(format!(
-                "{} is neither a Python nor a gw launcher.",
+                "{} is not Greaseweazle Tools.",
                 path.display()
             ))),
             (None, _) => Service::offline(Err(NO_GW.into())),
@@ -497,8 +499,11 @@ impl App {
         if engine.origin == Origin::Bundled && !installing(&self.gw_update) {
             self.gw_update = Update::check(engine, None, repaint(ctx));
         }
-        if Install::this().is_some() && !installing(&self.app_update) {
-            self.app_update = Update::check(engine, Some(update::APP_REPO), repaint(ctx));
+        // A standalone gw has no Python to ask GitHub with; the built-in one may.
+        if let Some(python) = engine.with_python().filter(|_| Install::this().is_some())
+            && !installing(&self.app_update)
+        {
+            self.app_update = Update::check(&python, Some(update::APP_REPO), repaint(ctx));
         }
     }
 
@@ -896,6 +901,9 @@ impl App {
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
     fn cannot_detect(&self, page: &str) -> Option<Cow<'static, str>> {
+        if self.engine.as_ref().is_some_and(|e| e.standalone) {
+            return Some(STANDALONE_DETECT.into());
+        }
         if let Some(why) = self.busy() {
             return Some(why.into());
         }
@@ -945,7 +953,7 @@ impl App {
                 self.probe = Some(job);
                 self.probe_failed = None;
             }
-            Err(e) => self.probe_failed = Some(format!("Could not start gw: {e}")),
+            Err(e) => self.probe_failed = Some(format!("Could not start Greaseweazle Tools: {e}")),
         }
     }
 
@@ -1168,7 +1176,7 @@ impl App {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                let version = self.listed.as_ref().map(|s| format!("gw {}", s.version));
+                let version = self.listed.as_ref().map(|s| s.gw());
                 let settings = self.settings.page == Page::Settings;
                 if nav_item(ui, "Settings", version.as_deref(), settings).clicked() {
                     self.settings.page = Page::Settings;
@@ -1331,7 +1339,10 @@ impl App {
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
                         for (option, tip) in [
-                            (Kind::Greaseweazle, "A Greaseweazle: gw finds its port."),
+                            (
+                                Kind::Greaseweazle,
+                                "A Greaseweazle: Greaseweazle Tools finds its port.",
+                            ),
                             (
                                 Kind::Adafruit,
                                 "Adafruit's Greaseweazle-compatible firmware: select its port.",
@@ -1569,7 +1580,7 @@ impl App {
         };
         let Some(cmd) = schema.command(name) else {
             ui.heading(title(name));
-            ui.label(format!("gw {} has no {name} command.", schema.version));
+            ui.label(format!("{} has no {name} command.", schema.tools()));
             return;
         };
         let width = form::form_width(ui, ui.available_width() - f32::from(PAGE_BAR));
@@ -1708,8 +1719,8 @@ impl App {
                     };
                     let stop = ui.add_enabled(!job.stopping(), big_button(label, p.bad, p));
                     let tip = match self.runs_motor(job) {
-                        true => "Stop gw and the drive's motor.",
-                        false => "Stop gw.",
+                        true => "Stop Greaseweazle Tools and the drive's motor.",
+                        false => "Stop Greaseweazle Tools.",
                     };
                     let warning = flash_warning(job);
                     let stop = stop.on_hover_ui(|ui| {
@@ -1757,7 +1768,12 @@ impl App {
                     "Show this page as a gw command line.",
                     "Hide the command line.",
                 ),
-                (Drawer::Log, "Log", "Show gw's output.", "Hide gw's output."),
+                (
+                    Drawer::Log,
+                    "Log",
+                    "Show Greaseweazle Tools' output.",
+                    "Hide Greaseweazle Tools' output.",
+                ),
             ] {
                 ui.add_space(6.0);
                 let open = self.settings.drawer == Some(drawer);
@@ -1788,7 +1804,7 @@ impl App {
             .collect();
         let device = uses_device(schema, &cmd.name);
         if self.engine.is_none() {
-            Some("gw is not set up. See Settings.".to_owned())
+            Some(NO_GW.to_owned())
         } else if let Some(why) = self.busy() {
             Some(why.to_owned())
         } else if self.probe.is_some() && device {
@@ -2060,7 +2076,7 @@ impl App {
                 };
                 let page = page.unwrap_or_else(|| command.to_owned());
                 self.notices
-                    .insert(page, format!("Could not start gw: {e}"));
+                    .insert(page, format!("Could not start Greaseweazle Tools: {e}"));
                 false
             }
         }
@@ -2460,7 +2476,7 @@ impl App {
             ui.separator();
             defaults = ui
                 .add_enabled(menu.changed, egui::Button::new("Restore defaults"))
-                .on_hover_text("Put this page's options back to gw's defaults.")
+                .on_hover_text("Put this page's options back to Greaseweazle Tools' defaults.")
                 .on_disabled_hover_text("No changes.")
                 .clicked();
             if save || pick || defaults {
@@ -2538,7 +2554,12 @@ impl App {
                         Origin::Installed => "installed on this computer",
                         Origin::Custom => "chosen here",
                     };
-                    ui.label(format!("gw {}, {origin}.", schema.version));
+                    let kind = if engine.standalone {
+                        " (standalone)"
+                    } else {
+                        ""
+                    };
+                    ui.label(format!("{}{kind}, {origin}.", schema.tools()));
                 }
                 (Some(_), Load::Waiting(_)) => {
                     ui.horizontal(|ui| {
@@ -2559,7 +2580,9 @@ impl App {
             ui.horizontal(|ui| {
                 let restart = ui.add_enabled(busy.is_none(), egui::Button::new("Restart"));
                 if restart
-                    .on_hover_text("Start gw again, and check GitHub for a newer release.")
+                    .on_hover_text(
+                        "Start Greaseweazle Tools again, and check GitHub for a newer release.",
+                    )
                     .on_disabled_hover_text(busy.unwrap_or_default())
                     .clicked()
                 {
@@ -2636,15 +2659,15 @@ impl App {
             }
             ui.add_space(8.0);
             let default = (
-                "Use the built-in gw",
-                "Go back to the gw Ferriteweazle ships.",
+                "Use the built-in Greaseweazle Tools",
+                "Go back to the Greaseweazle Tools Ferriteweazle ships.",
             );
             let python = self.engine.as_ref().map(|e| e.python.clone());
             let gw = python
                 .or_else(|| self.settings.engine.clone())
                 .unwrap_or_default();
             let back = self.settings.engine.is_some().then_some(default);
-            let tip = "Select a gw, or a Python with greaseweazle.";
+            let tip = "Select gw, gw.exe or a Python with Greaseweazle Tools installed.";
             let busy = self.busy();
             match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
@@ -2664,7 +2687,7 @@ impl App {
             setting(
                 ui,
                 &mut self.settings.save_logs,
-                "Save gw's output beside each image it makes",
+                "Save Greaseweazle Tools' output beside each image it makes",
                 "Writes the gw command and its output to name.ext.log where gw read or \
                  gw convert puts its image.",
             );
@@ -2680,7 +2703,7 @@ impl App {
                 ui,
                 &mut self.settings.backtrace,
                 "Show Python tracebacks",
-                "Passes --bt, so gw's errors say where they came from.",
+                "Passes --bt, so Greaseweazle Tools' errors say where they came from.",
             );
         });
         section(ui, "Update", |ui| self.app_update(ui));
@@ -2979,8 +3002,8 @@ impl App {
                     let name = job.map_or_else(String::new, |j| title(&j.command));
                     dialog_heading(ui, &format!("Stop {name} and quit?"));
                     ui.label(match job.is_some_and(|j| self.runs_motor(j)) {
-                        true => "gw stops the drive first, then the window closes.",
-                        false => "gw stops, then the window closes.",
+                        true => "Greaseweazle Tools stops the drive first, then the window closes.",
+                        false => "Greaseweazle Tools stops, then the window closes.",
                     });
                     if let Some(warning) = job.and_then(flash_warning) {
                         ui.label(warning);
@@ -3095,15 +3118,18 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked()
-                    && let (Update::Newer(tag), Some(engine), Some(install)) =
-                        (&self.app_update, &self.engine, install.clone())
+                    && let (Update::Newer(tag), Some(engine), Some(install)) = (
+                        &self.app_update,
+                        self.engine.as_ref().and_then(Engine::with_python),
+                        install.clone(),
+                    )
                 {
                     if cfg!(windows) && matches!(install, Install::Folder(_)) {
                         // Windows will not move the data folder while gw runs from it.
                         self.gw_paused = Some(self.service.known_ports().to_vec());
                         self.service = Service::offline(Err(UPDATING.into()));
                     }
-                    self.app_update = Update::app(engine, install, tag, repaint(ui.ctx()));
+                    self.app_update = Update::app(&engine, install, tag, repaint(ui.ctx()));
                 }
             });
         });
@@ -3250,7 +3276,7 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
     let mut answer = None;
     egui::Modal::new(Id::new("question")).show(ctx, |ui| {
         ui.set_width(400.0);
-        dialog_heading(ui, "gw asks");
+        dialog_heading(ui, "Greaseweazle Tools asks");
         ui.label(question.trim());
         ui.add_space(10.0);
         if question.contains("Yes/No") {
@@ -3581,25 +3607,25 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
     out
 }
 
-/// Where gw looks for the SPS/CAPS library, which reads IPF and CTRaw
+/// Where Greaseweazle Tools looks for the SPS/CAPS library, which reads IPF and CTRaw
 /// images and which gw does not ship.
 fn caps_advice(engine: Option<&Engine>) -> String {
     if cfg!(target_os = "macos") {
-        "gw looks for CAPSImage.framework or CAPSImg.framework in /Library/Frameworks.".into()
+        "Greaseweazle Tools looks for CAPSImage.framework or CAPSImg.framework in /Library/Frameworks.".into()
     } else if cfg!(windows) {
         // Python loads a DLL by name from python.exe's folder or System32.
         let bundled = engine.filter(|e| e.origin == Origin::Bundled);
         match bundled.and_then(|e| e.python.parent()) {
             Some(folder) => format!(
-                "This gw looks for CAPSImg_x64.dll or CAPSImg.dll in {} and in System32.",
+                "Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in {} and in System32.",
                 folder.display()
             ),
-            None => "gw looks for CAPSImg_x64.dll or CAPSImg.dll beside its python.exe and in \
+            None => "Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll beside its python.exe and in \
                      System32."
                 .into(),
         }
     } else {
-        "gw looks for libcapsimage.so.5 or libcapsimage.so.4 in the system's library folders, \
+        "Greaseweazle Tools looks for libcapsimage.so.5 or libcapsimage.so.4 in the system's library folders, \
          such as /usr/lib."
             .into()
     }
@@ -3833,7 +3859,7 @@ fn refused_port(job: &Job, port: Option<&Port>) -> Option<String> {
     unanswered.then(|| port.device.clone())
 }
 
-const NO_ACCESS: &str = "This account has no permission to open the port. gw's udev rule \
+const NO_ACCESS: &str = "This account has no permission to open the port. Greaseweazle Tools' udev rule \
                          gives the user logged in at this computer access to a Greaseweazle, \
                          and tells ModemManager to leave it alone.";
 
@@ -3910,7 +3936,7 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
                     }
                 });
         });
-    ui.hyperlink_to("gw's Linux instructions", udev::WIKI)
+    ui.hyperlink_to("Greaseweazle Tools' Linux instructions", udev::WIKI)
         .on_hover_text(udev::WIKI);
     pressed
 }
@@ -3960,7 +3986,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
             if save
-                .on_hover_text("Save gw's output to a file.")
+                .on_hover_text("Save Greaseweazle Tools' output to a file.")
                 .on_disabled_hover_text("No output.")
                 .clicked()
                 && let Some(path) = rfd::FileDialog::new()
@@ -3972,7 +3998,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             }
             let copy = ui.add_enabled(!log.is_empty(), egui::Button::new("Copy"));
             if copy
-                .on_hover_text("Copy gw's output.")
+                .on_hover_text("Copy Greaseweazle Tools' output.")
                 .on_disabled_hover_text("No output.")
                 .clicked()
             {
@@ -4005,8 +4031,8 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             let least = if drawer { height } else { height.min(80.0) };
             ui.set_min_size(vec2(ui.available_width(), least));
             let empty = match shown {
-                Shown::Job(job) if !job.running() => "gw printed no output.",
-                _ => "gw's output appears here.",
+                Shown::Job(job) if !job.running() => "Greaseweazle Tools printed no output.",
+                _ => "Greaseweazle Tools' output appears here.",
             };
             ui.label(RichText::new(empty).weak());
             return;
@@ -4488,7 +4514,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     fn schema() -> Schema {
-        serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+        serde_json::from_str(include_str!("gw-1.23.json")).unwrap()
     }
 
     fn offline() -> App {
@@ -4510,6 +4536,7 @@ mod tests {
         Engine {
             python: "/no/such/python".into(),
             origin: Origin::Custom,
+            standalone: false,
         }
     }
 
@@ -4878,7 +4905,10 @@ mod tests {
         );
         let w = window(app);
         w.get_by_label("Done in 0:00.");
-        assert!(w.query_by_label("gw printed no output.").is_none());
+        assert!(
+            w.query_by_label("Greaseweazle Tools printed no output.")
+                .is_none()
+        );
     }
 
     #[test]
@@ -5193,7 +5223,7 @@ mod tests {
         app.load_preset("write", Path::new("/no/such/Mine.json"));
         let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
         assert_eq!(pages, ["convert", "erase", "seek", "write"]);
-        assert!(app.notices["erase"].starts_with("Could not start gw: "));
+        assert!(app.notices["erase"].starts_with("Could not start Greaseweazle Tools: "));
     }
 
     #[test]
@@ -5313,10 +5343,11 @@ mod tests {
         let engine = Engine {
             python: r"C:\Program Files\Ferriteweazle\ferriteweazle-data\python.exe".into(),
             origin: Origin::Bundled,
+            standalone: false,
         };
         assert_eq!(
             caps_advice(Some(&engine)),
-            r"This gw looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\ferriteweazle-data and in System32."
+            r"Greaseweazle Tools looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\ferriteweazle-data and in System32."
         );
     }
 
@@ -5438,7 +5469,7 @@ mod tests {
             let choose = w.get_all_by_label("Browse…").last().expect("the gw row's");
             [
                 w.get_by_label("Restart"),
-                w.get_by_label("Use the built-in gw"),
+                w.get_by_label("Use the built-in Greaseweazle Tools"),
                 choose,
             ]
             .map(|b| b.accesskit_node().is_disabled())
@@ -5450,6 +5481,26 @@ mod tests {
         w.state_mut().gw_update = installing();
         w.run_steps(2);
         assert_eq!(greyed(&w), [true; 3], "gw installs an update");
+    }
+
+    #[test]
+    fn a_standalone_gw_greys_detect_and_says_why() {
+        let mut app = offline();
+        app.engine = Some(Engine {
+            standalone: true,
+            ..no_gw()
+        });
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        assert_eq!(
+            app.cannot_detect("read").as_deref(),
+            Some(STANDALONE_DETECT)
+        );
+        assert_eq!(
+            app.cannot_detect("convert").as_deref(),
+            Some(STANDALONE_DETECT)
+        );
+        app.engine = Some(no_gw());
+        assert_eq!(app.cannot_detect("convert"), None);
     }
 
     #[test]
@@ -5544,7 +5595,7 @@ mod tests {
             None,
             "the erase is no disk 1"
         );
-        assert!(app.notices["read"].starts_with("Could not start gw: "));
+        assert!(app.notices["read"].starts_with("Could not start Greaseweazle Tools: "));
     }
 
     #[test]
@@ -5707,10 +5758,10 @@ mod tests {
         app.dialog = Some(Dialog::Quit);
         let mut w = window(app);
         w.get_by_label("Stop Convert image and quit?");
-        w.get_by_label("gw stops, then the window closes.");
+        w.get_by_label("Greaseweazle Tools stops, then the window closes.");
         w.state_mut().disk = Some(running("read"));
         w.run_steps(2);
-        w.get_by_label("gw stops the drive first, then the window closes.");
+        w.get_by_label("Greaseweazle Tools stops the drive first, then the window closes.");
     }
 
     #[test]
@@ -5760,13 +5811,13 @@ mod tests {
                 .hover();
             // Past the tooltip's delay.
             w.run_steps(4);
-            w.get_by_label("Stop gw.");
+            w.get_by_label("Stop Greaseweazle Tools.");
             w.get_by_label(warning);
             w.event(egui::Event::PointerGone);
             w.state_mut().dialog = Some(Dialog::Quit);
             w.run_steps(2);
             w.get_by_label("Stop Update firmware and quit?");
-            w.get_by_label("gw stops, then the window closes.");
+            w.get_by_label("Greaseweazle Tools stops, then the window closes.");
             w.get_by_label(warning);
         }
         let mut app = offline();

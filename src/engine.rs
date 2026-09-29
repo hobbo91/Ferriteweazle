@@ -20,8 +20,12 @@ fn loader() -> &'static str {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Engine {
+    /// gw's Python, or gw itself when `standalone`.
     pub python: PathBuf,
     pub origin: Origin,
+    /// gw is a program with its Python sealed inside, such as the gw.exe of
+    /// gw's Windows download: it runs as it is, with no bridge.
+    pub standalone: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,14 +41,31 @@ pub enum Origin {
 impl Engine {
     /// The custom choice if given, else the bundled engine, else an installed `gw`.
     pub fn find(custom: Option<&Path>) -> Option<Engine> {
-        let (python, origin) = if let Some(path) = custom {
-            (interpreter(path)?, Origin::Custom)
+        let ((python, standalone), origin) = if let Some(path) = custom {
+            (gw(path)?, Origin::Custom)
         } else if let Some(python) = bundled() {
-            (python, Origin::Bundled)
+            ((python, false), Origin::Bundled)
         } else {
             (installed()?, Origin::Installed)
         };
-        Some(Engine { python, origin })
+        Some(Engine {
+            python,
+            origin,
+            standalone,
+        })
+    }
+
+    /// An engine with a Python to ask GitHub with: this one, or beside a
+    /// standalone gw the built-in one.
+    pub fn with_python(&self) -> Option<Engine> {
+        match self.standalone {
+            false => Some(self.clone()),
+            true => Some(Engine {
+                python: bundled()?,
+                origin: Origin::Bundled,
+                standalone: false,
+            }),
+        }
     }
 
     /// The release tag the bundled gw was built from, such as `v1.23`.
@@ -90,14 +111,22 @@ impl Engine {
         cmd.args(["-c", loader(), mode])
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONDONTWRITEBYTECODE", "1");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        cmd
+        quiet(cmd)
     }
+}
+
+/// `cmd` with no console window on Windows.
+#[cfg(windows)]
+pub fn quiet(mut cmd: Command) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+pub fn quiet(cmd: Command) -> Command {
+    cmd
 }
 
 /// Where Update installs newer gw releases, one folder per tag. Each build
@@ -160,7 +189,7 @@ const GW: &str = if cfg!(windows) { "gw.exe" } else { "gw" };
 
 /// An installed `gw` on the PATH or in the usual places, which apps started
 /// from a desktop do not always have on their PATH.
-fn installed() -> Option<PathBuf> {
+fn installed() -> Option<(PathBuf, bool)> {
     let path = std::env::var_os("PATH");
     let dirs = path
         .iter()
@@ -170,10 +199,35 @@ fn installed() -> Option<PathBuf> {
     installed_in(dirs)
 }
 
-fn installed_in(dirs: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
-    dirs.map(|d| d.join(GW))
-        .filter(|p| p.is_file())
-        .find_map(|p| interpreter(&p))
+/// The first gw launcher in `dirs`, else the first standalone gw.
+fn installed_in(dirs: impl Iterator<Item = PathBuf>) -> Option<(PathBuf, bool)> {
+    let found: Vec<PathBuf> = dirs.map(|d| d.join(GW)).filter(|p| p.is_file()).collect();
+    let python = found
+        .iter()
+        .find_map(|p| interpreter(p))
+        .map(|p| (p, false));
+    python.or_else(|| found.iter().find_map(|p| program(p)).map(|p| (p, true)))
+}
+
+/// The gw at `path`: the Python behind a launcher, or a standalone program.
+fn gw(path: &Path) -> Option<(PathBuf, bool)> {
+    match interpreter(path) {
+        Some(python) => Some((python, false)),
+        None => Some((program(path)?, true)),
+    }
+}
+
+/// `path` if it is a program that runs as it is.
+fn program(path: &Path) -> Option<PathBuf> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    #[cfg(unix)]
+    let runs = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+    #[cfg(not(unix))]
+    let runs = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        && meta.len() > 0;
+    runs.then(|| path.to_path_buf())
 }
 
 /// The Python behind a `gw` launcher, or the path itself if it names a
@@ -239,6 +293,7 @@ mod tests {
         let engine = Engine {
             python: "python3".into(),
             origin: Origin::Bundled,
+            standalone: false,
         };
         let cmd = engine.bridge("serve");
         let set = |(k, v): (&std::ffi::OsStr, Option<&std::ffi::OsStr>)| {
@@ -254,6 +309,7 @@ mod tests {
             let cmd = Engine {
                 python: "python3".into(),
                 origin,
+                standalone: false,
             }
             .bridge("serve");
             cmd.get_envs()
@@ -374,7 +430,42 @@ mod tests {
         let dirs = [dir.join("elsewhere"), dir.clone()];
         assert_eq!(
             installed_in(dirs.into_iter()),
-            Some("/venv/bin/python".into())
+            Some(("/venv/bin/python".into(), false))
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_gw_that_is_a_program_of_its_own_runs_standalone_after_any_launcher() {
+        let dir = scratch("standalone");
+        let (frozen, launcher) = (dir.join("frozen"), dir.join("pip"));
+        for d in [&frozen, &launcher] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let name = if cfg!(windows) { "gw.exe" } else { "gw" };
+        let program = frozen.join(name);
+        // A frozen program: no #! line and no Python beside it.
+        std::fs::write(&program, b"MZ\0\0frozen").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &program,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(launcher.join(name), "#!/venv/bin/python\n").unwrap();
+        let dirs = || [frozen.clone(), launcher.clone()].into_iter();
+        assert_eq!(
+            installed_in(dirs()),
+            Some(("/venv/bin/python".into(), false))
+        );
+        std::fs::remove_dir_all(&launcher).ok();
+        assert_eq!(installed_in(dirs()), Some((program.clone(), true)));
+        let chosen = Engine::find(Some(&program)).unwrap();
+        assert!(chosen.standalone && chosen.origin == Origin::Custom);
+        assert_eq!(
+            Engine::find(Some(&dir.join("readme.txt"))),
+            None,
+            "not there"
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -405,6 +496,7 @@ mod tests {
         let engine = Engine {
             python,
             origin: Origin::Bundled,
+            standalone: false,
         };
         assert_eq!(engine.bundled_tag().as_deref(), Some("v1.23"));
         let updates = dir.join("gw");

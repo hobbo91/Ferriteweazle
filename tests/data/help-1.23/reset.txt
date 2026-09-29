@@ -1,0 +1,8 @@
+usage: gw reset [options]
+
+Reset the Greaseweazle device to power-on default state.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)
+  --delays         include "gw delays" in the reset

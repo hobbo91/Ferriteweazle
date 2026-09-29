@@ -1,0 +1,7 @@
+usage: gw bandwidth [options]
+
+Report the available USB bandwidth for the Greaseweazle device.
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)

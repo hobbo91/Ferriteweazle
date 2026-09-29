@@ -1,0 +1,104 @@
+usage: gw read [options] file
+
+Read a disk to the specified image file.
+
+positional arguments:
+  file                  output filename
+
+options:
+  -h, --help            show this help message and exit
+  --device DEVICE       device name (COM/serial port)
+  --drive DRIVE         drive to read (default: A)
+  --diskdefs DISKDEFS   disk definitions file
+  --format FORMAT       disk format (output is converted unless --raw)
+  --revs N              number of revolutions to read per track
+  --tracks TSPEC        which tracks to read
+  --raw                 output raw stream (--format verifies only)
+  --fake-index SPEED    fake index pulses at SPEED
+  --hard-sectors        read from a hard-sectored disk
+  --adjust-speed SPEED  scale track data to effective drive SPEED
+  --retries N           number of retries per seek-retry (default: 3)
+  --seek-retries N      number of seek retries (default: 0)
+  -n, --no-clobber      do not overwrite an existing file
+  --pll PLLSPEC         manual PLL parameter override
+  --densel, --dd LEVEL  drive interface density select on pin 2 (H,L)
+  --gen-tg43            generate TG43 signal for 8-inch drive on pin 2 from
+                        track 60. Enable postcompensation filter
+  --reverse             reverse track data (flippy disk)
+
+DRIVE: Drive (and bus) identifier:
+  0 | 1 | 2 | 3       :: Shugart bus unit
+  A | B               :: IBM/PC bus unit
+
+SPEED: Track rotation time specified as:
+  <N>rpm | <N>ms | <N>us | <N>ns | <N>scp | <N>
+
+TSPEC: Colon-separated list of:
+  c=SET               :: Set of cylinders to access
+  h=SET               :: Set of heads (sides) to access
+  step=[0-9]          :: # physical head steps between cylinders
+  hswap               :: Swap physical drive heads
+  h[01].off=[+-][0-9] :: Physical cylinder offsets per head
+  SET is a comma-separated list of integers and integer ranges
+  e.g. 'c=0-7,9-12:h=0-1'
+
+PLLSPEC: Colon-separated list of:
+  period=PCT          :: Period adjustment as percentage of phase error
+  phase=PCT           :: Phase adjustment as percentage of phase error
+  lowpass=USEC        :: Filter flux periods shorter than USEC
+  Defaults: period=5:phase=60 (no lowpass filter)
+
+FORMAT options:
+acorn.adfs.160            acorn.adfs.1600           acorn.adfs.320            
+acorn.adfs.640            acorn.adfs.800            acorn.dfs.ds              
+acorn.dfs.ds80            acorn.dfs.ss              acorn.dfs.ss80            
+akai.1600                 akai.800                  amiga.amigados            
+amiga.amigados_hd         apple2.appledos.140       apple2.nofs.140           
+apple2.prodos.140         atari.130                 atari.90                  
+atarist.360               atarist.400               atarist.440               
+atarist.720               atarist.800               atarist.880               
+coco.decb                 coco.decb.40t             coco.os9.40ds             
+coco.os9.40ss             coco.os9.80ds             coco.os9.80ss             
+commodore.1541            commodore.1571            commodore.1581            
+commodore.cmd.fd2000.dd   commodore.cmd.fd2000.hd   commodore.cmd.fd4000.ed   
+datageneral.2f            dec.rx01                  dec.rx02                  
+dragon.40ds               dragon.40ss               dragon.80ds               
+dragon.80ss               eagle.dsqd.800            eagle.ssqd.400            
+ensoniq.1600              ensoniq.800               ensoniq.mirage            
+epson.qx10.320            epson.qx10.396            epson.qx10.399            
+epson.qx10.400            epson.qx10.booter         epson.qx10.logo           
+gem.1600                  hp.mmfm.9885              hp.mmfm.9895              
+ibm.1200                  ibm.1440                  ibm.160                   
+ibm.1680                  ibm.180                   ibm.2880                  
+ibm.320                   ibm.360                   ibm.720                   
+ibm.800                   ibm.dmf                   ibm.scan                  
+kaypro.dsdd.40            kaypro.dsdd.80            kaypro.ssdd.40            
+luxor.1000.abcnet         luxor.1000.data           luxor.1000.program        
+luxor.160                 luxor.320                 luxor.640                 
+luxor.80                  mac.400                   mac.800                   
+micropolis.100tpi.ds      micropolis.100tpi.ds.275  micropolis.100tpi.ss      
+micropolis.100tpi.ss.275  micropolis.48tpi.ds       micropolis.48tpi.ds.275   
+micropolis.48tpi.ss       micropolis.48tpi.ss.275   mm1.os9.80dshd_32         
+mm1.os9.80dshd_33         mm1.os9.80dshd_36         mm1.os9.80dshd_37         
+msx.1d                    msx.1dd                   msx.2d                    
+msx.2dd                   northstar.fm.ds           northstar.fm.ss           
+northstar.mfm.ds          northstar.mfm.ss          occ1.dd                   
+occ1.sd                   olivetti.m20              pc98.2d                   
+pc98.2dd                  pc98.2hd                  pc98.2hs                  
+pc98.n88basic.hd          raw.125                   raw.250                   
+raw.500                   sci.prophet               sega.sf7000               
+thomson.1s160             thomson.1s320             thomson.1s80              
+thomson.2s160             thomson.2s320             tsc.flex.dsdd             
+tsc.flex.ssdd             xerox.860.dssd            xerox.860.ss              
+zx.3dos.ds80              zx.3dos.ss40              zx.d80.ds80               
+zx.fdd3000.ds80           zx.fdd3000.ss40           zx.kempston.ds80          
+zx.kempston.ss40          zx.opus.ds80              zx.opus.ss40              
+zx.plusd.ds80             zx.quorum.ds80            zx.rocky.ds80             
+zx.rocky.ss40             zx.trdos.ds80             zx.turbodrive.ds40        
+zx.turbodrive.ds80        zx.watford.ds80           zx.watford.ss40           
+
+Supported file suffixes:
+.a2r   .adf   .ads   .adm   .adl   .ctr   .d1m   .d2m   .d4m   .d64   .d71   
+.d81   .d88   .dcp   .dim   .dmk   .do    .dsd   .dsk   .edsk  .fd    .fdi   
+.hdm   .hfe   .ima   .img   .imd   .ipf   .mgt   .msa   .nfd   .nsi   .po    
+.raw   .sf7   .scp   .ssd   .st    .td0   .xdf                               

@@ -3,12 +3,13 @@
 
 use crate::engine::Engine;
 use crate::schema::{DiskDefs, FormatInfo, Port, Schema};
+use crate::standalone;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::marker::PhantomData;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, Weak};
@@ -71,7 +72,7 @@ impl<T: DeserializeOwned> Pending<T> {
         match self.rx.try_recv() {
             Ok(r) => Some(r.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some(Err("gw stopped.".into())),
+            Err(TryRecvError::Disconnected) => Some(Err("Greaseweazle Tools stopped.".into())),
         }
     }
 }
@@ -110,8 +111,16 @@ pub struct Service {
 impl Service {
     pub fn start(engine: &Engine, repaint: Repaint) -> Service {
         let (requests, rx) = mpsc::channel();
-        let cmd = engine.bridge("serve");
-        std::thread::spawn(move || serve(cmd, rx, repaint));
+        match engine.standalone {
+            true => {
+                let gw = engine.python.clone();
+                std::thread::spawn(move || serve_standalone(&gw, rx, repaint));
+            }
+            false => {
+                let cmd = engine.bridge("serve");
+                std::thread::spawn(move || serve(cmd, rx, repaint));
+            }
+        }
         let schema = Load::Waiting(call(&requests, json!({"op": "schema"})));
         let ports = Load::Waiting(call(&requests, json!({"op": "ports"})));
         Service::new(requests, schema, ports)
@@ -477,8 +486,8 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
         let _ = child.kill();
         let _ = child.wait();
         let why = match last_words.join().unwrap_or_default() {
-            last if last.is_empty() => "gw stopped.".to_owned(),
-            last => format!("gw stopped: {}", last.trim()),
+            last if last.is_empty() => "Greaseweazle Tools stopped.".to_owned(),
+            last => format!("Greaseweazle Tools stopped: {}", last.trim()),
         };
         let _ = r.reply.send(Err(why.clone()));
         return refuse(requests, &repaint, why);
@@ -486,6 +495,35 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
     // The bridge ends when its input closes; waiting reaps it.
     drop(stdin);
     let _ = child.wait();
+}
+
+/// Answers for a standalone gw, which has no bridge: its schema from its help,
+/// the serial ports Windows lists, and no objections. What only the bridge
+/// can tell, such as a format's layout, stays unanswered.
+fn serve_standalone(gw: &Path, requests: Receiver<Request>, repaint: Repaint) {
+    let mut unanswered = Vec::new();
+    loop {
+        let r = match requests.recv_timeout(PORTS_EVERY) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => {
+                repaint();
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        let reply = match r.body["op"].as_str() {
+            Some("schema") => standalone::schema(gw)
+                .and_then(|s| serde_json::to_value(s).map_err(|e| e.to_string())),
+            Some("ports") => Ok(json!(standalone::ports())),
+            Some("check" | "check_opt" | "fits") => Ok(Value::Null),
+            _ => {
+                unanswered.push(r.reply);
+                continue;
+            }
+        };
+        let _ = r.reply.send(reply);
+        repaint();
+    }
 }
 
 /// Answers every request with the same error.
@@ -570,7 +608,54 @@ mod tests {
         Engine {
             python: script,
             origin: Origin::Custom,
+            standalone: false,
         }
+    }
+
+    /// A standalone gw that prints gw 1.23's help as recorded.
+    #[cfg(unix)]
+    fn recorded_gw(dir: &std::path::Path) -> Engine {
+        use std::os::unix::fs::PermissionsExt;
+        let help = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/help-1.23");
+        let text = format!(
+            "#!/bin/sh\nargs=\"$*\"\ncase \"$args\" in\n  \
+             --help) cat '{help}/gw.txt' >&2 ;;\n  \
+             info*) echo 'Host Tools: 1.23' >&2 ;;\n  \
+             *) cat \"{help}/${{args% --help}}.txt\" >&2 ;;\nesac\n"
+        );
+        let script = dir.join("gw");
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Engine::find(Some(&script)).expect("a program of its own")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_standalone_gw_is_read_from_its_help_and_not_asked_what_only_the_bridge_knows() {
+        let dir = scratch("standalone-service");
+        let gw = recorded_gw(&dir);
+        assert!(gw.standalone);
+        let mut service = Service::start(&gw, Box::new(|| {}));
+        let schema = wait_for("the schema", || {
+            service.poll();
+            service.schema.ready().cloned()
+        });
+        assert_eq!(schema.gw(), "gw 1.23");
+        assert_eq!(schema.commands.len(), 14);
+        assert_eq!(
+            schema.images[".adf"].default_format.as_deref(),
+            Some("amiga.amigados")
+        );
+        // Asked in order: the format's layout, then whether it fits an image.
+        service.format_info("", "ibm.1440");
+        let fits = wait_for("an answer", || {
+            service.poll();
+            service.fits("", "ibm.1440", ".img").ready().cloned()
+        });
+        assert_eq!(fits, None, "no objection");
+        let layout = service.known_format_info("", "ibm.1440");
+        assert!(matches!(layout, Some(Load::Waiting(_))), "left unanswered");
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -578,6 +663,7 @@ mod tests {
         let engine = Engine {
             python: std::env::temp_dir().join("ferriteweazle-no-such-python"),
             origin: Origin::Custom,
+            standalone: false,
         };
         let mut service = Service::start(&engine, Box::new(|| {}));
         let why = wait_for("reason", || {

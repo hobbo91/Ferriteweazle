@@ -47,7 +47,9 @@ impl Update {
     /// Installs gw `tag` beside the built-in gw.
     pub fn gw(engine: &Engine, tag: &str, repaint: Repaint) -> Update {
         let Some(bundled) = engine.bundled_tag() else {
-            return Update::Failed("The built-in gw has no version on record.".into());
+            return Update::Failed(
+                "The built-in Greaseweazle Tools has no version on record.".into(),
+            );
         };
         let folder = engine::updates();
         let mut cmd = engine.bridge("update");

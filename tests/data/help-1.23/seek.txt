@@ -1,0 +1,17 @@
+usage: gw seek [options] cylinder
+
+Seek to the specified cylinder.
+
+positional arguments:
+  cylinder         cylinder to seek
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)
+  --drive DRIVE    drive to read (default: A)
+  --force          allow extreme cylinders with no prompt
+  --motor-on       seek with drive motor activated
+
+DRIVE: Drive (and bus) identifier:
+  0 | 1 | 2 | 3       :: Shugart bus unit
+  A | B               :: IBM/PC bus unit

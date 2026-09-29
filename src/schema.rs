@@ -1,9 +1,9 @@
 //! gw's command line as data, as the bridge reports it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
     pub version: String,
     pub commands: Vec<Command>,
@@ -14,14 +14,14 @@ pub struct Schema {
     pub notes: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Command {
     pub name: String,
     pub about: String,
     pub args: Vec<Arg>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Arg {
     /// Option strings, canonical first. Empty for a positional argument.
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct Arg {
     pub help: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
     pub name: String,
     pub writable: bool,
@@ -67,7 +67,7 @@ pub struct Image {
     pub write_opts: Vec<ImageOpt>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageOpt {
     pub name: String,
     /// gw's default: a name, for an option with `choices`.
@@ -110,7 +110,7 @@ pub struct DiskDefs {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Port {
     pub device: String,
     pub name: Option<String>,
@@ -136,6 +136,22 @@ impl Schema {
 
     pub fn note(&self, name: &str) -> Option<&str> {
         self.notes.get(name).map(String::as_str)
+    }
+
+    /// "gw 1.23", or "gw" for a build that names no version.
+    pub fn gw(&self) -> String {
+        match self.version.as_str() {
+            "" => "gw".into(),
+            version => format!("gw {version}"),
+        }
+    }
+
+    /// "Greaseweazle Tools 1.23", as the gw's own name.
+    pub fn tools(&self) -> String {
+        match self.version.as_str() {
+            "" => "Greaseweazle Tools".into(),
+            version => format!("Greaseweazle Tools {version}"),
+        }
     }
 }
 

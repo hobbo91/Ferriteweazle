@@ -1,0 +1,11 @@
+usage: gw pin set [options] pin level
+
+Change the setting of a user-modifiable interface pin.
+
+positional arguments:
+  pin              pin number
+  level            pin level (H,L)
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE  device name (COM/serial port)

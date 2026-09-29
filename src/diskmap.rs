@@ -164,11 +164,13 @@ pub fn show(
                     }
                 }
                 None => {
-                    ui.weak("gw has not reported this track.");
+                    ui.weak("Greaseweazle Tools has not reported this track.");
                 }
             }
             if let Some(rows) = missing(progress, (cyl, head)) {
-                ui.label(format!("Missing in gw's sector map (S): {rows}"));
+                ui.label(format!(
+                    "Missing in Greaseweazle Tools' sector map (S): {rows}"
+                ));
             }
         });
     }
@@ -304,7 +306,7 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
 /// write gw verifies is running, so its one written track is the one gw checks.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
     let written = match verifying {
-        true => "The track gw is writing and checking.",
+        true => "The track Greaseweazle Tools is writing and checking.",
         false => progress
             .unverified
             .as_deref()

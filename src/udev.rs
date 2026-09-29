@@ -59,7 +59,7 @@ pub fn advice(port: &str, rule: Option<&Path>) -> Vec<String> {
     let [copy, reload] = commands(rule);
     vec![
         format!("No access to {port}: this account has no permission to open it."),
-        "To grant access, install gw's udev rule:".into(),
+        "To grant access, install Greaseweazle Tools' udev rule:".into(),
         format!("  {copy}"),
         format!("  {reload}"),
         format!("See {WIKI}"),
