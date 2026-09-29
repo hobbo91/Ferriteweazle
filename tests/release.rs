@@ -58,25 +58,31 @@ fn clone_with(dir: &Path, tags: &[&str], files: &[(&str, &str)]) -> PathBuf {
         std::fs::write(path, text).unwrap();
     }
     std::fs::create_dir_all(&clone).unwrap();
-    let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
-            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
-            .args(args)
-            .current_dir(&clone)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("git runs");
-        assert!(status.success(), "git {args:?}");
-    };
-    git(&["init", "-q"]);
-    git(&["add", "-A"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "a"]);
+    commit(&clone);
     for tag in tags {
-        git(&["tag", tag]);
+        git(&clone, &["tag", tag]);
     }
     clone
+}
+
+/// Makes `dir` a git repository whose one commit holds all it has.
+fn commit(dir: &Path) {
+    git(dir, &["init", "-q"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {args:?}");
 }
 
 /// Runs `script` in `dir` under `set -eu` after sourcing engine/greaseweazle.sh.
@@ -377,4 +383,107 @@ fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
         "a compiler named in the environment is kept"
     );
     std::fs::remove_dir_all(dir).ok();
+}
+
+/// packaging/release.sh in `dir`, committed with a clone whose newest release
+/// is v1.23, and the PATH that finds its ssh stub. The macOS bundle is a stub
+/// too. ssh logs each command to ssh.log, ending each with a "--" line; a
+/// build on "linux" or "windows" brings back a dist folder with one file,
+/// or fails with no output on the machine FAIL names.
+fn stub_release(dir: &Path) -> String {
+    let packaging = dir.join("packaging");
+    std::fs::create_dir_all(packaging.join("macos")).unwrap();
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/release.sh");
+    std::fs::copy(script, packaging.join("release.sh")).unwrap();
+    let machines = "LINUX_SSH=linux\nLINUX_DIR=fw\nLINUX_SETUP=true\n\
+        WINDOWS_SSH=windows\nWINDOWS_DIR=C:/fw\n";
+    std::fs::write(packaging.join("release.env"), machines).unwrap();
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nversion = \"0.9.0\"\n").unwrap();
+    let mac = "#!/bin/sh\nmkdir -p dist target\n\
+        echo \"$GREASEWEAZLE\" >dist/Ferriteweazle-0.9.0-macos-universal.dmg\n";
+    executable(&packaging.join("macos/bundle.sh"), mac);
+    let ignore = "/dist\n/target\n/stubs\n/greaseweazle\n/*.log\n";
+    std::fs::write(dir.join(".gitignore"), ignore).unwrap();
+    clone(dir, &["v1.22", "v1.23"]);
+    commit(dir);
+
+    let stubs = dir.join("stubs");
+    std::fs::create_dir(&stubs).unwrap();
+    let ssh = r#"#!/bin/sh
+host=$1
+shift
+printf '%s\n--\n' "$*" >>ssh.log
+case "$*" in *bundle.sh*) ;; *) cat >/dev/null; exit 0 ;; esac
+[ "${FAIL:-}" != "$host" ] || exit 1
+out=$(mktemp -d)
+mkdir "$out/dist"
+echo "$host" >"$out/dist/Ferriteweazle-0.9.0-$host"
+tar -cf - -C "$out" dist
+rm -rf "$out"
+"#;
+    executable(&stubs.join("ssh"), ssh);
+    format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap())
+}
+
+/// The build commands release.sh sent, in order.
+fn remote_builds(dir: &Path) -> Vec<String> {
+    let log = std::fs::read_to_string(dir.join("ssh.log")).unwrap_or_default();
+    log.split("\n--\n")
+        .filter(|command| command.contains("bundle.sh"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_release_builds_every_package_from_one_gw_release() {
+    let dir = repo("release", "");
+    let stubbed = stub_release(&dir);
+    let source = dir.join("greaseweazle");
+    let env = [
+        ("PATH", stubbed.as_str()),
+        ("GREASEWEAZLE_SOURCE", path(&source)),
+    ];
+    run(&dir, &env, "", "packaging/release.sh");
+
+    let sums = std::fs::read_to_string(dir.join("dist/Ferriteweazle-0.9.0-SHA256SUMS.txt"));
+    let sums = sums.unwrap();
+    for file in ["macos-universal.dmg", "linux", "windows"] {
+        assert!(
+            sums.contains(&format!("  Ferriteweazle-0.9.0-{file}\n")),
+            "{sums}"
+        );
+    }
+    let dmg = std::fs::read_to_string(dir.join("dist/Ferriteweazle-0.9.0-macos-universal.dmg"));
+    assert_eq!(dmg.unwrap(), "v1.23\n", "the Mac builds the release found");
+    let builds = remote_builds(&dir);
+    assert_eq!(builds.len(), 2, "{builds:?}");
+    for command in &builds {
+        assert!(command.contains(" export GREASEWEAZLE=v1.23 "), "{command}");
+        assert!(
+            !command.contains('\n'),
+            "cmd.exe ends a command at a line break"
+        );
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_failed_build_on_another_machine_stops_the_release() {
+    for machine in ["linux", "windows"] {
+        let dir = repo(&format!("release-{machine}"), "");
+        let stubbed = stub_release(&dir);
+        let source = dir.join("greaseweazle");
+        let env = [
+            ("PATH", stubbed.as_str()),
+            ("GREASEWEAZLE_SOURCE", path(&source)),
+            ("FAIL", machine),
+        ];
+        let out = sh(&dir, &env, "", "packaging/release.sh");
+        assert!(!out.status.success(), "{machine}");
+        let sums = dir.join("dist/Ferriteweazle-0.9.0-SHA256SUMS.txt");
+        assert!(!sums.exists(), "no sums without {machine}'s packages");
+        let last = remote_builds(&dir).pop().unwrap();
+        assert!(last.contains(&format!("{machine}/bundle.sh")), "{last}");
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
