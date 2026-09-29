@@ -87,6 +87,8 @@ pub struct Service {
     checks: HashMap<(String, String, String), Load<Option<String>>>,
     /// The files in a folder, keyed as `diskdefs` by the folder's last change.
     folders: HashMap<(String, Option<SystemTime>), Vec<PathBuf>>,
+    /// gw's objections, or none, by the request that asked for them.
+    objections: HashMap<String, Load<Option<String>>>,
 }
 
 impl Service {
@@ -120,6 +122,7 @@ impl Service {
             infos: HashMap::new(),
             checks: HashMap::new(),
             folders: HashMap::new(),
+            objections: HashMap::new(),
         }
     }
 
@@ -141,6 +144,9 @@ impl Service {
             changed |= load.poll();
         }
         for load in self.checks.values_mut() {
+            changed |= load.poll();
+        }
+        for load in self.objections.values_mut() {
             changed |= load.poll();
         }
         changed
@@ -294,6 +300,29 @@ impl Service {
             .ready()
             .and_then(|e| e.as_deref())
     }
+
+    /// gw's objection to an image of type `ext` in `format`, or none, as gw
+    /// finds when it makes one in memory. Asks gw if it has not tried yet.
+    pub fn fits(&mut self, diskdefs: &str, format: &str, ext: &str) -> &Load<Option<String>> {
+        let body = fits_body(diskdefs, format, ext);
+        let requests = &self.requests;
+        self.objections
+            .entry(body.to_string())
+            .or_insert_with(|| Load::Waiting(call(requests, body)))
+    }
+
+    /// As `fits`, the objection alone, from what gw has already said.
+    pub fn known_fits(&self, diskdefs: &str, format: &str, ext: &str) -> Option<&str> {
+        let load = self
+            .objections
+            .get(&fits_body(diskdefs, format, ext).to_string())?;
+        load.ready()?.as_deref()
+    }
+}
+
+fn fits_body(diskdefs: &str, format: &str, ext: &str) -> Value {
+    let diskdefs = (!diskdefs.is_empty()).then_some(diskdefs);
+    json!({"op": "fits", "ext": ext, "name": format, "diskdefs": diskdefs})
 }
 
 /// When a file last changed, so gw looks at an edited file again.

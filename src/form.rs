@@ -1193,6 +1193,18 @@ impl<'a> Form<'a> {
             out.ext = picked;
             out.opts.clear();
         }
+        // Flux as read holds any format; Raw saves that alone.
+        let tried = schema.images.get(&out.ext).is_some_and(|i| i.writable)
+            && !RAW_FLUX.contains(&out.ext.as_str())
+            && !self.values.on("raw");
+        if tried && let Some(format) = effective_format(self.service, schema, self.cmd, self.values)
+        {
+            let diskdefs = diskdefs_for(self.service, self.values, &format);
+            if let Load::Ready(Some(e)) = self.service.fits(&diskdefs, &format, &out.ext) {
+                let text = RichText::new(sentence(e)).small().color(p.bad);
+                row(ui, "", |ui| ui.label(text));
+            }
+        }
         if let Some(image) = schema
             .images
             .get(&out.ext)
@@ -1509,6 +1521,19 @@ pub fn blocked(
         }
         if values.on("raw") && out.ext == ".hfe" && !out.opts.contains_key("bitrate") {
             return Some("With Raw on, HFE needs a bitrate. See Image options.");
+        }
+        // gw would stop at the first track, or once the whole disk is read.
+        let format = match values.get("format") {
+            "" => implied_format(schema, cmd, values, service),
+            f => Some(f.to_owned()),
+        };
+        if let Some(format) = format.filter(|_| !values.on("raw")) {
+            let path = values.get("diskdefs");
+            let own = service.known_custom_formats(path).contains(&format);
+            let diskdefs = if own { path } else { "" };
+            if service.known_fits(diskdefs, &format, &out.ext).is_some() {
+                return Some("The image type cannot hold the disk format. See Image type.");
+            }
         }
     }
     // Paths, not strings, as in the page's warning: /a//b is /a/b.

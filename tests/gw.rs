@@ -1466,7 +1466,9 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
     );
     assert!(line.contains("--format=mine.800"), "{line}");
     // Non-breaking spaces keep each fact in the format's description whole.
-    w.get_by_label_contains("5\u{a0}sectors");
+    until_shown(&mut w, "the format's description", |w| {
+        w.query_by_label_contains("5\u{a0}sectors").is_some()
+    });
 
     choose_format(&mut w, "ibm.1440");
     let line = cli_line(&w);
@@ -1574,4 +1576,57 @@ fn detection_finds_the_format_of_a_track_image() {
         job.log
     );
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut fits = |format: &str, ext: &str| {
+        wait("gw's answer", || {
+            service.poll();
+            match service.fits("", format, ext) {
+                Load::Ready(e) => Some(e.clone()),
+                Load::Failed(e) => panic!("no answer: {e}"),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    assert_eq!(fits("amiga.amigados", ".adf"), None);
+    let imd = fits("amiga.amigados", ".imd").unwrap_or_default();
+    assert!(imd.contains("Not IBM.FM nor IBM.MFM"), "{imd}");
+    assert!(
+        fits("ibm.1440", ".d64").is_some(),
+        "gw reads a .d64 as C64 only"
+    );
+    assert!(
+        fits("acorn.dfs.ss", ".d81").is_some(),
+        "one side where it swaps two"
+    );
+    assert_eq!(
+        fits("raw.250", ".img").as_deref(),
+        Some("The image would be empty.")
+    );
+
+    let mut w = window(&engine, Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    choose_format(&mut w, "amiga.amigados");
+    assert!(!read_button(&w).accesskit_node().is_disabled());
+    let out = app_mut(&mut w)
+        .settings
+        .outputs
+        .get_mut("read/file")
+        .unwrap();
+    out.ext = ".imd".into();
+    until_shown(&mut w, "gw's objection", |w| {
+        w.query_by_label_contains("Not IBM.FM nor IBM.MFM")
+            .is_some()
+    });
+    w.run_steps(2);
+    assert!(read_button(&w).accesskit_node().is_disabled());
+    read_button(&w).hover();
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("The image type cannot hold the disk format. See Image type.")
+            .is_some()
+    });
 }

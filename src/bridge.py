@@ -200,6 +200,33 @@ def format_info(name, diskdefs=None):
     return info
 
 
+def fits(ext, name, diskdefs=None):
+    """gw's objection to an image of type `ext` in format `name`, or None. It
+    is made in memory from the format's own tracks, as a read makes it, and
+    read back where gw reads the type as sectors."""
+    from greaseweazle.codec import codec
+    from greaseweazle.image.img import IMG
+    from greaseweazle.tools import util
+    d = codec.get_diskdef(name, diskdefs)
+    if d is None:
+        raise ValueError(f'unknown format: {name}')
+    cls = util.get_image_class('x' + ext)
+    try:
+        with quiet():
+            image = cls.to_file('x' + ext, d, False, {})
+            for c in range(d.cyls):
+                for h in range(d.heads):
+                    if (t := d.mk_track(c, h)) is not None:
+                        image.emit_track(c, h, t)
+            data = image.get_image()
+            if issubclass(cls, IMG):
+                cls('x' + ext, d).from_bytes(data)
+    except Exception as e:
+        # Some fail on an assertion, which says nothing.
+        return str(e).strip().split('\n')[0] or 'gw cannot make this image type of the format.'
+    return None if data else 'The image would be empty.'
+
+
 def ports():
     """Every serial port, best first, scored by gw's guess at a Greaseweazle:
     0 for ports that are not one. On Linux, denied if this account may not
@@ -246,7 +273,8 @@ def schema():
 
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
-           'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check}
+           'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check,
+           'fits': fits}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)
