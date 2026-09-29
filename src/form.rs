@@ -893,11 +893,22 @@ impl<'a> Form<'a> {
     }
 
     fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
-        let (cyls, heads) = self
-            .effective_format()
-            .and_then(|f| self.format_info(&f).ready().map(|i| (i.cyls, i.heads)))
+        let format = self.effective_format();
+        let (cyls, heads) = format
+            .as_ref()
+            .and_then(|f| self.format_info(f).ready().map(|i| (i.cyls, i.heads)))
             .unwrap_or(USUAL_DISK);
         let mut spec = TrackSpec::parse(self.values.get(&a.dest));
+        // Unset, gw's output tracks are the cylinders and sides read.
+        let output = a.dest == "out_tracks";
+        let base = match output {
+            true => TrackSpec::parse(self.values.get("tracks")),
+            false => TrackSpec::default(),
+        };
+        // With no format gw takes 0-81 at any step; double stepped, the
+        // picker keeps to those the drive reaches and names them.
+        let short = !output && format.is_none() && spec.step.as_deref() == Some("2");
+        let cyls = if short { DOUBLE_REACH } else { cyls };
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
         let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
         ui.vertical(|ui| {
@@ -908,7 +919,8 @@ impl<'a> Form<'a> {
                     self.typed(ui, a, hint, width);
                 });
             } else {
-                let (mut first, mut last) = spec.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
+                let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
+                let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
                 let mut changed = false;
                 // Wraps rather than run past the field's edge in a narrow window.
                 ui.horizontal_wrapped(|ui| {
@@ -924,13 +936,17 @@ impl<'a> Form<'a> {
                         .add(egui::DragValue::new(&mut last).range(first..=254))
                         .changed();
                     if changed {
-                        let default = first == 0 && last + 1 == cyls;
+                        let default = (first, last) == whole && !short;
                         spec.c = (!default).then(|| format!("{first}-{last}"));
                     }
                     ui.label("Sides");
-                    let fixed = !spec.sides_can_change(heads);
+                    let mut sides = TrackSpec {
+                        h: spec.h.clone().or_else(|| base.h.clone()),
+                        ..TrackSpec::default()
+                    };
+                    let fixed = !sides.sides_can_change(heads);
                     for head in 0..2u32 {
-                        let on = spec.has_head(head, heads);
+                        let on = sides.has_head(head, heads);
                         let r = ui
                             .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
                             .on_disabled_hover_text("The format has one side.");
@@ -938,7 +954,8 @@ impl<'a> Form<'a> {
                             ui.data_mut(|d| d.insert_temp(own_tip_id(), true));
                         }
                         if r.clicked() {
-                            spec.toggle_head(head, heads);
+                            sides.toggle_head(head, heads);
+                            spec.h = sides.h.clone();
                             changed = true;
                         }
                     }
@@ -950,6 +967,14 @@ impl<'a> Form<'a> {
                         .changed()
                     {
                         spec.step = double.then(|| "2".to_owned());
+                        if !output && format.is_none() {
+                            let reach = format!("0-{}", DOUBLE_REACH - 1);
+                            match double {
+                                true if spec.c.is_none() => spec.c = Some(reach),
+                                false if spec.c.as_deref() == Some(&reach) => spec.c = None,
+                                _ => {}
+                            }
+                        }
                         changed = true;
                     }
                     changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
@@ -967,6 +992,7 @@ impl<'a> Form<'a> {
             };
             if ui
                 .add_enabled(spec.simple(), egui::Link::new(RichText::new(flip).small()))
+                .on_disabled_hover_text("The track picker cannot show this track list.")
                 .clicked()
             {
                 ui.data_mut(|d| d.insert_temp(text_id, !as_text));
@@ -1405,6 +1431,9 @@ const MAX_DISKS: u32 = 99;
 
 /// gw's tracks when no format gives them: c=0-81:h=0-1.
 pub const USUAL_DISK: (u32, u32) = (82, 2);
+
+/// Cylinders of gw's 0-81 still within reach when double stepped: 0-40.
+const DOUBLE_REACH: u32 = USUAL_DISK.0.div_ceil(2);
 
 /// Why settings with every argument filled in still cannot run.
 pub fn blocked(
@@ -2430,10 +2459,17 @@ impl Output {
     }
 }
 
-/// A track list with double step added, unless it names a step already.
-pub fn double_step(tracks: &str) -> String {
+/// A track list with the head step Detect found: added unless the list
+/// names one, or double step taken away for a disk that needs none.
+pub fn with_step(tracks: &str, step: u32) -> String {
     let mut spec = TrackSpec::parse(tracks);
-    spec.step.get_or_insert_with(|| "2".into());
+    match step {
+        1 if spec.step.as_deref() == Some("2") => spec.step = None,
+        1 => {}
+        n => {
+            spec.step.get_or_insert_with(|| n.to_string());
+        }
+    }
     spec.to_string()
 }
 
@@ -3214,10 +3250,57 @@ mod tests {
     }
 
     #[test]
-    fn double_step_joins_a_track_list_but_keeps_a_step_already_there() {
-        assert_eq!(double_step(""), "step=2");
-        assert_eq!(double_step("c=0-39:h=0"), "c=0-39:h=0:step=2");
-        assert_eq!(double_step("step=1"), "step=1");
+    fn detects_step_joins_a_track_list_but_keeps_a_step_already_there() {
+        assert_eq!(with_step("", 2), "step=2");
+        assert_eq!(with_step("c=0-39:h=0", 2), "c=0-39:h=0:step=2");
+        assert_eq!(with_step("step=1", 2), "step=1");
+        assert_eq!(
+            with_step("c=0-39:step=2", 1),
+            "c=0-39",
+            "the disk needs none"
+        );
+        assert_eq!(with_step("h1.off=-8", 1), "h1.off=-8");
+    }
+
+    #[test]
+    fn double_step_with_no_format_keeps_to_the_cylinders_the_drive_reaches() {
+        let mut h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("Double step").click();
+        h.run();
+        assert_eq!(h.state().0.get("tracks"), "c=0-40:step=2");
+        let last = h.get_all_by_role(Role::SpinButton).nth(1).unwrap();
+        assert_eq!(last.accesskit_node().numeric_value(), Some(40.0));
+        h.get_by_label("Double step").click();
+        h.run();
+        assert_eq!(h.state().0.get("tracks"), "");
+    }
+
+    #[test]
+    fn output_tracks_unset_show_the_cylinders_and_sides_read() {
+        let v = values(&[("in_file", "/f/a.scp"), ("tracks", "c=0-39:h=0")]);
+        let mut h = page("convert", v, BTreeMap::new());
+        h.get_by_label_contains("Advanced options").click();
+        h.run();
+        let ends: Vec<_> = h
+            .get_all_by_role(Role::SpinButton)
+            .map(|c| c.accesskit_node().numeric_value())
+            .collect();
+        assert_eq!(ends, [0.0, 39.0, 0.0, 39.0].map(Some));
+        let side1 = h
+            .get_all_by_role_and_label(Role::Button, "1")
+            .nth(1)
+            .unwrap();
+        let lit = side1.accesskit_node().toggled();
+        assert_eq!(lit, Some(egui::accesskit::Toggled::False));
+    }
+
+    #[test]
+    fn a_track_list_the_picker_cannot_show_says_so_on_its_link() {
+        let v = values(&[("tracks", "c=0-39:h1.off=-8")]);
+        let mut h = page("read", v, BTreeMap::new());
+        h.get_by_label("Use the track picker").hover();
+        h.run();
+        h.get_by_label("The track picker cannot show this track list.");
     }
 
     #[test]

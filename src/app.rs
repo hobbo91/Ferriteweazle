@@ -855,10 +855,11 @@ impl App {
         };
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
-        if step > 1 {
-            values.set("tracks", form::double_step(values.get("tracks")));
-        }
-        self.notices.insert(page, found_note(&formats, step));
+        let tracks = form::with_step(values.get("tracks"), step);
+        let undone = step == 1 && tracks != values.get("tracks");
+        values.set("tracks", tracks);
+        self.notices
+            .insert(page, found_note(&formats, step, undone));
     }
 
     /// Whether `job` runs the drive's motor, which gw turns off as it stops.
@@ -3229,10 +3230,14 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-fn found_note(formats: &[String], step: u32) -> String {
+/// What Detect found. `undone`: it turned off the double step an earlier
+/// disk needed.
+fn found_note(formats: &[String], step: u32, undone: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {
         note += " It is a 40-track disk in an 80-track drive, so Double step is on.";
+    } else if undone {
+        note += " It needs no double step, so Double step is off.";
     }
     match &formats[1..] {
         [] => {}
@@ -3547,13 +3552,13 @@ mod tests {
     #[test]
     fn a_detected_format_names_the_others_the_disk_also_matches() {
         let formats = ["akai.800", "eagle.dsqd.800", "epson.qx10.400"].map(String::from);
-        assert_eq!(found_note(&formats[..1], 1), "Found akai.800.");
+        assert_eq!(found_note(&formats[..1], 1, false), "Found akai.800.");
         assert_eq!(
-            found_note(&formats[..2], 1),
+            found_note(&formats[..2], 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800."
         );
         assert_eq!(
-            found_note(&formats, 1),
+            found_note(&formats, 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800 and epson.qx10.400."
         );
         let atari = [
@@ -3567,7 +3572,7 @@ mod tests {
         ]
         .map(String::from);
         assert_eq!(
-            found_note(&atari, 1),
+            found_note(&atari, 1, false),
             "Found atarist.720. Disk also matches ibm.360, ibm.720, msx.2d, msx.2dd and 2 more."
         );
     }
@@ -4172,5 +4177,18 @@ mod tests {
         values.set("file", "/no/such/Game.adf");
         let why = app.why_not(&schema, write);
         assert_eq!(why.as_deref(), Some("The image file does not exist."));
+    }
+
+    #[test]
+    fn detect_takes_double_step_away_from_a_disk_that_needs_none() {
+        let mut app = offline();
+        app.detect_for = Some("read".into());
+        app.found(vec!["ibm.360".into()], 2);
+        assert_eq!(app.settings.values["read"].get("tracks"), "step=2");
+        app.detect_for = Some("read".into());
+        app.found(vec!["ibm.1440".into()], 1);
+        assert_eq!(app.settings.values["read"].get("tracks"), "");
+        let note = &app.notices["read"];
+        assert!(note.contains("so Double step is off"), "{note}");
     }
 }
