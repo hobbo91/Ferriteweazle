@@ -2600,6 +2600,7 @@ impl eframe::App for App {
 fn ask(ctx: &egui::Context, job: &mut Job) {
     let question = job.question.clone().unwrap_or_default();
     let id = Id::new("answer");
+    let mut answer = None;
     egui::Modal::new(Id::new("question")).show(ctx, |ui| {
         ui.set_width(400.0);
         dialog_heading(ui, "gw asks");
@@ -2607,11 +2608,10 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
         ui.add_space(10.0);
         if question.contains("Yes/No") {
             right(ui, |ui| {
-                if ui.add(dialog_plain("Yes")).clicked() {
-                    job.answer("Yes");
-                }
-                if ui.add(dialog_plain("No")).clicked() {
-                    job.answer("No");
+                for choice in ["Yes", "No"] {
+                    if ui.add(dialog_plain(choice)).clicked() {
+                        answer = Some(choice.to_owned());
+                    }
                 }
             });
         } else {
@@ -2619,11 +2619,16 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
             ui.add(form::edit(&mut text).desired_width(f32::INFINITY));
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if ui.add(dialog_plain("Answer")).clicked() {
-                job.answer(&text);
+                answer = Some(text);
                 ui.data_mut(|d| d.remove_temp::<String>(id));
             }
         }
     });
+    if let Some(answer) = answer {
+        // After the question, as a terminal shows it.
+        job.log.push(format!("{question}{answer}"));
+        job.answer(&answer);
+    }
 }
 
 /// How far a disk job has got, and the share done if known: sectors found

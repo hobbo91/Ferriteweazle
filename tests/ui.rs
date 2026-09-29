@@ -1200,6 +1200,23 @@ fn a_line_gw_is_still_printing_shows_under_the_result_and_in_the_log() {
 }
 
 #[test]
+fn gws_question_and_its_answer_go_in_the_log_as_a_terminal_shows_them() {
+    let mut w = window(Settings {
+        page: Page::Command("seek".into()),
+        ..Settings::default()
+    });
+    let ask = "@ferriteweazle ask \"Seek to extreme cylinder 90, Yes/No? \"";
+    let mut job = Job::replay("seek", ask);
+    job.ended = None;
+    app_mut(&mut w).tool = Some(job);
+    w.run_steps(2);
+    w.get_by_role_and_label(Role::Button, "No").click();
+    w.run_steps(2);
+    let log = &app(&w).tool.as_ref().unwrap().log;
+    assert_eq!(log, &["Seek to extreme cylinder 90, Yes/No? No"]);
+}
+
+#[test]
 fn a_tool_that_printed_nothing_says_so() {
     let mut w = window(Settings {
         page: Page::Command("reset".into()),
