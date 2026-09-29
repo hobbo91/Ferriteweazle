@@ -18,6 +18,10 @@ serde_json = "1"
 known-folders = "1.4"
 
 # For build.rs; a build dependency's cfg is the building computer's.
+[build-dependencies]
+# Already built for the image crates; packs the bridge (build.rs).
+miniz_oxide = "0.8"
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = { version = "0.1", default-features = false }
 

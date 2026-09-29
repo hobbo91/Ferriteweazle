@@ -2,8 +2,21 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
-const BRIDGE: &str = include_str!("bridge.py");
+/// bridge.py as build.rs packs it: zlib, then base64.
+const BRIDGE: &str = include_str!(concat!(env!("OUT_DIR"), "/bridge.b64"));
+
+/// The program `python -c` runs: it unpacks the bridge and runs it as
+/// __main__, with bridge.py's name in tracebacks.
+fn loader() -> &'static str {
+    static LOADER: OnceLock<String> = OnceLock::new();
+    LOADER.get_or_init(|| {
+        format!(
+            "import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('{BRIDGE}')),'bridge.py','exec'))"
+        )
+    })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Engine {
@@ -61,7 +74,7 @@ impl Engine {
             .map(|(_, path)| path)
     }
 
-    /// `python -c BRIDGE MODE`, ready for more arguments.
+    /// `python -c LOADER MODE`, which runs bridge.py, ready for more arguments.
     pub fn bridge(&self, mode: &str) -> Command {
         let mut cmd = Command::new(&self.python);
         if self.origin == Origin::Bundled {
@@ -76,7 +89,7 @@ impl Engine {
         }
         // No .pyc files: the app leaves nothing behind, and a signed bundle
         // must not change.
-        cmd.args(["-c", BRIDGE, mode])
+        cmd.args(["-c", loader(), mode])
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONDONTWRITEBYTECODE", "1");
         #[cfg(windows)]
@@ -271,7 +284,7 @@ mod tests {
         // It goes whole on the command line, beside the Python's path, the
         // quoting and a job's arguments.
         assert!(
-            BRIDGE.len() < 30_000,
+            loader().len() < 30_000,
             "Windows limits a command line to 32,767 characters"
         );
     }
