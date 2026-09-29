@@ -1924,8 +1924,11 @@ fn describe(info: &FormatInfo) -> String {
     } else {
         format!("{} sides", info.heads)
     });
-    parts.extend(info.sectors.map(|s| format!("{s} sectors")));
-    parts.extend(info.bytes.map(|b| format!("{} KB", b / 1024)));
+    // A format with no fixed sectors, such as ibm.scan, gives 0 of each.
+    let sectors = info.sectors.filter(|&s| s > 0);
+    let bytes = info.bytes.filter(|&b| b > 0);
+    parts.extend(sectors.map(|s| format!("{s} sectors")));
+    parts.extend(bytes.map(|b| format!("{} KB", b / 1024)));
     // A narrow field wraps between facts, never inside one: "1440 KB" stays whole.
     let whole: Vec<String> = parts.iter().map(|p| p.replace(' ', "\u{a0}")).collect();
     whole.join(" · ")
@@ -2915,6 +2918,23 @@ mod tests {
         assert_eq!(t("acorn.dfs.ss80"), ".ssd");
         assert_eq!(t("apple2.prodos.140"), ".po");
         assert_eq!(t("ibm.800"), ".img", "not SAM Coupé's .mgt");
+    }
+
+    #[test]
+    fn a_format_with_no_fixed_sectors_shows_no_count_or_size() {
+        let info = |sectors, bytes| FormatInfo {
+            cyls: 80,
+            heads: 2,
+            encoding: Some("IBM MFM".into()),
+            sectors: Some(sectors),
+            bytes: Some(bytes),
+        };
+        let shown = |i| describe(&i).replace('\u{a0}', " ");
+        assert_eq!(
+            shown(info(18, 1_474_560)),
+            "IBM MFM · 80 cylinders · 2 sides · 18 sectors · 1440 KB"
+        );
+        assert_eq!(shown(info(0, 0)), "IBM MFM · 80 cylinders · 2 sides");
     }
 
     #[test]
