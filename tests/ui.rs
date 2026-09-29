@@ -1846,3 +1846,15 @@ fn image_options_end_within_the_field_in_the_smallest_window() {
         assert!(list.rect().right() <= right + 0.5, "{:?}", list.value());
     }
 }
+
+#[test]
+fn a_typed_bt_turns_on_tracebacks_and_an_option_gw_lacks_is_refused() {
+    let mut w = window(Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    });
+    type_line(&mut w, "gw --bt info");
+    assert!(app(&w).settings.backtrace);
+    type_line(&mut w, "gw --foo info");
+    w.get_by_label("gw has no option --foo.");
+}

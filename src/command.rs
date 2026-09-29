@@ -62,14 +62,27 @@ pub fn missing<'a>(cmd: &'a Command, values: &Values) -> impl Iterator<Item = &'
         .filter(|a| a.required && values.get(&a.dest).is_empty())
 }
 
-/// A pasted gw command line, as its command name and settings.
-pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
+/// A pasted gw command line, as its command name, its settings, and whether
+/// it asks for Python tracebacks (gw's --bt).
+pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values, bool), String> {
     let words = split(line)?;
     let mut words = words.iter().map(String::as_str).peekable();
     if words.next_if(|w| is_gw(w)).is_none() {
         return Err("A command starts with gw.".into());
     }
-    while words.next_if(|w| w.starts_with("--")).is_some() {} // gw's own --time, --bt
+    // gw's own options, which it takes only before the command. Every job is
+    // timed, so --time adds nothing.
+    let mut backtrace = false;
+    while let Some(word) = words.next_if(|w| w.starts_with("--")) {
+        match word {
+            "--bt" => backtrace = true,
+            "--time" => {}
+            _ => {
+                let flag = word.split_once('=').map_or(word, |(f, _)| f);
+                return Err(format!("gw has no option {flag}."));
+            }
+        }
+    }
     let first = words
         .next()
         .ok_or("Paste a gw command, such as: gw read --format=ibm.1440 disk.img")?;
@@ -127,7 +140,7 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
             return Err(format!("{a} cannot be used with {b}."));
         }
     }
-    Ok((cmd.name.clone(), values))
+    Ok((cmd.name.clone(), values, backtrace))
 }
 
 fn is_gw(word: &str) -> bool {
@@ -258,7 +271,7 @@ mod tests {
     fn a_pasted_command_fills_the_settings_it_names() {
         let s = schema();
         let line = r#"gw read --format ibm.1440 --tracks=c=0-39:h=0 --dd H -n "My Disk.img""#;
-        let (name, v) = parse(&s, line).unwrap();
+        let (name, v, _) = parse(&s, line).unwrap();
         assert_eq!(name, "read");
         assert_eq!(
             v,
@@ -281,14 +294,17 @@ mod tests {
             ("format", "amiga.amigados"),
         ]);
         let line = line(&argv(s.command("convert").unwrap(), &v));
-        assert_eq!(parse(&s, &line).unwrap(), ("convert".into(), v));
+        assert_eq!(parse(&s, &line).unwrap(), ("convert".into(), v, false));
     }
 
     #[test]
     fn pasting_accepts_a_path_to_gw_and_its_global_options() {
         let s = schema();
-        let (name, v) = parse(&s, "/usr/local/bin/gw --time pin get 34").unwrap();
+        let (name, v, backtrace) = parse(&s, "/usr/local/bin/gw --time pin get 34").unwrap();
         assert_eq!((name.as_str(), v.get("pin")), ("pin get", "34"));
+        assert!(!backtrace);
+        let (_, _, backtrace) = parse(&s, "gw --bt --time info").unwrap();
+        assert!(backtrace, "--bt asks for tracebacks");
     }
 
     #[test]
@@ -320,6 +336,10 @@ mod tests {
         assert_eq!(
             parse(&s, "read --format=ibm.1440 x.img").unwrap_err(),
             "A command starts with gw."
+        );
+        assert_eq!(
+            parse(&s, "gw --foo=1 rpm").unwrap_err(),
+            "gw has no option --foo."
         );
     }
 
@@ -353,7 +373,7 @@ mod tests {
             r#"gw convert "\\nas\f\x.scp" y.img"#,
             r"gw convert \\nas\f\x.scp y.img",
         ] {
-            let (_, v) = parse(&s, line).unwrap();
+            let (_, v, _) = parse(&s, line).unwrap();
             assert_eq!(v.get("in_file"), r"\\nas\f\x.scp", "{line}");
         }
     }
@@ -365,7 +385,7 @@ mod tests {
             "gw read --format=ibm.1440 \\\n  disk.img",
             "gw read --format=ibm.1440 \\\r\n  disk.img",
         ] {
-            let (_, v) = parse(&s, line).unwrap();
+            let (_, v, _) = parse(&s, line).unwrap();
             assert_eq!(v.get("file"), "disk.img", "{line:?}");
         }
     }

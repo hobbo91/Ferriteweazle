@@ -1927,7 +1927,9 @@ impl App {
         if let Some(e) = &cli.error {
             ui.label(RichText::new(e).small().color(p.bad));
         }
-        if let Some((name, values)) = apply {
+        if let Some((name, values, backtrace)) = apply {
+            // As with --device: given, it sets the setting; left out, it leaves it.
+            self.settings.backtrace |= backtrace;
             self.fill_in(name, values);
         }
     }
@@ -4332,7 +4334,7 @@ mod tests {
         let read = schema.command("read").unwrap();
         let mut app = offline();
         let line = "gw read --format=ibm.1440 -n /d/x.img";
-        let (name, values) = command::parse(&schema, line).unwrap();
+        let (name, values, _) = command::parse(&schema, line).unwrap();
         app.fill_in(name, values);
         let args = app.args(read);
         assert!(args.iter().all(|a| a != "-n"), "{args:?}");
@@ -4343,7 +4345,7 @@ mod tests {
     fn a_pasted_conversion_keeps_the_name_it_gives_its_image() {
         let schema = schema();
         let mut app = offline();
-        let (name, values) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
+        let (name, values, _) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
         app.fill_in(name, values);
         let w = window(app);
         assert_eq!(w.state().settings.outputs["convert/out_file"].name, "b");
