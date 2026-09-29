@@ -78,21 +78,20 @@ mod tests {
             parse(&lines("Host Tools: 1.23\nDevice:\n  Not found")),
             None
         );
-        assert_eq!(
-            parse(&lines(
-                "** FATAL ERROR:\nCannot find the Greaseweazle device"
-            )),
-            None
-        );
+        let silent = "Host Tools: 1.23\nDevice:\n** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        assert_eq!(parse(&lines(silent)), None);
     }
 
     #[test]
     fn a_failed_firmware_check_keeps_the_fields() {
         let log = lines(
-            "Device:\n  Model:    Greaseweazle F7 Plus\n** FATAL ERROR:\nGitHub API Rate Limit exceeded",
+            "Device:\n  Model:    Greaseweazle F7 Plus (Ant Goffart, v1)\n** FATAL ERROR:\nGitHub API Rate Limit exceeded",
         );
         let info = parse(&log).unwrap();
-        assert_eq!(info.get("Model"), Some("Greaseweazle F7 Plus"));
+        assert_eq!(
+            info.get("Model"),
+            Some("Greaseweazle F7 Plus (Ant Goffart, v1)")
+        );
         assert_eq!(info.update, None);
     }
 }

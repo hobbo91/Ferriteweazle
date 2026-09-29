@@ -1,6 +1,6 @@
 //! A command's settings, and the gw arguments they stand for.
 
-use crate::schema::{Command, Schema};
+use crate::schema::{Arg, Command, Schema};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -38,19 +38,16 @@ pub fn argv(cmd: &Command, values: &Values) -> Vec<String> {
         match values.get(&a.dest) {
             "" => {}
             _ if a.switch => out.push(flag.to_owned()),
-            value if a.multi => {
-                out.push(flag.to_owned());
-                out.extend(value.split_whitespace().map(String::from));
-            }
             value => out.push(format!("{flag}={value}")),
         }
     }
+    // gw fills positionals in order: one after an empty one would take its place.
     let positional = cmd
         .args
         .iter()
         .filter(|a| a.positional())
         .map(|a| values.get(&a.dest))
-        .filter(|v| !v.is_empty());
+        .take_while(|v| !v.is_empty());
     if positional.clone().any(|v| v.starts_with('-')) {
         out.push("--".into());
     }
@@ -85,7 +82,7 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
     }
     let cmd = sub
         .or_else(|| schema.command(first))
-        .ok_or_else(|| format!("gw has no command called \u{201c}{first}\u{201d}."))?;
+        .ok_or_else(|| format!("gw has no command called \"{first}\"."))?;
 
     let mut values = Values::default();
     let mut positional = cmd.args.iter().filter(|a| a.positional());
@@ -115,8 +112,20 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
         } else {
             let arg = positional
                 .next()
-                .ok_or_else(|| format!("Unexpected \u{201c}{word}\u{201d}."))?;
+                .ok_or_else(|| format!("Unexpected \"{word}\"."))?;
             values.set(&arg.dest, word);
+        }
+    }
+    // gw refuses two options of one exclusive group.
+    for a in cmd
+        .args
+        .iter()
+        .filter(|a| a.group.is_some() && values.on(&a.dest))
+    {
+        let clash = |b: &&Arg| b.group == a.group && b.dest != a.dest && values.on(&b.dest);
+        if let Some(b) = cmd.args.iter().find(clash) {
+            let (a, b) = (a.flag().unwrap_or(&a.dest), b.flag().unwrap_or(&b.dest));
+            return Err(format!("{a} cannot be used with {b}."));
         }
     }
     Ok((cmd.name.clone(), values))
@@ -141,7 +150,7 @@ fn split(line: &str) -> Result<Vec<String>, String> {
                 loop {
                     match chars.next() {
                         Some(q) if q == c => break,
-                        Some('\\') if c == '"' && matches!(chars.peek(), Some('"' | '\\')) => {
+                        Some('\\') if c == '"' && chars.peek() == Some(&'"') => {
                             w.extend(chars.next());
                         }
                         Some(ch) => w.push(ch),
@@ -149,9 +158,14 @@ fn split(line: &str) -> Result<Vec<String>, String> {
                     }
                 }
             }
-            // A backslash escapes only what a Windows path would not contain.
-            '\\' if matches!(chars.peek(), Some(' ' | '\'' | '"' | '\\')) => {
+            // A backslash escapes a space or a quote; any other stays, as in a Windows path.
+            '\\' if matches!(chars.peek(), Some(' ' | '\'' | '"')) => {
                 word.get_or_insert_default().extend(chars.next());
+            }
+            // A backslash ending a line joins the next to it, as in a shell.
+            '\\' if matches!(chars.peek(), Some('\n' | '\r')) => {
+                chars.next_if_eq(&'\r');
+                chars.next_if_eq(&'\n');
             }
             c if c.is_whitespace() => words.extend(word.take()),
             c => word.get_or_insert_default().push(c),
@@ -281,10 +295,9 @@ mod tests {
     #[test]
     fn pasting_explains_what_it_cannot_read() {
         let s = schema();
-        assert!(
-            parse(&s, "gw frobnicate")
-                .unwrap_err()
-                .contains("frobnicate")
+        assert_eq!(
+            parse(&s, "gw frobnicate").unwrap_err(),
+            "gw has no command called \"frobnicate\"."
         );
         assert!(
             parse(&s, "gw read --bogus x.img")
@@ -297,11 +310,65 @@ mod tests {
                 .contains("needs a value")
         );
         assert!(parse(&s, "gw read 'x.img").unwrap_err().contains("quote"));
-        assert!(parse(&s, "").is_err());
+        assert_eq!(
+            parse(&s, "gw read x.img y.img").unwrap_err(),
+            "Unexpected \"y.img\"."
+        );
+        assert_eq!(
+            parse(&s, "gw").unwrap_err(),
+            "Paste a gw command, such as: gw read --format=ibm.1440 disk.img"
+        );
         assert_eq!(
             parse(&s, "read --format=ibm.1440 x.img").unwrap_err(),
             "A command starts with gw."
         );
+    }
+
+    #[test]
+    fn pasting_two_options_gw_holds_exclusive_is_refused() {
+        let s = schema();
+        assert_eq!(
+            parse(&s, "gw read --hard-sectors --fake-index=300rpm x.scp").unwrap_err(),
+            "--fake-index cannot be used with --hard-sectors."
+        );
+        assert_eq!(
+            parse(&s, "gw write --dd H --gen-tg43 x.adf").unwrap_err(),
+            "--densel cannot be used with --gen-tg43."
+        );
+        assert!(parse(&s, "gw write --dd H --fake-index=300rpm x.adf").is_ok());
+    }
+
+    #[test]
+    fn positionals_after_an_empty_one_are_left_out_not_moved_up() {
+        let s = schema();
+        let v = values(&[("out_file", "b.img")]);
+        assert_eq!(argv(s.command("convert").unwrap(), &v), ["convert"]);
+        let v = values(&[("level", "H")]);
+        assert_eq!(argv(s.command("pin set").unwrap(), &v), ["pin", "set"]);
+    }
+
+    #[test]
+    fn a_windows_share_keeps_both_its_leading_backslashes() {
+        let s = schema();
+        for line in [
+            r#"gw convert "\\nas\f\x.scp" y.img"#,
+            r"gw convert \\nas\f\x.scp y.img",
+        ] {
+            let (_, v) = parse(&s, line).unwrap();
+            assert_eq!(v.get("in_file"), r"\\nas\f\x.scp", "{line}");
+        }
+    }
+
+    #[test]
+    fn a_line_ending_in_a_backslash_goes_on_to_the_next() {
+        let s = schema();
+        for line in [
+            "gw read --format=ibm.1440 \\\n  disk.img",
+            "gw read --format=ibm.1440 \\\r\n  disk.img",
+        ] {
+            let (_, v) = parse(&s, line).unwrap();
+            assert_eq!(v.get("file"), "disk.img", "{line:?}");
+        }
     }
 
     #[test]

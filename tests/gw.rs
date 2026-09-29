@@ -1419,8 +1419,8 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
             .unwrap_or_default()
     };
     output(&mut w, ".adf");
-    assert_eq!(format(&w), "Choose disk format");
-    assert!(w.get_by_label("Convert").accesskit_node().is_disabled());
+    assert_eq!(format(&w), "Amiga · amiga.amigados (from the image type)");
+    assert!(!w.get_by_label("Convert").accesskit_node().is_disabled());
     output(&mut w, ".scp");
     assert_eq!(format(&w), "North Star · northstar.mfm.ss (from the input)");
     w.get_by_label("Convert").click();

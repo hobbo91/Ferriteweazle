@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub const GLOBAL: [&str; 2] = ["device", "drive"];
 
 /// Arguments a command shows first, in this order. The rest go under Advanced options.
-pub const FIRST: &[(&str, &[&str])] = &[
+const FIRST: &[(&str, &[&str])] = &[
     ("read", &["format", "file", "tracks", "revs"]),
     ("write", &["file", "format", "tracks", "no_verify"]),
     ("convert", &["in_file", "format", "out_file", "tracks"]),
@@ -28,12 +28,8 @@ pub const FIRST: &[(&str, &[&str])] = &[
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
 
-/// The kind of file an open dialog shows for an argument that takes one kind.
-const FILE_TYPES: &[(&str, &str, &str, &[&str])] =
-    &[("update", "file", "Firmware updates", &["upd"])];
-
 /// The update page's firmware source, kept with its settings. Not a gw argument.
-pub const FIRMWARE: &str = "firmware";
+const FIRMWARE: &str = "firmware";
 
 /// A page's batch settings, kept with its values. Not gw arguments.
 pub const BATCH: &str = "batch";
@@ -43,7 +39,7 @@ pub const BATCH_TYPE: &str = "batch_type";
 
 /// Commands that take a folder of images one at a time, and the argument
 /// each image goes to.
-pub const BATCHES: &[(&str, &str)] = &[("write", "file"), ("convert", "in_file")];
+const BATCHES: &[(&str, &str)] = &[("write", "file"), ("convert", "in_file")];
 
 /// Where gw update takes the firmware from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +83,7 @@ impl Firmware {
 
     /// The source chosen on the page, else the one its settings name, as
     /// when a command line is typed.
-    pub fn of(values: &Values) -> Firmware {
+    fn of(values: &Values) -> Firmware {
         let chosen = Firmware::ALL
             .into_iter()
             .find(|f| f.name() == values.get(FIRMWARE));
@@ -119,21 +115,16 @@ impl Firmware {
 
 /// Labels where gw's own argument name would not read well.
 const LABELS: &[(&str, &str)] = &[
-    ("adjust_speed", "Adjust speed"),
     ("cyls", "Cylinders"),
     ("densel", "Density select"),
     ("diskdefs", "Disk definitions"),
     ("erase_empty", "Erase empty tracks"),
-    ("fake_index", "Fake index"),
     ("format", "Disk format"),
     ("gen_tg43", "TG43 signal"),
-    ("hard_sectors", "Hard sectors"),
     ("hfreq", "High frequency"),
     ("in_file", "Input"),
     ("linger", "Time per step"),
     ("motor", "Motor delay"),
-    ("motor_on", "Motor on"),
-    ("no_clobber", "Keep existing files"),
     ("no_verify", "Skip verify"),
     ("nr", "Measurements"),
     ("out_file", "Output"),
@@ -145,7 +136,6 @@ const LABELS: &[(&str, &str)] = &[
     ("precomp", "Precompensation"),
     ("reverse", "Reverse (flippy)"),
     ("revs", "Revolutions"),
-    ("seek_retries", "Seek retries"),
     ("select", "Select delay"),
     ("settle", "Settle time"),
     ("step", "Step delay"),
@@ -169,8 +159,7 @@ const OTHER: &str = "Other…";
 const CUSTOM: &str = "custom";
 const CUSTOM_NAME: &str = "Custom disk definitions";
 
-/// Image types that hold flux: a format can be found from them, and reading
-/// into one needs no format.
+/// Image types that hold flux or bitcells: Detect can find a format from them.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 
 /// Names for gw's format families, which it names only by prefix.
@@ -216,7 +205,6 @@ const FAMILIES: &[(&str, &str)] = &[
 
 /// The image type for formats that gw pairs with none, by prefix.
 const TYPES: &[(&str, &str)] = &[
-    ("ibm.", ".img"),
     ("atarist.", ".st"),
     ("amiga.", ".adf"),
     ("acorn.dfs.ss", ".ssd"),
@@ -421,8 +409,9 @@ impl<'a> Form<'a> {
     }
 
     /// Another argument from the same exclusive group that is already set.
+    /// One that is set itself is never blocked, so it can be cleared.
     fn blocker(&self, a: &Arg) -> Option<&'a Arg> {
-        let group = a.group?;
+        let group = a.group.filter(|_| !self.values.on(&a.dest))?;
         self.cmd
             .args
             .iter()
@@ -436,8 +425,10 @@ impl<'a> Form<'a> {
             "file" | "in_file" if a.positional() => self.input(ui, a),
             "diskdefs" => self.diskdefs(ui, a),
             // Shown once File is chosen, so it is needed.
-            "file" if self.cmd.name == "update" => self.path(ui, a, "Required"),
-            dest if dest.ends_with("file") => self.path(ui, a, "None"),
+            "file" if self.cmd.name == "update" => {
+                self.path(ui, a, "Required", Some(("Firmware updates", &["upd"])))
+            }
+            dest if dest.ends_with("file") => self.path(ui, a, "None", None),
             _ if a.switch => {
                 let mut on = self.values.on(&a.dest);
                 if toggle(ui, &mut on).changed() {
@@ -469,9 +460,10 @@ impl<'a> Form<'a> {
             .as_deref()
             .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
         let shown = match (other, current.as_str()) {
-            (true, _) => OTHER,
-            (false, "") => default.as_str(),
-            (false, value) => value,
+            (true, _) => RichText::new(OTHER),
+            (false, "") if a.required => RichText::new("Required").color(theme::palette(ui).dim),
+            (false, "") => RichText::new(&default),
+            (false, value) => RichText::new(value),
         };
         let mut chosen = None;
         ui.horizontal(|ui| {
@@ -481,9 +473,10 @@ impl<'a> Form<'a> {
                     .truncate()
                     .width(SHORT_FIELD)
                     .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(!other && current.is_empty(), &default)
-                            .clicked()
+                        if !a.required
+                            && ui
+                                .selectable_label(!other && current.is_empty(), &default)
+                                .clicked()
                         {
                             chosen = Some((false, ""));
                         }
@@ -514,13 +507,11 @@ impl<'a> Form<'a> {
             ui.spacing_mut().item_spacing.x = 4.0;
             let current = self.values.get(&a.dest).to_owned();
             let (unset, tip) = match a.dest.as_str() {
-                "densel" => (
-                    "Auto",
-                    "Leave pin 2 as it is. Most drives sense density from the disk.",
-                ),
+                "densel" => ("Auto", "gw leaves pin 2 as it is."),
                 _ => ("Default", "gw's own choice."),
             };
             if a.default.is_none()
+                && !a.required
                 && ui
                     .selectable_label(current.is_empty(), unset)
                     .own_tip(tip)
@@ -590,8 +581,9 @@ impl<'a> Form<'a> {
         }
     }
 
-    /// A file for gw to read, typed or chosen in an open dialog.
-    fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str) {
+    /// A file for gw to read, typed or chosen in an open dialog. `only` keeps
+    /// the dialog to one kind of file: its name and suffixes.
+    fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str, only: Option<(&str, &[&str])>) {
         let mut value = self.values.get(&a.dest).to_owned();
         ui.horizontal(|ui| {
             let edit = edit(&mut value)
@@ -600,17 +592,21 @@ impl<'a> Form<'a> {
             if ui.add(edit).changed() {
                 self.values.set(&a.dest, value.as_str());
             }
-            if browse_button(ui).own_tip("Choose a file.").clicked()
-                && let Some(path) = open_dialog(&self.cmd.name, &a.dest).pick_file()
-            {
-                self.values.set(&a.dest, path.to_string_lossy());
+            if browse_button(ui).own_tip("Choose a file.").clicked() {
+                let mut dialog = rfd::FileDialog::new();
+                if let Some((name, exts)) = only {
+                    dialog = dialog.add_filter(name, exts);
+                }
+                if let Some(path) = dialog.pick_file() {
+                    self.values.set(&a.dest, path.to_string_lossy());
+                }
             }
         });
     }
 
     /// A disk definitions file, and what gw makes of it.
     fn diskdefs(&mut self, ui: &mut Ui, a: &Arg) {
-        self.path(ui, a, "None");
+        self.path(ui, a, "None", None);
         let path = self.values.get(&a.dest).to_owned();
         if path.is_empty() {
             return;
@@ -674,7 +670,14 @@ impl<'a> Form<'a> {
         let dim = theme::palette(ui).dim;
         let shown = match (current.as_str(), &effective) {
             ("", Some(own)) => {
-                RichText::new(format!("{} (from the input)", format_name(own))).color(dim)
+                // The input's own comes first, as in gw.
+                let input = own_format(self.schema, input_file(self.cmd, self.values));
+                let output = own_format(self.schema, output_file(self.cmd, self.values));
+                let from = match (input, output) {
+                    (None, Some(_)) => "the image type",
+                    _ => "the input",
+                };
+                RichText::new(format!("{} (from {from})", format_name(own))).color(dim)
             }
             ("", None) => RichText::new("Choose disk format").color(dim),
             (chosen, _) if custom => RichText::new(format!("Custom · {chosen}")),
@@ -707,9 +710,13 @@ impl<'a> Form<'a> {
                 if can_detect {
                     let detect = egui::Button::new("Detect")
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
+                    let tip = match OUTPUTS.iter().any(|(c, _)| *c == self.cmd.name) {
+                        true => "Find the disk format and the image type that suits it.",
+                        false => "Find the disk format.",
+                    };
                     if ui
                         .add_enabled(self.cannot_detect.is_none(), detect)
-                        .own_tip("Attempt to find the disk format and image type.")
+                        .own_tip(tip)
                         .on_disabled_hover_text(self.cannot_detect.unwrap_or_default())
                         .clicked()
                     {
@@ -797,14 +804,9 @@ impl<'a> Form<'a> {
                     }
                 });
         } else {
-            let none = if self.cmd.name == "read" {
-                "Read the flux, with no format."
-            } else {
-                "Use the input's own format, if it has one."
-            };
             if ui
                 .selectable_label(current.is_empty(), "None")
-                .on_hover_text(none)
+                .on_hover_text("Leave the format to gw: the images' own, if they have one.")
                 .clicked()
             {
                 chosen = Some(String::new());
@@ -933,7 +935,7 @@ impl<'a> Form<'a> {
                         changed = true;
                     }
                     changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
-                        .own_tip("Read side 1 as side 0 and side 0 as side 1.")
+                        .own_tip("Use head 1 for side 0 and head 0 for side 1.")
                         .changed();
                 });
                 if changed {
@@ -1108,6 +1110,10 @@ impl<'a> Form<'a> {
             }
         });
         if changed {
+            // gw refuses an option the image's type does not take.
+            if let Some((_, image)) = self.schema.image(&path) {
+                opts.retain(|k, _| image.read_opts.iter().any(|o| o.name == *k));
+            }
             self.values.set(&a.dest, join_opts(&path, &opts));
         }
     }
@@ -1348,15 +1354,12 @@ const REPLACES_INPUTS: &str =
     "An image would replace its input. Choose another type, folder, prefix or suffix.";
 
 /// The most disks one session reads.
-pub const MAX_DISKS: u32 = 99;
+const MAX_DISKS: u32 = 99;
 
-/// Cylinders and sides assumed while the format is unknown.
-pub const USUAL_DISK: (u32, u32) = (80, 2);
+/// gw's tracks when no format gives them: c=0-81:h=0-1.
+pub const USUAL_DISK: (u32, u32) = (82, 2);
 
 /// Why settings with every argument filled in still cannot run.
-/// Why a page that makes an image cannot run before its image is named.
-const NO_OUTPUT: &str = "Choose the output file and location first.";
-
 pub fn blocked(
     schema: &Schema,
     cmd: &Command,
@@ -1390,10 +1393,10 @@ pub fn blocked(
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
-            return Some(NO_OUTPUT);
+            return Some("Choose an image type first.");
         };
-        if batch.is_none() && out.value(1).is_empty() {
-            return Some(NO_OUTPUT);
+        if batch.is_none() && out.name.trim().is_empty() {
+            return Some("Name the image first.");
         }
         if batch.is_some() {
             let files = service.known_folder(values.get(BATCH_FOLDER));
@@ -1403,10 +1406,17 @@ pub fn blocked(
             }
         }
         let flux = flux_source(cmd, values);
-        // Flux saved as flux needs no format.
-        if !(flux && FLUX.contains(&out.ext.as_str()))
+        // Flux saved as flux needs no format. HFE holds bitcells, which gw
+        // makes from flux only with a format or a bitrate.
+        let bitcells = matches!(
+            extension(input_file(cmd, values)).as_deref(),
+            Some(".hfe" | ".ipf" | ".ctr")
+        );
+        let flux_out = FLUX.contains(&out.ext.as_str())
+            && (out.ext != ".hfe" || out.opts.contains_key("bitrate") || bitcells);
+        if !(flux && flux_out)
             && values.get("format").is_empty()
-            && input_format(schema, cmd, values, service).is_none()
+            && implied_format(schema, cmd, values, service).is_none()
         {
             return Some(if flux {
                 "Choose a disk format first, or press Detect."
@@ -1415,9 +1425,10 @@ pub fn blocked(
             });
         }
     }
-    let path = |dest: &str| split_opts(values.get(dest)).0;
-    let same = cmd.arg("in_file").is_some() && !path("in_file").is_empty();
-    (same && path("in_file") == path("out_file")).then_some(REPLACES_INPUT)
+    // Paths, not strings, as in the page's warning: /a//b is /a/b.
+    let input = input_file(cmd, values);
+    let same = !input.is_empty() && Path::new(input) == Path::new(output_file(cmd, values));
+    same.then_some(REPLACES_INPUT)
 }
 
 /// Where a new image is saved.
@@ -1558,6 +1569,12 @@ fn input_file<'v>(cmd: &Command, values: &'v Values) -> &'v str {
     split_opts(values.get(dest)).0
 }
 
+/// The image file a command writes, if it writes one.
+fn output_file<'v>(cmd: &Command, values: &'v Values) -> &'v str {
+    let output = OUTPUTS.iter().find(|(c, _)| *c == cmd.name);
+    output.map_or("", |(_, dest)| split_opts(values.get(dest)).0)
+}
+
 /// Whether a command reads flux, from the drive or a flux image, so Detect
 /// can find its format.
 fn flux_source(cmd: &Command, values: &Values) -> bool {
@@ -1565,7 +1582,7 @@ fn flux_source(cmd: &Command, values: &Values) -> bool {
         || extension(input_file(cmd, values)).is_some_and(|e| FLUX.contains(&e.as_str()))
 }
 
-/// The format to decode with: the one chosen, or the input image's own.
+/// The format to decode with: the one chosen, or the one gw takes without.
 /// Asks gw about an input it finds the format in, if it has not yet.
 pub fn effective_format(
     service: &mut Service,
@@ -1578,39 +1595,43 @@ pub fn effective_format(
             if format_in_file(schema, cmd, values) {
                 service.image_format(input_file(cmd, values));
             }
-            input_format(schema, cmd, values, service)
+            implied_format(schema, cmd, values, service)
         }
         chosen => Some(chosen.to_owned()),
     }
 }
 
-/// The format gw takes from the input image: its type's own, such as an
-/// .adf's, else one gw has found in the file, such as an .nsi's.
-fn input_format(
+/// The format gw takes when none is chosen, in gw's order: the input type's
+/// own, such as an .adf's, else the output type's, else one gw has found in
+/// the input file, such as an .nsi's.
+fn implied_format(
     schema: &Schema,
     cmd: &Command,
     values: &Values,
     service: &Service,
 ) -> Option<String> {
     let path = input_file(cmd, values);
-    let (_, image) = schema.image(path)?;
     let found = || match format_in_file(schema, cmd, values) {
         true => service.known_image_format(path).map(str::to_owned),
         false => None,
     };
-    image.default_format.clone().or_else(found)
+    own_format(schema, path)
+        .or_else(|| own_format(schema, output_file(cmd, values)))
+        .or_else(found)
 }
 
-/// Whether gw looks in the input file for its format, as in an .nsi. Convert
-/// takes the output type's own format, such as an .adf's, first.
+/// An image type's own format, such as an .adf's.
+fn own_format(schema: &Schema, path: &str) -> Option<String> {
+    schema.image(path)?.1.default_format.clone()
+}
+
+/// Whether gw looks in the input file for its format, as in an .nsi. The
+/// output type's own format, such as an .adf's, comes first.
 fn format_in_file(schema: &Schema, cmd: &Command, values: &Values) -> bool {
     let finds = schema
         .image(input_file(cmd, values))
         .is_some_and(|(_, i)| i.finds_format);
-    let output_has_one = schema
-        .image(values.get("out_file"))
-        .is_some_and(|(_, i)| i.default_format.is_some());
-    finds && !output_has_one
+    finds && own_format(schema, output_file(cmd, values)).is_none()
 }
 
 /// A tooltip of a widget's own, in a row that has one: the row's then stays hidden.
@@ -1632,7 +1653,7 @@ fn own_tip_id() -> egui::Id {
 }
 
 /// The arguments shown first, and the rest.
-pub fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
+fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
     let shown = |a: &&Arg| {
         !GLOBAL.contains(&a.dest.as_str())
             && !(a.dest == "no_clobber" && OUTPUTS.iter().any(|(c, _)| *c == cmd.name))
@@ -1669,7 +1690,7 @@ fn plain(names: &[(&str, &str)], name: &str) -> String {
 }
 
 /// What an argument does, in one short sentence: from TIPS, else gw's help.
-pub fn tip(command: &str, a: &Arg) -> String {
+fn tip(command: &str, a: &Arg) -> String {
     let own = TIPS
         .iter()
         .find(|(c, d, _)| *c == command && *d == a.dest)
@@ -1702,13 +1723,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "cyls", "How many cylinders the drive has."),
     ("reset", "delays", "Reset the delays as well."),
     ("", "densel", "Set the density select signal on pin 2."),
-    (
-        "",
-        "diskdefs",
-        "A file of disk formats to use instead of gw's own.",
-    ),
-    ("", "drive", "The drive, by bus unit."),
-    ("", "device", "The Greaseweazle's port."),
+    ("", "diskdefs", "A file of disk formats to add to gw's own."),
     (
         "write",
         "erase_empty",
@@ -1758,7 +1773,6 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "linger", "Time on each step, in milliseconds."),
     ("delays", "motor", "Motor delay, in milliseconds."),
     ("seek", "motor_on", "Run the motor while seeking."),
-    ("", "no_clobber", "Keep an existing file."),
     (
         "write",
         "no_verify",
@@ -1874,7 +1888,7 @@ fn format_name(format: &str) -> String {
 
 /// The image type that suits a format: the one gw pairs with it (.adf for
 /// Amiga, .d64 for the C64), else one for its family, else a sector image.
-pub fn type_for(schema: &Schema, format: &str) -> String {
+fn type_for(schema: &Schema, format: &str) -> String {
     let writable = |e: &str| schema.images.get(e).is_some_and(|i| i.writable);
     // gw pairs ibm.800 with .mgt, which is SAM Coupé's; PC disks want .img.
     let paired = schema.images.iter().find(|(e, i)| {
@@ -1903,8 +1917,11 @@ fn describe(info: &FormatInfo) -> String {
     } else {
         format!("{} sides", info.heads)
     });
-    parts.extend(info.sectors.map(|s| format!("{s} sectors")));
-    parts.extend(info.bytes.map(|b| format!("{} KB", b / 1024)));
+    // A format with no fixed sectors, such as ibm.scan, gives 0 of each.
+    let sectors = info.sectors.filter(|&s| s > 0);
+    let bytes = info.bytes.filter(|&b| b > 0);
+    parts.extend(sectors.map(|s| format!("{s} sectors")));
+    parts.extend(bytes.map(|b| format!("{} KB", b / 1024)));
     // A narrow field wraps between facts, never inside one: "1440 KB" stays whole.
     let whole: Vec<String> = parts.iter().map(|p| p.replace(' ', "\u{a0}")).collect();
     whole.join(" · ")
@@ -1913,7 +1930,6 @@ fn describe(info: &FormatInfo) -> String {
 /// Plain names for image options, where gw's own would not read well.
 const OPTION_NAMES: &[(&str, &str)] = &[
     ("disktype", "Disk type"),
-    ("double_step", "Double step"),
     ("legacy_ss", "Legacy single-sided"),
     ("revs", "Revolutions"),
     ("sck", "Sample clock"),
@@ -1936,7 +1952,6 @@ const KNOWN_IMAGES: &[(&str, &str)] = &[
     (".d64", "Commodore 1541"),
     (".d71", "Commodore 1571"),
     (".d81", "Commodore 1581"),
-    (".dsk", "DSK"),
     (".edsk", "Extended DSK"),
     (".hfe", "HxC floppy emulator"),
     (".ima", "Sector image"),
@@ -1977,19 +1992,6 @@ fn join_opts(path: &str, opts: &BTreeMap<String, String>) -> String {
         path.to_owned()
     } else {
         format!("{path}::{}", set.join(":"))
-    }
-}
-
-/// An open dialog for a file argument, showing only its kind of file where
-/// gw takes one kind.
-fn open_dialog(command: &str, dest: &str) -> rfd::FileDialog {
-    let dialog = rfd::FileDialog::new();
-    match FILE_TYPES
-        .iter()
-        .find(|(c, d, _, _)| *c == command && *d == dest)
-    {
-        Some((_, _, name, exts)) => dialog.add_filter(*name, exts),
-        None => dialog,
     }
 }
 
@@ -2080,16 +2082,14 @@ impl Output {
         Output {
             folder: lossy(path.parent().map(Path::as_os_str)),
             name: lossy(path.file_stem()),
-            ext: path.extension().map_or_else(String::new, |e| {
-                format!(".{}", e.to_string_lossy().to_lowercase())
-            }),
+            ext: extension(value).unwrap_or_default(),
             opts,
             ..Output::default()
         }
     }
 
     /// The file for one disk, counting from 1: `Game_Disk2.adf` of three.
-    pub fn file_name(&self, disk: u32) -> String {
+    fn file_name(&self, disk: u32) -> String {
         let (name, ext) = (&self.name, &self.ext);
         if self.disks <= 1 {
             return format!("{name}{ext}");
@@ -2267,7 +2267,7 @@ impl std::fmt::Display for TrackSpec {
 }
 
 /// A checkbox with a clean tick, drawn here: egui's own is lopsided.
-pub fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
+fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
@@ -2300,7 +2300,6 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     let round = CornerRadius::same(4);
     if *on {
         painter.rect_filled(square, round, fade(p.accent));
-        // A short stroke down to the left, a long one up to the right.
         let at = |x: f32, y: f32| square.min + square.size() * vec2(x, y);
         let tick = vec![at(0.24, 0.52), at(0.42, 0.70), at(0.77, 0.32)];
         let stroke = egui::Stroke::new(2.0, fade(p.on_accent));
@@ -2356,9 +2355,242 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     fn schema() -> Schema {
         serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+    }
+
+    fn values(pairs: &[(&str, &str)]) -> Values {
+        let mut v = Values::default();
+        pairs.iter().for_each(|(k, x)| v.set(k, *x));
+        v
+    }
+
+    /// An output of type `ext` in /f, named Floppy.
+    fn output(ext: &str) -> Output {
+        Output {
+            folder: "/f".into(),
+            ext: ext.into(),
+            ..Output::default()
+        }
+    }
+
+    type Page = (Values, BTreeMap<String, Output>);
+
+    /// A command's form alone, drawn until it settles.
+    fn page(
+        command: &str,
+        values: Values,
+        outputs: BTreeMap<String, Output>,
+    ) -> Harness<'static, Page> {
+        let schema = schema();
+        let cmd = schema.command(command).unwrap().clone();
+        let mut service = Service::offline(Ok(schema.clone()));
+        let mut h = Harness::new_ui_state(
+            move |ui, (values, outputs): &mut Page| {
+                let form = Form {
+                    schema: &schema,
+                    cmd: &cmd,
+                    values,
+                    outputs,
+                    service: &mut service,
+                    cannot_detect: None,
+                };
+                form.show(ui);
+            },
+            (values, outputs),
+        );
+        h.run();
+        h
+    }
+
+    #[test]
+    fn with_no_format_chosen_gw_takes_the_input_types_own_then_the_output_types() {
+        let s = schema();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut implied = |command: &str, pairs: &[(&str, &str)]| {
+            effective_format(
+                &mut service,
+                &s,
+                s.command(command).unwrap(),
+                &values(pairs),
+            )
+        };
+        let read = |file| [("file", file)];
+        assert_eq!(
+            implied("read", &read("/f/x.adf")).as_deref(),
+            Some("amiga.amigados")
+        );
+        assert_eq!(implied("read", &read("/f/x.scp")), None);
+        let convert = |from, to| [("in_file", from), ("out_file", to)];
+        assert_eq!(
+            implied("convert", &convert("/f/x.scp", "/f/x.d64")).as_deref(),
+            Some("commodore.1541")
+        );
+        assert_eq!(
+            implied("convert", &convert("/f/x.adf", "/f/x.d64")).as_deref(),
+            Some("amiga.amigados"),
+            "the input's own comes first"
+        );
+
+        let outputs = BTreeMap::from([(output_key("read", "file"), output(".adf"))]);
+        let v = values(&[("file", &outputs["read/file"].value(1))]);
+        let read = s.command("read").unwrap();
+        assert_eq!(blocked(&s, read, &v, &outputs, &service), None);
+        let h = page("read", Values::default(), outputs);
+        let format = h.get_all_by_role(Role::ComboBox).next().unwrap().value();
+        assert_eq!(
+            format.as_deref(),
+            Some("Amiga · amiga.amigados (from the image type)")
+        );
+    }
+
+    #[test]
+    fn hfe_made_from_flux_needs_a_format_or_a_bitrate() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |command: &str, input: &str, out: Output| {
+            let (_, dest) = OUTPUTS.iter().find(|(c, _)| *c == command).unwrap();
+            let mut v = values(&[(dest, &out.value(1))]);
+            if command == "convert" {
+                v.set("in_file", input);
+            }
+            let outputs = BTreeMap::from([(output_key(command, dest), out)]);
+            blocked(&s, s.command(command).unwrap(), &v, &outputs, &service)
+        };
+        let mut bitrate = output(".hfe");
+        bitrate.opts.insert("bitrate".into(), "250".into());
+        let needs = Some("Choose a disk format first, or press Detect.");
+        assert_eq!(why("read", "", output(".hfe")), needs);
+        assert_eq!(why("read", "", bitrate), None);
+        assert_eq!(why("read", "", output(".scp")), None, "flux kept as flux");
+        assert_eq!(why("convert", "/f/x.scp", output(".hfe")), needs);
+        assert_eq!(
+            why("convert", "/f/x.ipf", output(".hfe")),
+            None,
+            "an IPF's tracks have a bitrate"
+        );
+    }
+
+    #[test]
+    fn a_page_that_makes_an_image_says_whether_it_lacks_the_type_or_the_name() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let service = Service::offline(Ok(s.clone()));
+        let v = values(&[("format", "ibm.1440")]);
+        let mut outputs = BTreeMap::new();
+        let why = |outputs: &_| blocked(&s, read, &v, outputs, &service);
+        assert_eq!(why(&outputs), Some("Choose an image type first."));
+        let unnamed = Output {
+            name: " ".into(),
+            ..output(".img")
+        };
+        outputs.insert(output_key("read", "file"), unnamed);
+        assert_eq!(why(&outputs), Some("Name the image first."));
+    }
+
+    #[test]
+    fn an_output_that_is_the_input_cannot_run_however_its_folder_is_typed() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let out = Output {
+            folder: "/f//g".into(),
+            name: "x".into(),
+            ..output(".img")
+        };
+        let v = values(&[
+            ("in_file", "/f/g/x.img"),
+            ("out_file", &out.value(1)),
+            ("format", "ibm.1440"),
+        ]);
+        let outputs = BTreeMap::from([(output_key("convert", "out_file"), out)]);
+        let convert = s.command("convert").unwrap();
+        assert_eq!(
+            blocked(&s, convert, &v, &outputs, &service),
+            Some(REPLACES_INPUT)
+        );
+    }
+
+    #[test]
+    fn of_two_exclusive_options_set_at_once_either_can_be_cleared() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut outputs = BTreeMap::new();
+        let mut blocker = |v: &mut Values, dest: &str| {
+            let form = Form {
+                schema: &s,
+                cmd: read,
+                values: v,
+                outputs: &mut outputs,
+                service: &mut service,
+                cannot_detect: None,
+            };
+            form.blocker(read.arg(dest).unwrap())
+                .map(|b| b.dest.clone())
+        };
+        let mut v = values(&[("hard_sectors", ON)]);
+        assert_eq!(
+            blocker(&mut v, "fake_index").as_deref(),
+            Some("hard_sectors")
+        );
+        assert_eq!(blocker(&mut v, "hard_sectors"), None);
+        v.set("fake_index", "300rpm");
+        assert_eq!(blocker(&mut v, "fake_index"), None);
+        assert_eq!(blocker(&mut v, "hard_sectors"), None);
+    }
+
+    #[test]
+    fn an_image_of_another_type_drops_the_options_its_type_does_not_take() {
+        let v = values(&[("file", "/f/game.d88::index=1")]);
+        let mut h = page("write", v, BTreeMap::new());
+        let mut retype = |path: &str| {
+            h.get_all_by_role(Role::TextInput).next().unwrap().click();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.run();
+            h.event(egui::Event::Text(path.to_owned()));
+            h.run();
+            h.state().0.get("file").to_owned()
+        };
+        assert_eq!(retype("/f/disk.d88"), "/f/disk.d88::index=1");
+        assert_eq!(retype("/f/game.scp"), "/f/game.scp");
+    }
+
+    #[test]
+    fn a_required_argument_offers_no_default() {
+        let h = page("pin set", Values::default(), BTreeMap::new());
+        h.get_by_label("High");
+        assert!(h.query_by_label("Default").is_none());
+
+        let mut h = page("seek", Values::default(), BTreeMap::new());
+        let cylinder = h.get_by_role(Role::ComboBox);
+        assert_eq!(cylinder.value().as_deref(), Some("Required"));
+        cylinder.click();
+        h.run();
+        h.get_by_label("40");
+        assert!(h.query_by_label_contains("Default").is_none());
+    }
+
+    #[test]
+    fn detect_promises_an_image_type_only_where_the_page_makes_one() {
+        let mut h = page("write", values(&[("file", "/f/x.scp")]), BTreeMap::new());
+        h.get_by_label("Detect").hover();
+        h.run();
+        h.get_by_label("Find the disk format.");
+    }
+
+    #[test]
+    fn with_no_format_the_track_picker_offers_the_82_cylinders_gw_uses() {
+        let h = page("erase", Values::default(), BTreeMap::new());
+        let cylinders: Vec<_> = h
+            .get_all_by_role(Role::SpinButton)
+            .map(|c| c.accesskit_node().numeric_value())
+            .collect();
+        assert_eq!(cylinders, [Some(0.0), Some(81.0)]);
     }
 
     #[test]
@@ -2664,6 +2896,23 @@ mod tests {
     }
 
     #[test]
+    fn a_format_with_no_fixed_sectors_shows_no_count_or_size() {
+        let info = |sectors, bytes| FormatInfo {
+            cyls: 80,
+            heads: 2,
+            encoding: Some("IBM MFM".into()),
+            sectors: Some(sectors),
+            bytes: Some(bytes),
+        };
+        let shown = |i| describe(&i).replace('\u{a0}', " ");
+        assert_eq!(
+            shown(info(18, 1_474_560)),
+            "IBM MFM · 80 cylinders · 2 sides · 18 sectors · 1440 KB"
+        );
+        assert_eq!(shown(info(0, 0)), "IBM MFM · 80 cylinders · 2 sides");
+    }
+
+    #[test]
     fn families_have_names_even_new_ones() {
         assert_eq!(family_name("akai.800"), "Akai");
         assert_eq!(family_name("pc98.2hd"), "NEC PC-98");
@@ -2671,10 +2920,14 @@ mod tests {
     }
 
     #[test]
-    fn every_argument_has_a_short_tooltip_and_every_tooltip_an_argument() {
+    fn every_field_has_a_short_tooltip_and_every_tooltip_a_field() {
+        fn shown(cmd: &Command) -> Vec<&Arg> {
+            let (first, rest) = sections(cmd);
+            first.into_iter().chain(rest).collect()
+        }
         let s = schema();
         for cmd in &s.commands {
-            for a in &cmd.args {
+            for a in shown(cmd) {
                 let tip = tip(&cmd.name, a);
                 assert!(tip.ends_with('.'), "gw {} {}: {tip}", cmd.name, a.dest);
                 assert!(tip.len() <= 70, "gw {} {} is long: {tip}", cmd.name, a.dest);
@@ -2688,11 +2941,10 @@ mod tests {
             }
         }
         for (c, d, _) in TIPS {
-            let found = s
-                .commands
-                .iter()
-                .any(|cmd| (c.is_empty() || cmd.name == *c) && cmd.arg(d).is_some());
-            assert!(found, "no gw {c} has {d}");
+            let found = s.commands.iter().any(|cmd| {
+                (c.is_empty() || cmd.name == *c) && shown(cmd).iter().any(|a| a.dest == *d)
+            });
+            assert!(found, "no gw {c} shows {d}");
         }
     }
 

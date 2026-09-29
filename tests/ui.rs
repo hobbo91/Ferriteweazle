@@ -534,7 +534,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
     w.run();
     w.get_by_label("Detect").hover();
     w.run();
-    w.get_by_label("Attempt to find the disk format and image type.");
+    w.get_by_label("Find the disk format and the image type that suits it.");
     assert!(
         w.query_by_label_contains("The disk's format").is_none(),
         "two tooltips at once"
