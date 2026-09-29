@@ -925,6 +925,22 @@ impl<'a> Form<'a> {
                         let default = (first, last) == whole && !short;
                         spec.c = (!default).then(|| format!("{first}-{last}"));
                     }
+                    // The sides and their buttons wrap together.
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let text = |t: &str| {
+                        let galley = ui.painter().layout_no_wrap(
+                            t.into(),
+                            font.clone(),
+                            Color32::PLACEHOLDER,
+                        );
+                        galley.size().x
+                    };
+                    let button = text("0") + 2.0 * ui.spacing().button_padding.x;
+                    let spacing = ui.spacing().item_spacing.x;
+                    if ui.available_size_before_wrap().x < text("Sides") + 2.0 * (button + spacing)
+                    {
+                        ui.end_row();
+                    }
                     ui.label("Sides");
                     let mut sides = TrackSpec {
                         h: spec.h.clone().or_else(|| base.h.clone()),
@@ -2542,20 +2558,21 @@ fn image_options(
                     .map(String::as_str)
                     .chain(common.iter().copied());
                 let field = ui.vertical(|ui| {
+                    // Narrower in a small window, so it ends within the page.
+                    let width = OPTION_FIELD.min(ui.available_width());
                     if opt.choices.is_empty() && common.is_empty() {
                         let hint = option_default(opt).unwrap_or_default();
-                        let edit = edit(value).hint_text(hint).desired_width(OPTION_FIELD);
+                        let edit = edit(value).hint_text(hint).desired_width(width);
                         changed |= ui.add(edit).changed();
                         return;
                     }
                     let unset = option_default(opt)
                         .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
                     let id = ui.make_persistent_id(("image option", ext, &opt.name));
-                    let (chose, other) =
-                        drop_down(ui, id, value, &unset, false, OPTION_FIELD, listed);
+                    let (chose, other) = drop_down(ui, id, value, &unset, false, width, listed);
                     changed |= chose;
                     if other {
-                        changed |= ui.add(edit(value).desired_width(OPTION_FIELD)).changed();
+                        changed |= ui.add(edit(value).desired_width(width)).changed();
                     }
                 });
                 if let Some(tip) = tip(&opt.name) {

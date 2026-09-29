@@ -68,7 +68,7 @@ fn render_sized(
                     Some(job) => app.disk = Some(job),
                     None => {}
                 }
-                app.show(ui);
+                common::show(ui, app);
             },
             None,
         );
@@ -220,6 +220,14 @@ fn screens() {
         });
         let read = settings("read", theme);
         render_sized("default", DEFAULT, theme, read, Some(read_job()), |_| {});
+        let small = ferriteweazle::SMALLEST;
+        let read = settings("read", theme);
+        render_sized("smallest", small, theme, read, Some(read_job()), |_| {});
+        let read = settings("read", theme);
+        render_sized("smallest-log", small, theme, read, Some(read_job()), |w| {
+            session(w);
+            w.get_by_role_and_label(Role::Button, "Log").click();
+        });
         let read = settings("read", theme);
         render_sized("log", DEFAULT, theme, read, Some(read_job()), |w| {
             session(w);

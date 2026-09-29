@@ -96,9 +96,16 @@ const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
 /// gw's guide to setting up a Greaseweazle, its drives and its cables.
 const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";
 
+/// The window as it opens, in points: wide enough for the Read page's Folder
+/// field to show /Users/lhobson/Documents/Ferriteweazle/Images whole, and tall
+/// enough for the idle map's widest squares.
+pub const WINDOW: egui::Vec2 = egui::vec2(1123.0, 768.0);
+/// The smallest window, which a 1024 by 768 screen holds beside a dock or a
+/// taskbar.
+pub const SMALLEST: egui::Vec2 = egui::vec2(960.0, 640.0);
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
-const STATUS_MIN: f32 = 320.0;
+const STATUS_MIN: f32 = 300.0;
 /// The sidebar logo's side.
 const LOGO_SIZE: f32 = 40.0;
 /// How far the logo reaches above the sidebar's margin.
@@ -539,7 +546,7 @@ impl App {
                 let status = (ui.available_width() - page_wants).clamp(STATUS_MIN, widest);
                 egui::Panel::right("status")
                     .resizable(false)
-                    .exact_size(status.min(1100.0))
+                    .exact_size(status)
                     .frame(status_frame)
                     .show(ui, |ui| self.status(ui, &name, tall));
                 egui::CentralPanel::default()

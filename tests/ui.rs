@@ -39,12 +39,12 @@ fn start(
     let schema = schema();
     builder.build_ui_state(
         move |ui, app| {
-            app.get_or_insert_with(|| {
+            let app = app.get_or_insert_with(|| {
                 let mut app = App::offline(ui.ctx(), settings.clone(), Ok(schema.clone()));
                 app.disk = disk.take();
                 app
-            })
-            .show(ui);
+            });
+            common::show(ui, app);
         },
         None,
     )
@@ -486,8 +486,8 @@ fn until_gw_describes_itself_the_sidebar_lists_no_command() {
     let mut w = Harness::builder().with_size(DEFAULT).build_ui_state(
         |ui, app: &mut Option<App>| {
             let error = Err("Starting.".to_owned());
-            app.get_or_insert_with(|| App::offline(ui.ctx(), Settings::default(), error))
-                .show(ui);
+            let app = app.get_or_insert_with(|| App::offline(ui.ctx(), Settings::default(), error));
+            common::show(ui, app);
         },
         None,
     );
@@ -639,7 +639,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 
 #[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
-    let w = window_at(DEFAULT, chosen());
+    let w = window_at(ferriteweazle::SMALLEST, chosen());
     let image_type = combo(&w, 2).rect();
     let status = w.get_by_label("Disk status").rect();
     assert!(
@@ -756,7 +756,8 @@ fn a_drawer_slides_open_and_shut_and_the_map_stays_where_it_fits() {
         opening.iter().all(|f| f[1] == legend),
         "the map moved: {opening:?}"
     );
-    assert_eq!(w.run(), 1, "the window keeps drawing");
+    // The page's scroll bar, shown now the Log leaves the form too little room, fades in.
+    assert!(w.run() < 10, "the window keeps drawing");
 
     let shutting = toggle(&mut w, "Log");
     assert!(
@@ -844,7 +845,7 @@ fn a_log_dragged_taller_stays_that_tall_and_the_map_shrinks_only_when_it_must() 
     w.run();
     let [open, legend] = edges(&w);
     // Less than the room the map leaves below it at this size.
-    drag_log(&mut w, 20.0);
+    drag_log(&mut w, 15.0);
     let [taller, map] = edges(&w);
     assert!(taller < open - 5.0, "{open} to {taller}");
     assert_eq!(map, legend, "the map shrank with room to spare");
@@ -1383,6 +1384,46 @@ fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
         (side_1.center().y - cylinders.center().y).abs() < 2.0,
         "the sides wrap under the cylinders: {side_1:?}, {cylinders:?}"
     );
+}
+
+#[test]
+fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
+    let small = ferriteweazle::SMALLEST;
+    for drawer in [None, Some(Drawer::Log)] {
+        let settings = Settings { drawer, ..chosen() };
+        let mut w = start(
+            Harness::builder().with_size(small),
+            settings,
+            Some(Job::replay("read", &damaged_read())),
+        );
+        w.run();
+        let inside = |r: egui::Rect| r.bottom() <= small.y && r.right() <= small.x;
+        let run = run_button(&w, "Read disk").rect();
+        assert!(inside(run), "{drawer:?}: the run button at {run:?}");
+        let settings = w.get_by_label("Settings").rect();
+        assert!(inside(settings), "{drawer:?}: Settings at {settings:?}");
+        let legend = w.get_by_label_contains("Good ").rect();
+        let bottom = squares(&w).map(|s| s.rect.bottom()).fold(0.0, f32::max);
+        assert!(
+            bottom < legend.top(),
+            "{drawer:?}: a square under the legend"
+        );
+        let limit = match drawer {
+            Some(_) => w.get_by_role_and_label(Role::Label, "Log").rect().top(),
+            None => small.y,
+        };
+        assert!(
+            legend.bottom() < limit,
+            "{drawer:?}: the legend at {legend:?}"
+        );
+        // The sides' buttons wrap with their label, not apart.
+        let sides = w.get_by_label("Sides").rect();
+        let side_1 = w.get_all_by_label("1").last().unwrap().rect();
+        assert!(
+            side_1.top() < sides.bottom() && sides.top() < side_1.bottom(),
+            "{drawer:?}: {sides:?}, {side_1:?}"
+        );
+    }
 }
 
 #[test]
@@ -2030,7 +2071,7 @@ fn formats_within_a_family_run_in_numeric_order() {
 fn image_options_end_within_the_field_in_the_smallest_window() {
     let mut settings = chosen();
     settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();
-    let w = window_at(DEFAULT, settings);
+    let w = window_at(ferriteweazle::SMALLEST, settings);
     let right = combo(&w, 2).rect().right();
     let lists: Vec<_> = w.get_all_by_role(Role::ComboBox).skip(3).collect();
     assert!(lists.len() >= 4, "bitrate, version, interface and encoding");
@@ -2107,7 +2148,7 @@ fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
         w.run();
         squares(&w).next().unwrap().rect.width()
     };
-    for (window, cell) in [(DEFAULT, 18.0), (egui::vec2(1920.0, 1080.0), 34.0)] {
+    for (window, cell) in [(DEFAULT, 20.0), (egui::vec2(1920.0, 1080.0), 46.0)] {
         for cyls in [40, 80, 82, 90] {
             for drawer in [None, Some(Drawer::Log)] {
                 assert_eq!(

@@ -590,12 +590,12 @@ fn window(engine: &Engine, settings: Settings) -> Window {
         .with_size(egui::vec2(1240.0, 780.0))
         .build_ui_state(
             move |ui, app: &mut Option<App>| {
-                app.get_or_insert_with(|| {
+                let app = app.get_or_insert_with(|| {
                     let mut app = App::with_settings(ui.ctx(), settings.clone());
                     app.pin_ports(Vec::new());
                     app
-                })
-                .show(ui);
+                });
+                common::show(ui, app);
             },
             None,
         );

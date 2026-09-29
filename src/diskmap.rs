@@ -18,7 +18,7 @@ const MIN_CELL: f32 = 5.0;
 const LEGEND: f32 = 28.0;
 /// The least square size wherever the pane has room for it.
 const CELL: f32 = 18.0;
-const MAX_CELL: f32 = 34.0;
+const MAX_CELL: f32 = 96.0;
 /// Room for the row numbers left of a grid.
 const LABEL: f32 = 24.0;
 /// Room for a side's name above its grid.

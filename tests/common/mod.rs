@@ -23,8 +23,18 @@ pub const FOUND: &str =
 pub const REFUSED: &str = "** FATAL ERROR:
 [Errno 13] could not open port /dev/ttyACM0: [Errno 13] Permission denied: '/dev/ttyACM0'";
 
-/// main.rs's SIZE, the window as it opens and its smallest: must match.
-pub const DEFAULT: egui::Vec2 = egui::vec2(1040.0, 744.0);
+/// The window as it opens.
+pub const DEFAULT: egui::Vec2 = ferriteweazle::WINDOW;
+
+/// Shows `app` over the whole harness: kittest insets its ui by 8 points, so
+/// a harness of the window's size lays the app out as the window does.
+pub fn show(ui: &mut egui::Ui, app: &mut App) {
+    let rect = ui.ctx().content_rect();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.set_clip_rect(rect);
+        app.show(ui);
+    });
+}
 
 /// A Greaseweazle as gw lists it, on a made-up port.
 pub fn greaseweazle() -> Port {

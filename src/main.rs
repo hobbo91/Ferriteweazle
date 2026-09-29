@@ -3,9 +3,6 @@
 
 use eframe::egui;
 
-/// The window's size when it opens, and its smallest.
-const SIZE: [f32; 2] = [1040.0, 744.0];
-
 fn main() -> eframe::Result {
     #[cfg_attr(not(windows), expect(unused_mut))]
     let mut options = eframe::NativeOptions {
@@ -16,9 +13,8 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(ferriteweazle::theme::LOGO)
                     .expect("the logo is a PNG"),
             )
-            // As short as the sidebar's full list allows, so it never scrolls.
-            .with_inner_size(SIZE)
-            .with_min_inner_size(SIZE),
+            .with_inner_size(ferriteweazle::WINDOW)
+            .with_min_inner_size(ferriteweazle::SMALLEST),
         ..Default::default()
     };
     // Every Windows 10 has DirectX 12, with a software fallback; Windows on ARM
