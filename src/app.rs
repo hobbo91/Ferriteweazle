@@ -3539,7 +3539,6 @@ mod tests {
         Port {
             device: device.into(),
             name: Some("Greaseweazle".into()),
-            serial: None,
             score: 20,
             denied,
         }
@@ -3585,7 +3584,6 @@ mod tests {
         app.pin_ports(vec![Port {
             device: "/dev/cu.debug-console".into(),
             name: None,
-            serial: None,
             score: 0,
             denied: false,
         }]);

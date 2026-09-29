@@ -284,7 +284,7 @@ def ports():
     linux = sys.platform.startswith('linux')
     return [{'device': p.device,
              'name': next((n for n in (p.product, p.description) if n and n != 'n/a'), None),
-             'serial': p.serial_number, 'score': s,
+             'score': s,
              'denied': linux and not os.access(p.device, os.R_OK | os.W_OK)}
             for s, p in found]
 

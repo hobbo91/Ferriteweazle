@@ -111,7 +111,6 @@ pub struct DiskDefs {
 pub struct Port {
     pub device: String,
     pub name: Option<String>,
-    pub serial: Option<String>,
     /// gw's guess that this is a Greaseweazle: 0 if not.
     #[serde(default)]
     pub score: i32,

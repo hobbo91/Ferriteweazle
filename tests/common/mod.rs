@@ -31,7 +31,6 @@ pub fn greaseweazle() -> Port {
     Port {
         device: "/dev/cu.usbmodem14201".into(),
         name: Some("Greaseweazle".into()),
-        serial: Some("GW0123456789ABCDEF".into()),
         score: 20,
         denied: false,
     }
