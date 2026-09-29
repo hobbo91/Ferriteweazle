@@ -18,6 +18,10 @@ use std::time::{Duration, Instant, SystemTime};
 const PORTS_EVERY: Duration = Duration::from_secs(2);
 /// How often the files asked about are looked at again.
 const WATCH_EVERY: Duration = Duration::from_secs(1);
+/// How long a folder's listing stands while the folder's time is unchanged.
+/// FAT keeps times to 2 s and Windows may leave a folder's alone, so a file
+/// added soon after a listing need not change it.
+const FOLDER_EVERY: Duration = Duration::from_millis(500);
 
 /// When each file asked about last changed, by path.
 type Times = Mutex<HashMap<String, Option<SystemTime>>>;
@@ -94,8 +98,8 @@ pub struct Service {
     /// By disk definitions file, as `diskdefs`, and format name.
     infos: HashMap<(String, Option<SystemTime>, String), Load<FormatInfo>>,
     checks: HashMap<(String, String, String), Load<Option<String>>>,
-    /// The files in a folder, keyed as `diskdefs` by the folder's last change.
-    folders: HashMap<(String, Option<SystemTime>), Vec<PathBuf>>,
+    /// The last folder listed: its time then, when, and its files.
+    folders: HashMap<String, (Option<SystemTime>, Instant, Vec<PathBuf>)>,
     /// The file times in the keys of `diskdefs`, `image_formats` and
     /// `infos`, which `watch` keeps current.
     times: Arc<Times>,
@@ -279,9 +283,12 @@ impl Service {
     /// The files in `folder`, listed again when it changes. The folder is
     /// looked at on each call, not by `watch`, so a file added shows at once.
     pub fn folder(&mut self, folder: &str) -> &[PathBuf] {
-        let key = (folder.to_owned(), stat(folder));
-        if !self.folders.contains_key(&key) {
-            self.folders.retain(|(f, _), _| f != folder);
+        let time = stat(folder);
+        let fresh = self
+            .folders
+            .get(folder)
+            .is_some_and(|(then, at, _)| *then == time && at.elapsed() < FOLDER_EVERY);
+        if !fresh {
             let files = std::fs::read_dir(folder).map_or_else(
                 |_| Vec::new(),
                 |dir| {
@@ -291,15 +298,16 @@ impl Service {
                         .collect()
                 },
             );
-            self.folders.insert(key.clone(), files);
+            self.folders.clear();
+            self.folders
+                .insert(folder.to_owned(), (time, Instant::now(), files));
         }
-        &self.folders[&key]
+        &self.folders[folder].2
     }
 
     /// As `folder`, from the last listing.
     pub fn known_folder(&self, folder: &str) -> &[PathBuf] {
-        let last = self.folders.iter().find(|((f, _), _)| f == folder);
-        last.map_or(&[], |(_, files)| files)
+        self.folders.get(folder).map_or(&[], |(_, _, files)| files)
     }
 
     /// A format's layout, gw's own or from a disk definitions file, which
@@ -512,6 +520,26 @@ fn parse(line: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
     use crate::engine::Origin;
+
+    // A file added in the same tick as a listing leaves the folder's time as
+    // it was; here the time is set back to show that.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_is_listed_again_when_its_time_has_not_changed() {
+        let dir = scratch("folder-tick");
+        let folder = dir.to_string_lossy().into_owned();
+        let mut service = Service::offline(Err(String::new()));
+        assert!(service.folder(&folder).is_empty());
+        let before = std::fs::metadata(&dir).unwrap().modified().unwrap();
+        std::fs::write(dir.join("Game.adf"), "").unwrap();
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        std::thread::sleep(FOLDER_EVERY);
+        assert_eq!(service.folder(&folder), [dir.join("Game.adf")]);
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     /// An empty folder of its own for `test`.
     fn scratch(test: &str) -> PathBuf {
