@@ -1165,6 +1165,11 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
+        // The Overwrite question stands in for gw's -n, which would refuse
+        // once it is answered.
+        if form::OUTPUTS.iter().any(|(c, _)| *c == cmd.name) {
+            values.set("no_clobber", "");
+        }
         if cmd.name == "update" {
             form::Firmware::only(&mut values);
         }
@@ -4190,5 +4195,18 @@ mod tests {
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
         assert!(note.contains("so Double step is off"), "{note}");
+    }
+
+    #[test]
+    fn a_pasted_no_clobber_is_left_to_the_overwrite_question() {
+        let schema = schema();
+        let read = schema.command("read").unwrap();
+        let mut app = offline();
+        let line = "gw read --format=ibm.1440 -n /d/x.img";
+        let (name, values) = command::parse(&schema, line).unwrap();
+        app.fill_in(name, values);
+        let args = app.args(read);
+        assert!(args.iter().all(|a| a != "-n"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--format=ibm.1440"), "{args:?}");
     }
 }
