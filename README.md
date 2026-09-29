@@ -74,25 +74,17 @@ DOS 3.3.
 You need [Rust](https://rustup.rs) 1.95 or later.
 
 ```sh
-engine/build.sh     # optional: gw with its own Python, in target/engine
+git clone https://github.com/hobbo91/ferriteweazle
+cd ferriteweazle
+engine/build.sh     # optional: gw with its own Python
 cargo run --release
 ```
 
-Without `target/engine`, the app uses an installed `gw`.
+Without the engine, the app uses an installed `gw`. `engine/build.sh` needs curl,
+git and a C/C++ compiler: Xcode's command line tools on macOS, zig on Linux, and on
+Windows Visual Studio's C++ build tools and LLVM, in Git Bash.
 
-`engine/build.sh` needs curl, git and a C/C++ compiler: Xcode's command line tools
-on macOS, [zig](https://ziglang.org) on Linux, and on Windows Visual Studio's C++
-build tools and LLVM, run from Git Bash.
-
-## Tests
-
-```sh
-cargo test                                   # unit, window and end-to-end tests
-cargo test --test screens -- --ignored       # draws the window to target/screens
-```
-
-The end-to-end tests run real `gw` conversions through the bridge. They skip
-when there is no Greaseweazle install. No test opens a device.
+Tests and packages: [BUILDING.md](BUILDING.md).
 
 ## Licence
 
