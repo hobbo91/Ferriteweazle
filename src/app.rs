@@ -1373,7 +1373,14 @@ impl App {
                         true => "Stop gw and the drive's motor.",
                         false => "Stop gw.",
                     };
-                    if stop.on_hover_text(tip).clicked() {
+                    let warning = flash_warning(job);
+                    let stop = stop.on_hover_ui(|ui| {
+                        ui.label(tip);
+                        if let Some(warning) = warning {
+                            ui.label(warning);
+                        }
+                    });
+                    if stop.clicked() {
                         self.stop();
                     }
                 }
@@ -1585,7 +1592,7 @@ impl App {
     }
 
     fn confirm_or_run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
-        if destructive(command) {
+        if destructive(command) || flashes_bootloader(command, &args) {
             self.dialog = Some(Dialog::Confirm {
                 command: command.to_owned(),
                 args,
@@ -2206,25 +2213,33 @@ impl App {
                     args,
                     disks,
                 } => {
-                    let drive = match self.settings.drive.as_str() {
-                        "" => self.default_drive(),
-                        drive => drive.to_owned(),
-                    };
-                    let verb = title(command);
-                    let verb = verb.split(' ').next().unwrap_or_default();
                     let disks = *disks;
-                    let heading = match disks {
-                        1 => format!("{verb} the disk in drive {drive}?"),
-                        n => format!("{verb} {n} disks in drive {drive}?"),
-                    };
-                    dialog_heading(ui, &heading);
-                    let why = DESTRUCTIVE
-                        .iter()
-                        .find(|(c, _)| c == command)
-                        .map_or("", |(_, w)| *w);
-                    ui.label(why);
-                    if disks > 1 {
-                        ui.label("It asks for each disk in turn.");
+                    if flashes_bootloader(command, args) {
+                        dialog_heading(ui, "Update the bootloader?");
+                        ui.label(
+                            "If the flash fails, the Greaseweazle may need reflashing with a \
+                             programming adapter.",
+                        );
+                    } else {
+                        let drive = match self.settings.drive.as_str() {
+                            "" => self.default_drive(),
+                            drive => drive.to_owned(),
+                        };
+                        let verb = title(command);
+                        let verb = verb.split(' ').next().unwrap_or_default();
+                        let heading = match disks {
+                            1 => format!("{verb} the disk in drive {drive}?"),
+                            n => format!("{verb} {n} disks in drive {drive}?"),
+                        };
+                        dialog_heading(ui, &heading);
+                        let why = DESTRUCTIVE
+                            .iter()
+                            .find(|(c, _)| c == command)
+                            .map_or("", |(_, w)| *w);
+                        ui.label(why);
+                        if disks > 1 {
+                            ui.label("It asks for each disk in turn.");
+                        }
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
@@ -2385,6 +2400,9 @@ impl App {
                         true => "gw stops the drive first, then the window closes.",
                         false => "gw stops, then the window closes.",
                     });
+                    if let Some(warning) = job.and_then(flash_warning) {
+                        ui.label(warning);
+                    }
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
@@ -2773,6 +2791,22 @@ fn runs(
 
 fn destructive(command: &str) -> bool {
     DESTRUCTIVE.iter().any(|(c, _)| *c == command)
+}
+
+/// Whether gw update flashes the bootloader, which asks first.
+fn flashes_bootloader(command: &str, args: &[String]) -> bool {
+    command == "update" && args.iter().any(|a| a == "--bootloader")
+}
+
+/// What an update stopped part way through its flash leaves to put right.
+fn flash_warning(job: &Job) -> Option<&'static str> {
+    if job.command != "update" {
+        None
+    } else if flashes_bootloader(&job.command, &job.args) {
+        Some("A bootloader flash stopped part way may need reflashing with a programming adapter.")
+    } else {
+        Some("A flash stopped part way leaves the firmware erased until Update runs again.")
+    }
 }
 
 fn installing(update: &Update) -> bool {
@@ -4185,6 +4219,66 @@ mod tests {
         w.state_mut().disk = Some(running("read"));
         w.run_steps(2);
         w.get_by_label("gw stops the drive first, then the window closes.");
+    }
+
+    #[test]
+    fn an_update_of_the_bootloader_asks_first() {
+        let schema = schema();
+        let update = schema.command("update").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.start(&ctx, update);
+        assert!(app.dialog.is_none(), "the main firmware updates at once");
+        let values = app.settings.values.entry("update".into()).or_default();
+        values.set("bootloader", command::ON);
+        app.start(&ctx, update);
+        let asks = |args: &Vec<String>| args.contains(&"--bootloader".to_owned());
+        assert!(matches!(&app.dialog, Some(Dialog::Confirm { args, .. }) if asks(args)));
+        let w = window(app);
+        w.get_by_label("Update the bootloader?");
+        w.get_by_label(
+            "If the flash fails, the Greaseweazle may need reflashing with a programming adapter.",
+        );
+        w.get_by_role_and_label(egui::accesskit::Role::Button, "Update");
+    }
+
+    #[test]
+    fn stopping_an_update_warns_what_a_flash_stopped_part_way_leaves() {
+        let firmware =
+            "A flash stopped part way leaves the firmware erased until Update runs again.";
+        let bootloader =
+            "A bootloader flash stopped part way may need reflashing with a programming adapter.";
+        for (args, warning) in [
+            (&["update"][..], firmware),
+            (&["update", "--bootloader"], bootloader),
+        ] {
+            let mut app = offline();
+            app.settings.page = Page::Command("update".into());
+            let mut job = running("update");
+            job.args = args.iter().map(|a| a.to_string()).collect();
+            app.tool = Some(job);
+            let mut w = window(app);
+            w.get_by_role_and_label(egui::accesskit::Role::Button, "Stop")
+                .hover();
+            // Past the tooltip's delay.
+            w.run_steps(4);
+            w.get_by_label("Stop gw.");
+            w.get_by_label(warning);
+            w.event(egui::Event::PointerGone);
+            w.state_mut().dialog = Some(Dialog::Quit);
+            w.run_steps(2);
+            w.get_by_label("Stop Update firmware and quit?");
+            w.get_by_label("gw stops, then the window closes.");
+            w.get_by_label(warning);
+        }
+        let mut app = offline();
+        app.disk = Some(running("read"));
+        app.dialog = Some(Dialog::Quit);
+        let w = window(app);
+        assert!(
+            w.query_by_label(firmware).is_none(),
+            "a read flashes nothing"
+        );
     }
 
     #[test]
