@@ -131,8 +131,7 @@ pub fn show(
         for &cyl in &cyls {
             let key = (cyl, head);
             let filled = fill(progress, key, p);
-            let t = fade(ui, egui::Id::new(("square", &job, key)), filled.is_some());
-            let colour = theme::lerp(p.pending, filled.unwrap_or(p.pending), t);
+            let colour = shade(ui, egui::Id::new(("square", &job, key)), filled, p.pending);
             let status = progress.tracks.get(&key).map(|t| t.status);
             let edge = edge(status == Some(Status::Skipped), p);
             painter.rect(square(i, cyl), radius, colour, edge, StrokeKind::Inside);
@@ -178,29 +177,56 @@ pub fn show(
     }
 }
 
-/// How far a square has faded in, 0 to 1. Timed from the frame it lit up,
-/// not by frame gaps, so one lit after an idle spell starts empty. A square
-/// done when first seen shows at once.
-fn fade(ui: &egui::Ui, id: egui::Id, done: bool) -> f32 {
-    let now = ui.input(|i| i.time);
-    // When it lit up: infinity while not done, minus infinity if done when first seen.
-    let lit = ui.data_mut(|d| {
-        let lit = d.get_temp_mut_or_insert_with(id, || f64::NEG_INFINITY);
-        if !done {
-            *lit = f64::INFINITY;
-        } else if *lit == f64::INFINITY {
-            *lit = now;
-        }
-        *lit
-    });
-    if !done {
-        return 0.0;
+/// A square's fade: from the colour it showed when its own last changed.
+#[derive(Clone, Copy)]
+struct Shade {
+    from: Color32,
+    /// Its colour, `None` until gw reports the track.
+    to: Option<Color32>,
+    /// When it changed, in egui's seconds.
+    at: f64,
+}
+
+impl Shade {
+    fn colour(self, now: f64, pending: Color32) -> Color32 {
+        let t = ((now - self.at) as f32 / FILL_TIME).clamp(0.0, 1.0);
+        let to = self.to.unwrap_or(pending);
+        theme::lerp(self.from, to, egui::emath::easing::cubic_in_out(t))
     }
-    let t = ((now - lit) as f32 / FILL_TIME).clamp(0.0, 1.0);
-    if t < 1.0 {
+}
+
+/// A square's colour, fading over FILL_TIME from what it showed when `filled`
+/// last changed: as it lights up, and as a written track verifies. Timed from
+/// that frame, not by frame gaps, so one lit after an idle spell starts empty.
+/// A square filled when first seen shows at once.
+fn shade(ui: &egui::Ui, id: egui::Id, filled: Option<Color32>, pending: Color32) -> Color32 {
+    let now = ui.input(|i| i.time);
+    let shade = ui.data_mut(|d| {
+        let shade = d.get_temp_mut_or_insert_with(id, || Shade {
+            from: filled.unwrap_or(pending),
+            to: filled,
+            at: f64::NEG_INFINITY,
+        });
+        if shade.to != filled {
+            *shade = match filled {
+                Some(_) => Shade {
+                    from: shade.colour(now, pending),
+                    to: filled,
+                    at: now,
+                },
+                None => Shade {
+                    from: pending,
+                    to: None,
+                    at: f64::NEG_INFINITY,
+                },
+            };
+        }
+        *shade
+    });
+    if now - shade.at < f64::from(FILL_TIME) {
         ui.ctx().request_repaint();
     }
-    egui::emath::easing::cubic_in_out(t)
+    shade.colour(now, pending)
 }
 
 /// A track's colour, by its sectors once gw has mapped them; `None` until gw

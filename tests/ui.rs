@@ -1359,6 +1359,34 @@ fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
 }
 
 #[test]
+fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
+    let mut job = Job::replay("write", "Writing c=0-1:h=0");
+    job.progress.verifies = true;
+    job.progress.feed("T0.0: Writing Track (Flux: 1)");
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = build(builder, chosen(), Some(job));
+    let first = |w: &Window| squares(w).next().unwrap().fill;
+    let written = first(&w);
+    // gw goes on to the next track, so the first verified.
+    let disk = app_mut(&mut w).disk.as_mut().unwrap();
+    disk.progress.feed("T1.0: Writing Track (Flux: 1)");
+    // Half of FILL_TIME's 0.4 s.
+    w.run_steps(12);
+    let between = first(&w);
+    w.run();
+    let good = first(&w);
+    assert_ne!(written, good);
+    assert!(
+        between != written && between != good,
+        "it changed at once: {written:?} to {good:?}"
+    );
+    assert_eq!(w.run(), 1, "the window keeps drawing when nothing changes");
+}
+
+#[test]
 fn with_the_log_open_the_whole_map_still_fits_above_it() {
     let settings = Settings {
         drawer: Some(Drawer::Log),
