@@ -1805,7 +1805,7 @@ impl App {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
-            diskmap::show(ui, &blank, "blank", budget, room);
+            diskmap::show(ui, &blank, "blank", false, budget, room);
             return;
         };
         // These rows wrap, so the job shows in full.
@@ -1862,8 +1862,11 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, "blank", budget, room),
-            false => diskmap::show(ui, &job.progress, job.started, budget, room),
+            true => diskmap::show(ui, &blank, "blank", false, budget, room),
+            false => {
+                let verifying = job.running() && job.progress.verifies;
+                diskmap::show(ui, &job.progress, job.started, verifying, budget, room);
+            }
         }
         if install {
             self.install_rule(ui.ctx());
@@ -4036,6 +4039,31 @@ mod tests {
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
         w.run_steps(2);
         w
+    }
+
+    #[test]
+    fn a_verified_write_calls_its_purple_track_verifying_until_it_stops() {
+        let mut job = running("write");
+        job.progress.verifies = true;
+        for line in [
+            "Writing c=0-1:h=0",
+            "T0.0: Writing Track (Flux: 1)",
+            "T1.0: Writing Track (Flux: 1)",
+        ] {
+            job.progress.feed(line);
+        }
+        let mut app = offline();
+        app.settings.page = Page::Command("write".into());
+        app.disk = Some(job);
+        let mut w = window(app);
+        w.get_by_label("Good 1");
+        w.get_by_label("Verifying");
+        // Stopped part way: its last track was written but never checked.
+        let job = w.state_mut().disk.as_mut().unwrap();
+        job.ended = Some((std::time::Instant::now(), Outcome::Stopped));
+        w.run_steps(2);
+        w.get_by_label("Written 1");
+        assert!(w.query_by_label("Verifying").is_none());
     }
 
     #[test]

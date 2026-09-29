@@ -41,11 +41,12 @@ pub fn width_for(budget: f32) -> f32 {
 /// Draws the map with squares of CELL points, smaller where `room`, the pane's
 /// height below its top, lacks space for them, larger where a map `budget`
 /// points tall (legend included) and the width allow. `job` keys the squares'
-/// fade-in, so each fills once per job.
+/// fade-in, so each fills once per job; `verifying` as for `legend`.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
     job: impl std::hash::Hash + std::fmt::Debug,
+    verifying: bool,
     budget: f32,
     room: f32,
 ) {
@@ -169,7 +170,7 @@ pub fn show(
     }
     let top = ui.cursor().top();
     ui.add_space(6.0);
-    legend(ui, &shown, progress, p);
+    legend(ui, &shown, progress, verifying, p);
     let height = ui.cursor().top() - top;
     if height != legend_height {
         ui.data_mut(|d| d.insert_temp(legend_id, height));
@@ -259,11 +260,16 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
 }
 
 /// Each colour on the map with its track count, then the retries.
-fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, p: &Palette) {
-    let written = progress
-        .unverified
-        .as_deref()
-        .unwrap_or("Written, no verify reported.");
+/// `verifying`: a write gw verifies is running, so its one written track is
+/// the one gw is checking.
+fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
+    let written = match verifying {
+        true => "The track gw is writing and checking.",
+        false => progress
+            .unverified
+            .as_deref()
+            .unwrap_or("Written, no verify reported."),
+    };
     ui.horizontal_wrapped(|ui| {
         for (status, name, tip) in [
             (
@@ -274,7 +280,11 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, p: &Palette
             (Status::Partial, "Short", "Some sectors missing."),
             (Status::Bad, "Bad", "No sectors found, or the write failed."),
             (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (Status::Written, "Written", written),
+            (
+                Status::Written,
+                if verifying { "Verifying" } else { "Written" },
+                written,
+            ),
             (Status::Erased, "Erased", "Erased."),
             (
                 Status::Skipped,
@@ -291,8 +301,11 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, p: &Palette
             let edge = edge(status == Status::Skipped, p);
             ui.painter()
                 .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
-            ui.label(RichText::new(format!("{name} {tracks}")).small())
-                .on_hover_text(tip);
+            let text = match status == Status::Written && verifying {
+                true => name.to_owned(),
+                false => format!("{name} {tracks}"),
+            };
+            ui.label(RichText::new(text).small()).on_hover_text(tip);
             ui.add_space(6.0);
         }
         let retries = progress.tally().retries;
