@@ -2441,7 +2441,11 @@ impl App {
                 .get(&key)
                 .is_some_and(|o| o.value(1) == file);
             if !file.is_empty() && !same {
-                self.settings.outputs.insert(key, Output::from_value(file));
+                let mut out = Output::from_value(file);
+                // The name given holds while the input is the one given with it.
+                let input = values.get("in_file").split("::").next().unwrap_or_default();
+                out.named_for = input.to_owned();
+                self.settings.outputs.insert(key, out);
             }
         }
         // The line leaves out a definitions file the chosen format does not use.
@@ -4207,5 +4211,15 @@ mod tests {
         let args = app.args(read);
         assert!(args.iter().all(|a| a != "-n"), "{args:?}");
         assert!(args.iter().any(|a| a == "--format=ibm.1440"), "{args:?}");
+    }
+
+    #[test]
+    fn a_pasted_conversion_keeps_the_name_it_gives_its_image() {
+        let schema = schema();
+        let mut app = offline();
+        let (name, values) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
+        app.fill_in(name, values);
+        let w = window(app);
+        assert_eq!(w.state().settings.outputs["convert/out_file"].name, "b");
     }
 }

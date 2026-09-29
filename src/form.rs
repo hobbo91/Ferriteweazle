@@ -1253,10 +1253,13 @@ impl<'a> Form<'a> {
             .on_hover_text(tip);
         }
         let beside = has_input && out.beside_input;
+        // An image is named after its input, as converters do, until renamed.
+        if !batch && !input.is_empty() && (beside || out.named_for != input) {
+            out.name = image_stem(Path::new(&input));
+            out.named_for.clone_from(&input);
+        }
         if beside && !batch && !input.is_empty() {
-            let input = Path::new(&input);
-            out.folder = lossy(input.parent().map(Path::as_os_str));
-            out.name = image_stem(input);
+            out.folder = lossy(Path::new(&input).parent().map(Path::as_os_str));
         }
         if batch {
             if !beside {
@@ -2580,6 +2583,8 @@ pub struct Output {
     /// Around each input's name in a batch: `Backup_Disk1_copy`.
     pub prefix: String,
     pub suffix: String,
+    /// The input the name was taken from: a new input names the image again.
+    pub named_for: String,
 }
 
 impl Default for Output {
@@ -2595,6 +2600,7 @@ impl Default for Output {
             beside_input: false,
             prefix: String::new(),
             suffix: String::new(),
+            named_for: String::new(),
         }
     }
 }
@@ -3145,6 +3151,21 @@ mod tests {
         };
         outputs.insert(output_key("read", "file"), unnamed);
         assert_eq!(why(&outputs), Some("Name the image first."));
+    }
+
+    #[test]
+    fn a_conversion_is_named_after_its_input_until_renamed() {
+        let key = output_key("convert", "out_file");
+        let v = values(&[("in_file", "/d/Game.scp")]);
+        let outputs = BTreeMap::from([(key.clone(), output(".adf"))]);
+        let mut h = page("convert", v, outputs);
+        assert_eq!(h.state().1[&key].name, "Game");
+        h.state_mut().1.get_mut(&key).unwrap().name = "Mine".into();
+        h.run();
+        assert_eq!(h.state().1[&key].name, "Mine", "a name typed holds");
+        h.state_mut().0.set("in_file", "/d/Other.scp");
+        h.run();
+        assert_eq!(h.state().1[&key].name, "Other");
     }
 
     #[test]
