@@ -4259,7 +4259,7 @@ mod tests {
         assert_eq!(note, Some("Failed: no image kept."), "gw deleted it");
         let log = std::fs::read_to_string(dir.join("Game.img.log")).expect("the log");
         let lines: Vec<&str> = log.lines().collect();
-        let command = format!("gw read --revs=3 {}", path(&image));
+        let command = format!("gw read --revs=3 {}", command::quote(&path(&image)));
         assert_eq!(lines.first(), Some(&command.as_str()), "{log}");
         assert!(lines.contains(&"Command Failed: GetFluxStatus: No Index"));
         assert_eq!(lines.last(), Some(&"Failed after 0:00."));
