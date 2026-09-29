@@ -516,10 +516,7 @@ impl<'a> Form<'a> {
             ui.spacing_mut().item_spacing.x = 4.0;
             let current = self.values.get(&a.dest).to_owned();
             let (unset, tip) = match a.dest.as_str() {
-                "densel" => (
-                    "Auto",
-                    "Leave pin 2 as it is. Most drives sense density from the disk.",
-                ),
+                "densel" => ("Auto", "gw leaves pin 2 as it is."),
                 _ => ("Default", "gw's own choice."),
             };
             if a.default.is_none()
@@ -717,9 +714,13 @@ impl<'a> Form<'a> {
                 if can_detect {
                     let detect = egui::Button::new("Detect")
                         .min_size(vec2(DETECT_BUTTON, theme::FIELD_HEIGHT));
+                    let tip = match OUTPUTS.iter().any(|(c, _)| *c == self.cmd.name) {
+                        true => "Find the disk format and the image type that suits it.",
+                        false => "Find the disk format.",
+                    };
                     if ui
                         .add_enabled(self.cannot_detect.is_none(), detect)
-                        .own_tip("Attempt to find the disk format and image type.")
+                        .own_tip(tip)
                         .on_disabled_hover_text(self.cannot_detect.unwrap_or_default())
                         .clicked()
                     {
@@ -938,7 +939,7 @@ impl<'a> Form<'a> {
                         changed = true;
                     }
                     changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
-                        .own_tip("Read side 1 as side 0 and side 0 as side 1.")
+                        .own_tip("Use head 1 for side 0 and head 0 for side 1.")
                         .changed();
                 });
                 if changed {
@@ -1726,11 +1727,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "cyls", "How many cylinders the drive has."),
     ("reset", "delays", "Reset the delays as well."),
     ("", "densel", "Set the density select signal on pin 2."),
-    (
-        "",
-        "diskdefs",
-        "A file of disk formats to use instead of gw's own.",
-    ),
+    ("", "diskdefs", "A file of disk formats to add to gw's own."),
     ("", "drive", "The drive, by bus unit."),
     ("", "device", "The Greaseweazle's port."),
     (
@@ -2598,6 +2595,14 @@ mod tests {
         h.run();
         h.get_by_label("40");
         assert!(h.query_by_label_contains("Default").is_none());
+    }
+
+    #[test]
+    fn detect_promises_an_image_type_only_where_the_page_makes_one() {
+        let mut h = page("write", values(&[("file", "/f/x.scp")]), BTreeMap::new());
+        h.get_by_label("Detect").hover();
+        h.run();
+        h.get_by_label("Find the disk format.");
     }
 
     #[test]
