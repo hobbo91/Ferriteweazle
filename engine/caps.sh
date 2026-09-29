@@ -28,6 +28,7 @@ tar -xzf "$cache/$name" -C "$work" --strip-components=1
 # What CMakeLists.txt configures, written here so no cmake is needed.
 printf '#define CAPS_LIB_RELEASE 5\n#define CAPS_LIB_REVISION 1\n' >"$work/CapsLibVersion.h"
 arch=${triple%%-*}
+std=c++11
 case "$triple" in
     *apple-darwin)
         [ "$arch" = aarch64 ] && arch=arm64
@@ -41,6 +42,8 @@ case "$triple" in
         out=libcapsimage.so.5 ;;
     *windows-msvc)
         # MSVC's libraries, linked statically: Python ships no C++ runtime.
+        # Its standard library needs C++14.
+        std=c++14
         cxx="clang++ --target=$triple -fuse-ld=lld -shared -fms-runtime-lib=static \
             -D_CRT_SECURE_NO_WARNINGS -I$work/src/Compatibility"
         out=CAPSImg.dll ;;
@@ -49,10 +52,12 @@ esac
 touch "$work/config.h"
 mkdir -p "$dest/caps"
 # shellcheck disable=SC2086
-$cxx -std=c++11 -O2 -w -DHAVE_CONFIG_H=1 -I"$work" -I"$work/src/LibIPF" \
+$cxx -std=$std -O2 -w -DHAVE_CONFIG_H=1 -I"$work" -I"$work/src/LibIPF" \
     -I"$work/src/CAPSImg" -I"$work/src/Core" -I"$work/src/Codec" -I"$work/src/Device" \
     "$work"/src/Core/*.cpp "$work"/src/CAPSImg/*.cpp "$work"/src/Codec/*.cpp \
     -o "$dest/caps/$out"
+# The linker's import library, which only a program linking the DLL needs.
+rm -f "$dest/caps/CAPSImg.lib" "$dest/caps/CAPSImg.exp"
 # Latin-1 with CRLF line ends in the source.
 iconv -f ISO-8859-1 -t UTF-8 "$work/LICENCE.txt" | tr -d '\r' >"$dest/caps/LICENCE.txt"
 echo "caps: $dest/caps/$out"
