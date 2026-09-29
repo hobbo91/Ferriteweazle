@@ -915,6 +915,23 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
 }
 
 #[test]
+fn a_write_names_the_format_gw_takes_from_the_image() {
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    };
+    let log = "Format amiga.amigados\nWriting c=0-79:h=0-1";
+    let w = build(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(Job::replay("write", log)),
+    );
+    let pane = w.get_by_label("Disk status").rect().left();
+    let about = w.get_by_label_contains("amiga.amigados").rect();
+    assert!(about.left() >= pane, "not in the status pane: {about:?}");
+}
+
+#[test]
 fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
     let left = |width: f32| {
         let w = window_at(egui::vec2(width, 780.0), chosen());

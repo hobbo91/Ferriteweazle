@@ -244,6 +244,13 @@ impl Job {
                 .collect();
             self.step = result["step"].as_u64().map_or(1, |s| s.max(1) as u32);
         } else {
+            // With no --format, gw names the image type's own or the one it finds in the file.
+            if self.format.is_none() {
+                self.format = line
+                    .strip_prefix("Format ")
+                    .or_else(|| Some(line.split_once(": Image format ")?.1))
+                    .map(str::to_owned);
+            }
             self.progress.feed(&line);
             self.log.push(line);
         }
@@ -468,6 +475,15 @@ mod tests {
         );
         let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
         assert_eq!(heads, [0, 3, 6, 10]);
+    }
+
+    #[test]
+    fn the_format_gw_takes_from_the_image_is_the_jobs() {
+        let format = |log| Job::replay("convert", log).format;
+        let adf = "Format amiga.amigados\nConverting c=0-79:h=0-1 -> c=0-79:h=0-1";
+        assert_eq!(format(adf).as_deref(), Some("amiga.amigados"));
+        let nsi = "NSI: Image format northstar.fm.ss\nConverting c=0-34:h=0 -> c=0-34:h=0";
+        assert_eq!(format(nsi).as_deref(), Some("northstar.fm.ss"));
     }
 
     #[test]
