@@ -1659,3 +1659,16 @@ fn formats_within_a_family_run_in_numeric_order() {
     assert!(top("ibm.360") < top("ibm.1200"));
     assert!(top("ibm.720") < top("ibm.1440"));
 }
+
+#[test]
+fn image_options_end_within_the_field_in_the_smallest_window() {
+    let mut settings = chosen();
+    settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();
+    let w = window_at(DEFAULT, settings);
+    let right = combo(&w, 2).rect().right();
+    let lists: Vec<_> = w.get_all_by_role(Role::ComboBox).skip(3).collect();
+    assert!(lists.len() >= 4, "bitrate, version, interface and encoding");
+    for list in lists {
+        assert!(list.rect().right() <= right + 0.5, "{:?}", list.value());
+    }
+}

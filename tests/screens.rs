@@ -303,6 +303,12 @@ fn screens() {
         render("tracks-help", theme, typed, None, |w| {
             w.get_by_label("Tracks").hover();
         });
+        for ext in [".hfe", ".scp"] {
+            let mut options = settings("read", theme);
+            options.outputs.get_mut("read/file").unwrap().ext = ext.into();
+            let name = format!("options{}", ext.replace('.', "-"));
+            render(&name, theme, options, None, |_| {});
+        }
         let mut update = settings("update", theme);
         let firmware = "/Users/you/Downloads/greaseweazle-firmware-v1.7.upd";
         update

@@ -70,7 +70,11 @@ pub struct Image {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageOpt {
     pub name: String,
+    /// gw's own: a name, for an option with `choices`.
     pub default: Option<serde_json::Value>,
+    /// The names gw takes for the value, such as SCP disk types.
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
 impl ImageOpt {

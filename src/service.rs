@@ -304,7 +304,17 @@ impl Service {
     /// gw's objection to an image of type `ext` in `format`, or none, as gw
     /// finds when it makes one in memory. Asks gw if it has not tried yet.
     pub fn fits(&mut self, diskdefs: &str, format: &str, ext: &str) -> &Load<Option<String>> {
-        let body = fits_body(diskdefs, format, ext);
+        self.ask(fits_body(diskdefs, format, ext))
+    }
+
+    /// gw's complaint about a value of an image type's option, if it has one.
+    pub fn check_opt(&mut self, ext: &str, name: &str, value: &str) -> Option<&str> {
+        let body = json!({"op": "check_opt", "ext": ext, "name": name, "value": value});
+        self.ask(body).ready().and_then(|e| e.as_deref())
+    }
+
+    /// What gw objects to in `body`'s request, asked once.
+    fn ask(&mut self, body: Value) -> &Load<Option<String>> {
         let requests = &self.requests;
         self.objections
             .entry(body.to_string())

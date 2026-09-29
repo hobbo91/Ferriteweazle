@@ -108,15 +108,52 @@ def opts_class(cls):
 
 
 def settings(o, names):
-    """File options with their defaults. A bool default marks a flag, which gw
-    takes as `::name` since any value it is given counts as true."""
+    """File options with their defaults, and the names gw takes for one with
+    named values. A bool default marks a flag, which gw takes as `::name`
+    since any value it is given counts as true."""
     try:
         inst = o()
     except Exception:
         inst = None
-    defaults = [getattr(inst, n, None) for n in names]
-    return [{'name': n, 'default': d if type(d) in (bool, int, float, str) else None}
-            for n, d in zip(names, defaults)]
+    out = []
+    for n in names:
+        d = getattr(inst, n, None)
+        opt = {'name': n, 'default': d if type(d) in (bool, int, float, str) else None}
+        if choices := named(o, n):
+            opt['choices'] = choices
+            # The default by its name, as gw lists it: other-320k, not 128.
+            opt['default'] = next((c for c in choices if set_to(o, n, c) == d), opt['default'])
+        out.append(opt)
+    return out
+
+
+def named(o, n):
+    """The names gw lists when it refuses a value of option n, if it lists any."""
+    try:
+        setattr(o(), n, '\x01')
+    except Exception as e:
+        lines = str(e).split('\n')
+        at = next((i for i, line in enumerate(lines) if line.startswith('Valid')), None)
+        if at is not None:
+            return ' '.join(lines[at + 1:]).split()
+    return []
+
+
+def set_to(o, n, value):
+    """What option n holds once set to value."""
+    inst = o()
+    setattr(inst, n, value)
+    return getattr(inst, n)
+
+
+def check_opt(ext, name, value):
+    """gw's objection to a value of a file option, from its own setter, or None."""
+    from greaseweazle.tools import util
+    try:
+        set_to(opts_class(util.get_image_class('x' + ext)), name, value)
+    except Exception as e:
+        return str(e).strip().split('\n')[0]
+    return None
 
 
 def images():
@@ -278,7 +315,7 @@ def schema():
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
            'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check,
-           'fits': fits}
+           'fits': fits, 'check_opt': check_opt}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)

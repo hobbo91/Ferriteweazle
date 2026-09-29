@@ -240,6 +240,8 @@ const MAX_FIELD: f32 = 400.0;
 const SHORT_FIELD: f32 = 150.0;
 /// A number of two or three digits.
 const NUMBER_FIELD: f32 = 56.0;
+/// An image option, wide enough for gw's names: Default (other-320k).
+const OPTION_FIELD: f32 = 190.0;
 /// A cylinder number's box in the track picker.
 const NUMBER_BOX: f32 = 32.0;
 /// Detect, beside the format.
@@ -484,54 +486,23 @@ impl<'a> Form<'a> {
 
     /// Common values in a list, and Other… for anything else.
     fn suggest(&mut self, ui: &mut Ui, a: &Arg, options: &[&str]) {
-        let current = self.values.get(&a.dest).to_owned();
-        let other_id = ui.make_persistent_id(("other", &self.cmd.name, &a.dest));
-        let listed = current.is_empty() || options.contains(&current.as_str());
-        let mut other = !listed || ui.data(|d| d.get_temp(other_id)).unwrap_or(false);
-        let default = a
+        let mut value = self.values.get(&a.dest).to_owned();
+        let id = ui.make_persistent_id(("suggest", &self.cmd.name, &a.dest));
+        let unset = a
             .default
             .as_deref()
             .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
-        let shown = match (other, current.as_str()) {
-            (true, _) => RichText::new(OTHER),
-            (false, "") if a.required => RichText::new("Required").color(theme::palette(ui).dim),
-            (false, "") => RichText::new(&default),
-            (false, value) => RichText::new(value),
-        };
-        let mut chosen = None;
+        let listed = options.iter().copied();
         ui.horizontal(|ui| {
-            sized(ui, SHORT_FIELD, |ui| {
-                egui::ComboBox::from_id_salt(("suggest", &self.cmd.name, &a.dest))
-                    .selected_text(shown)
-                    .truncate()
-                    .width(SHORT_FIELD)
-                    .show_ui(ui, |ui| {
-                        if !a.required
-                            && ui
-                                .selectable_label(!other && current.is_empty(), &default)
-                                .clicked()
-                        {
-                            chosen = Some((false, ""));
-                        }
-                        for &o in options {
-                            if ui.selectable_label(!other && current == o, o).clicked() {
-                                chosen = Some((false, o));
-                            }
-                        }
-                        if ui.selectable_label(other, OTHER).clicked() {
-                            chosen = Some((true, ""));
-                        }
-                    })
-            });
-            if let Some((o, value)) = chosen {
-                other = o;
+            let (changed, other) =
+                drop_down(ui, id, &mut value, &unset, a.required, SHORT_FIELD, listed);
+            if changed {
                 self.values.set(&a.dest, value);
             }
             if other {
                 self.typed(ui, a, hint(a, self.schema), SHORT_FIELD);
             }
         });
-        ui.data_mut(|d| d.insert_temp(other_id, other));
     }
 
     /// Choices as a row of buttons; choosing the chosen one again clears it.
@@ -1155,10 +1126,11 @@ impl<'a> Form<'a> {
                 ui.label(RichText::new(COLONS_IN).small().color(bad));
             } else if !path.is_empty() {
                 match self.schema.image(&path) {
-                    Some((_, image)) => {
+                    Some((ext, image)) => {
                         ui.label(RichText::new(image_name(&path, &image.name)).small().weak());
                         if !image.read_opts.is_empty() {
-                            changed |= image_options(ui, &image.read_opts, &mut opts);
+                            changed |=
+                                image_options(ui, self.service, ext, &image.read_opts, &mut opts);
                         }
                         let stray = foreign(&opts, &image.read_opts);
                         if !stray.is_empty() {
@@ -1252,7 +1224,7 @@ impl<'a> Form<'a> {
             .filter(|i| !i.write_opts.is_empty())
         {
             row(ui, "Image options", |ui| {
-                image_options(ui, &image.write_opts, &mut out.opts)
+                image_options(ui, self.service, &out.ext, &image.write_opts, &mut out.opts)
             })
             .0
             .on_hover_text("Settings of this image type.");
@@ -2343,34 +2315,186 @@ fn lossy(s: Option<&OsStr>) -> String {
     s.map_or_else(String::new, |s| s.to_string_lossy().into_owned())
 }
 
-/// Fields for an image type's own options. Returns true if one changed.
-fn image_options(ui: &mut Ui, options: &[ImageOpt], values: &mut BTreeMap<String, String>) -> bool {
-    let mut changed = false;
-    ui.horizontal_wrapped(|ui| {
-        for opt in options {
-            let name = plain(OPTION_NAMES, &opt.name);
-            let value = values.entry(opt.name.clone()).or_default();
-            if opt.flag() {
-                let mut on = !value.is_empty();
-                if checkbox(ui, &mut on, &name).changed() {
-                    *value = if on { ON.to_owned() } else { String::new() };
-                    changed = true;
+/// A drop-down `width` wide of `options`, after `unset` unless the value is
+/// required and before Other…, whose box the caller draws. Returns whether
+/// the value changed, and whether Other… is chosen.
+fn drop_down<'o>(
+    ui: &mut Ui,
+    id: egui::Id,
+    value: &mut String,
+    unset: &str,
+    required: bool,
+    width: f32,
+    options: impl Iterator<Item = &'o str> + Clone,
+) -> (bool, bool) {
+    let other_id = id.with("other");
+    let listed = value.is_empty() || options.clone().any(|o| o == value);
+    let mut other = !listed || ui.data(|d| d.get_temp(other_id)).unwrap_or(false);
+    let shown = match (other, value.as_str()) {
+        (true, _) => RichText::new(OTHER),
+        (false, "") if required => RichText::new("Required").color(theme::palette(ui).dim),
+        (false, "") => RichText::new(unset),
+        (false, v) => RichText::new(v),
+    };
+    let mut chosen = None;
+    sized(ui, width, |ui| {
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(shown)
+            .truncate()
+            .width(width)
+            .show_ui(ui, |ui| {
+                if !required
+                    && ui
+                        .selectable_label(!other && value.is_empty(), unset)
+                        .clicked()
+                {
+                    chosen = Some((false, ""));
                 }
-            } else {
-                ui.label(RichText::new(name).small());
-                let hint = opt
-                    .default
-                    .as_ref()
-                    .filter(|d| !d.is_null())
-                    .map(|d| d.to_string())
-                    .unwrap_or_default();
-                changed |= ui
-                    .add(edit(value).hint_text(hint).desired_width(SHORT_FIELD / 2.0))
-                    .changed();
+                for o in options {
+                    if ui.selectable_label(!other && value == o, o).clicked() {
+                        chosen = Some((false, o));
+                    }
+                }
+                if ui.selectable_label(other, OTHER).clicked() {
+                    chosen = Some((true, ""));
+                }
+            })
+    });
+    if let Some((o, v)) = chosen {
+        other = o;
+        *value = v.to_owned();
+    }
+    ui.data_mut(|d| d.insert_temp(other_id, other));
+    (chosen.is_some(), other)
+}
+
+/// Common values for image options that gw names none for.
+const OPTION_VALUES: &[(&str, &[&str])] = &[
+    ("bitrate", &["125", "250", "300", "500"]),
+    // gw takes these alone.
+    ("version", &["1", "3"]),
+];
+
+/// What an image option does, by its name.
+const OPTION_TIPS: &[(&str, &str)] = &[
+    (
+        "bitrate",
+        "Bit rate, in kbit/s. Unset, gw takes it from the format.",
+    ),
+    ("disktype", "Disk type in the SCP header."),
+    (
+        "double_step",
+        "Mark the image double-stepped, for 40 tracks in an 80-track drive.",
+    ),
+    ("encoding", "Track encoding in the HFE header."),
+    (
+        "index",
+        "Which disk of a multi-disk image, counting from 0.",
+    ),
+    ("interface", "Interface mode in the HFE header."),
+    (
+        "legacy_ss",
+        "Lay out a single-sided image the old, wrong way, for older tools.",
+    ),
+    ("revs", "Revolutions to save per track."),
+    (
+        "sck",
+        "Sample clock for flux timings, in Hz, or MHz with m: 72m.",
+    ),
+    (
+        "uniform",
+        "Keep one bit rate throughout, dropping variable-rate timings.",
+    ),
+    ("version", "HFE version: 1, or 3 for HFEv3."),
+];
+
+/// An image option's default as shown: gw's name for it, or a whole number.
+fn option_default(opt: &ImageOpt) -> Option<String> {
+    match opt.default.as_ref()? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(format!("{:.0}", n.as_f64()?)),
+        _ => None,
+    }
+}
+
+/// Fields for an image type's own options, and gw's complaint about each
+/// value. Returns true if one changed.
+fn image_options(
+    ui: &mut Ui,
+    service: &mut Service,
+    ext: &str,
+    options: &[ImageOpt],
+    values: &mut BTreeMap<String, String>,
+) -> bool {
+    let tip = |name: &str| {
+        OPTION_TIPS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, t)| *t)
+    };
+    let mut changed = false;
+    egui::Grid::new(("image options", ext))
+        .num_columns(2)
+        .spacing(vec2(ROW_GAP, 6.0))
+        .show(ui, |ui| {
+            for opt in options.iter().filter(|o| !o.flag()) {
+                let name = ui.label(plain(OPTION_NAMES, &opt.name));
+                let value = values.entry(opt.name.clone()).or_default();
+                let common = OPTION_VALUES.iter().find(|(n, _)| *n == opt.name);
+                let common = common.map_or(&[][..], |(_, v)| *v);
+                let listed = opt
+                    .choices
+                    .iter()
+                    .map(String::as_str)
+                    .chain(common.iter().copied());
+                let field = ui.vertical(|ui| {
+                    if opt.choices.is_empty() && common.is_empty() {
+                        let hint = option_default(opt).unwrap_or_default();
+                        let edit = edit(value).hint_text(hint).desired_width(OPTION_FIELD);
+                        changed |= ui.add(edit).changed();
+                        return;
+                    }
+                    let unset = option_default(opt)
+                        .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
+                    let id = ui.make_persistent_id(("image option", ext, &opt.name));
+                    let (chose, other) =
+                        drop_down(ui, id, value, &unset, false, OPTION_FIELD, listed);
+                    changed |= chose;
+                    if other {
+                        changed |= ui.add(edit(value).desired_width(OPTION_FIELD)).changed();
+                    }
+                });
+                if let Some(tip) = tip(&opt.name) {
+                    name.on_hover_text(tip);
+                    field.response.on_hover_text(tip);
+                }
+                ui.end_row();
+            }
+        });
+    ui.horizontal_wrapped(|ui| {
+        for opt in options.iter().filter(|o| o.flag()) {
+            let value = values.entry(opt.name.clone()).or_default();
+            let mut on = !value.is_empty();
+            let check = checkbox(ui, &mut on, &plain(OPTION_NAMES, &opt.name));
+            if check.changed() {
+                *value = if on { ON.to_owned() } else { String::new() };
+                changed = true;
+            }
+            if let Some(tip) = tip(&opt.name) {
+                check.on_hover_text(tip);
             }
         }
     });
     values.retain(|_, v| !v.is_empty());
+    for (name, value) in values.iter() {
+        if let Some(e) = service.check_opt(ext, name, value) {
+            ui.label(
+                RichText::new(sentence(e))
+                    .small()
+                    .color(theme::palette(ui).bad),
+            );
+        }
+    }
     changed
 }
 
@@ -3508,6 +3632,48 @@ mod tests {
         assert_eq!(out.value(1), format!("/f{sep}Floppy.img"));
         out.name = " ".into();
         assert_eq!(out.value(1), "");
+    }
+
+    #[test]
+    fn named_image_options_are_chosen_from_gws_names() {
+        let v = values(&[("format", "ibm.1440")]);
+        let key = output_key("read", "file");
+        let pick = |ext: &str, shown: &str, name: &str| {
+            let outputs = BTreeMap::from([(key.clone(), output(ext))]);
+            let mut h = page("read", v.clone(), outputs);
+            h.get_all_by_role(Role::ComboBox)
+                .find(|c| c.value().as_deref() == Some(shown))
+                .expect("the option's list")
+                .click();
+            h.run();
+            h.get_by_label(name).click();
+            h.run();
+            h.state().1[&key].value(1)
+        };
+        let scp = pick(".scp", "Default (other-320k)", "amiga");
+        assert!(scp.ends_with(".scp::disktype=amiga"), "{scp}");
+        let hfe = pick(".hfe", "Default", "250");
+        assert!(hfe.ends_with(".hfe::bitrate=250"), "{hfe}");
+    }
+
+    #[test]
+    fn every_image_option_has_a_short_tip_and_a_default_as_gw_names_it() {
+        let s = schema();
+        for (ext, image) in &s.images {
+            for opt in image.read_opts.iter().chain(&image.write_opts) {
+                let tip = OPTION_TIPS.iter().find(|(n, _)| *n == opt.name);
+                let (_, tip) = tip.unwrap_or_else(|| panic!("{ext} {} has no tip", opt.name));
+                assert!(tip.len() <= 70 && tip.ends_with('.'), "{tip}");
+            }
+        }
+        let opt = |ext: &str, name: &str| {
+            let image = &s.images[ext];
+            let opts = image.read_opts.iter().chain(&image.write_opts);
+            option_default(opts.clone().find(|o| o.name == name).unwrap())
+        };
+        assert_eq!(opt(".raw", "sck").as_deref(), Some("24027429"));
+        assert_eq!(opt(".scp", "disktype").as_deref(), Some("other-320k"));
+        assert_eq!(opt(".hfe", "bitrate"), None);
     }
 
     #[test]

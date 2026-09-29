@@ -1666,3 +1666,42 @@ fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
             .is_some()
     });
 }
+
+#[test]
+fn image_options_offer_gws_names_and_show_its_objections() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let schema = wait("the schema", || {
+        service.poll();
+        service.schema.ready().cloned()
+    });
+    let opt = |ext: &str, name: &str| {
+        let opts = &schema.images[ext].write_opts;
+        opts.iter().find(|o| o.name == name).unwrap().clone()
+    };
+    let disktype = opt(".scp", "disktype");
+    for name in ["amiga", "ibmpc-1m44"] {
+        assert!(disktype.choices.iter().any(|c| c == name), "{name}");
+    }
+    let default = disktype.default.as_ref().and_then(|d| d.as_str());
+    assert_eq!(default, Some("other-320k"));
+    let interface = opt(".hfe", "interface");
+    assert!(interface.choices.iter().any(|c| c == "ibmpc_dd"));
+    let complaint = wait("a complaint", || {
+        service.poll();
+        service.check_opt(".hfe", "version", "2").map(str::to_owned)
+    });
+    assert_eq!(complaint, "HFE: Invalid version: '2'");
+
+    let mut settings = Settings::default();
+    let mut out = Output {
+        ext: ".hfe".into(),
+        ..Output::default()
+    };
+    out.opts.insert("version".into(), "2".into());
+    settings.outputs.insert("read/file".into(), out);
+    let mut w = window(&engine, settings);
+    until_shown(&mut w, "gw's complaint on the page", |w| {
+        w.query_by_label("HFE: Invalid version: '2'.").is_some()
+    });
+}
