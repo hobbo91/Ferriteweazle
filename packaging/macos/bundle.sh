@@ -29,10 +29,21 @@ strip "$app/Contents/MacOS/ferriteweazle"
 # One engine for both: the Apple Silicon one, each program in it joined with
 # its Intel twin (the rest differs only in build notes and cached bytecode),
 # unless pip installed one built for both. Joining drops signatures, and
-# Apple Silicon will not run unsigned code.
+# Apple Silicon will not run unsigned code. Both must hold the same Python
+# and packages, which pip resolves afresh for each build.
+arm=$(engine_dir aarch64-apple-darwin)
 intel=$(engine_dir x86_64-apple-darwin)
+versions() {
+    cat "$1/python-version"
+    "$1/bin/python3" -B -I -c 'import importlib.metadata as m
+print(sorted(d.name + " " + d.version for d in m.distributions()))'
+}
+[ "$(versions "$arm")" = "$(versions "$intel")" ] || {
+    echo "bundle: the two engines differ; rebuild each with engine/build.sh TRIPLE" >&2
+    exit 1
+}
 engine=$app/Contents/Resources/ferriteweazle-data
-ditto "$(engine_dir aarch64-apple-darwin)" "$engine"
+ditto "$arm" "$engine"
 find "$engine" -type f | while read -r f; do
     file -b "$f" | grep -q Mach-O || continue
     case "$(lipo -archs "$f")" in *x86_64*) continue ;; esac
