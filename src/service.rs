@@ -10,11 +10,17 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 /// How often the list of connected devices is refreshed.
 const PORTS_EVERY: Duration = Duration::from_secs(2);
+/// How often the files asked about are looked at again.
+const WATCH_EVERY: Duration = Duration::from_secs(1);
+
+/// When each file asked about last changed, by path.
+type Times = Mutex<HashMap<String, Option<SystemTime>>>;
 
 pub type Repaint = Box<dyn Fn() + Send>;
 
@@ -77,16 +83,22 @@ pub struct Service {
     ports: Load<Vec<Port>>,
     ports_asked: Instant,
     last_ports: Vec<Port>,
-    /// The devices are set by `pin_ports`, and gw is no longer asked.
+    /// Why the last list of devices failed, if it did.
+    ports_error: Option<String>,
+    /// Set by `pin_ports`: gw is not asked for devices.
     pinned: bool,
     /// By path and the time the file last changed, so an edit is checked again.
     diskdefs: HashMap<(String, Option<SystemTime>), Load<DiskDefs>>,
     /// Keyed as `diskdefs`.
     image_formats: HashMap<(String, Option<SystemTime>), Load<Option<String>>>,
-    infos: HashMap<(String, String), Load<FormatInfo>>,
+    /// By disk definitions file, as `diskdefs`, and format name.
+    infos: HashMap<(String, Option<SystemTime>, String), Load<FormatInfo>>,
     checks: HashMap<(String, String, String), Load<Option<String>>>,
     /// The files in a folder, keyed as `diskdefs` by the folder's last change.
     folders: HashMap<(String, Option<SystemTime>), Vec<PathBuf>>,
+    /// The file times in the keys of `diskdefs`, `image_formats` and
+    /// `infos`, which `watch` keeps current.
+    times: Arc<Times>,
 }
 
 impl Service {
@@ -108,45 +120,49 @@ impl Service {
     }
 
     fn new(requests: Sender<Request>, schema: Load<Schema>, ports: Load<Vec<Port>>) -> Service {
+        let times = Arc::default();
+        let watched = Arc::downgrade(&times);
+        std::thread::spawn(move || watch(&watched));
         Service {
             requests,
             schema,
             ports,
             ports_asked: Instant::now(),
             last_ports: Vec::new(),
+            ports_error: None,
             pinned: false,
             diskdefs: HashMap::new(),
             image_formats: HashMap::new(),
             infos: HashMap::new(),
             checks: HashMap::new(),
             folders: HashMap::new(),
+            times,
         }
     }
 
-    /// Takes in replies that have arrived. Returns true if anything changed.
-    pub fn poll(&mut self) -> bool {
-        let mut changed = self.schema.poll();
+    /// Takes in replies that have arrived.
+    pub fn poll(&mut self) {
+        self.schema.poll();
         if self.ports.poll() {
-            let now = self.ports.ready().cloned().unwrap_or_default();
-            changed |= now != self.last_ports;
-            self.last_ports = now;
+            self.ports_error = self.ports.error().map(str::to_owned);
+            self.last_ports = self.ports.ready().cloned().unwrap_or_default();
         }
         for load in self.diskdefs.values_mut() {
-            changed |= load.poll();
+            load.poll();
         }
         for load in self.image_formats.values_mut() {
-            changed |= load.poll();
+            load.poll();
         }
         for load in self.infos.values_mut() {
-            changed |= load.poll();
+            load.poll();
         }
         for load in self.checks.values_mut() {
-            changed |= load.poll();
+            load.poll();
         }
-        changed
     }
 
-    /// Connected Greaseweazles, best match first, refreshed every few seconds.
+    /// Every serial port, likeliest Greaseweazle first, refreshed every
+    /// PORTS_EVERY.
     pub fn ports(&mut self) -> &[Port] {
         if self.ports_asked.elapsed() > PORTS_EVERY {
             self.refresh_ports();
@@ -159,6 +175,11 @@ impl Service {
         &self.last_ports
     }
 
+    /// Why gw could not list the devices, such as its engine having stopped.
+    pub fn ports_error(&self) -> Option<&str> {
+        self.ports_error.as_deref()
+    }
+
     /// Asks for the list of devices now, not when it is next due.
     pub fn refresh_ports(&mut self) {
         if !self.pinned && !matches!(self.ports, Load::Waiting(_)) {
@@ -167,19 +188,20 @@ impl Service {
         }
     }
 
-    /// The devices to show until gw first lists them. None with no gw to ask.
+    /// The devices to show until gw first lists them; ignored with no gw to ask.
     pub fn seed_ports(&mut self, ports: Vec<Port>) {
         if matches!(self.ports, Load::Waiting(_)) {
             self.last_ports = ports;
         }
     }
 
-    /// Lists these devices from now on, and no longer asks gw: a window
-    /// with a made-up Greaseweazle, for tests and pictures.
+    /// Lists these devices and stops asking gw: a window with a made-up
+    /// Greaseweazle, for tests and pictures.
     pub fn pin_ports(&mut self, ports: Vec<Port>) {
         // Drops a reply on its way, which would replace them.
         self.ports = Load::Ready(Vec::new());
         self.last_ports = ports;
+        self.ports_error = None;
         self.pinned = true;
     }
 
@@ -190,12 +212,11 @@ impl Service {
 
     /// The formats a disk definitions file adds, and what gw says is wrong with it.
     pub fn diskdefs(&mut self, path: &str) -> &Load<DiskDefs> {
+        let key = (path.to_owned(), self.modified(path));
         let requests = &self.requests;
-        self.diskdefs
-            .entry((path.to_owned(), modified(path)))
-            .or_insert_with(|| {
-                Load::Waiting(call(requests, json!({"op": "diskdefs", "path": path})))
-            })
+        self.diskdefs.entry(key).or_insert_with(|| {
+            Load::Waiting(call(requests, json!({"op": "diskdefs", "path": path})))
+        })
     }
 
     /// The formats a disk definitions file adds, once gw has read it without
@@ -212,7 +233,7 @@ impl Service {
 
     /// What gw has said so far about a disk definitions file, without asking.
     pub fn known_diskdefs(&self, path: &str) -> Option<&Load<DiskDefs>> {
-        self.diskdefs.get(&(path.to_owned(), modified(path)))
+        self.diskdefs.get(&(path.to_owned(), self.modified(path)))
     }
 
     /// As `custom_formats`, from what gw has already said.
@@ -226,29 +247,33 @@ impl Service {
     /// The format gw takes from an image file when none is chosen, if any.
     /// Asks gw if it has not opened this file yet.
     pub fn image_format(&mut self, path: &str) -> &Load<Option<String>> {
+        let key = (path.to_owned(), self.modified(path));
         let requests = &self.requests;
-        self.image_formats
-            .entry((path.to_owned(), modified(path)))
-            .or_insert_with(|| {
-                Load::Waiting(call(requests, json!({"op": "image_format", "path": path})))
-            })
+        self.image_formats.entry(key).or_insert_with(|| {
+            Load::Waiting(call(requests, json!({"op": "image_format", "path": path})))
+        })
     }
 
     /// As `image_format`, from what gw has already said.
     pub fn known_image_format(&self, path: &str) -> Option<&str> {
-        let load = self.image_formats.get(&(path.to_owned(), modified(path)))?;
+        let load = self
+            .image_formats
+            .get(&(path.to_owned(), self.modified(path)))?;
         load.ready()?.as_deref()
     }
 
     /// gw's objection to an image file, from what gw has already said.
     pub fn image_fault(&self, path: &str) -> Option<&str> {
-        let load = self.image_formats.get(&(path.to_owned(), modified(path)))?;
+        let load = self
+            .image_formats
+            .get(&(path.to_owned(), self.modified(path)))?;
         load.error()
     }
 
-    /// The files in `folder`, listed again when it changes.
+    /// The files in `folder`, listed again when it changes. The folder is
+    /// looked at on each call, not by `watch`, so a file added shows at once.
     pub fn folder(&mut self, folder: &str) -> &[PathBuf] {
-        let key = (folder.to_owned(), modified(folder));
+        let key = (folder.to_owned(), stat(folder));
         if !self.folders.contains_key(&key) {
             self.folders.retain(|(f, _), _| f != folder);
             let files = std::fs::read_dir(folder).map_or_else(
@@ -267,19 +292,24 @@ impl Service {
 
     /// As `folder`, from the last listing.
     pub fn known_folder(&self, folder: &str) -> &[PathBuf] {
-        let key = (folder.to_owned(), modified(folder));
-        self.folders.get(&key).map_or(&[], Vec::as_slice)
+        let last = self.folders.iter().find(|((f, _), _)| f == folder);
+        last.map_or(&[], |(_, files)| files)
     }
 
+    /// A format's layout, gw's own or from a disk definitions file, which
+    /// gw reads again when it changes.
     pub fn format_info(&mut self, diskdefs: &str, name: &str) -> &Load<FormatInfo> {
+        let key = (
+            diskdefs.to_owned(),
+            self.modified(diskdefs),
+            name.to_owned(),
+        );
         let requests = &self.requests;
-        self.infos
-            .entry((diskdefs.to_owned(), name.to_owned()))
-            .or_insert_with(|| {
-                let diskdefs = (!diskdefs.is_empty()).then_some(diskdefs);
-                let body = json!({"op": "format", "name": name, "diskdefs": diskdefs});
-                Load::Waiting(call(requests, body))
-            })
+        self.infos.entry(key).or_insert_with(|| {
+            let diskdefs = (!diskdefs.is_empty()).then_some(diskdefs);
+            let body = json!({"op": "format", "name": name, "diskdefs": diskdefs});
+            Load::Waiting(call(requests, body))
+        })
     }
 
     /// gw's complaint about a value, if it has one.
@@ -294,11 +324,53 @@ impl Service {
             .ready()
             .and_then(|e| e.as_deref())
     }
+
+    /// When a file last changed, so gw looks at an edited file again. After
+    /// the first look it is `watch` that looks, so the window never waits on
+    /// a network mount that has stalled.
+    fn modified(&self, path: &str) -> Option<SystemTime> {
+        if path.is_empty() {
+            return None;
+        }
+        let seen = self.times.lock().ok().and_then(|t| t.get(path).copied());
+        seen.unwrap_or_else(|| {
+            let time = stat(path);
+            if let Ok(mut times) = self.times.lock() {
+                times.insert(path.to_owned(), time);
+            }
+            time
+        })
+    }
 }
 
-/// When a file last changed, so gw looks at an edited file again.
-fn modified(path: &str) -> Option<SystemTime> {
+fn stat(path: &str) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Looks again at the files in `times` every WATCH_EVERY, until the Service
+/// is dropped. No lock is held while the file system answers. The window
+/// draws at least every PORTS_EVERY (see `serve`), and so sees a change.
+fn watch(times: &Weak<Times>) {
+    loop {
+        std::thread::sleep(WATCH_EVERY);
+        let Some(live) = times.upgrade() else {
+            return;
+        };
+        let paths: Vec<String> = match live.lock() {
+            Ok(known) => known.keys().cloned().collect(),
+            Err(_) => return,
+        };
+        let seen: Vec<_> = paths
+            .into_iter()
+            .map(|p| {
+                let time = stat(&p);
+                (p, time)
+            })
+            .collect();
+        if let Ok(mut known) = live.lock() {
+            known.extend(seen);
+        }
+    }
 }
 
 fn call<T>(requests: &Sender<Request>, body: Value) -> Pending<T> {
@@ -310,7 +382,9 @@ fn call<T>(requests: &Sender<Request>, body: Value) -> Pending<T> {
     }
 }
 
-/// Runs the bridge and answers requests in order until the Service is dropped.
+/// Runs the bridge and answers requests in order until the Service is
+/// dropped. With nothing asked for PORTS_EVERY it wakes the window, which
+/// asks for the devices only when it draws.
 fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
     let spawned = cmd
         .stdin(Stdio::piped())
@@ -330,7 +404,15 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
     let stderr = child.stderr.take().expect("stderr is piped");
     let last_words = std::thread::spawn(move || last_line(stderr));
     let mut line = String::new();
-    while let Ok(r) = requests.recv() {
+    loop {
+        let r = match requests.recv_timeout(PORTS_EVERY) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => {
+                repaint();
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         line.clear();
         let sent = writeln!(stdin, "{}", r.body).and_then(|()| stdin.flush());
         if let Ok(1..) = sent.and_then(|()| stdout.read_line(&mut line)) {
@@ -347,6 +429,9 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
         let _ = r.reply.send(Err(why.clone()));
         return refuse(requests, &repaint, why);
     }
+    // The bridge ends when its input closes; waiting reaps it.
+    drop(stdin);
+    let _ = child.wait();
 }
 
 /// Answers every request with the same error.
@@ -371,5 +456,126 @@ fn parse(line: &str) -> Result<Value, String> {
     match reply.get("error").and_then(Value::as_str) {
         Some(e) => Err(e.to_owned()),
         None => Ok(reply["ok"].take()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Origin;
+    use std::path::Path;
+
+    /// An empty folder of its own for `test`.
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
+        let start = Instant::now();
+        loop {
+            if let Some(t) = ready() {
+                return t;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "no {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// A bridge that answers every request with an empty list, and writes its
+    /// process id beside itself.
+    #[cfg(unix)]
+    fn fake_engine(dir: &Path) -> Engine {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("bridge");
+        let text =
+            "#!/bin/sh\necho $$ > \"$0.pid\"\nwhile read -r line; do echo '{\"ok\": []}'; done\n";
+        std::fs::write(&script, text).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Engine {
+            python: script,
+            origin: Origin::Custom,
+        }
+    }
+
+    #[test]
+    fn a_failed_device_list_keeps_its_reason() {
+        let engine = Engine {
+            python: std::env::temp_dir().join("ferriteweazle-no-such-python"),
+            origin: Origin::Custom,
+        };
+        let mut service = Service::start(&engine, Box::new(|| {}));
+        let why = wait_for("reason", || {
+            service.poll();
+            service.ports_error().map(str::to_owned)
+        });
+        assert!(why.starts_with("Could not start "), "{why}");
+        assert!(service.known_ports().is_empty());
+    }
+
+    #[test]
+    fn the_window_never_waits_on_a_file_it_has_looked_at_once() {
+        let dir = scratch("watch");
+        let file = dir.join("Disk.img");
+        std::fs::write(&file, "").unwrap();
+        let path = file.to_string_lossy();
+        let service = Service::offline(Err(String::new()));
+        let seen = service.modified(&path);
+        assert!(seen.is_some());
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(
+            service.modified(&path),
+            seen,
+            "the window does not look again"
+        );
+        wait_for("the file to go", || {
+            service.modified(&path).is_none().then_some(())
+        });
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_window_is_woken_when_the_devices_are_due() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = scratch("idle");
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = wakes.clone();
+        let repaint = Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        let _service = Service::start(&fake_engine(&dir), repaint);
+        // One wake for each of the first two replies, then one with nothing asked.
+        wait_for("a wake", || {
+            (wakes.load(Ordering::SeqCst) > 2).then_some(())
+        });
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_service_leaves_no_bridge_behind() {
+        let dir = scratch("reaped");
+        let engine = fake_engine(&dir);
+        let mut service = Service::start(&engine, Box::new(|| {}));
+        wait_for("the devices", || {
+            service.poll();
+            service.ports.ready().map(|_| ())
+        });
+        let pid = std::fs::read_to_string(dir.join("bridge.pid")).unwrap();
+        drop(service);
+        wait_for("the bridge to be reaped", || {
+            let ps = Command::new("ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&ps.stdout)
+                .trim()
+                .is_empty()
+                .then_some(())
+        });
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -1216,6 +1216,30 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+#[test]
+fn an_edited_disk_definitions_file_gives_its_new_layout() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("diskdefs-edit");
+    let defs = custom_defs(&dir);
+    let file = path(&defs);
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut cyls = |want: u32| {
+        wait("the layout", || {
+            service.poll();
+            let info = service.format_info(&file, "mine.800");
+            if let Some(e) = info.error() {
+                panic!("no layout: {e}");
+            }
+            (info.ready().map(|i| i.cyls) == Some(want)).then_some(())
+        })
+    };
+    cyls(80);
+    let text = std::fs::read_to_string(&defs).unwrap();
+    std::fs::write(&defs, text.replace("cyls = 80", "cyls = 40")).unwrap();
+    cyls(40);
+    std::fs::remove_dir_all(dir).ok();
+}
+
 /// Steps the window until `shown`; on a timeout, lists what it showed instead.
 fn until_shown(w: &mut Window, what: &str, shown: impl Fn(&Window) -> bool) {
     let start = Instant::now();
