@@ -4048,6 +4048,26 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_that_printed_nothing_shows_how_it_ended_as_the_log_does() {
+        let mut app = offline();
+        app.settings.page = Page::Command("seek".into());
+        let mut job = running("seek");
+        app.log.begin(heading(&job), &mut job);
+        job.ended = Some((std::time::Instant::now(), Outcome::Succeeded));
+        app.tool = Some(job);
+        app.ended(&egui::Context::default(), false);
+        let job = app.tool.as_ref().unwrap();
+        assert_eq!(job.log, ["Done in 0:00."]);
+        assert_eq!(
+            app.log.lines().last().map(String::as_str),
+            Some("Done in 0:00.")
+        );
+        let w = window(app);
+        w.get_by_label("Done in 0:00.");
+        assert!(w.query_by_label("gw printed no output.").is_none());
+    }
+
+    #[test]
     fn a_verified_write_calls_its_purple_track_verifying_until_it_stops() {
         let mut job = running("write");
         job.progress.verifies = true;

@@ -379,12 +379,11 @@ impl SessionLog {
         }
     }
 
-    /// Takes the rest of the job's output, then `ending`, which says how it ended.
+    /// Ends the job's own lines with `ending`, which says how it ended, and
+    /// takes the rest: its page's output box shows what the Log shows.
     pub fn end(&mut self, job: &mut Job, ending: String) {
+        job.log.push(ending);
         self.follow(job);
-        self.resume(job);
-        self.lines.push(ending);
-        self.trim();
     }
 
     /// Heads the job's lines again when another job's came in between.
