@@ -2,9 +2,10 @@
 # Builds the engine the app ships, a standalone Python with Greaseweazle, for
 # this computer or for TRIPLE: gw's newest release, or the tag GREASEWEAZLE
 # names (engine/versions). Another processor's Python runs emulated (Rosetta,
-# Windows on ARM, qemu) so pip builds gw's C code for it; on Linux set CC and
-# LDSHARED to a compiler for that processor. Downloads Python and gw's pip
-# dependencies, and on Linux gw's udev rule; needs curl, git and a C compiler.
+# Windows on ARM, qemu) so pip builds gw's C code for it; on Linux zig cc
+# compiles it for glibc 2.17 unless CC and LDSHARED name another compiler.
+# Downloads Python and gw's pip dependencies, and on Linux gw's udev rule;
+# needs curl, git and a C compiler (zig on Linux).
 #
 #   engine/build.sh                                          # this computer
 #   engine/build.sh x86_64-pc-windows-msvc                   # another triple
@@ -42,6 +43,11 @@ case "$triple" in
     *) py=$dest/bin/python3 lib=$(echo "$dest"/lib/python3.*) ;;
 esac
 
+# On Linux gw's C code, like the program, needs no newer glibc than 2.17.
+case "$triple" in *linux*)
+    export CC="${CC:-zig cc -target ${triple%%-*}-linux-gnu.2.17}"
+    export LDSHARED="${LDSHARED:-$CC -shared}" ;;
+esac
 case "$source" in /*) source="file://$source" ;; esac
 "$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check \
     --no-warn-script-location "git+$source@$tag"
@@ -68,7 +74,8 @@ case "$triple" in
 esac
 "$py" -m compileall -q "$lib/site-packages"
 
-"$py" -c 'import greaseweazle, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
+# gw cannot run without its C extension, so it must load too.
+"$py" -c 'import greaseweazle.optimised.optimised, sys; print("engine: greaseweazle", greaseweazle.__version__, "on Python", sys.version.split()[0])'
 
 # gw's udev rule, which the app offers when Linux refuses it the port.
 case "$triple" in *linux*)

@@ -87,6 +87,8 @@ fn sh(dir: &Path, env: &[(&str, &str)], stdin: &str, script: &str) -> Output {
         .current_dir(dir)
         .env_remove("GREASEWEAZLE")
         .env_remove("GREASEWEAZLE_SOURCE")
+        .env_remove("CC")
+        .env_remove("LDSHARED")
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -246,7 +248,7 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
 
 /// engine/build.sh in `dir`, and the PATH that finds its stubs: a download
 /// passes its check and holds its URL, and unpacks a Python that logs its
-/// arguments.
+/// arguments and the compiler it would build with.
 fn stub_build(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/build.sh");
     std::fs::copy(script, dir.join("engine/build.sh")).unwrap();
@@ -265,7 +267,7 @@ echo "$url" >"$2"
     let tar = r#"#!/bin/sh
 while [ "$1" != -C ]; do shift; done
 mkdir -p "$2/bin" "$2/lib/python3.14/site-packages"
-printf '#!/bin/sh\necho "$*" >>python.log\n' >"$2/bin/python3.14"
+printf '#!/bin/sh\necho "$* CC=${CC-} LDSHARED=${LDSHARED-}" >>python.log\n' >"$2/bin/python3.14"
 chmod +x "$2/bin/python3.14"
 ln -s python3.14 "$2/bin/python3"
 "#;
@@ -282,6 +284,11 @@ fn a_build_installs_the_release_wanted_and_records_it() {
     let python = std::fs::read_to_string(dir.join("python.log")).unwrap();
     let pip = "git+https://github.com/keirf/greaseweazle@v1.30";
     assert!(python.contains(pip), "{python}");
+    let check = "-c import greaseweazle.optimised.optimised,";
+    assert!(
+        python.contains(check),
+        "the check loads gw's C extension: {python}"
+    );
     let record = |file: &str| std::fs::read_to_string(dir.join("target/engine").join(file));
     assert_eq!(record("greaseweazle-version").unwrap(), "v1.30\n");
     assert_eq!(record("python-version").unwrap(), format!("{PYTHON}\n"));
@@ -319,5 +326,39 @@ fn a_linux_engine_holds_gws_udev_rule_from_the_release_it_builds() {
         "engine/build.sh x86_64-unknown-linux-gnu",
     );
     assert_eq!(rule("x86_64-unknown-linux-gnu").as_deref(), Some(text));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
+    let dir = repo("zig", "");
+    let stubbed = stub_build(&dir);
+    let env = [("PATH", stubbed.as_str()), ("GREASEWEAZLE", "v1.30")];
+    // The compiler pip had, as the stub Python logged it.
+    let compiler = |env: &[(&str, &str)], triple: &str| {
+        std::fs::remove_file(dir.join("python.log")).ok();
+        run(&dir, env, "", &format!("engine/build.sh {triple}"));
+        let log = std::fs::read_to_string(dir.join("python.log")).unwrap();
+        let pip = log.lines().find(|l| l.contains("pip install")).unwrap();
+        pip[pip.find(" CC=").unwrap() + 1..].to_owned()
+    };
+    for arch in ["x86_64", "aarch64"] {
+        let zig = format!("zig cc -target {arch}-linux-gnu.2.17");
+        assert_eq!(
+            compiler(&env, &format!("{arch}-unknown-linux-gnu")),
+            format!("CC={zig} LDSHARED={zig} -shared")
+        );
+    }
+    assert_eq!(
+        compiler(&env, "aarch64-apple-darwin"),
+        "CC= LDSHARED=",
+        "macOS uses the compiler Python was built with"
+    );
+    let cc = [env[0], env[1], ("CC", "gcc")];
+    assert_eq!(
+        compiler(&cc, "x86_64-unknown-linux-gnu"),
+        "CC=gcc LDSHARED=gcc -shared",
+        "a compiler named in the environment is kept"
+    );
     std::fs::remove_dir_all(dir).ok();
 }

@@ -2,9 +2,8 @@
 # Builds, for ARCH (x86_64 or aarch64, this computer's if none), a tarball
 # dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz and an AppImage
 # dist/Ferriteweazle-VERSION-ARCH.AppImage that run on glibc 2.17 or newer.
-# The engine is rebuilt first if gw has a newer release; for another
-# processor's, set CC and LDSHARED as engine/build.sh says. Needs
-# cargo-zigbuild and zig; downloads appimagetool and the AppImage runtime.
+# The engine is rebuilt first if gw has a newer release. Needs cargo-zigbuild
+# and zig; downloads appimagetool and the AppImage runtime.
 #
 #   packaging/linux/bundle.sh           # this computer
 #   packaging/linux/bundle.sh x86_64    # another processor
