@@ -56,7 +56,7 @@ pub fn line(w: &Window) -> String {
         .unwrap_or_default()
 }
 
-/// The disk map's squares.
+/// The disk map's squares, larger than the legend's 10-point swatches.
 pub fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
     let left = w.get_by_label("Disk status").rect().left();
     w.output()
@@ -66,7 +66,7 @@ pub fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
             egui::Shape::Rect(r)
                 if r.rect.left() > left
                     && (r.rect.width() - r.rect.height()).abs() < 0.5
-                    && r.rect.width() > 8.0 =>
+                    && r.rect.width() > 10.5 =>
             {
                 Some(r)
             }

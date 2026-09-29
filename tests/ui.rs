@@ -897,8 +897,8 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
             settings,
             Some(Job::replay("write", &log)),
         );
-        // Side 0's squares, then side 1's: the fourth is cylinder 1, side 1.
-        let never = squares(&w).nth(3).expect("the map's squares").rect.center();
+        // Side 0's squares, then side 1's: the last is cylinder 1, side 1.
+        let never = squares(&w).last().expect("the map's squares").rect.center();
         w.hover_at(never);
         w.run();
         w.get_by_label("Cylinder 1, side 1");
