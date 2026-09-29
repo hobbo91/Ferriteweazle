@@ -29,10 +29,21 @@ strip "$app/Contents/MacOS/ferriteweazle"
 # One engine for both: the Apple Silicon one, each program in it joined with
 # its Intel twin (the rest differs only in build notes and cached bytecode),
 # unless pip installed one built for both. Joining drops signatures, and
-# Apple Silicon will not run unsigned code.
+# Apple Silicon will not run unsigned code. Both must hold the same Python
+# and packages, which pip resolves afresh for each build.
+arm=$(engine_dir aarch64-apple-darwin)
 intel=$(engine_dir x86_64-apple-darwin)
+versions() {
+    cat "$1/python-version"
+    "$1/bin/python3" -B -I -c 'import importlib.metadata as m
+print(sorted(d.name + " " + d.version for d in m.distributions()))'
+}
+[ "$(versions "$arm")" = "$(versions "$intel")" ] || {
+    echo "bundle: the two engines differ; rebuild each with engine/build.sh TRIPLE" >&2
+    exit 1
+}
 engine=$app/Contents/Resources/ferriteweazle-data
-ditto "$(engine_dir aarch64-apple-darwin)" "$engine"
+ditto "$arm" "$engine"
 find "$engine" -type f | while read -r f; do
     file -b "$f" | grep -q Mach-O || continue
     case "$(lipo -archs "$f")" in *x86_64*) continue ;; esac
@@ -46,11 +57,13 @@ sed "s/@VERSION@/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.pli
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
-# The app beside a link to Applications, to drag it across, and how to open
-# it the first time.
+# The app beside a link to Applications, to drag it across, how to open it
+# the first time, and the licences.
 ln -s /Applications "$stage/Applications"
 cp packaging/macos/README.txt "$stage/README.txt"
 cp LICENSE "$stage/LICENSE.txt"
+packaging/notices.sh "$engine" aarch64-apple-darwin x86_64-apple-darwin \
+    >"$stage/THIRD-PARTY-NOTICES.txt"
 # The disk shows the logo: made writable, given Finder's custom-icon flag,
 # then compressed.
 cp packaging/macos/AppIcon.icns "$stage/.VolumeIcon.icns"

@@ -1,6 +1,9 @@
 f0fb6b233971672dd7add4efa90f8c209a63253e457ffabd0148b9f734638319  cpython-3.14.7+20260924-aarch64-apple-darwin-install_only_stripped.tar.gz
+d19bc0bfc0e19cdf5fd16ae2c053431415d98cc09a1230303ea25616804761e4  cpython-3.14.7+20260924-aarch64-apple-darwin-pgo+lto-full.tar.zst
 215891f97f2f8f2b6f058dd3fc5764390c558a966d14df657c958a52c1312d39  cpython-3.14.7+20260924-aarch64-pc-windows-msvc-install_only_stripped.tar.gz
 d922413468a276e69a132b79fb7493faa46ef2e85b1a29844d3af1f7710ab5bd  cpython-3.14.7+20260924-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
 82745f483d2bcf39ade058ec0dbd44659d583454ea9c4562b66dae7d718ae100  cpython-3.14.7+20260924-x86_64-apple-darwin-install_only_stripped.tar.gz
 1493fc4185edf84bbd4305c15c5fbac2d4fcd4ddd7eb6273903669a5d3106178  cpython-3.14.7+20260924-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
 bd0d0568ccded07bbf1c87727230dc5dd0187e706a87da23c4de78388a229b78  cpython-3.14.7+20260924-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+cd6f471c0bfdb099efefc25ddff9b3df8bf62e10428987f1f05e6f2f9e35d563  cpython-3.14.7-license.rst
+7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8  zstd-1.5.7-LICENSE

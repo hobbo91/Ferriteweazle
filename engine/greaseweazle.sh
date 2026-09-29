@@ -61,15 +61,16 @@ wanted() {
     echo "$tag"
 }
 
-# Builds TRIPLE's engine, this computer's if none, again unless it holds the
-# wanted release. Offline, an engine already built is kept.
+# Builds TRIPLE's engine (this computer's if none) unless it holds the wanted
+# release and Python. Offline, an engine already built is kept.
 refresh() {
     dir=$(engine_dir "${1:-}")
     if tag=$(wanted); then
-        [ "$(cat "$dir/greaseweazle-version" 2>/dev/null)" = "$tag" ] ||
+        [ "$(cat "$dir/greaseweazle-version" 2>/dev/null)" = "$tag" ] &&
+            [ "$(cat "$dir/python-version" 2>/dev/null)" = "$PYTHON+$PYTHON_RELEASE" ] ||
             GREASEWEAZLE=$tag engine/build.sh ${1:+"$1"}
     else
-        [ -d "$dir" ] || return 1
+        [ -f "$dir/greaseweazle-version" ] || return 1
         echo "engine: keeping the Greaseweazle already built" >&2
     fi
 }
