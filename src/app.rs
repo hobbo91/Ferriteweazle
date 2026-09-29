@@ -1447,6 +1447,7 @@ impl App {
             let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
             self.diskdefs_fault(values)
+                .or_else(|| form::missing_image(cmd, values))
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
                 .or(no_device.then_some(NO_DEVICE))
                 .map(str::to_owned)
@@ -4159,5 +4160,17 @@ mod tests {
         w.run();
         w.get_by_label("Second");
         std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn write_waits_for_an_image_that_is_there() {
+        let schema = schema();
+        let write = schema.command("write").unwrap();
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        let values = app.settings.values.entry("write".into()).or_default();
+        values.set("file", "/no/such/Game.adf");
+        let why = app.why_not(&schema, write);
+        assert_eq!(why.as_deref(), Some("The image file does not exist."));
     }
 }

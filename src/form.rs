@@ -159,8 +159,12 @@ const OTHER: &str = "Other…";
 const CUSTOM: &str = "custom";
 const CUSTOM_NAME: &str = "Custom disk definitions";
 
-/// Image types that hold flux or bitcells: Detect can find a format from them.
+/// Image types that hold flux or bitcells: gw saves any track in them with
+/// no format.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
+
+/// Flux as read, which has no bitrate: gw makes HFE of it only at a set one.
+const RAW_FLUX: &[&str] = &[".scp", ".raw", ".a2r"];
 
 /// A KryoFlux stream: one file per track, `nameCC.H.raw`, which gw opens as a
 /// set from any one of them.
@@ -691,7 +695,7 @@ impl<'a> Form<'a> {
         let mut action = None;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let can_detect = flux_source(self.cmd, self.values);
+                let can_detect = detectable(self.schema, self.cmd, self.values);
                 let width = if can_detect {
                     beside_button(ui, DETECT_BUTTON)
                 } else {
@@ -1105,6 +1109,10 @@ impl<'a> Form<'a> {
                         if !image.read_opts.is_empty() {
                             changed |= image_options(ui, &image.read_opts, &mut opts);
                         }
+                        let stray = foreign(&opts, &image.read_opts);
+                        if !stray.is_empty() {
+                            foreign_label(ui, &stray);
+                        }
                     }
                     None => {
                         ui.label(
@@ -1185,6 +1193,12 @@ impl<'a> Form<'a> {
             })
             .0
             .on_hover_text("Settings of this image type.");
+        }
+        if let Some(image) = schema.images.get(&out.ext) {
+            let stray = foreign(&out.opts, &image.write_opts);
+            if !stray.is_empty() {
+                row(ui, "", |ui| foreign_label(ui, &stray));
+            }
         }
 
         ui.add_space(2.0);
@@ -1359,6 +1373,8 @@ const REPLACES_INPUT: &str = "This is the input file. Choose another type or nam
 
 const COLONS_IN: &str = "gw reads :: in a path as options. Choose another image or folder.";
 
+const FOREIGN: &str = "An image has an option its type does not take.";
+
 const REPLACES_INPUTS: &str =
     "An image would replace its input. Choose another type, folder, prefix or suffix.";
 
@@ -1390,6 +1406,14 @@ pub fn blocked(
     {
         return Some("gw cannot read this image. See Disk format.");
     }
+    if values.get("format").is_empty()
+        && !OUTPUTS.iter().any(|(c, _)| *c == cmd.name)
+        && schema
+            .image(input_file(cmd, values))
+            .is_some_and(|(_, i)| i.needs_format)
+    {
+        return Some("Choose a disk format first.");
+    }
     let batch = batch_input(cmd, values);
     if let Some(dest) = batch
         && values.get(dest).is_empty()
@@ -1399,11 +1423,18 @@ pub fn blocked(
             _ => "The folder has no images gw can read.",
         });
     }
-    if BATCHES
-        .iter()
-        .any(|(c, dest)| *c == cmd.name && split_path(values.get(dest)))
-    {
-        return Some(COLONS_IN);
+    if let Some((_, dest)) = BATCHES.iter().find(|(c, _)| *c == cmd.name) {
+        let value = values.get(dest);
+        if split_path(value) {
+            return Some(COLONS_IN);
+        }
+        let (path, opts) = split_opts(value);
+        if schema
+            .image(path)
+            .is_some_and(|(_, i)| !foreign(&opts, &i.read_opts).is_empty())
+        {
+            return Some(FOREIGN);
+        }
     }
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
@@ -1411,10 +1442,13 @@ pub fn blocked(
             return Some("Choose an image type first.");
         };
         // Only a pasted command line gives one of these.
-        match schema.images.get(&out.ext) {
+        let image = match schema.images.get(&out.ext) {
             None => return Some("gw does not know this image type."),
             Some(i) if !i.writable => return Some("gw cannot write this image type."),
-            Some(_) => {}
+            Some(i) => i,
+        };
+        if !foreign(&out.opts, &image.write_opts).is_empty() {
+            return Some(FOREIGN);
         }
         if batch.is_none() && out.name.trim().is_empty() {
             return Some("Name the image first.");
@@ -1441,20 +1475,18 @@ pub fn blocked(
                 return Some(REPLACES_INPUTS);
             }
         }
-        let flux = flux_source(cmd, values);
-        // Flux saved as flux needs no format. HFE holds bitcells, which gw
-        // makes from flux only with a format or a bitrate.
-        let bitcells = matches!(
-            extension(input_file(cmd, values)).as_deref(),
-            Some(".hfe" | ".ipf" | ".ctr")
-        );
+        let tracks = detectable(schema, cmd, values);
+        // Tracks saved as flux need no format. HFE holds bitcells, which gw
+        // makes from flux as read only with a format or a bitrate.
+        let raw_flux = cmd.name == "read"
+            || extension(input_file(cmd, values)).is_some_and(|e| RAW_FLUX.contains(&e.as_str()));
         let flux_out = FLUX.contains(&out.ext.as_str())
-            && (out.ext != ".hfe" || out.opts.contains_key("bitrate") || bitcells);
-        if !(flux && flux_out)
+            && (out.ext != ".hfe" || out.opts.contains_key("bitrate") || !raw_flux);
+        if !(tracks && flux_out)
             && values.get("format").is_empty()
             && implied_format(schema, cmd, values, service).is_none()
         {
-            return Some(if flux {
+            return Some(if tracks {
                 "Choose a disk format first, or press Detect."
             } else {
                 "Choose a disk format first."
@@ -1701,11 +1733,23 @@ fn output_file<'v>(cmd: &Command, values: &'v Values) -> &'v str {
     output.map_or("", |(_, dest)| split_opts(values.get(dest)).0)
 }
 
-/// Whether a command reads flux, from the drive or a flux image, so Detect
-/// can find its format.
-fn flux_source(cmd: &Command, values: &Values) -> bool {
+/// Whether Detect can find the format: of the disk in the drive, or of an
+/// input that holds tracks, flux or decoded.
+fn detectable(schema: &Schema, cmd: &Command, values: &Values) -> bool {
     cmd.name == "read"
-        || extension(input_file(cmd, values)).is_some_and(|e| FLUX.contains(&e.as_str()))
+        || schema
+            .image(input_file(cmd, values))
+            .is_some_and(|(_, i)| i.tracks)
+}
+
+/// Why the page's image cannot be written or converted: it is not there. gw
+/// would stop before it opens the drive, but only after Write has asked.
+pub fn missing_image(cmd: &Command, values: &Values) -> Option<&'static str> {
+    let (_, dest) = BATCHES.iter().find(|(c, _)| *c == cmd.name)?;
+    let value = values.get(dest);
+    let (path, _) = split_opts(value);
+    let missing = !path.is_empty() && !split_path(value) && !Path::new(path).is_file();
+    missing.then_some("The image file does not exist.")
 }
 
 /// The format to decode with: the one chosen, or the one gw takes without.
@@ -2096,6 +2140,21 @@ fn split_path(value: &str) -> bool {
     value
         .split_once("::")
         .is_some_and(|(_, opts)| opts.contains(['/', '\\']))
+}
+
+/// Options set that a type with `options` does not take: gw refuses them.
+fn foreign<'o>(set: &'o BTreeMap<String, String>, options: &[ImageOpt]) -> Vec<&'o str> {
+    let taken = |k: &&String| options.iter().any(|o| o.name == **k);
+    set.keys()
+        .filter(|k| !taken(k))
+        .map(String::as_str)
+        .collect()
+}
+
+/// Names the options set that the image type does not take.
+fn foreign_label(ui: &mut Ui, names: &[&str]) {
+    let text = format!("This image type takes no option {}.", names.join(", "));
+    ui.label(RichText::new(text).small().color(theme::palette(ui).bad));
 }
 
 /// Splits gw's `path::name=value:flag` into the path and its options.
@@ -2641,6 +2700,97 @@ mod tests {
     }
 
     #[test]
+    fn a_track_image_converts_to_flux_with_no_format_and_offers_detect() {
+        let s = schema();
+        let convert = s.command("convert").unwrap();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |input: &str, out: Output| {
+            let v = values(&[("in_file", input)]);
+            let outputs = BTreeMap::from([(output_key("convert", "out_file"), out)]);
+            blocked(&s, convert, &v, &outputs, &service)
+        };
+        assert_eq!(
+            why("/f/a.imd", output(".hfe")),
+            None,
+            "its tracks have a bitrate"
+        );
+        assert_eq!(why("/f/a.edsk", output(".scp")), None);
+        let detect = Some("Choose a disk format first, or press Detect.");
+        assert_eq!(why("/f/a.imd", output(".img")), detect);
+        let sectors = Some("Choose a disk format first.");
+        assert_eq!(
+            why("/f/a.dsk", output(".scp")),
+            sectors,
+            "a .dsk may hold sectors"
+        );
+        let h = page(
+            "convert",
+            values(&[("in_file", "/f/a.imd")]),
+            BTreeMap::new(),
+        );
+        h.get_by_label("Detect");
+    }
+
+    #[test]
+    fn a_plain_sector_image_waits_for_a_format_before_a_write() {
+        let s = schema();
+        let write = s.command("write").unwrap();
+        let service = Service::offline(Ok(s.clone()));
+        let none = BTreeMap::new();
+        let why = |pairs: &[(&str, &str)]| blocked(&s, write, &values(pairs), &none, &service);
+        let needs = Some("Choose a disk format first.");
+        assert_eq!(why(&[("file", "/f/a.img")]), needs);
+        assert_eq!(why(&[("file", "/f/a.st")]), needs);
+        assert_eq!(why(&[("file", "/f/a.img"), ("format", "ibm.1440")]), None);
+        for own in ["/f/a.adf", "/f/a.dsk", "/f/a.msa", "/f/a.scp"] {
+            assert_eq!(why(&[("file", own)]), None, "{own}");
+        }
+    }
+
+    #[test]
+    fn a_missing_image_stops_write_and_convert_before_they_ask() {
+        let s = schema();
+        let dir =
+            std::env::temp_dir().join(format!("ferriteweazle-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let game = dir.join("Game.adf");
+        let file = |dest: &str| values(&[(dest, &game.to_string_lossy())]);
+        let missing = |command: &str, v: &Values| missing_image(s.command(command).unwrap(), v);
+        let gone = Some("The image file does not exist.");
+        assert_eq!(missing("write", &file("file")), gone);
+        assert_eq!(missing("convert", &file("in_file")), gone);
+        assert_eq!(
+            missing("write", &Values::default()),
+            None,
+            "none chosen yet"
+        );
+        std::fs::write(&game, [0u8; 512]).unwrap();
+        assert_eq!(missing("write", &file("file")), None);
+        assert_eq!(missing("convert", &file("in_file")), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_option_an_images_type_does_not_take_is_shown_and_stops_the_page() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let none = BTreeMap::new();
+        let v = values(&[("file", "/f/disk.hfe::bitrate=250")]);
+        let write = s.command("write").unwrap();
+        assert_eq!(blocked(&s, write, &v, &none, &service), Some(FOREIGN));
+        let h = page("write", v, BTreeMap::new());
+        h.get_by_label("This image type takes no option bitrate.");
+
+        let read = s.command("read").unwrap();
+        let v = values(&[("format", "ibm.1440")]);
+        let pasted = Output::from_value("/f/x.img::index=1");
+        let outputs = BTreeMap::from([(output_key("read", "file"), pasted)]);
+        assert_eq!(blocked(&s, read, &v, &outputs, &service), Some(FOREIGN));
+        let h = page("read", v, outputs);
+        h.get_by_label("This image type takes no option index.");
+    }
+
+    #[test]
     fn a_page_that_makes_an_image_says_whether_it_lacks_the_type_or_the_name() {
         let s = schema();
         let read = s.command("read").unwrap();
@@ -2725,7 +2875,7 @@ mod tests {
         let v = values(&[("file", "/Volumes/x::y/Game.adf")]);
         let none = BTreeMap::new();
         assert_eq!(blocked(&s, write, &v, &none, &service), Some(COLONS_IN));
-        let v = values(&[("file", "/f/Game.hfe::bitrate=250")]);
+        let v = values(&[("file", "/f/Game.d88::index=1")]);
         assert_eq!(blocked(&s, write, &v, &none, &service), None, "options");
     }
 

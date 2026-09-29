@@ -52,6 +52,12 @@ pub struct Image {
     /// gw finds the disk format in the file itself, as it does an .nsi's from its size.
     #[serde(default)]
     pub finds_format: bool,
+    /// Holds tracks as they lie on the disk, flux or decoded, not sectors.
+    #[serde(default)]
+    pub tracks: bool,
+    /// A sector image gw opens only with a disk format, as it does an .img.
+    #[serde(default)]
+    pub needs_format: bool,
     /// Settings for `file.ext::opt=value`.
     #[serde(default)]
     pub read_opts: Vec<ImageOpt>,

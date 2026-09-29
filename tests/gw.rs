@@ -1554,3 +1554,24 @@ fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
     }
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn detection_finds_the_format_of_a_track_image() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("detect-imd");
+    let (img, imd) = (dir.join("d.img"), dir.join("d.imd"));
+    let data: Vec<u8> = (0..737_280).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&img, data).unwrap();
+    run(
+        &engine,
+        &["convert", "--format=ibm.720", &path(&img), &path(&imd)],
+    );
+    let job = detect(&engine, &imd);
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("ibm.720"),
+        "{:#?}",
+        job.log
+    );
+    std::fs::remove_dir_all(dir).ok();
+}

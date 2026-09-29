@@ -120,14 +120,22 @@ def settings(o, names):
 
 def images():
     from greaseweazle.tools import util
+    from greaseweazle.image.image import Image
+    from greaseweazle.image.img import IMG
     out = {}
     for ext, spec in util.image_types.items():
         cls = util.get_image_class('x' + ext)
         o = opts_class(cls)
+        sectors = issubclass(cls, IMG)
+        own_open = cls.from_file.__func__ is not Image.from_file.__func__
         out[ext] = {'name': spec if isinstance(spec, str) else spec[0],
                     'writable': not cls.read_only,
                     'default_format': cls.default_format,
                     'finds_format': finds_format(cls),
+                    # Tracks as they lie on the disk, flux or decoded, not sectors.
+                    'tracks': not sectors,
+                    # A sector image gw opens only with a format, as it does an .img.
+                    'needs_format': sectors and not cls.default_format and not own_open,
                     'read_opts': settings(o, o.a_settings + o.r_settings),
                     'write_opts': settings(o, o.a_settings + o.w_settings)}
     return out
@@ -268,6 +276,8 @@ def detect(argv):
     a = p.parse_args(argv)
     found = []
     if a.file:
+        # First: gw 1.23's track image modules import it in a circle.
+        importlib.import_module('greaseweazle.codec.codec')
         image = util.get_image_class(a.file).from_file(a.file, None, {})
         found.append(probe(image.get_track, a.diskdefs))
     else:

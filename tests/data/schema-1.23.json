@@ -939,7 +939,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "A2R",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -947,7 +949,9 @@
    "default_format": "amiga.amigados",
    "finds_format": false,
    "name": "ADF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -955,7 +959,9 @@
    "default_format": "acorn.adfs.640",
    "finds_format": false,
    "name": "ADL",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -963,7 +969,9 @@
    "default_format": "acorn.adfs.320",
    "finds_format": false,
    "name": "ADM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -971,7 +979,9 @@
    "default_format": "acorn.adfs.160",
    "finds_format": false,
    "name": "ADS",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -979,7 +989,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "CTRaw",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -987,7 +999,9 @@
    "default_format": "commodore.cmd.fd2000.dd",
    "finds_format": false,
    "name": "D1M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -995,7 +1009,9 @@
    "default_format": "commodore.cmd.fd2000.hd",
    "finds_format": false,
    "name": "D2M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1003,7 +1019,9 @@
    "default_format": "commodore.cmd.fd4000.ed",
    "finds_format": false,
    "name": "D4M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1011,7 +1029,9 @@
    "default_format": "commodore.1541",
    "finds_format": false,
    "name": "D64",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1019,7 +1039,9 @@
    "default_format": "commodore.1571",
    "finds_format": false,
    "name": "D71",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1027,7 +1049,9 @@
    "default_format": "commodore.1581",
    "finds_format": false,
    "name": "D81",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1035,12 +1059,14 @@
    "default_format": null,
    "finds_format": false,
    "name": "D88",
+   "needs_format": false,
    "read_opts": [
     {
      "default": 0,
      "name": "index"
     }
    ],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1048,7 +1074,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "DCP",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1056,7 +1084,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "DIM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1064,7 +1094,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "DMK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1072,7 +1104,9 @@
    "default_format": "apple2.appledos.140",
    "finds_format": false,
    "name": "DO",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1080,7 +1114,9 @@
    "default_format": "acorn.dfs.ds",
    "finds_format": false,
    "name": "DSD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1088,7 +1124,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "DSK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1096,7 +1134,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "EDSK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1104,7 +1144,9 @@
    "default_format": "thomson.1s320",
    "finds_format": false,
    "name": "FD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1112,7 +1154,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "FDI",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1120,7 +1164,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "HDM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1128,7 +1174,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "HFE",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
@@ -1161,7 +1209,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1169,7 +1219,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1177,7 +1229,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1185,7 +1239,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IPF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1193,7 +1249,9 @@
    "default_format": "ibm.800",
    "finds_format": false,
    "name": "MGT",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1201,7 +1259,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "MSA",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1209,7 +1269,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "NFD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1217,7 +1279,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "NSI",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1225,7 +1289,9 @@
    "default_format": "apple2.prodos.140",
    "finds_format": false,
    "name": "PO",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1233,7 +1299,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "KryoFlux",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
@@ -1250,7 +1318,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "SCP",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
@@ -1271,7 +1341,9 @@
    "default_format": "sega.sf7000",
    "finds_format": false,
    "name": "SF7",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1279,7 +1351,9 @@
    "default_format": "acorn.dfs.ss",
    "finds_format": false,
    "name": "SSD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1287,7 +1361,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1295,7 +1371,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "TD0",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1303,7 +1381,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "XDF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   }
