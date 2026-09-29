@@ -41,6 +41,7 @@ cp -a "$data" "$top/ferriteweazle-data"
 cp packaging/linux/ferriteweazle.desktop packaging/linux/README.txt "$top/"
 cp assets/logo.png "$top/ferriteweazle.png"
 cp LICENSE "$top/LICENSE.txt"
+packaging/notices.sh "$top/ferriteweazle-data" "$triple" >"$top/THIRD-PARTY-NOTICES.txt"
 tarball=dist/Ferriteweazle-$version-linux-$arch.tar.gz
 tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$stage" Ferriteweazle
 
@@ -49,7 +50,7 @@ appdir=$stage/AppDir
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/doc/ferriteweazle"
 cp "$program" "$appdir/usr/bin/ferriteweazle"
 cp -a "$data" "$appdir/usr/bin/ferriteweazle-data"
-cp LICENSE "$appdir/usr/share/doc/ferriteweazle/"
+cp LICENSE "$top/THIRD-PARTY-NOTICES.txt" "$appdir/usr/share/doc/ferriteweazle/"
 ln -s usr/bin/ferriteweazle "$appdir/AppRun"
 cp packaging/linux/ferriteweazle.desktop "$appdir/"
 cp assets/logo.png "$appdir/ferriteweazle.png"

@@ -34,5 +34,6 @@ ModemManager to leave it alone. To install it by hand:
     sudo cp ferriteweazle-data/49-greaseweazle.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules && sudo udevadm trigger
 
-Ferriteweazle is MIT licensed; see LICENSE.txt. Greaseweazle is by Keir
+Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
+holds the licences of the software it includes. Greaseweazle is by Keir
 Fraser and is in the public domain.

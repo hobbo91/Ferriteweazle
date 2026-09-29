@@ -55,7 +55,8 @@ case "$source" in /*) source="file://$source" ;; esac
 
 # Drop what gw never uses, and what only building needed. On Linux and macOS
 # the interpreter is linked statically, so libpython goes too, as do
-# launchers whose #! line names this build folder.
+# launchers whose #! line names this build folder. _dbm goes as well: on
+# Linux it holds Berkeley DB, whose licence wants its source offered.
 rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/ensurepip" \
     "$lib/pydoc_data"
 case "$triple" in
@@ -69,7 +70,7 @@ case "$triple" in
         rm -rf "$dest/include" "$dest/share" "$dest"/lib/libpython* "$dest"/lib/libtcl* \
             "$dest"/lib/libtk* "$dest"/lib/tcl* "$dest"/lib/tk* "$dest"/lib/itcl* \
             "$dest"/lib/thread* "$dest/lib/pkgconfig" "$lib"/config-* \
-            "$lib/lib-dynload/_tkinter"*
+            "$lib/lib-dynload/_tkinter"* "$lib/lib-dynload/_dbm"*
         ;;
 esac
 # The engine never changes once built, so its bytecode is not checked against

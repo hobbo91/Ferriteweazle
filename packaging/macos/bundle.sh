@@ -57,11 +57,13 @@ sed "s/@VERSION@/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.pli
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
-# The app beside a link to Applications, to drag it across, and how to open
-# it the first time.
+# The app beside a link to Applications, to drag it across, how to open it
+# the first time, and the licences.
 ln -s /Applications "$stage/Applications"
 cp packaging/macos/README.txt "$stage/README.txt"
 cp LICENSE "$stage/LICENSE.txt"
+packaging/notices.sh "$engine" aarch64-apple-darwin x86_64-apple-darwin \
+    >"$stage/THIRD-PARTY-NOTICES.txt"
 # The disk shows the logo: made writable, given Finder's custom-icon flag,
 # then compressed.
 cp packaging/macos/AppIcon.icns "$stage/.VolumeIcon.icns"

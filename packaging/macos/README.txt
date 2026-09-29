@@ -20,4 +20,5 @@ If macOS says the app is damaged, run this in Terminal:
 
     xattr -dr com.apple.quarantine /Applications/Ferriteweazle.app
 
-Ferriteweazle is MIT licensed; see LICENSE.txt.
+Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
+holds the licences of the software it includes.

@@ -1,7 +1,8 @@
 //! Which Greaseweazle release engine/greaseweazle.sh picks for the build, when
-//! packaging rebuilds the engine, and what engine/build.sh records. Offline:
-//! curl, git and the Python download are stubs, or the tags come from a scratch
-//! git repository.
+//! packaging rebuilds the engine, what engine/build.sh records, how
+//! packaging/release.sh gathers a release, and what packaging/notices.sh lists.
+//! Offline: curl, git, ssh, cargo and the Python download are stubs, or the tags
+//! come from a scratch git repository.
 #![cfg(unix)]
 
 use std::io::Write;
@@ -486,4 +487,197 @@ fn a_failed_build_on_another_machine_stops_the_release() {
         assert!(last.contains(&format!("{machine}/bundle.sh")), "{last}");
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+/// packaging/notices.sh in `dir`, with packaging/licences, a scratch cargo
+/// registry, an engine in `dir`/data with two Python packages, and the PATH
+/// that finds a cargo stub. The stub logs its arguments to cargo.log and
+/// lists the crates, and the crate in EXTRA if set.
+fn stub_notices(dir: &Path) -> String {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/notices.sh");
+    std::fs::create_dir_all(dir.join("packaging")).unwrap();
+    std::fs::copy(script, dir.join("packaging/notices.sh")).unwrap();
+    let files = [
+        ("packaging/licences/MIT.txt", "The MIT text.\n"),
+        ("packaging/licences/Apache-2.0.txt", "The Apache text.\n"),
+        (
+            "packaging/licences/python-3.14.7+1.txt",
+            "Python's texts.\n",
+        ),
+        ("packaging/licences/pyserial.txt", "pyserial's text.\n"),
+        ("data/python-version", "3.14.7+1\n"),
+    ];
+    let crates = [
+        ("alpha-1.0.0/LICENSE-MIT", "Alpha's MIT.\n"),
+        ("alpha-1.0.0/LICENSE-APACHE", "A shared Apache.\n"),
+        ("beta-2.0.0/LICENSE-APACHE", "A shared Apache.\n"),
+        ("gamma-0.1.0/src/lib.rs", ""),
+        ("fonts-0.1.0/fonts/Font.txt", "The font's licence.\n"),
+        ("fonts-0.1.0/tests/COPYRIGHT", "Test data.\n"),
+        ("delta-1.0.0/src/lib.rs", ""),
+    ];
+    let packages = [
+        (
+            "greaseweazle-1.23.dist-info/licenses/COPYING",
+            "gw's Unlicense.\n",
+        ),
+        ("pyserial-3.5.dist-info/METADATA", "Name: pyserial\n"),
+    ];
+    let files = files.map(|(file, text)| (file.to_owned(), text));
+    let crates = crates.map(|(file, text)| (format!("cargo/registry/src/index/{file}"), text));
+    let site = "data/lib/python3.14/site-packages";
+    let packages = packages.map(|(file, text)| (format!("{site}/{file}"), text));
+    for (file, text) in files.into_iter().chain(crates).chain(packages) {
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let stubs = dir.join("stubs");
+    std::fs::create_dir(&stubs).unwrap();
+    let cargo = r#"#!/bin/sh
+echo "$*" >cargo.log
+printf '%s\n' 'ferriteweazle v0.9.0 (/src)|MIT' 'alpha v1.0.0|MIT OR Apache-2.0' \
+    'beta v2.0.0 (proc-macro)|Apache-2.0' 'gamma v0.1.0|MIT/Apache-2.0' '' \
+    'alpha v1.0.0|MIT OR Apache-2.0 (*)' 'fonts v0.1.0|MIT AND OFL-1.1'
+[ -z "${EXTRA:-}" ] || echo "$EXTRA"
+"#;
+    executable(&stubs.join("cargo"), cargo);
+    format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap())
+}
+
+#[test]
+fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
+    let dir = repo("notices", "");
+    let stubbed = stub_notices(&dir);
+    let cargo = dir.join("cargo");
+    let env = [("PATH", stubbed.as_str()), ("CARGO_HOME", path(&cargo))];
+    let notices = run(
+        &dir,
+        &env,
+        "",
+        "packaging/notices.sh data a-triple b-triple",
+    );
+    let once = |text: &str| assert_eq!(notices.matches(text).count(), 1, "{text}\n{notices}");
+
+    let args = std::fs::read_to_string(dir.join("cargo.log")).unwrap();
+    assert!(args.contains("-e normal"), "{args}");
+    assert!(
+        args.contains("--target a-triple --target b-triple"),
+        "{args}"
+    );
+    once("alpha 1.0.0, beta 2.0.0\n");
+    once("A shared Apache.");
+    once("Alpha's MIT.");
+    once("The font's licence.");
+    assert!(
+        !notices.contains("Test data."),
+        "tests' files are not licences"
+    );
+    assert!(!notices.contains("ferriteweazle 0.9.0"));
+
+    // Crates with no licence file, and the standard texts of what they name.
+    once("gamma 0.1.0: MIT/Apache-2.0\n");
+    once("fonts 0.1.0: MIT AND OFL-1.1\n");
+    once("The MIT text.");
+    once("The Apache text.");
+
+    once("Python's texts.");
+    once("greaseweazle 1.23\n");
+    once("gw's Unlicense.");
+    once("pyserial 3.5\n");
+    once("pyserial's text.");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn notices_stop_at_a_licence_they_have_no_text_for() {
+    let dir = repo("notices-missing", "");
+    let stubbed = stub_notices(&dir);
+    let cargo = dir.join("cargo");
+    let env = [("PATH", stubbed.as_str()), ("CARGO_HOME", path(&cargo))];
+    let script = "packaging/notices.sh data a-triple";
+    let fails = |env: &[(&str, &str)], says: &str| {
+        let out = sh(&dir, env, "", script);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && stderr.contains(says), "{stderr}");
+    };
+
+    let extra = [env[0], env[1], ("EXTRA", "delta v1.0.0|MPL-2.0")];
+    fails(&extra, "add packaging/licences/MPL-2.0.txt");
+
+    std::fs::remove_file(dir.join("packaging/licences/pyserial.txt")).unwrap();
+    fails(&env, "add packaging/licences/pyserial.txt");
+
+    std::fs::remove_file(dir.join("packaging/licences/python-3.14.7+1.txt")).unwrap();
+    fails(&env, "run packaging/python-licences.sh");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn python_licences_keep_the_libraries_the_engine_ships_and_add_zstd() {
+    let dir = repo("python-licences", "");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/python-licences.sh");
+    std::fs::create_dir_all(dir.join("packaging/licences")).unwrap();
+    std::fs::copy(script, dir.join("packaging/python-licences.sh")).unwrap();
+    std::fs::write(dir.join("packaging/licences/python-3.14.6+0.txt"), "old").unwrap();
+    let full = "cpython-3.14.7+1-aarch64-apple-darwin-pgo+lto-full.tar.zst";
+    let names = [full, "cpython-3.14.7-license.rst", "zstd-1.5.7-LICENSE"];
+    let sums: String = names.iter().map(|n| format!("0  {n}\n")).collect();
+    std::fs::write(dir.join("engine/python.sha256"), sums).unwrap();
+
+    // The downloads, already in the cache: the full build is a plain tar that
+    // the zstd stub passes through.
+    let cache = dir.join("target/engine-cache");
+    let licenses = dir.join("full/python/licenses");
+    std::fs::create_dir_all(&licenses).unwrap();
+    let texts = [
+        "cpython",
+        "openssl-3",
+        "zlib",
+        "tcl",
+        "libX11",
+        "bdb",
+        "openssl-1.1",
+    ];
+    for name in texts {
+        let text = format!("The {name} licence.\n");
+        std::fs::write(licenses.join(format!("LICENSE.{name}.txt")), text).unwrap();
+    }
+    std::fs::create_dir_all(&cache).unwrap();
+    let (archive, root) = (cache.join(full), dir.join("full"));
+    let tar = ["-cf", path(&archive), "-C", path(&root), "python"];
+    assert!(Command::new("tar").args(tar).status().unwrap().success());
+    std::fs::write(cache.join(names[1]), "CPython's own page.\n").unwrap();
+    std::fs::write(cache.join(names[2]), "zstd's licence.\n").unwrap();
+    let stubs = dir.join("stubs");
+    std::fs::create_dir(&stubs).unwrap();
+    executable(&stubs.join("shasum"), "#!/bin/sh\ncat >/dev/null\n");
+    executable(&stubs.join("zstd"), "#!/bin/sh\ncat \"$2\"\n");
+    let stubbed = format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap());
+    let env = [("PATH", stubbed.as_str())];
+
+    run(&dir, &env, "", "packaging/python-licences.sh");
+    let licences = std::fs::read_dir(dir.join("packaging/licences")).unwrap();
+    let names: Vec<_> = licences.map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, ["python-3.14.7+1.txt"], "the old build's texts go");
+    let text = std::fs::read_to_string(dir.join("packaging/licences/python-3.14.7+1.txt"));
+    let text = text.unwrap();
+    let kept = [
+        "CPython's own page.",
+        "openssl-3",
+        "zlib",
+        "zstd's licence.",
+    ];
+    for kept in kept {
+        assert!(text.contains(kept), "{kept}: {text}");
+    }
+    for dropped in ["cpython licence", "tcl", "libX11", "bdb", "openssl-1.1"] {
+        assert!(!text.contains(dropped), "{dropped}: {text}");
+    }
+
+    std::fs::write(dir.join("engine/python.sha256"), "").unwrap();
+    let out = sh(&dir, &env, "", "packaging/python-licences.sh");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && stderr.contains("python.sha256 has no line for"));
+    std::fs::remove_dir_all(dir).ok();
 }

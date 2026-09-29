@@ -20,4 +20,5 @@ The first time
 This build is not code-signed, so SmartScreen may stop a downloaded copy
 with "Windows protected your PC". Choose More info, then Run anyway.
 
-Ferriteweazle is MIT licensed; see LICENSE.txt.
+Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
+holds the licences of the software it includes.

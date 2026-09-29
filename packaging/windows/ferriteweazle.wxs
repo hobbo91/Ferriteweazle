@@ -49,6 +49,9 @@
         <File Source="$(App)\LICENSE.txt" />
       </Component>
       <Component Directory="INSTALLFOLDER">
+        <File Source="$(App)\THIRD-PARTY-NOTICES.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
         <RegistryValue Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
                        Type="string" Value="[INSTALLFOLDER]" />
       </Component>
