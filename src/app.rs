@@ -18,6 +18,7 @@ use eframe::egui::{
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
     ViewportCommand, pos2, vec2,
 };
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -761,12 +762,24 @@ impl App {
     }
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
-    fn cannot_detect(&self, page: &str) -> Option<&'static str> {
-        self.busy().or(match page {
-            "read" if self.probe.is_some() => Some(ASKING),
-            "read" if !self.connected() => Some(NO_DEVICE),
+    fn cannot_detect(&self, page: &str) -> Option<Cow<'static, str>> {
+        if let Some(why) = self.busy() {
+            return Some(why.into());
+        }
+        match page {
+            "read" if self.probe.is_some() => Some(ASKING.into()),
+            "read" if !self.connected() => Some(self.no_device()),
             _ => None,
-        })
+        }
+    }
+
+    /// Why the sidebar shows no Greaseweazle: gw's reason when it could not
+    /// list the ports, else NO_DEVICE.
+    fn no_device(&self) -> Cow<'static, str> {
+        match self.service.ports_error() {
+            Some(why) => why.to_owned().into(),
+            None => NO_DEVICE.into(),
+        }
     }
 
     /// Runs `gw info` for the device card, when nothing else is using the device.
@@ -1074,6 +1087,8 @@ impl App {
                             .on_disabled_hover_text(BUSY)
                             .clicked();
                     }
+                } else if let Some(why) = self.service.ports_error() {
+                    ui.label(RichText::new(why).small().color(p.bad));
                 }
                 ui.add_space(4.0);
                 let shown = match &found {
@@ -1305,7 +1320,7 @@ impl App {
                         values,
                         outputs: &mut self.settings.outputs,
                         service: &mut self.service,
-                        cannot_detect,
+                        cannot_detect: cannot_detect.as_deref(),
                     }
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
@@ -1497,10 +1512,13 @@ impl App {
             // The page's own settings first: they can be made ready with no device.
             let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
-            self.diskdefs_fault(values)
+            match self
+                .diskdefs_fault(values)
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
-                .or(no_device.then_some(NO_DEVICE))
-                .map(str::to_owned)
+            {
+                Some(why) => Some(why.to_owned()),
+                None => no_device.then(|| self.no_device().into_owned()),
+            }
         }
     }
 
@@ -3809,7 +3827,7 @@ mod tests {
         let mut probe = Job::replay("info", "");
         probe.ended = None;
         app.probe = Some(probe);
-        assert_eq!(app.cannot_detect("read"), Some(ASKING));
+        assert_eq!(app.cannot_detect("read").as_deref(), Some(ASKING));
         assert_eq!(app.cannot_detect("convert"), None, "it reads a file");
     }
 
@@ -4176,10 +4194,40 @@ mod tests {
         assert_eq!(app.why_not(&schema, info), None);
         app.gw_update = installing();
         assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
-        assert_eq!(app.cannot_detect("convert"), Some(INSTALLING));
+        assert_eq!(app.cannot_detect("convert").as_deref(), Some(INSTALLING));
         app.gw_update = Update::Idle;
         app.app_update = installing();
         assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
+    }
+
+    #[test]
+    fn a_port_list_gw_could_not_make_gives_its_reason_on_the_card_and_the_buttons() {
+        use egui::accesskit::Role;
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.service = Service::start(&no_gw(), Box::new(|| {}));
+        let asked = std::time::Instant::now();
+        let why = loop {
+            app.service.poll();
+            if let Some(why) = app.service.ports_error() {
+                break why.to_owned();
+            }
+            assert!(asked.elapsed() < Duration::from_secs(10), "no reason came");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(app.cannot_detect("read").as_deref(), Some(why.as_str()));
+        app.settings.page = Page::Command("info".into());
+        let mut w = window(app);
+        w.get_by_label("Disconnected");
+        w.get_by_label(&why);
+        w.get_by_role_and_label(Role::Button, "Get info").hover();
+        w.run_steps(4);
+        assert_eq!(
+            w.get_all_by_label(&why).count(),
+            2,
+            "not the run button's reason"
+        );
+        assert!(w.query_by_label(NO_DEVICE).is_none());
     }
 
     #[test]
