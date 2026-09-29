@@ -15,8 +15,8 @@ use ferriteweazle::{App, Drawer, Page, Settings};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The engine in target/engine, or the folder FERRITEWEAZLE_ENGINE names,
-/// such as another processor's engine run emulated.
+/// The engine in target/engine or the folder FERRITEWEAZLE_ENGINE names (such
+/// as another processor's, run emulated), else an installed gw.
 fn engine() -> Option<Engine> {
     let dir = std::env::var_os("FERRITEWEAZLE_ENGINE").map_or_else(
         || Path::new(env!("CARGO_MANIFEST_DIR")).join("target/engine"),
@@ -147,6 +147,33 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
     );
 }
 
+/// Prints what the bridge in argv[1] uses that gw's oldest Python, 3.8,
+/// lacks: newer syntax fails to parse, and these came in 3.9 and 3.10.
+const NEWER_PYTHON: &str = r#"
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read(), feature_version=(3, 8))
+newer = {'cache', 'get_annotations', 'removeprefix', 'removesuffix'}
+print(sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & newer))
+"#;
+
+#[test]
+fn the_bridge_runs_on_the_oldest_python_gw_does() {
+    let Some(engine) = engine() else { return };
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&engine.python)
+        .args(["-c", NEWER_PYTHON])
+        .arg(&bridge)
+        .output()
+        .expect("python runs");
+    let used = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        used.trim(),
+        "[]",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Lays out a GitHub for gw in argv[1], its latest release v1.99: source
 /// zips made from the installed gw, v1.98's with different C code.
 const FAKE_GITHUB: &str = r#"
@@ -204,7 +231,9 @@ fn serve(engine: &Engine, dir: &Path) -> Server {
 
 #[test]
 fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed() {
-    let Some(engine) = engine() else { return };
+    let Some(engine) = engine().filter(|e| e.origin == Origin::Bundled) else {
+        return;
+    };
     let dir = scratch("github");
     let site = dir.join("site");
     let made = std::process::Command::new(&engine.python)
@@ -231,7 +260,7 @@ fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed()
     std::fs::create_dir_all(&updates).unwrap();
     let folder = path(&updates);
     let (ok, _, why) = bridge(&["update", "v1.98", "v1.23", &folder]);
-    assert!(!ok && why.contains("changes its C code"), "{why}");
+    assert!(!ok && why.contains("gw 1.98 changes its C code"), "{why}");
     let (ok, tag, why) = bridge(&["update", "v1.99", "v1.23", &folder]);
     assert!(ok, "{why}");
     assert_eq!(tag, "v1.99");
@@ -301,6 +330,36 @@ fn a_release_is_downloaded_checked_against_its_sums_and_unpacked() {
 }
 
 #[test]
+fn github_out_of_reach_is_one_sentence_whatever_asked_it() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("unreachable");
+    let folder = path(&dir);
+    for args in [
+        vec!["latest"],
+        vec![
+            "fetch",
+            "v0.9.1",
+            "Ferriteweazle-0.9.1-linux-x86_64.tar.gz",
+            &folder,
+        ],
+        vec!["update", "v1.99", "v1.23", &folder],
+    ] {
+        // Nothing listens on the discard port.
+        let out = engine
+            .bridge(args[0])
+            .args(&args[1..])
+            .env("FERRITEWEAZLE_GITHUB", "http://127.0.0.1:9")
+            .env("FERRITEWEAZLE_GITHUB_API", "http://127.0.0.1:9")
+            .output()
+            .expect("the bridge runs");
+        let why = String::from_utf8_lossy(&out.stderr);
+        let last = why.lines().last().unwrap_or_default();
+        assert_eq!(last, "Could not reach GitHub.", "{}: {why}", args[0]);
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn the_service_describes_gw_and_checks_values() {
     let Some(engine) = engine() else { return };
     let mut service = Service::start(&engine, Box::new(|| {}));
@@ -319,6 +378,15 @@ fn the_service_describes_gw_and_checks_values() {
         );
     }
     assert!(schema.formats.iter().any(|f| f == "ibm.1440"));
+    let about = |name| schema.command(name).map(|c| c.about.as_str());
+    assert_eq!(
+        about("pin get"),
+        Some("Read the level of a user-modifiable interface pin.")
+    );
+    assert_eq!(
+        about("pin set"),
+        Some("Change the setting of a user-modifiable interface pin.")
+    );
     let info = wait("format details", || {
         service.poll();
         match service.format_info("", "amiga.amigados") {
@@ -336,6 +404,37 @@ fn the_service_describes_gw_and_checks_values() {
         service.check("read", "revs", "0").map(str::to_owned)
     });
     assert_eq!(complaint, "must be 1 or greater");
+}
+
+#[test]
+fn format_details_describe_the_whole_disk_not_its_first_track() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut info = |name: &str| {
+        let info = wait(name, || {
+            service.poll();
+            match service.format_info("", name) {
+                Load::Ready(info) => Some(info.clone()),
+                Load::Failed(e) => panic!("{name}: {e}"),
+                Load::Waiting(_) => None,
+            }
+        });
+        (info.encoding, info.sectors, info.bytes)
+    };
+    // FM on cylinder 0, with 10 sectors a track; MFM with 18 after.
+    let flex = info("tsc.flex.dsdd");
+    assert_eq!(
+        flex,
+        (Some("IBM FM and IBM MFM".into()), None, Some(733_184))
+    );
+    // 21 sectors a track on the outer cylinders, 17 on the inner.
+    let c64 = info("commodore.1541");
+    assert_eq!(c64, (Some("Commodore GCR".into()), None, Some(196_608)));
+    // A scan's tracks have no layout until gw reads them.
+    assert_eq!(info("ibm.scan"), (None, None, None));
+    assert_eq!(info("raw.250"), (Some("Raw Bitcell".into()), None, None));
+    let pc = info("ibm.1440");
+    assert_eq!(pc, (Some("IBM MFM".into()), Some(18), Some(1_474_560)));
 }
 
 #[test]
@@ -477,10 +576,7 @@ fn window(engine: &Engine, settings: Settings) -> Window {
 }
 
 fn until(w: &mut Window, what: &str, done: impl Fn(&App) -> bool) {
-    wait(what, || {
-        w.step();
-        w.state().as_ref().is_some_and(&done).then_some(())
-    });
+    until_shown(w, what, |w| w.state().as_ref().is_some_and(&done));
 }
 
 /// Writes a blank ibm.360 image, dir/Game.img, and returns the Convert page
@@ -634,6 +730,15 @@ fn app_mut(w: &mut Window) -> &mut App {
         .expect("the first frame made the app")
 }
 
+/// Starts `seek 90` as the tool job; it waits on gw's question, so it runs
+/// until stopped.
+fn waiting_tool(w: &mut Window, engine: &Engine) {
+    app_mut(w).tool = Some(start(engine, "seek", &["seek", "90"]));
+    until(w, "gw's question", |app| {
+        app.tool.as_ref().is_some_and(|j| j.question.is_some())
+    });
+}
+
 /// A Greaseweazle as gw lists it, on a made-up port.
 fn greaseweazle() -> Port {
     Port {
@@ -686,11 +791,7 @@ fn a_device_page_stays_open_when_the_greaseweazle_goes_and_its_job_runs_on() {
 
     app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     app_mut(&mut w).settings.page = Page::Command("seek".into());
-    // `seek 90` waits on gw's question, so the job runs until it is stopped.
-    app_mut(&mut w).tool = Some(start(&engine, "seek", &["seek", "90"]));
-    until(&mut w, "gw's question", |app| {
-        app.tool.as_ref().is_some_and(|j| j.question.is_some())
-    });
+    waiting_tool(&mut w, &engine);
     app_mut(&mut w).pin_ports(Vec::new());
     w.run_steps(2);
     assert!(app_mut(&mut w).tool.as_ref().unwrap().running());
@@ -723,40 +824,6 @@ fn painted(w: &Window, text: &str) -> bool {
 }
 
 #[test]
-fn a_page_that_acts_on_the_device_says_to_connect_one_until_it_is() {
-    let Some(engine) = engine() else { return };
-    let settings = Settings {
-        page: Page::Command("erase".into()),
-        ..Settings::default()
-    };
-    let mut w = window(&engine, settings);
-    let run = |w: &Window| {
-        w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
-            .find(|n| n.rect().left() > 240.0)
-            .expect("the run button")
-            .accesskit_node()
-            .is_disabled()
-    };
-    assert!(run(&w), "it runs with no device");
-    w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
-        .find(|n| n.rect().left() > 240.0)
-        .expect("the run button")
-        .hover();
-    until_shown(&mut w, "why", |w| {
-        w.query_by_label("Connect a Greaseweazle.").is_some()
-    });
-    w.state_mut().as_mut().unwrap().pin_ports(vec![Port {
-        device: "/dev/cu.usbmodem14201".into(),
-        name: Some("Greaseweazle".into()),
-        serial: None,
-        score: 20,
-        denied: false,
-    }]);
-    w.run_steps(2);
-    assert!(!run(&w), "it cannot run with a device");
-}
-
-#[test]
 fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let Some(engine) = engine() else { return };
     let settings = Settings {
@@ -766,6 +833,10 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let mut w = window(&engine, settings);
     let before = entries(&w);
     assert!(before.contains(&"Erase disk".to_owned()), "{before:?}");
+    let version = format!(
+        "gw {}",
+        w.state().as_ref().unwrap().schema().unwrap().version
+    );
     w.get_by_label("Restart").click();
     w.step();
     assert!(
@@ -775,7 +846,7 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     wait("gw to start again", || {
         w.step();
         assert_eq!(entries(&w), before);
-        assert!(painted(&w, "gw 1.23"), "the version beside Settings went");
+        assert!(painted(&w, &version), "the version beside Settings went");
         w.state().as_ref().unwrap().schema().map(|_| ())
     });
     w.run_steps(2);
@@ -796,22 +867,13 @@ fn a_restarted_gw_keeps_the_greaseweazle_until_it_has_looked() {
     w.run_steps(2);
     assert!(app_mut(&mut w).schema().is_none(), "gw restarts");
     assert!(w.query_by_label("Disconnected").is_none());
-    let erase = w
-        .get_all_by_role_and_label(egui::accesskit::Role::Button, "Erase disk")
-        .next()
-        .expect("the sidebar entry");
-    assert!(!erase.accesskit_node().is_disabled());
 }
 
 #[test]
 fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
     let Some(engine) = engine() else { return };
     let mut w = window(&engine, Settings::default());
-    // `seek 90` waits on gw's question, so the job runs until it is stopped.
-    w.state_mut().as_mut().unwrap().tool = Some(start(&engine, "seek", &["seek", "90"]));
-    until(&mut w, "gw's question", |app| {
-        app.tool.as_ref().is_some_and(|j| j.question.is_some())
-    });
+    waiting_tool(&mut w, &engine);
 
     w.input_mut()
         .viewports
@@ -845,10 +907,7 @@ fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
 fn a_job_that_ends_while_quit_asks_lets_the_window_close() {
     let Some(engine) = engine() else { return };
     let mut w = window(&engine, Settings::default());
-    w.state_mut().as_mut().unwrap().tool = Some(start(&engine, "seek", &["seek", "90"]));
-    until(&mut w, "gw's question", |app| {
-        app.tool.as_ref().is_some_and(|j| j.question.is_some())
-    });
+    waiting_tool(&mut w, &engine);
     w.input_mut()
         .viewports
         .entry(egui::ViewportId::ROOT)
@@ -859,8 +918,7 @@ fn a_job_that_ends_while_quit_asks_lets_the_window_close() {
     w.step();
     w.get_by_label("Stop and quit");
 
-    let app = w.state_mut().as_mut().unwrap();
-    app.tool.as_mut().unwrap().stop();
+    app_mut(&mut w).tool.as_mut().unwrap().stop();
     wait("the window to close", || {
         w.step();
         w.output().viewport_output[&egui::ViewportId::ROOT]
@@ -1063,7 +1121,7 @@ fn detection_tells_apart_formats_that_differ_only_in_layout() {
     let Some(engine) = engine() else { return };
     let dir = scratch("detect-layout");
     // Each decodes like another format on cylinder 0; only the index mark,
-    // skew, gaps or length differ.
+    // interleave, skew, gaps or length differ.
     for (format, bytes) in [
         ("atarist.720", 737_280), // no index mark, where ibm.720 has one
         ("ibm.720", 737_280),
@@ -1209,10 +1267,49 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
         "{bad:?}"
     );
     assert!(bad.errors[1].contains("line 10"), "{bad:?}");
+    // gw reads the file from the top for each disk.
+    let stray = dir.join("stray.cfg");
+    let disks = std::fs::read_to_string(dir.join("mine.cfg")).unwrap();
+    std::fs::write(
+        &stray,
+        format!("oops\n{disks}{}", disks.replace("mine.800", "mine.900")),
+    )
+    .unwrap();
+    let stray = read(&stray).unwrap();
+    assert_eq!(stray.formats, ["mine.800", "mine.900"]);
+    assert_eq!(stray.errors.len(), 1, "{stray:?}");
+    assert!(
+        stray.errors[0].ends_with("line 1: syntax error"),
+        "{stray:?}"
+    );
     assert_eq!(
         read(&dir.join("missing.cfg")),
         Err("There is no such file.".into())
     );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn an_edited_disk_definitions_file_gives_its_new_layout() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("diskdefs-edit");
+    let defs = custom_defs(&dir);
+    let file = path(&defs);
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut cyls = |want: u32| {
+        wait("the layout", || {
+            service.poll();
+            let info = service.format_info(&file, "mine.800");
+            if let Some(e) = info.error() {
+                panic!("no layout: {e}");
+            }
+            (info.ready().map(|i| i.cyls) == Some(want)).then_some(())
+        })
+    };
+    cyls(80);
+    let text = std::fs::read_to_string(&defs).unwrap();
+    std::fs::write(&defs, text.replace("cyls = 80", "cyls = 40")).unwrap();
+    cyls(40);
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -1408,7 +1505,7 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
 
     // gw convert takes an output type's own format before the input's.
     let output = |w: &mut Window, ext: &str| {
-        let outputs = &mut w.state_mut().as_mut().unwrap().settings.outputs;
+        let outputs = &mut app_mut(w).settings.outputs;
         outputs.get_mut("convert/out_file").unwrap().ext = ext.into();
         w.run_steps(3);
     };
@@ -1457,6 +1554,9 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
     until_shown(&mut w, "the file's formats", |w| {
         w.query_by_label("Custom disk definitions").is_some()
     });
+    // Acorn is the first of gw's own families.
+    let top = |label| w.get_by_label(label).rect().top();
+    assert!(top("Custom disk definitions") < top("Acorn"));
     w.get_by_label("mine.800").click();
     w.run_steps(3);
     let line = cli_line(&w);

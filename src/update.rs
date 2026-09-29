@@ -1,17 +1,18 @@
 //! Newer releases on GitHub, of gw and of Ferriteweazle: looking for one and
-//! installing it. The bridge talks to GitHub, in the background with a time
-//! limit, so no network trouble can hold up the window.
+//! installing it. The bridge talks to GitHub in the background, so no network
+//! trouble can hold up the window.
 
 use crate::engine::{self, Engine};
 use crate::service::Repaint;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 /// Longest a look at GitHub may take; a slow DNS lookup counts as no answer.
+/// An install has no limit: the bridge gives up on a download that stalls.
 const CHECK_LIMIT: Duration = Duration::from_secs(20);
-const INSTALL_LIMIT: Duration = Duration::from_secs(300);
 pub const APP_REPO: &str = "hobbo91/ferriteweazle";
 
 type Answer = Receiver<Result<String, String>>;
@@ -19,7 +20,7 @@ type Answer = Receiver<Result<String, String>>;
 /// One product's update: what was found, and what is under way.
 #[derive(Default)]
 pub enum Update {
-    /// Not looked for: a test window.
+    /// Not looked for.
     #[default]
     Idle,
     Checking(Answer),
@@ -36,7 +37,10 @@ impl Update {
     pub fn check(engine: &Engine, repo: Option<&str>, repaint: Repaint) -> Update {
         let mut cmd = engine.bridge("latest");
         cmd.args(repo);
-        Update::Checking(background(move || run(&mut cmd, CHECK_LIMIT), repaint))
+        Update::Checking(background(
+            move || run(&mut cmd, Some(CHECK_LIMIT)),
+            repaint,
+        ))
     }
 
     /// Installs gw `tag` beside the built-in gw.
@@ -49,21 +53,21 @@ impl Update {
         cmd.arg(tag).arg(bundled).arg(&folder);
         let work = move || {
             std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-            run(&mut cmd, INSTALL_LIMIT)
+            run(&mut cmd, None)
         };
         Update::Installing(background(work, repaint), tag.to_owned())
     }
 
     /// Downloads Ferriteweazle `tag` and puts it in place of this copy.
     pub fn app(engine: &Engine, install: Install, tag: &str, repaint: Repaint) -> Update {
-        let name = install.asset(tag.trim_start_matches('v'));
+        let name = install.asset(bare(tag));
         let folder = install.downloads();
         let mut cmd = engine.bridge("fetch");
         cmd.arg(tag).arg(&name).arg(&folder);
         let done = tag.to_owned();
         let work = move || {
             std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-            install.replace(Path::new(&run(&mut cmd, INSTALL_LIMIT)?))?;
+            install.replace(Path::new(&run(&mut cmd, None)?))?;
             Ok(done)
         };
         Update::Installing(background(work, repaint), tag.to_owned())
@@ -97,16 +101,19 @@ impl Update {
     /// Whether Update can run for `what`, and what its hover says.
     pub fn button(&self, what: &str) -> (bool, String) {
         match self {
-            Update::Newer(tag) => (true, format!("Install {what} {tag} from GitHub.")),
-            Update::Idle | Update::Checking(_) => (
+            Update::Idle => (false, "Not checked.".into()),
+            Update::Newer(tag) => (true, format!("Install {what} {} from GitHub.", bare(tag))),
+            Update::Checking(_) => (
                 false,
                 format!("Checking GitHub for a newer release of {what}\u{2026}"),
             ),
             Update::Latest(tag) => (
                 false,
-                format!("{what} {tag} is the latest release on GitHub."),
+                format!("{what} {} is the latest release on GitHub.", bare(tag)),
             ),
-            Update::Installing(_, tag) => (false, format!("Installing {what} {tag}\u{2026}")),
+            Update::Installing(_, tag) => {
+                (false, format!("Installing {what} {}\u{2026}", bare(tag)))
+            }
             Update::Unreachable(why) | Update::Failed(why) => (false, why.clone()),
         }
     }
@@ -114,7 +121,6 @@ impl Update {
     /// Settings' line for Ferriteweazle `now`, such as `0.9.0`, and the reason
     /// behind a failure.
     pub fn summary(&self, now: &str) -> (String, Option<String>) {
-        let bare = |tag: &str| tag.trim_start_matches('v').to_owned();
         match self {
             Update::Idle => ("Not checked.".into(), None),
             Update::Checking(_) => ("Checking GitHub for a newer release\u{2026}".into(), None),
@@ -131,6 +137,11 @@ impl Update {
             Update::Failed(why) => ("Unable to install the update.".into(), Some(why.clone())),
         }
     }
+}
+
+/// A release tag as a version: `v1.23` as `1.23`.
+fn bare(tag: &str) -> &str {
+    tag.trim_start_matches('v')
 }
 
 /// How this copy of Ferriteweazle was installed, and so how to replace it.
@@ -153,8 +164,9 @@ impl Install {
             let app = exe.ancestors().nth(3)?;
             return (app.extension()? == "app").then(|| Install::MacApp(app.to_path_buf()));
         }
-        if let Some(image) = std::env::var_os("APPIMAGE") {
-            return Some(Install::AppImage(image.into()));
+        let (image, appdir) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"));
+        if let Some(image) = appimage(&exe, image, appdir) {
+            return Some(Install::AppImage(image));
         }
         let dir = exe.parent()?;
         let data = dir.join(engine::DATA);
@@ -171,7 +183,9 @@ impl Install {
             return None;
         };
         let path = app.to_string_lossy();
-        (path.contains("/AppTranslocation/") || path.starts_with("/Volumes/")).then_some(
+        // bundle.sh names the image's volume "Ferriteweazle VERSION".
+        let image = path.starts_with("/Volumes/Ferriteweazle ");
+        (path.contains("/AppTranslocation/") || image).then_some(
             "macOS runs Ferriteweazle read-only from the disk image: drag it to Applications first.",
         )
     }
@@ -190,11 +204,12 @@ impl Install {
     }
 
     /// Where the download goes: beside a Windows folder, so it can be
-    /// renamed into place; elsewhere, the temporary folder.
+    /// renamed into place; elsewhere, this account's data folder, since
+    /// another account can own any name in a shared /tmp. tidy() removes it.
     fn downloads(&self) -> PathBuf {
         match self {
             Install::Folder(dir) if cfg!(windows) => dir.join(".ferriteweazle-update"),
-            _ => std::env::temp_dir().join("ferriteweazle-update"),
+            _ => crate::data_folder().join("update"),
         }
     }
 
@@ -210,8 +225,7 @@ impl Install {
                     quote(new)
                 );
                 shell(&attach, false)?;
-                let from = mount.join("Ferriteweazle.app");
-                let swap = swap_script(app, &from);
+                let swap = swap_script(&[(app.clone(), mount.join("Ferriteweazle.app"))]);
                 let done = shell(&swap, false).or_else(|_| shell(&swap, true));
                 let _ = shell(&format!("hdiutil detach -quiet {}", quote(&mount)), false);
                 done
@@ -222,22 +236,14 @@ impl Install {
                 shell(&script, false).or_else(|_| shell(&script, true))
             }
             Install::Folder(dir) if cfg!(windows) => {
-                let from = new.join("Ferriteweazle");
-                for name in [program(), engine::DATA.into()] {
-                    let (old, now) = (dir.join(format!("{name}.old")), dir.join(&name));
-                    let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
-                    // A running program can be renamed on Windows, not deleted.
-                    std::fs::rename(&now, &old).map_err(|e| format!("{}: {e}", now.display()))?;
-                    std::fs::rename(from.join(&name), &now).map_err(|e| e.to_string())?;
-                }
-                Ok(())
+                rename_in(dir, &new.join("Ferriteweazle"), &program())
             }
             Install::Folder(dir) => {
                 let from = new.join("Ferriteweazle");
-                let script = [program(), engine::DATA.into()]
-                    .map(|name| swap_script(&dir.join(&name), &from.join(&name)))
-                    .join(" && ");
-                shell(&script, false).or_else(|_| shell(&script, true))
+                // The data first, as on Windows.
+                let pairs = [engine::DATA.to_owned(), program()]
+                    .map(|name| (dir.join(&name), from.join(&name)));
+                shell(&swap_script(&pairs), !writable(dir))
             }
         }
     }
@@ -258,16 +264,53 @@ impl Install {
     }
 }
 
-/// Deletes what a Windows update left beside the program, which could not
-/// go while it ran.
+/// Deletes what the last update left: the old program and data beside a
+/// Windows folder, which could not go while they ran, and the download,
+/// which msiexec still reads after the window closes.
 pub fn tidy() {
-    if let Some(Install::Folder(dir)) = Install::this() {
+    let Some(install) = Install::this() else {
+        return;
+    };
+    if let Install::Folder(dir) = &install {
         for name in [program(), engine::DATA.into()] {
             let old = dir.join(format!("{name}.old"));
             let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
         }
-        let _ = std::fs::remove_dir_all(dir.join(".ferriteweazle-update"));
     }
+    let _ = std::fs::remove_dir_all(install.downloads());
+}
+
+/// The AppImage `exe` runs from. The AppImage runtime sets APPIMAGE and
+/// APPDIR, which a program started from another AppImage inherits.
+fn appimage(exe: &Path, image: Option<OsString>, appdir: Option<OsString>) -> Option<PathBuf> {
+    appdir.filter(|d| exe.starts_with(d))?;
+    image.map(Into::into)
+}
+
+/// Puts the new data folder and `program` from `from` in place of those in
+/// `dir`, keeping each old one as NAME.old: Windows renames a running
+/// program but will not delete it. The data goes first, since Windows will
+/// not move it while a gw runs from it, and a failure then leaves the old
+/// program, which offers the update again.
+fn rename_in(dir: &Path, from: &Path, program: &str) -> Result<(), String> {
+    let names = [engine::DATA, program];
+    if let Some(missing) = names.iter().map(|n| from.join(n)).find(|p| !p.exists()) {
+        return Err(format!("{} is not in the download.", missing.display()));
+    }
+    for name in names {
+        let (old, now, new) = (
+            dir.join(format!("{name}.old")),
+            dir.join(name),
+            from.join(name),
+        );
+        let _ = std::fs::remove_dir_all(&old).or_else(|_| std::fs::remove_file(&old));
+        std::fs::rename(&now, &old).map_err(|e| format!("{}: {e}", now.display()))?;
+        if let Err(e) = std::fs::rename(&new, &now) {
+            let _ = std::fs::rename(&old, &now);
+            return Err(format!("{}: {e}", new.display()));
+        }
+    }
+    Ok(())
 }
 
 fn program() -> String {
@@ -277,14 +320,33 @@ fn program() -> String {
         .unwrap_or_default()
 }
 
-/// Replaces `now` with a copy of `new`, keeping `now` until the copy is whole.
-fn swap_script(now: &Path, new: &Path) -> String {
-    let beside = |suffix| quote(Path::new(&format!("{}.{suffix}", now.display())));
-    let (old, temp, now) = (beside("old"), beside("new"), quote(now));
+/// Replaces each `now` with a copy of its `new`, in order. Every `now` stays
+/// until all the copies are whole, and a partial copy is removed.
+fn swap_script(pairs: &[(PathBuf, PathBuf)]) -> String {
+    let beside = |now: &Path, suffix| quote(Path::new(&format!("{}.{suffix}", now.display())));
+    let (mut copies, mut moves, mut temps, mut olds) = (vec![], vec![], vec![], vec![]);
+    for (now, new) in pairs {
+        let (old, temp, now) = (beside(now, "old"), beside(now, "new"), quote(now));
+        copies.push(format!("cp -R {} {temp}", quote(new)));
+        moves.push(format!("mv {now} {old} && mv {temp} {now}"));
+        temps.push(temp);
+        olds.push(old);
+    }
+    let (temps, olds) = (temps.join(" "), olds.join(" "));
     format!(
-        "rm -rf {temp} {old} && cp -R {} {temp} && mv {now} {old} && mv {temp} {now} && rm -rf {old}",
-        quote(new)
+        "rm -rf {temps} {olds} && {{ {} || {{ rm -rf {temps}; false; }}; }} && {} && rm -rf {olds}",
+        copies.join(" && "),
+        moves.join(" && ")
     )
+}
+
+/// Whether this account can make files in `dir`; if not, a swap there runs
+/// as root.
+fn writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".ferriteweazle-{}", std::process::id()));
+    let made = std::fs::File::create(&probe).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    made
 }
 
 /// Runs `script` in sh, as root after macOS's or polkit's password prompt if `admin`.
@@ -320,7 +382,7 @@ fn status(cmd: &mut Command) -> Result<(), String> {
 
 /// A path as one word for sh.
 fn quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
+    crate::command::quote(&path.to_string_lossy())
 }
 
 /// Runs `work` on a thread, then asks for a repaint.
@@ -337,8 +399,8 @@ fn background(
 }
 
 /// Runs `cmd`: its last line out, or on failure its last line of errors.
-/// Killed after `limit`.
-fn run(cmd: &mut Command, limit: Duration) -> Result<String, String> {
+/// Killed after `limit`, if it has one.
+fn run(cmd: &mut Command, limit: Option<Duration>) -> Result<String, String> {
     let fail = |e: std::io::Error| e.to_string();
     let mut child = cmd
         .stdin(Stdio::null())
@@ -346,13 +408,16 @@ fn run(cmd: &mut Command, limit: Duration) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(fail)?;
-    let end = Instant::now() + limit;
-    while child.try_wait().map_err(fail)?.is_none() {
-        if Instant::now() > end {
-            let _ = child.kill();
-            return Err("GitHub did not answer in time.".into());
+    if let Some(limit) = limit {
+        let end = Instant::now() + limit;
+        while child.try_wait().map_err(fail)?.is_none() {
+            if Instant::now() > end {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("GitHub did not answer in time.".into());
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
     let out = child.wait_with_output().map_err(fail)?;
     let last = |bytes: &[u8]| {
@@ -378,21 +443,41 @@ mod tests {
 
     const GW: &str = "Greaseweazle Tools";
 
+    /// An empty folder of its own for `test`.
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read(path: impl AsRef<Path>) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
     #[test]
     fn a_check_finds_a_newer_release_the_latest_or_why_it_could_not_look() {
         let mut check = Update::Checking(answered(Ok("v1.24")));
         assert!(!check.poll(None), "waits for the version in use");
         assert!(!check.poll(Some("1.23")));
         assert!(matches!(&check, Update::Newer(t) if t == "v1.24"));
-        assert!(check.button(GW).0);
+        let install = "Install Greaseweazle Tools 1.24 from GitHub.";
+        assert_eq!(check.button(GW), (true, install.into()));
         let mut check = Update::Checking(answered(Ok("v1.23")));
         check.poll(Some("1.23"));
-        let latest = "Greaseweazle Tools v1.23 is the latest release on GitHub.";
+        let latest = "Greaseweazle Tools 1.23 is the latest release on GitHub.";
         assert_eq!(check.button(GW), (false, latest.into()));
         let why = "hobbo91/ferriteweazle has no release on GitHub.";
         let mut check = Update::Checking(answered(Err(why)));
         check.poll(Some("0.9.0"));
         assert_eq!(check.button("Ferriteweazle"), (false, why.into()));
+    }
+
+    #[test]
+    fn a_release_not_looked_for_is_not_checked() {
+        let not = "Not checked.";
+        assert_eq!(Update::Idle.button("Ferriteweazle"), (false, not.into()));
+        assert_eq!(Update::Idle.summary("0.9.0"), (not.into(), None));
     }
 
     #[test]
@@ -409,7 +494,7 @@ mod tests {
             line(Update::Newer("v0.9.1".into())).0,
             "Update available (0.9.0 -> 0.9.1)"
         );
-        let why = "Could not reach GitHub to check for a newer release.";
+        let why = "Could not reach GitHub.";
         assert_eq!(
             line(Update::Unreachable(why.into())),
             (
@@ -422,8 +507,10 @@ mod tests {
     #[test]
     fn an_install_reports_success_or_says_why_it_failed() {
         let mut install = Update::Installing(answered(Ok("v1.24")), "v1.24".into());
+        let installing = "Installing Greaseweazle Tools 1.24\u{2026}";
+        assert_eq!(install.button(GW), (false, installing.into()));
         assert!(install.poll(Some("1.23")), "the new release takes over");
-        let why = "gw v1.24 changes its C code or its dependencies, so it needs a new build of Ferriteweazle.";
+        let why = "gw 1.24 changes its C code or its dependencies, so it needs a new build of Ferriteweazle.";
         let mut install = Update::Installing(answered(Err(why)), "v1.24".into());
         assert!(!install.poll(Some("1.23")));
         assert_eq!(install.button(GW), (false, why.into()));
@@ -447,21 +534,107 @@ mod tests {
             Install::Msi.asset("0.9.1"),
             format!("Ferriteweazle-0.9.1-win-{win}.msi")
         );
+        let folder = if cfg!(windows) {
+            format!("Ferriteweazle-0.9.1-win-{win}.zip")
+        } else {
+            format!("Ferriteweazle-0.9.1-linux-{arch}.tar.gz")
+        };
+        assert_eq!(Install::Folder(PathBuf::new()).asset("0.9.1"), folder);
     }
 
     #[test]
     fn a_copy_run_from_the_disk_image_cannot_replace_itself() {
-        let from_image = Install::MacApp("/Volumes/Ferriteweazle 0.9.0/Ferriteweazle.app".into());
-        assert!(from_image.stuck().is_some());
+        for image in ["Ferriteweazle 0.9.0", "Ferriteweazle 0.9.0 1"] {
+            let app = Install::MacApp(format!("/Volumes/{image}/Ferriteweazle.app").into());
+            assert!(app.stuck().is_some(), "{image}");
+        }
         let moved = Install::MacApp("/Applications/Ferriteweazle.app".into());
         assert_eq!(moved.stuck(), None);
+        let other = Install::MacApp("/Volumes/Tools/Applications/Ferriteweazle.app".into());
+        assert_eq!(other.stuck(), None, "a copy on another disk updates");
+    }
+
+    #[test]
+    fn a_download_goes_to_this_accounts_own_folder() {
+        for install in [
+            Install::MacApp("/Applications/Ferriteweazle.app".into()),
+            Install::AppImage("/opt/Ferriteweazle.AppImage".into()),
+            Install::Msi,
+        ] {
+            let folder = install.downloads();
+            assert!(folder.starts_with(crate::data_folder()), "{folder:?}");
+        }
+        let dir = Install::Folder("/opt/ferriteweazle".into());
+        let beside = dir.downloads().starts_with("/opt/ferriteweazle");
+        assert_eq!(beside, cfg!(windows), "only Windows renames it into place");
+    }
+
+    #[test]
+    fn only_a_program_inside_the_appimage_takes_it_for_its_own() {
+        let image = || Some(OsString::from("/home/u/Apps/Ferriteweazle.AppImage"));
+        let appdir = || Some(OsString::from("/tmp/.mount_Ferrit1a2b3c"));
+        let inside = Path::new("/tmp/.mount_Ferrit1a2b3c/usr/bin/ferriteweazle");
+        assert_eq!(
+            appimage(inside, image(), appdir()),
+            Some("/home/u/Apps/Ferriteweazle.AppImage".into())
+        );
+        // A tarball's copy, started from a shell another AppImage opened.
+        let outside = Path::new("/home/u/Ferriteweazle/ferriteweazle");
+        assert_eq!(appimage(outside, image(), appdir()), None);
+        assert_eq!(appimage(inside, image(), None), None);
+    }
+
+    #[test]
+    fn a_folder_update_that_cannot_move_the_data_keeps_the_old_program() {
+        let dir = scratch("rename");
+        let from = dir.join("new");
+        std::fs::create_dir_all(from.join(engine::DATA)).unwrap();
+        std::fs::write(from.join("fw.exe"), "new").unwrap();
+        std::fs::write(dir.join("fw.exe"), "old").unwrap();
+        // With no data folder to move aside, the rename fails as Windows'
+        // refusal would.
+        assert!(rename_in(&dir, &from, "fw.exe").is_err());
+        assert_eq!(read(dir.join("fw.exe")), "old");
+        // A renamed program has no match in the download, so nothing moves.
+        std::fs::create_dir_all(dir.join(engine::DATA)).unwrap();
+        let why = rename_in(&dir, &from, "mine.exe").unwrap_err();
+        assert!(why.contains("mine.exe"), "{why}");
+        assert!(!dir.join(format!("{}.old", engine::DATA)).exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_refusing_to_move_a_data_folder_leaves_this_copy_whole() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        let dir = scratch("refused");
+        let from = dir.join("new");
+        for (root, text) in [(&dir, "old"), (&from, "new")] {
+            std::fs::create_dir_all(root.join(engine::DATA)).unwrap();
+            std::fs::write(root.join(engine::DATA).join("python.exe"), text).unwrap();
+            std::fs::write(root.join("fw.exe"), text).unwrap();
+        }
+        // A file held open, as by a gw running from it, keeps its folder in
+        // place: first the old data, then the new.
+        for held in [dir.join(engine::DATA), from.join(engine::DATA)] {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(held.join("python.exe"))
+                .unwrap();
+            assert!(rename_in(&dir, &from, "fw.exe").is_err(), "{held:?}");
+            drop(file);
+            assert_eq!(read(dir.join("fw.exe")), "old");
+            assert_eq!(read(dir.join(engine::DATA).join("python.exe")), "old");
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn a_mac_app_is_replaced_from_the_disk_image() {
-        let dir = std::env::temp_dir().join(format!("ferriteweazle-dmg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = scratch("dmg");
         let (app, image) = (dir.join("Ferriteweazle.app"), dir.join("image"));
         for (folder, text) in [(&app, "0.9.0"), (&image.join("Ferriteweazle.app"), "0.9.1")] {
             std::fs::create_dir_all(folder).unwrap();
@@ -475,33 +648,96 @@ mod tests {
         );
         shell(&make, false).unwrap();
         Install::MacApp(app.clone()).replace(&dmg).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(app.join("marker")).unwrap(),
-            "0.9.1"
-        );
+        assert_eq!(read(app.join("marker")), "0.9.1");
         assert!(!dir.join("Ferriteweazle.app.old").exists());
         assert!(!dir.join("new.mount").exists(), "the image is detached");
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The names in `dir`, sorted.
+    #[cfg(unix)]
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_swap_leaves_the_new_copy_and_nothing_else() {
-        let dir = std::env::temp_dir().join(format!("ferriteweazle-swap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = scratch("swap");
         let (now, new) = (dir.join("it's here.app"), dir.join("new/it.app"));
         for (path, text) in [(&now, "old"), (&new, "new")] {
             std::fs::create_dir_all(path).unwrap();
             std::fs::write(path.join("marker"), text).unwrap();
         }
-        shell(&swap_script(&now, &new), false).unwrap();
-        assert_eq!(std::fs::read_to_string(now.join("marker")).unwrap(), "new");
-        let left: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name())
-            .collect();
-        assert_eq!(left.len(), 2, "{left:?}");
+        shell(&swap_script(&[(now.clone(), new)]), false).unwrap();
+        assert_eq!(read(now.join("marker")), "new");
+        assert_eq!(names(&dir), ["it's here.app", "new"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swap_changes_nothing_unless_every_copy_is_made() {
+        let dir = scratch("folder-swap");
+        let (data, program, new) = (dir.join("data"), dir.join("fw"), dir.join("new"));
+        for (path, text) in [(&data, "old"), (&new.join("data"), "new")] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("marker"), text).unwrap();
+        }
+        std::fs::write(&program, "old").unwrap();
+        let pairs = [
+            (data.clone(), new.join("data")),
+            (program.clone(), new.join("fw")),
+        ];
+        // The download lacks the program.
+        assert!(shell(&swap_script(&pairs), false).is_err());
+        assert_eq!(read(data.join("marker")), "old");
+        assert_eq!(names(&dir), ["data", "fw", "new"], "no partial copy");
+        std::fs::write(new.join("fw"), "new").unwrap();
+        shell(&swap_script(&pairs), false).unwrap();
+        assert_eq!(read(data.join("marker")), "new");
+        assert_eq!(read(&program), "new");
+        assert_eq!(names(&dir), ["data", "fw", "new"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_folder_this_account_cannot_write_needs_an_administrator() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("writable");
+        assert!(writable(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(!writable(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(names(&dir), Vec::<String>::new(), "the probe is gone");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_check_has_a_time_limit_and_one_past_it_is_reaped() {
+        let dir = scratch("limit");
+        let pid = dir.join("pid");
+        let mut slow = Command::new("sh");
+        slow.arg("-c")
+            .arg(format!("echo $$ > {}; sleep 1; echo done", quote(&pid)));
+        assert_eq!(run(&mut slow, None), Ok("done".into()));
+        let limit = Some(Duration::from_millis(300));
+        let late = "GitHub did not answer in time.";
+        assert_eq!(run(&mut slow, limit), Err(late.into()));
+        let ps = Command::new("ps")
+            .args(["-o", "stat=", "-p", read(&pid).trim()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&ps.stdout);
+        assert_eq!(state.trim(), "", "the killed command is waited for");
         std::fs::remove_dir_all(dir).ok();
     }
 }

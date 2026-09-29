@@ -1,4 +1,4 @@
-//! Finds a Python that can import greaseweazle, and starts the bridge in it.
+//! Finds the Python gw runs in, and starts the bridge in it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -64,6 +64,13 @@ impl Engine {
     /// `python -c BRIDGE MODE`, ready for more arguments.
     pub fn bridge(&self, mode: &str) -> Command {
         let mut cmd = Command::new(&self.python);
+        if self.origin == Origin::Bundled {
+            // The built-in gw, not one in the user's site-packages or on a
+            // path the environment names.
+            cmd.env("PYTHONNOUSERSITE", "1")
+                .env_remove("PYTHONPATH")
+                .env_remove("PYTHONHOME");
+        }
         if let Some(update) = self.update_in(&updates()) {
             cmd.env("PYTHONPATH", update);
         }
@@ -82,9 +89,13 @@ impl Engine {
     }
 }
 
-/// Where Update installs newer gw releases, one folder per tag.
+/// Where Update installs newer gw releases, one folder per tag. Each build
+/// has its own: a release keeps the compiled module of the Python that
+/// installed it, which another Python cannot load.
 pub fn updates() -> PathBuf {
-    crate::data_folder().join("gw")
+    crate::data_folder()
+        .join("gw")
+        .join(env!("CARGO_PKG_VERSION"))
 }
 
 /// `v1.23.1` as [1, 23, 1]; anything else, such as a half-installed
@@ -133,27 +144,52 @@ fn data_with(exe: &Path) -> Option<PathBuf> {
     .find(|root| python_in(root).is_file())
 }
 
+/// gw's launcher as pip, pipx and uv install it.
+const GW: &str = if cfg!(windows) { "gw.exe" } else { "gw" };
+
 /// An installed `gw` on the PATH or in the usual places, which apps started
 /// from a desktop do not always have on their PATH.
 fn installed() -> Option<PathBuf> {
-    std::env::var_os("PATH")
+    let path = std::env::var_os("PATH");
+    let dirs = path
         .iter()
         .flat_map(std::env::split_paths)
         .chain(crate::home().map(|h| h.join(".local/bin")))
-        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
-        .map(|d| d.join("gw"))
+        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    installed_in(dirs)
+}
+
+fn installed_in(dirs: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+    dirs.map(|d| d.join(GW))
         .filter(|p| p.is_file())
         .find_map(|p| interpreter(&p))
 }
 
-/// The Python behind a `gw` launcher script, or the path itself if it names
-/// a Python.
+/// The Python behind a `gw` launcher, or the path itself if it names a
+/// Python. A launcher is a `#!` script, or on Windows a gw.exe: a program,
+/// then the `#!` line it runs, then a zip.
 fn interpreter(path: &Path) -> Option<PathBuf> {
     if path.file_name()?.to_string_lossy().starts_with("python") {
         return Some(path.to_path_buf());
     }
+    let exe = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+    // A venv keeps its Python beside gw.exe. uv's gw.exe has no `#!` line,
+    // and a moved venv's names the old path.
+    let beside = path.with_file_name("python.exe");
+    if exe && beside.is_file() {
+        return Some(beside);
+    }
     let bytes = std::fs::read(path).ok()?;
-    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]);
+    let script = match bytes.windows(4).rposition(|w| w == b"PK\x03\x04") {
+        Some(zip) if exe => {
+            let line = bytes[..zip].windows(2).rposition(|w| w == b"#!")?;
+            &bytes[line..zip]
+        }
+        _ => &bytes[..bytes.len().min(1024)],
+    };
+    let text = String::from_utf8_lossy(script);
     let mut lines = text.lines();
     let first = lines.next()?.strip_prefix("#!")?;
     // pip writes a /bin/sh trampoline when the venv path has a space.
@@ -200,18 +236,67 @@ mod tests {
         assert!(cmd.get_envs().any(set));
     }
 
-    fn launcher(test: &str, text: &str) -> Option<PathBuf> {
-        let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}"));
+    #[test]
+    fn the_built_in_gw_ignores_the_users_own_packages_and_python_paths() {
+        // Some(None) is a variable taken away, None one left as inherited.
+        let var = |origin, name: &str| {
+            let cmd = Engine {
+                python: "python3".into(),
+                origin,
+            }
+            .bridge("serve");
+            cmd.get_envs()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(
+            var(Origin::Bundled, "PYTHONNOUSERSITE"),
+            Some(Some("1".into()))
+        );
+        assert_eq!(var(Origin::Bundled, "PYTHONPATH"), Some(None));
+        assert_eq!(var(Origin::Bundled, "PYTHONHOME"), Some(None));
+        for name in ["PYTHONNOUSERSITE", "PYTHONPATH", "PYTHONHOME"] {
+            assert_eq!(var(Origin::Custom, name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn each_build_keeps_its_own_gw_updates() {
+        let own = Path::new("gw").join(env!("CARGO_PKG_VERSION"));
+        assert!(updates().ends_with(own), "{:?}", updates());
+    }
+
+    #[test]
+    fn the_bridge_fits_on_a_windows_command_line() {
+        // It goes whole on the command line, beside the Python's path, the
+        // quoting and a job's arguments.
+        assert!(
+            BRIDGE.len() < 30_000,
+            "Windows limits a command line to 32,767 characters"
+        );
+    }
+
+    /// An empty folder of its own for `test`.
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("gw");
-        std::fs::write(&path, text).unwrap();
-        interpreter(&path)
+        dir
+    }
+
+    fn launcher(test: &str, name: &str, bytes: impl AsRef<[u8]>) -> Option<PathBuf> {
+        let dir = scratch(test);
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let python = interpreter(&path);
+        std::fs::remove_dir_all(dir).ok();
+        python
     }
 
     #[test]
     fn a_launcher_names_its_python() {
         let text = "#!/home/x/.local/pipx/venvs/greaseweazle/bin/python\nimport sys\n";
-        let python = launcher("plain", text);
+        let python = launcher("plain", "gw", text);
         assert_eq!(
             python,
             Some("/home/x/.local/pipx/venvs/greaseweazle/bin/python".into())
@@ -221,7 +306,7 @@ mod tests {
     #[test]
     fn a_trampoline_for_a_path_with_spaces_names_its_python() {
         let text = "#!/bin/sh\n'''exec' \"/Users/x/Library/Application Support/pipx/venvs/greaseweazle/bin/python\" \"$0\" \"$@\"\n' '''\n";
-        let python = launcher("trampoline", text);
+        let python = launcher("trampoline", "gw", text);
         let expected = "/Users/x/Library/Application Support/pipx/venvs/greaseweazle/bin/python";
         assert_eq!(python, Some(expected.into()));
     }
@@ -229,20 +314,64 @@ mod tests {
     #[test]
     fn env_shebangs_name_the_python_on_the_path() {
         assert_eq!(
-            launcher("env", "#!/usr/bin/env python3\n"),
+            launcher("env", "gw", "#!/usr/bin/env python3\n"),
             Some("python3".into())
         );
     }
 
     #[test]
     fn other_scripts_are_not_engines() {
-        assert_eq!(launcher("bash", "#!/bin/bash\necho hi\n"), None);
+        assert_eq!(launcher("bash", "gw", "#!/bin/bash\necho hi\n"), None);
         assert_eq!(interpreter(Path::new("/nonexistent/gw")), None);
+    }
+
+    /// A gw.exe as pip writes it: a launcher, the line it runs, then a zip
+    /// holding the script.
+    fn pip_exe(line: &str) -> Vec<u8> {
+        [
+            b"MZ\x90\0the launcher".as_slice(),
+            line.as_bytes(),
+            b"PK\x03\x04\x14\0\0\0__main__.py",
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_windows_launcher_names_the_python_before_its_zip() {
+        let python = r"C:\Users\x\pipx\venvs\greaseweazle\Scripts\python.exe";
+        let exe = pip_exe(&format!("#!\"{python}\"\n\r\n"));
+        assert_eq!(launcher("pip-exe", "gw.exe", exe), Some(python.into()));
+        // Greaseweazle's own Windows gw.exe is frozen, with no Python behind it.
+        assert_eq!(launcher("frozen-exe", "gw.exe", b"MZ\x90\0frozen"), None);
+    }
+
+    #[test]
+    fn a_windows_launcher_in_a_venv_runs_in_the_python_beside_it() {
+        let dir = scratch("venv-exe");
+        let (gw, python) = (dir.join("gw.exe"), dir.join("python.exe"));
+        std::fs::write(&gw, b"MZ\x90\0a launcher with no line").unwrap();
+        std::fs::write(&python, "").unwrap();
+        assert_eq!(interpreter(&gw), Some(python));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_installed_gw_is_found_by_the_name_pip_gives_it() {
+        let dir = scratch("installed");
+        let name = if cfg!(windows) { "gw.exe" } else { "gw" };
+        std::fs::write(dir.join(name), "#!/venv/bin/python\n").unwrap();
+        let dirs = [dir.join("elsewhere"), dir.clone()];
+        assert_eq!(
+            installed_in(dirs.into_iter()),
+            Some("/venv/bin/python".into())
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn the_engine_inside_a_mac_app_is_found() {
-        let app = std::env::temp_dir().join("ferriteweazle-bundle/Ferriteweazle.app/Contents");
+        let dir = scratch("bundle");
+        let app = dir.join("Ferriteweazle.app/Contents");
         let python = python_in(&app.join("Resources").join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::create_dir_all(app.join("MacOS")).unwrap();
@@ -252,21 +381,16 @@ mod tests {
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
         );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn an_update_is_used_only_when_newer_than_the_bundled_gw_and_whole() {
-        let dir = std::env::temp_dir().join("ferriteweazle-updates");
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = scratch("updates");
         let python = python_in(&dir.join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
-        let root = if cfg!(windows) {
-            dir.join(DATA)
-        } else {
-            dir.join(DATA).join("..").join(DATA)
-        };
-        std::fs::write(root.join("greaseweazle-version"), "v1.23\n").unwrap();
+        std::fs::write(dir.join(DATA).join("greaseweazle-version"), "v1.23\n").unwrap();
         let engine = Engine {
             python,
             origin: Origin::Bundled,
@@ -287,11 +411,12 @@ mod tests {
             None,
             "only the bundled gw is updated"
         );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn the_engine_beside_the_program_is_found() {
-        let dir = std::env::temp_dir().join("ferriteweazle-portable");
+        let dir = scratch("portable");
         let python = python_in(&dir.join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
@@ -300,20 +425,21 @@ mod tests {
             found.canonicalize().unwrap(),
             python.canonicalize().unwrap()
         );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn a_linux_package_keeps_gws_udev_rule_beside_its_python() {
-        let dir = std::env::temp_dir().join("ferriteweazle-rule");
+        let dir = scratch("rule");
         let python = python_in(&dir.join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
         std::fs::write(&python, "").unwrap();
         let exe = dir.join("ferriteweazle");
         let rule = dir.join(DATA).join(crate::udev::RULE);
-        let _ = std::fs::remove_file(&rule);
         assert_eq!(udev_rule_with(&exe), None);
         std::fs::write(&rule, "").unwrap();
         assert_eq!(udev_rule_with(&exe), Some(rule));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
