@@ -1,6 +1,6 @@
 //! A command's settings, and the gw arguments they stand for.
 
-use crate::schema::{Command, Schema};
+use crate::schema::{Arg, Command, Schema};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -45,12 +45,13 @@ pub fn argv(cmd: &Command, values: &Values) -> Vec<String> {
             value => out.push(format!("{flag}={value}")),
         }
     }
+    // gw fills positionals in order: one after an empty one would take its place.
     let positional = cmd
         .args
         .iter()
         .filter(|a| a.positional())
         .map(|a| values.get(&a.dest))
-        .filter(|v| !v.is_empty());
+        .take_while(|v| !v.is_empty());
     if positional.clone().any(|v| v.starts_with('-')) {
         out.push("--".into());
     }
@@ -117,6 +118,18 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
                 .next()
                 .ok_or_else(|| format!("Unexpected \u{201c}{word}\u{201d}."))?;
             values.set(&arg.dest, word);
+        }
+    }
+    // gw refuses two options of one exclusive group.
+    for a in cmd
+        .args
+        .iter()
+        .filter(|a| a.group.is_some() && values.on(&a.dest))
+    {
+        let clash = |b: &&Arg| b.group == a.group && b.dest != a.dest && values.on(&b.dest);
+        if let Some(b) = cmd.args.iter().find(clash) {
+            let (a, b) = (a.flag().unwrap_or(&a.dest), b.flag().unwrap_or(&b.dest));
+            return Err(format!("{a} cannot be used with {b}."));
         }
     }
     Ok((cmd.name.clone(), values))
@@ -307,6 +320,29 @@ mod tests {
             parse(&s, "read --format=ibm.1440 x.img").unwrap_err(),
             "A command starts with gw."
         );
+    }
+
+    #[test]
+    fn pasting_two_options_gw_holds_exclusive_is_refused() {
+        let s = schema();
+        assert_eq!(
+            parse(&s, "gw read --hard-sectors --fake-index=300rpm x.scp").unwrap_err(),
+            "--fake-index cannot be used with --hard-sectors."
+        );
+        assert_eq!(
+            parse(&s, "gw write --dd H --gen-tg43 x.adf").unwrap_err(),
+            "--densel cannot be used with --gen-tg43."
+        );
+        assert!(parse(&s, "gw write --dd H --fake-index=300rpm x.adf").is_ok());
+    }
+
+    #[test]
+    fn positionals_after_an_empty_one_are_left_out_not_moved_up() {
+        let s = schema();
+        let v = values(&[("out_file", "b.img")]);
+        assert_eq!(argv(s.command("convert").unwrap(), &v), ["convert"]);
+        let v = values(&[("level", "H")]);
+        assert_eq!(argv(s.command("pin set").unwrap(), &v), ["pin", "set"]);
     }
 
     #[test]
