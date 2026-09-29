@@ -1535,3 +1535,22 @@ fn detection_finds_a_format_from_a_disk_definitions_file() {
     );
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("kryoflux");
+    let mut settings = convert_page(&dir);
+    settings.outputs.get_mut("convert/out_file").unwrap().ext = ".raw".into();
+    let mut w = window(&engine, settings);
+    w.get_by_label("Convert").click();
+    until(&mut w, "the conversion", |app| {
+        app.disk.as_ref().is_some_and(|j| !j.running())
+    });
+    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
+    for track in ["00.0", "39.1"] {
+        assert!(dir.join(format!("Game{track}.raw")).is_file(), "{track}");
+    }
+    std::fs::remove_dir_all(dir).ok();
+}

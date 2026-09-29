@@ -162,6 +162,10 @@ const CUSTOM_NAME: &str = "Custom disk definitions";
 /// Image types that hold flux or bitcells: Detect can find a format from them.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 
+/// A KryoFlux stream: one file per track, `nameCC.H.raw`, which gw opens as a
+/// set from any one of them.
+const KRYOFLUX: &str = ".raw";
+
 /// Names for gw's format families, which it names only by prefix.
 const FAMILIES: &[(&str, &str)] = &[
     ("acorn", "Acorn"),
@@ -1209,7 +1213,7 @@ impl<'a> Form<'a> {
         if beside && !batch && !input.is_empty() {
             let input = Path::new(&input);
             out.folder = lossy(input.parent().map(Path::as_os_str));
-            out.name = lossy(input.file_stem());
+            out.name = image_stem(input);
         }
         if batch {
             if !beside {
@@ -1473,7 +1477,63 @@ pub fn batch_images(schema: &Schema, files: &[PathBuf], only: &str) -> Vec<PathB
         .cloned()
         .collect();
     images.sort_by(|a, b| natural(&a.to_string_lossy(), &b.to_string_lossy()));
+    // A KryoFlux stream is one image, taken by its first track's file; gw
+    // refuses a .raw file named otherwise.
+    let mut sets = BTreeSet::new();
+    images.retain(|p| match extension(&p.to_string_lossy()).as_deref() {
+        Some(KRYOFLUX) => {
+            stream_set(&lossy(p.file_stem())).is_some_and(|set| sets.insert(p.with_file_name(set)))
+        }
+        _ => true,
+    });
     images
+}
+
+/// A KryoFlux stream file's set, as gw takes it: `Game` for `Game00.0`.
+fn stream_set(stem: &str) -> Option<&str> {
+    let b = stem.as_bytes();
+    let n = b.len();
+    let track = n >= 4
+        && b[n - 4].is_ascii_digit()
+        && b[n - 3].is_ascii_digit()
+        && b[n - 2] == b'.'
+        && matches!(b[n - 1], b'0' | b'1');
+    track.then(|| &stem[..n - 4])
+}
+
+/// The name for what is made from an input image: its own, less a KryoFlux
+/// stream's track. A stream named by track alone, as KryoFlux's DTC names
+/// it (track00.0.raw), takes its folder's name.
+fn image_stem(input: &Path) -> String {
+    let stem = lossy(input.file_stem());
+    let stream = extension(&input.to_string_lossy()).as_deref() == Some(KRYOFLUX);
+    let Some(set) = stream_set(&stem).filter(|_| stream) else {
+        return stem;
+    };
+    let set = set.trim_end_matches(['_', '-', '.', ' ']);
+    let folder = lossy(input.parent().and_then(Path::file_name));
+    if (set.is_empty() || set.eq_ignore_ascii_case("track")) && !folder.is_empty() {
+        folder
+    } else if set.is_empty() {
+        stem
+    } else {
+        set.to_owned()
+    }
+}
+
+/// A file name of type `ext`. gw writes a KryoFlux stream as a set of files,
+/// one per track, named from the first: `Game00.0.raw`.
+fn typed_name(stem: &str, ext: &str) -> String {
+    if ext != KRYOFLUX || stream_set(stem).is_some() {
+        return format!("{stem}{ext}");
+    }
+    // Game_Disk1_00.0.raw, which does not read as disk 100.
+    let gap = if stem.ends_with(|c: char| c.is_ascii_digit()) {
+        "_"
+    } else {
+        ""
+    };
+    format!("{stem}{gap}00.0{ext}")
 }
 
 /// Orders names with their numbers as numbers: Disk2 before Disk10.
@@ -2092,14 +2152,15 @@ impl Output {
     fn file_name(&self, disk: u32) -> String {
         let (name, ext) = (&self.name, &self.ext);
         if self.disks <= 1 {
-            return format!("{name}{ext}");
+            return typed_name(name, ext);
         }
         let width = self.disks.to_string().len();
         let number = format!("{}{disk:0width$}", self.label.trim());
-        match self.number_first {
-            true => format!("{number}_{name}{ext}"),
-            false => format!("{name}_{number}{ext}"),
-        }
+        let stem = match self.number_first {
+            true => format!("{number}_{name}"),
+            false => format!("{name}_{number}"),
+        };
+        typed_name(&stem, ext)
     }
 
     pub fn path(&self, disk: u32) -> PathBuf {
@@ -2128,8 +2189,8 @@ impl Output {
             false => Path::new(&self.folder),
         };
         let (prefix, suffix) = (self.prefix.trim(), self.suffix.trim());
-        let stem = lossy(input.file_stem());
-        folder.join(format!("{prefix}{stem}{suffix}{}", self.ext))
+        let stem = image_stem(input);
+        folder.join(typed_name(&format!("{prefix}{stem}{suffix}"), &self.ext))
     }
 
     /// As `value`, for the image a batch makes from `input`.
@@ -2848,6 +2909,60 @@ mod tests {
         assert_eq!(out.file_name(2), "Side02_Game.adf");
         out.label.clear();
         assert_eq!(out.file_name(12), "12_Game.adf");
+    }
+
+    #[test]
+    fn a_kryoflux_stream_is_named_as_gw_takes_it() {
+        let mut out = output(".raw");
+        assert_eq!(out.file_name(1), "Floppy00.0.raw");
+        out.name = "Disk7".into();
+        assert_eq!(out.file_name(1), "Disk7_00.0.raw", "not disk 700");
+        out.name = "Game".into();
+        out.disks = 2;
+        assert_eq!(out.file_name(2), "Game_Disk2_00.0.raw");
+        let pasted = Output::from_value("/f/Game00.0.raw");
+        assert_eq!(
+            pasted.file_name(1),
+            "Game00.0.raw",
+            "a set's own name stays"
+        );
+        out.folder = "/out".into();
+        let made = out.batch_path(Path::new("/in/Game.scp"));
+        assert_eq!(made, Path::new("/out").join("Game00.0.raw"));
+    }
+
+    #[test]
+    fn a_kryoflux_stream_is_one_image_named_for_its_disk() {
+        let s = schema();
+        let names = [
+            "track00.1.raw",
+            "track00.0.raw",
+            "track81.1.raw",
+            "dump.raw",
+            "Disk2.scp",
+        ];
+        let folder = Path::new("/dumps/Lemmings");
+        let files: Vec<PathBuf> = names.iter().map(|n| folder.join(n)).collect();
+        let images = batch_images(&s, &files, "");
+        let taken: Vec<String> = images.iter().map(|p| lossy(p.file_name())).collect();
+        assert_eq!(taken, ["Disk2.scp", "track00.0.raw"]);
+        let out = Output {
+            folder: "/out".into(),
+            ..output(".scp")
+        };
+        let made = |input: &Path| out.batch_path(input);
+        assert_eq!(made(&images[1]), Path::new("/out").join("Lemmings.scp"));
+        let named = Path::new("/d/Disk1_00.0.raw");
+        assert_eq!(made(named), Path::new("/out").join("Disk1.scp"));
+
+        let v = values(&[("in_file", &images[1].to_string_lossy())]);
+        let beside = Output {
+            beside_input: true,
+            ..output(".scp")
+        };
+        let key = output_key("convert", "out_file");
+        let h = page("convert", v, BTreeMap::from([(key.clone(), beside)]));
+        assert_eq!(h.state().1[&key].name, "Lemmings");
     }
 
     #[test]
