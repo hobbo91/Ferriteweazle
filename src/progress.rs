@@ -225,11 +225,15 @@ impl Progress {
         if text.contains("(Retry #") || text.contains("(Verify Failure") {
             t.retries += 1;
         }
-        text.clone_into(&mut t.text);
-        // "Giving up" keeps the result of the last attempt.
+        // "Giving up" keeps the result of the last attempt, and adds to it.
         if text.starts_with("Giving up") {
+            if !t.text.is_empty() {
+                t.text.push('\n');
+            }
+            t.text.push_str(text);
             return;
         }
+        text.clone_into(&mut t.text);
         t.status = if text.starts_with("WARNING") {
             // Outside the format: a read with --raw keeps its flux all the same.
             match self.raw && text.contains("No format conversion applied") {
@@ -451,6 +455,12 @@ mod tests {
             Found 35 sectors of 36 (97%)");
         let t = &p.tracks[&(1, 0)];
         assert_eq!((t.status, t.retries), (Status::Partial, 2));
+        assert_eq!(
+            t.text,
+            "IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.2)\n\
+             Giving up: 1 sectors missing",
+            "the last attempt's result, then gw's"
+        );
         assert_eq!(p.sector_map[&(1, 0)], vec![Some(true), Some(false)]);
         assert_eq!(p.total, Some((35, 36)));
     }

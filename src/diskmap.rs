@@ -151,6 +151,9 @@ pub fn show(
                     ui.weak("gw has not reported this track.");
                 }
             }
+            if let Some(rows) = missing(progress, (cyl, head)) {
+                ui.label(format!("Missing in gw's sector map (S): {rows}"));
+            }
         });
     }
     ui.add_space(6.0);
@@ -196,6 +199,18 @@ fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
         (false, true) => p.bad,
         (true, true) => p.partial,
     })
+}
+
+/// The rows of gw's sector map missing on a track that has others, such as
+/// `5, 9`. A row is a sector's place in the format's track, not its ID.
+fn missing(progress: &Progress, key: (u32, u32)) -> Option<String> {
+    let sectors = progress.sector_map.get(&key)?;
+    let rows: Vec<String> = (0..sectors.len())
+        .filter(|&s| sectors[s] == Some(false))
+        .map(|s| s.to_string())
+        .collect();
+    // With none found, the track's text says so.
+    (!rows.is_empty() && sectors.contains(&Some(true))).then(|| rows.join(", "))
 }
 
 fn side_name(head: u32) -> &'static str {

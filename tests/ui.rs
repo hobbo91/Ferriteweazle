@@ -923,6 +923,21 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
 }
 
 #[test]
+fn a_square_names_the_rows_of_gws_sector_map_it_is_missing() {
+    let mut w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("read", DAMAGED)),
+    );
+    // Side 0's squares come first, one to a cylinder.
+    let square = squares(&w).nth(20).expect("cylinder 20").rect.center();
+    w.hover_at(square);
+    w.run();
+    w.get_by_label("Cylinder 20, side 0");
+    w.get_by_label("Missing in gw's sector map (S): 5");
+}
+
+#[test]
 fn a_track_outside_the_format_is_a_hole_in_the_map_not_one_to_come() {
     let log = "Reading c=0-80:h=0 revs=2\n\
                T0.0: IBM MFM (18/18 sectors) from Raw Flux (500 flux in 400.00ms)\n\
