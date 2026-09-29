@@ -38,10 +38,6 @@ pub fn argv(cmd: &Command, values: &Values) -> Vec<String> {
         match values.get(&a.dest) {
             "" => {}
             _ if a.switch => out.push(flag.to_owned()),
-            value if a.multi => {
-                out.push(flag.to_owned());
-                out.extend(value.split_whitespace().map(String::from));
-            }
             value => out.push(format!("{flag}={value}")),
         }
     }
@@ -86,7 +82,7 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
     }
     let cmd = sub
         .or_else(|| schema.command(first))
-        .ok_or_else(|| format!("gw has no command called \u{201c}{first}\u{201d}."))?;
+        .ok_or_else(|| format!("gw has no command called \"{first}\"."))?;
 
     let mut values = Values::default();
     let mut positional = cmd.args.iter().filter(|a| a.positional());
@@ -116,7 +112,7 @@ pub fn parse(schema: &Schema, line: &str) -> Result<(String, Values), String> {
         } else {
             let arg = positional
                 .next()
-                .ok_or_else(|| format!("Unexpected \u{201c}{word}\u{201d}."))?;
+                .ok_or_else(|| format!("Unexpected \"{word}\"."))?;
             values.set(&arg.dest, word);
         }
     }
@@ -299,10 +295,9 @@ mod tests {
     #[test]
     fn pasting_explains_what_it_cannot_read() {
         let s = schema();
-        assert!(
-            parse(&s, "gw frobnicate")
-                .unwrap_err()
-                .contains("frobnicate")
+        assert_eq!(
+            parse(&s, "gw frobnicate").unwrap_err(),
+            "gw has no command called \"frobnicate\"."
         );
         assert!(
             parse(&s, "gw read --bogus x.img")
@@ -315,7 +310,14 @@ mod tests {
                 .contains("needs a value")
         );
         assert!(parse(&s, "gw read 'x.img").unwrap_err().contains("quote"));
-        assert!(parse(&s, "").is_err());
+        assert_eq!(
+            parse(&s, "gw read x.img y.img").unwrap_err(),
+            "Unexpected \"y.img\"."
+        );
+        assert_eq!(
+            parse(&s, "gw").unwrap_err(),
+            "Paste a gw command, such as: gw read --format=ibm.1440 disk.img"
+        );
         assert_eq!(
             parse(&s, "read --format=ibm.1440 x.img").unwrap_err(),
             "A command starts with gw."

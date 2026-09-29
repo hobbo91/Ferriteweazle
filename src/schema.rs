@@ -30,9 +30,6 @@ pub struct Arg {
     /// Takes no value: present or absent.
     #[serde(default)]
     pub switch: bool,
-    /// Takes several values.
-    #[serde(default)]
-    pub multi: bool,
     /// Name of gw's parser for the value: `TrackSet`, `period`, `min_int`...
     #[serde(rename = "type")]
     pub ty: Option<String>,
