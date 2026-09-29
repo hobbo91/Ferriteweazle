@@ -792,6 +792,7 @@ impl App {
 
     /// Keeps the device card current, and gives up on a device that does not answer.
     fn poll_probe(&mut self, ctx: &egui::Context) {
+        let mut named = None;
         if let Some(probe) = &mut self.probe {
             probe.poll();
             self.log.follow(probe);
@@ -824,6 +825,7 @@ impl App {
                     _ => ending(probe),
                 };
                 self.log.end(probe, end);
+                named = device::parse(&probe.log).and_then(|i| named_device(&i));
                 self.probe_failed = match (device::parse(&probe.log), probe.outcome()) {
                     (Some(_), _) => None,
                     (None, Some(Outcome::Stopped)) => Some("No answer.".into()),
@@ -837,6 +839,9 @@ impl App {
                 };
                 self.probe = None;
             }
+        }
+        if let Some((port, kind)) = named {
+            self.follow(&port, kind);
         }
         let port = self.found_port().map(|p| (p.device.clone(), p.denied));
         if port.is_none() {
@@ -930,7 +935,13 @@ impl App {
         // the device's mode every time.
         let args = self.argv(cmd, &self.device_only(cmd));
         let Some(engine) = &self.engine else { return };
-        match Job::start(engine, "info", args, repaint(ctx)) {
+        match Job::start(
+            engine,
+            self.settings.kind.name(),
+            "info",
+            args,
+            repaint(ctx),
+        ) {
             Ok(mut job) => {
                 self.log.begin(heading(&job), &mut job);
                 self.probe = Some(job);
@@ -989,6 +1000,9 @@ impl App {
             // With --bootloader, gw reports the bootloader's firmware.
             "info" if !job.args.iter().any(|a| a == "--bootloader") => {
                 self.device = device::parse(&job.log);
+                if let Some((port, kind)) = self.device.as_ref().and_then(named_device) {
+                    self.follow(&port, kind);
+                }
             }
             // New firmware changes what the device says about itself.
             "update" => self.probed = None,
@@ -1079,6 +1093,30 @@ impl App {
         if !shown || chosen != format {
             self.found_note = None;
         }
+    }
+
+    /// gw info found a `kind` on `port`. While that is the port chosen, the
+    /// tick follows it, and with it what the pages allow.
+    fn follow(&mut self, port: &str, kind: Kind) {
+        let known = self.service.known_ports();
+        let chosen = chosen_port(known, &self.settings.device, self.settings.kind);
+        if chosen.is_some_and(|p| p.device == port) && kind != self.settings.kind {
+            // An Adafruit RP2040 is only ever the port chosen for it.
+            self.settings.device = port.to_owned();
+            self.set_kind(kind);
+        }
+    }
+
+    /// The device type ticked by hand. A port gw info found the other type on
+    /// is not this one's, so it gives way rather than undo the tick.
+    fn choose_kind(&mut self, kind: Kind) {
+        let found = self.device.as_ref().and_then(named_device);
+        if found.is_some_and(|(port, k)| k != kind && port == self.settings.device) {
+            self.settings.device.clear();
+        }
+        self.set_kind(kind);
+        // gw info again, in the type's name.
+        self.probed = None;
     }
 
     /// Drives `kind` from now on. An Adafruit RP2040 has unit 0 alone, so a
@@ -1215,7 +1253,20 @@ impl App {
                         (Some(_), Some(model)) => model,
                         (Some(port), None) => match self.settings.kind {
                             Kind::Greaseweazle => port.name.as_deref().unwrap_or("Greaseweazle"),
-                            Kind::Adafruit => adafruit::NAME,
+                            Kind::Adafruit => {
+                                let room =
+                                    ui.available_width() - REFRESH - ui.spacing().item_spacing.x;
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let full = ui.painter().layout_no_wrap(
+                                    adafruit::NAME.into(),
+                                    font,
+                                    Color32::PLACEHOLDER,
+                                );
+                                match full.size().x <= room {
+                                    true => adafruit::NAME,
+                                    false => adafruit::SHORT,
+                                }
+                            }
                         },
                     };
                     ui.add(egui::Label::new(RichText::new(name).strong()).truncate());
@@ -1372,7 +1423,7 @@ impl App {
             self.dialog = Some(Dialog::Access { port });
         }
         if let Some(kind) = chose {
-            self.set_kind(kind);
+            self.choose_kind(kind);
         }
     }
 
@@ -1557,10 +1608,14 @@ impl App {
                         ui.heading(title(name));
                         right(ui, |ui| self.presets_menu(ui, name));
                     });
-                    let about = match ABOUTS.iter().find(|(c, _)| *c == name) {
+                    let mut about = match ABOUTS.iter().find(|(c, _)| *c == name) {
                         Some((_, about)) => (*about).to_owned(),
                         None => form::sentence(&cmd.about),
                     };
+                    // gw's own words name the Greaseweazle.
+                    if self.settings.kind == Kind::Adafruit {
+                        about = about.replace("Greaseweazle", adafruit::NAME);
+                    }
                     ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
                     ui.add_space(14.0);
@@ -1991,7 +2046,13 @@ impl App {
         if let Some(folder) = output.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(folder);
         }
-        match Job::start(engine, command, args, repaint(ctx)) {
+        match Job::start(
+            engine,
+            self.settings.kind.name(),
+            command,
+            args,
+            repaint(ctx),
+        ) {
             Ok(mut job) => {
                 job.output = output;
                 job.format = job
@@ -4004,6 +4065,12 @@ fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
 }
 
+/// The port gw info reports and the device type its Model names.
+fn named_device(info: &DeviceInfo) -> Option<(String, Kind)> {
+    let kind = Kind::of_model(info.get("Model")?)?;
+    Some((info.get("Port")?.to_owned(), kind))
+}
+
 /// Where the device type is kept between runs, with an Adafruit RP2040's
 /// port, which gw cannot find by itself. A Greaseweazle keeps no file.
 fn device_file() -> PathBuf {
@@ -4353,11 +4420,14 @@ fn text_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 }
 
 /// A small button with a painted circular arrow.
+/// The refresh button's side.
+const REFRESH: f32 = 22.0;
+
 fn refresh_button(p: &'static Palette) -> impl egui::Widget {
     move |ui: &mut Ui| {
         let response = ui.add(
             egui::Button::new("")
-                .min_size(vec2(22.0, 22.0))
+                .min_size(vec2(REFRESH, REFRESH))
                 .frame_when_inactive(false),
         );
         let colour = if ui.is_enabled() {
@@ -4688,6 +4758,73 @@ mod tests {
         app.set_kind(Kind::Greaseweazle);
         app.set_kind(Kind::Adafruit);
         assert_eq!(app.settings.drive, "0");
+    }
+
+    /// gw info's report of a device with `model` on `port`.
+    fn info_job(port: &str, model: &str) -> Job {
+        let log = format!(
+            "Host Tools: 1.23\nDevice:\n  Port:     {port}\n  Model:    {model}\n  Firmware: 1.6"
+        );
+        Job::replay("info", &log)
+    }
+
+    #[test]
+    fn the_tick_follows_the_device_gw_info_finds_on_the_chosen_port() {
+        let ctx = egui::Context::default();
+        let mut app = adafruit();
+        app.tool = Some(info_job("COM9", "Greaseweazle V4.1"));
+        app.ended(&ctx, false);
+        assert_eq!(app.settings.kind, Kind::Greaseweazle);
+        assert_eq!(app.settings.device, "COM9", "the port chosen stays");
+
+        // The card's own gw info.
+        app.probe = Some(info_job("COM9", "Adafruit Floppy Generic"));
+        app.poll_probe(&ctx);
+        assert_eq!(app.settings.kind, Kind::Adafruit);
+
+        app.tool = Some(info_job("COM3", "Greaseweazle V4.1"));
+        app.ended(&ctx, false);
+        assert_eq!(app.settings.kind, Kind::Adafruit, "another port's device");
+        app.tool = Some(info_job("COM9", "Unknown (0x0900)"));
+        app.ended(&ctx, false);
+        assert_eq!(
+            app.settings.kind,
+            Kind::Adafruit,
+            "a model gw does not know"
+        );
+
+        // gw's own pick becomes the port chosen, as an Adafruit RP2040 needs.
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        app.tool = Some(info_job("COM3", "Adafruit Floppy Generic"));
+        app.ended(&ctx, false);
+        assert_eq!(app.settings.kind, Kind::Adafruit);
+        assert_eq!(app.settings.device, "COM3");
+    }
+
+    #[test]
+    fn a_type_ticked_by_hand_drops_a_port_gw_info_found_the_other_type_on() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        app.settings.device = "COM3".into();
+        app.tool = Some(info_job("COM3", "Greaseweazle V4.1"));
+        app.ended(&ctx, false);
+        app.choose_kind(Kind::Adafruit);
+        assert_eq!(app.settings.kind, Kind::Adafruit);
+        assert_eq!(app.settings.device, "", "its port is still to select");
+        app.probe = Some(info_job("COM3", "Greaseweazle V4.1"));
+        app.poll_probe(&ctx);
+        assert_eq!(
+            app.settings.kind,
+            Kind::Adafruit,
+            "the next gw info keeps the tick"
+        );
+
+        // A port gw info has not named stays.
+        let mut app = adafruit();
+        app.choose_kind(Kind::Greaseweazle);
+        assert_eq!(app.settings.device, "COM9");
     }
 
     #[test]

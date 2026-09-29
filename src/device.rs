@@ -68,6 +68,18 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The device gw info's Model names: gw prefixes every model but
+    /// Adafruit's with "Greaseweazle". None for another.
+    pub fn of_model(model: &str) -> Option<Kind> {
+        if adafruit::model(model) {
+            Some(Kind::Adafruit)
+        } else if model.starts_with("Greaseweazle") {
+            Some(Kind::Greaseweazle)
+        } else {
+            None
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Kind::Greaseweazle => "Greaseweazle",
@@ -80,6 +92,8 @@ impl Kind {
 /// (Adafruit_Floppy's examples/greaseweazle and library, 0.6.1 and main).
 pub mod adafruit {
     pub const NAME: &str = "Adafruit RP2040";
+    /// Its name where the full one does not fit.
+    pub const SHORT: &str = "RP2040";
     /// Its library clamps a seek to FLOPPY_IBMPC_HD_TRACKS - 1 and reports success.
     pub const LAST_CYLINDER: u32 = 79;
     /// Its SELECT takes unit 0 alone, on either bus: gw's A and 0.
@@ -199,6 +213,26 @@ mod tests {
         assert!(adafruit::model("Unknown (0x0801)"));
         assert!(!adafruit::model("Greaseweazle V4.1"));
         assert!(!adafruit::model("Unknown (0x0400)"));
+    }
+
+    #[test]
+    fn gw_infos_model_names_the_device_type() {
+        let greaseweazle = Some(Kind::Greaseweazle);
+        assert_eq!(Kind::of_model("Greaseweazle V4.1"), greaseweazle);
+        assert_eq!(
+            Kind::of_model("Greaseweazle F7 v3 \"Thunderbolt\""),
+            greaseweazle
+        );
+        assert_eq!(
+            Kind::of_model("Adafruit Floppy Generic"),
+            Some(Kind::Adafruit)
+        );
+        assert_eq!(Kind::of_model("Unknown (0x0801)"), Some(Kind::Adafruit));
+        assert_eq!(
+            Kind::of_model("Unknown (0x0900)"),
+            None,
+            "a model gw does not know"
+        );
     }
 
     #[test]

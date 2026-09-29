@@ -1830,6 +1830,7 @@ fn the_device_list_picks_a_greaseweazle_or_an_adafruit_rp2040_then_its_port() {
     w.get_by_label("COM9 · Feather RP2040").click();
     w.run();
     assert_eq!(app(&w).settings.device, "COM9");
+    w.get_by_label("Adafruit RP2040");
     // The sidebar's identifiers, not the page's sides.
     let identifier = |id: &str| {
         let mut buttons = w.get_all_by_role(Role::Button);
@@ -1845,6 +1846,35 @@ fn the_device_list_picks_a_greaseweazle_or_an_adafruit_rp2040_then_its_port() {
         ("3", false),
     ] {
         assert_eq!(identifier(id), possible, "{id}");
+    }
+}
+
+#[test]
+fn gws_page_descriptions_name_the_adafruit_rp2040_when_it_is_the_device() {
+    for (page, about) in [
+        (
+            "info",
+            "Display information about the Adafruit RP2040 setup.",
+        ),
+        (
+            "bandwidth",
+            "Report the available USB bandwidth for the Adafruit RP2040 device.",
+        ),
+        (
+            "reset",
+            "Reset the Adafruit RP2040 device to power-on default state.",
+        ),
+    ] {
+        let settings = Settings {
+            page: Page::Command(page.into()),
+            kind: Kind::Adafruit,
+            ..Settings::default()
+        };
+        let mut w = window(settings);
+        w.get_by_label(about);
+        app_mut(&mut w).settings.kind = Kind::Greaseweazle;
+        w.run();
+        w.get_by_label(&about.replace("Adafruit RP2040", "Greaseweazle"));
     }
 }
 

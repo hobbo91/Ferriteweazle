@@ -70,6 +70,7 @@ impl Job {
     /// Runs `gw ARGS`, or with [`DETECT`] finds the format of the disk they name.
     pub fn start(
         engine: &Engine,
+        device: &str,
         command: &str,
         args: Vec<String>,
         repaint: Repaint,
@@ -77,6 +78,8 @@ impl Job {
         let mode = if command == DETECT { "detect" } else { "run" };
         let mut child = engine
             .bridge(mode)
+            // The device the bridge's own messages name.
+            .env("FERRITEWEAZLE_DEVICE", device)
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

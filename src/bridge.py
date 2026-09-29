@@ -688,7 +688,8 @@ def steady_handshake():
             for _ in range(3):
                 with contextlib.suppress(struct.error):  # a short read: no reply
                     return connect(unit, ser)
-            raise error.Fatal('Greaseweazle interface did not answer.')
+            device = os.environ.get('FERRITEWEAZLE_DEVICE', 'Greaseweazle')
+            raise error.Fatal(f'{device} interface did not answer.')
         finally:
             ser.timeout = wait
 

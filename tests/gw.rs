@@ -69,7 +69,7 @@ fn wait<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
 
 fn start(engine: &Engine, command: &str, args: &[&str]) -> Job {
     let args = args.iter().map(|a| a.to_string()).collect();
-    Job::start(engine, command, args, Box::new(|| {})).expect("the bridge starts")
+    Job::start(engine, "Greaseweazle", command, args, Box::new(|| {})).expect("the bridge starts")
 }
 
 fn finish(mut job: Job, what: &str) -> Job {
@@ -148,6 +148,16 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The device the app drives, as Job::start names it.
+    let out = std::process::Command::new(&engine.python)
+        .args(["-c", LOSSY_PORT])
+        .arg(&bridge)
+        .arg("[{1, 2, 3}]")
+        .env("FERRITEWEAZLE_DEVICE", "Adafruit RP2040")
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.trim(), "Adafruit RP2040 interface did not answer.");
 }
 
 #[test]
