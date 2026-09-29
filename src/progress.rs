@@ -15,7 +15,7 @@ pub enum Status {
     Bad,
     /// Read or converted as flux, with nothing decoded.
     Flux,
-    /// Written and not verified.
+    /// Written, with no verify reported.
     Written,
     Erased,
     /// Outside the chosen format.

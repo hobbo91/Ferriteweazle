@@ -15,7 +15,7 @@ const GAP: f32 = 3.0;
 const MIN_CELL: f32 = 5.0;
 /// Room for the legend under the map.
 const LEGEND: f32 = 28.0;
-/// Square size wherever the pane has room.
+/// The least square size wherever the pane has room for it.
 const CELL: f32 = 18.0;
 const MAX_CELL: f32 = 30.0;
 /// Share of the pane's width the map fills where the height allows.
@@ -29,9 +29,10 @@ const TITLE: f32 = 20.0;
 const SIZED_ROWS: u32 = 8;
 const SIDE_GAP: f32 = 28.0;
 
-/// Draws the map as tall as `budget` points (legend included) where the width
-/// allows, and no taller than `room`, the pane's height below its top. `job`
-/// keys the squares' fade-in, so each fills once per job.
+/// Draws the map with squares of CELL points, smaller where `room`, the pane's
+/// height below its top, lacks space for them, larger where a map `budget`
+/// points tall (legend included) and the width allow. `job` keys the squares'
+/// fade-in, so each fills once per job.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
@@ -144,7 +145,7 @@ pub fn show(
                     }
                 }
                 None => {
-                    ui.weak("Not read yet.");
+                    ui.weak("gw has not reported this track.");
                 }
             }
         });
@@ -218,11 +219,15 @@ fn colour(status: Status, p: &Palette) -> Color32 {
 fn legend(ui: &mut egui::Ui, shown: &[Color32], retries: u32, p: &Palette) {
     ui.horizontal_wrapped(|ui| {
         for (status, name, tip) in [
-            (Status::Good, "Good", "Every sector read."),
+            (
+                Status::Good,
+                "Good",
+                "Every sector found, or written and verified.",
+            ),
             (Status::Partial, "Short", "Some sectors missing."),
-            (Status::Bad, "Bad", "No sectors read."),
+            (Status::Bad, "Bad", "No sectors found, or failed to verify."),
             (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (Status::Written, "Written", "Written, not verified."),
+            (Status::Written, "Written", "Written, no verify reported."),
             (Status::Erased, "Erased", "Erased."),
         ] {
             let swatch = colour(status, p);

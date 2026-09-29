@@ -894,6 +894,58 @@ fn the_82_cylinders_gw_erases_add_a_row_not_smaller_squares() {
 }
 
 #[test]
+fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
+    let writing =
+        |c, h| format!("T{c}.{h}: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)");
+    let header = "Writing c=0-1:h=0-1";
+    // The image lacks cylinder 1, which gw passes over without a word.
+    let verified = [
+        header,
+        &writing(0, 0),
+        &writing(0, 1),
+        "All tracks verified",
+    ]
+    .join("\n");
+    // Track 1.0 fails its verify, which ends the write.
+    let failed = [
+        header,
+        &writing(0, 0),
+        &writing(0, 1),
+        &writing(1, 0),
+        "** FATAL ERROR:\nFailed to verify Track 1.0",
+    ]
+    .join("\n");
+    let good = ("Good 2", "Every sector found, or written and verified.");
+    let written = ("Written 2", "Written, no verify reported.");
+    let bad = ("Bad 1", "No sectors found, or failed to verify.");
+    for (log, legend) in [(verified, vec![good]), (failed, vec![written, bad])] {
+        let settings = Settings {
+            page: Page::Command("write".into()),
+            ..Settings::default()
+        };
+        let mut w = build(
+            Harness::builder().with_size(DEFAULT),
+            settings,
+            Some(Job::replay("write", &log)),
+        );
+        // Side 0's squares, then side 1's: the fourth is cylinder 1, side 1.
+        let never = squares(&w).nth(3).expect("the map's squares").rect.center();
+        w.hover_at(never);
+        w.run();
+        w.get_by_label("Cylinder 1, side 1");
+        w.get_by_label("gw has not reported this track.");
+        for (entry, tip) in legend {
+            // One tooltip at a time: the last must close first.
+            w.event(egui::Event::PointerGone);
+            w.run();
+            w.get_by_label(entry).hover();
+            w.run();
+            w.get_by_label(tip);
+        }
+    }
+}
+
+#[test]
 fn the_map_keeps_in_line_with_the_text_above_it_however_wide_the_pane() {
     let left = |width: f32| {
         let w = window_at(egui::vec2(width, 780.0), chosen());
