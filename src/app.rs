@@ -288,8 +288,9 @@ pub struct App {
     probe_failed: Option<String>,
     /// The port the card last asked about, and whether Linux denied it then.
     probed: Option<(String, bool)>,
-    /// The real app, not a test window: it asks each Greaseweazle that
-    /// appears what it is, and GitHub for newer gw releases.
+    /// The real app, not a test window: it keeps the drive in drive_file(),
+    /// runs gw info on each Greaseweazle that appears, and asks GitHub for
+    /// newer releases of gw and of this app.
     live: bool,
     /// The drive as last kept in drive_file().
     kept_drive: String,
@@ -374,7 +375,7 @@ impl App {
             desktop_theme: None,
             framed: None,
             drawn: None,
-            udev_rule: crate::engine::udev_rule(),
+            udev_rule: engine::udev_rule(),
             install: RuleInstall::Idle,
         }
     }
@@ -1452,7 +1453,7 @@ impl App {
         }
     }
 
-    /// Why a disk definitions file stops the page: gw would refuse it too.
+    /// Why the page's disk definitions file stops it, whatever the format.
     fn diskdefs_fault(&self, values: &Values) -> Option<&'static str> {
         let path = values.get("diskdefs");
         if path.is_empty() {
@@ -1626,9 +1627,8 @@ impl App {
         }
     }
 
-    /// The disk's status: what is happening now, or last happened, to a disk.
-    /// The job and its map. `tall` is the pane's height with no drawer open:
-    /// the map keeps the size that gives it while a drawer leaves it room.
+    /// The disk job, running or last run, and its map, or with no job the
+    /// page's idle status. `tall` is the pane's height with no drawer open.
     fn status(&mut self, ui: &mut Ui, page: &str, tall: f32) {
         let full = ui.available_height();
         // The rows keep one width, clear of the strip the scroll bar floats in.
@@ -1766,8 +1766,9 @@ impl App {
         let switched = self.drawn.is_some() && open.is_some() && self.drawn != open;
         self.drawn = open;
         for (drawer, id) in [(Drawer::Cli, "cli"), (Drawer::Log, "log")] {
-            // Runs the slide egui's Panel keys by this id, so it takes DRAWER_TIME,
-            // or no time going straight from one drawer to the other.
+            // egui's Panel keys its slide by this id. Setting it here first
+            // makes it take DRAWER_TIME, or none from one drawer to the
+            // other: the Panel's own call this frame then sees no time pass.
             let slide = Id::new(id).with("animation");
             let time = if switched { 0.0 } else { DRAWER_TIME };
             ui.ctx()
@@ -2982,9 +2983,8 @@ struct Refused<'a> {
     install: &'a RuleInstall,
 }
 
-/// The port a job was refused for want of permission. gw's error names it,
-/// but `gw info` says only that it found no device, so there `port`, the
-/// port list's, tells.
+/// The port a job was refused for want of permission: the one gw's error
+/// names, else `port` when Linux denies it and `gw info` found no device.
 fn refused_port(job: &Job, port: Option<&Port>) -> Option<String> {
     if let Some(port) = job.progress.error.as_deref().and_then(udev::denied_port) {
         return Some(port.to_owned());
@@ -3442,13 +3442,12 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
 
-    fn offline() -> App {
-        let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
-        App::offline(&egui::Context::default(), Settings::default(), Ok(schema))
-    }
-
     fn schema() -> Schema {
         serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap()
+    }
+
+    fn offline() -> App {
+        App::offline(&egui::Context::default(), Settings::default(), Ok(schema()))
     }
 
     /// A Greaseweazle as gw lists it, on a made-up port.
@@ -3534,13 +3533,7 @@ mod tests {
     #[test]
     fn detect_on_the_read_page_waits_while_the_device_card_asks_gw() {
         let mut app = offline();
-        app.pin_ports(vec![Port {
-            device: "/dev/cu.usbmodem14201".into(),
-            name: Some("Greaseweazle".into()),
-            serial: None,
-            score: 20,
-            denied: false,
-        }]);
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         assert_eq!(app.cannot_detect("read"), None);
         let mut probe = Job::replay("info", "");
         probe.ended = None;
@@ -3605,8 +3598,7 @@ mod tests {
 
     #[test]
     fn a_batch_convert_runs_gw_once_for_each_image_and_names_what_it_makes() {
-        let schema: Schema =
-            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let schema = schema();
         let convert = schema.command("convert").unwrap();
         let mut values = Values::default();
         values.set(form::BATCH, command::ON);
@@ -3676,8 +3668,7 @@ mod tests {
 
     #[test]
     fn a_read_of_three_disks_runs_gw_once_for_each() {
-        let schema: Schema =
-            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let schema = schema();
         let read = schema.command("read").unwrap();
         let mut values = Values::default();
         values.set("format", "amiga.amigados");
@@ -3704,8 +3695,7 @@ mod tests {
 
     #[test]
     fn the_device_card_asks_gw_info_with_no_page_options() {
-        let schema: Schema =
-            serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
+        let schema = schema();
         let ctx = egui::Context::default();
         let mut settings = Settings::default();
         settings
@@ -3736,15 +3726,14 @@ mod tests {
     #[test]
     fn a_fault_shows_on_the_page_it_happened_on() {
         let ctx = egui::Context::default();
+        // A folder inside a file cannot be made on any system.
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml/presets");
         let settings = Settings {
-            presets_folder: Some("/dev/null/presets".into()),
+            presets_folder: Some(folder),
             ..Settings::default()
         };
         let mut app = App::offline(&ctx, settings, Err(String::new()));
-        app.engine = Some(Engine {
-            python: "/no/such/python".into(),
-            origin: Origin::Custom,
-        });
+        app.engine = Some(no_gw());
         app.run(&ctx, "erase", Vec::new());
         app.detect_for = Some("convert".into());
         app.run(&ctx, DETECT, Vec::new());
@@ -3758,15 +3747,8 @@ mod tests {
     #[test]
     fn a_gw_that_cannot_be_found_leaves_no_greaseweazle_or_command() {
         let ctx = egui::Context::default();
-        let schema = serde_json::from_str(include_str!("../tests/data/schema-1.23.json")).unwrap();
-        let mut app = App::offline(&ctx, Settings::default(), Ok(schema));
-        app.pin_ports(vec![Port {
-            device: "/dev/cu.usbmodem14201".into(),
-            name: Some("Greaseweazle".into()),
-            serial: None,
-            score: 20,
-            denied: false,
-        }]);
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
         assert!(app.connected());
         assert!(!sections(app.listed.as_deref()).is_empty());
         app.settings.engine = Some("/no/such/gw".into());
@@ -3855,14 +3837,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = offline();
         app.udev_rule = Some(RULE.into());
-        app.pin_ports(vec![Port {
-            device: "/dev/ttyACM0".into(),
-            name: Some("Greaseweazle".into()),
-            serial: None,
-            score: 20,
-            denied: true,
-        }]);
-        // gw info takes a port it may not open for no device.
+        app.pin_ports(vec![greaseweazle("/dev/ttyACM0", true)]);
+        // gw info prints "Not found" for a port pyserial may not open.
         app.probe = Some(Job::replay(
             "info",
             "Host Tools: 1.23\nDevice:\n  Not found",
