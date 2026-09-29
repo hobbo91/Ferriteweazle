@@ -3658,7 +3658,7 @@ mod tests {
         app.session.as_mut().unwrap().next = 2;
         app.disk = Some(Job::replay(
             "write",
-            "** FATAL ERROR:\nNo index pulse detected",
+            "Command Failed: GetFluxStatus: No Index",
         ));
         app.ended(&ctx, true);
         assert!(app.session.is_none());
