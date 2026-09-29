@@ -2086,3 +2086,17 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
         .expect("the first disk's field");
     assert!(field.accesskit_node().is_disabled(), "one disk is no set");
 }
+
+#[test]
+fn the_map_grows_with_the_window_to_34_point_squares() {
+    let sizes = [(1040.0, 744.0), (1280.0, 800.0), (1920.0, 1080.0)].map(|(x, y)| {
+        let mut w = start(
+            Harness::builder().with_size(egui::vec2(x, y)),
+            chosen(),
+            Some(Job::replay("read", &damaged_read())),
+        );
+        w.run();
+        squares(&w).next().unwrap().rect.width()
+    });
+    assert_eq!(sizes, [19.0, 23.0, 34.0]);
+}

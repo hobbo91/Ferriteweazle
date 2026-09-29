@@ -110,8 +110,6 @@ const LOGO_CLEAR: f32 = 16.0 / 256.0;
 const CARD_DROP: f32 = 2.0;
 /// A sidebar entry's height.
 const NAV_ROW: f32 = 26.0;
-/// The share of the status pane's height the map and its heading fill.
-const MAP_SHARE: f32 = 0.8;
 /// How long a theme chosen in Settings takes to fade in, in seconds.
 const FADE_TIME: f32 = 0.25;
 /// The most of a frame the fade counts, in seconds, so a stall cannot skip it.
@@ -1764,11 +1762,11 @@ impl App {
         let p = theme::palette(ui);
         let blank = self.blank_map(page);
         let top = ui.cursor().top();
-        // Below the cursor: the map's share of the pane with no drawer open,
-        // so opening one leaves the map be while it fits, and the room there is.
+        // Below the cursor: the room above a drawer of its least height, so
+        // opening one leaves the map be, and the room there is.
         let room = |ui: &Ui| {
             let used = ui.cursor().top() - top;
-            (tall * MAP_SHARE - used, full - used)
+            (tall - DRAWER - used, full - used)
         };
         // The job's state keeps to the top right, leaving the rows below to its name.
         egui::Sides::new().shrink_left().truncate().show(

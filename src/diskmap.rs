@@ -14,21 +14,20 @@ const FILL_TIME: f32 = 0.4;
 const ROW: u32 = 10;
 const GAP: f32 = 3.0;
 const MIN_CELL: f32 = 5.0;
-/// Room for the legend under the map.
+/// Room for a one-line legend under the map, until the legend has been drawn.
 const LEGEND: f32 = 28.0;
 /// The least square size wherever the pane has room for it.
 const CELL: f32 = 18.0;
-const MAX_CELL: f32 = 30.0;
-/// Share of the pane's width the map fills where the height allows.
-const WIDTH_SHARE: f32 = 0.9;
+const MAX_CELL: f32 = 34.0;
 /// Room for the row numbers left of a grid.
 const LABEL: f32 = 24.0;
 /// Room for a side's name above its grid.
-const TITLE: f32 = 20.0;
+const TITLE: f32 = 18.0;
 /// Rows the squares are sized for, 80 cylinders: the 82 gw erases add a row
 /// below, not smaller squares, while the pane has room for it.
 const SIZED_ROWS: u32 = 8;
 const SIDE_GAP: f32 = 28.0;
+const STACK_GAP: f32 = 8.0;
 
 /// Draws the map with squares of CELL points, smaller where `room`, the pane's
 /// height below its top, lacks space for them, larger where a map `budget`
@@ -53,21 +52,24 @@ pub fn show(
     let sides = heads.len().max(1) as f32;
     let rows = last / ROW - first / ROW + 1;
     let width = ui.available_width();
-    let room = room - LEGEND;
-    let wanted = (budget - LEGEND).min(room);
-    let cell_in = |across: bool, height: f32, share: f32, rows: u32| {
+    // The legend wraps in a narrow pane: last frame's height keeps it in room.
+    let legend_id = ui.id().with("legend");
+    let legend_height = ui.data(|d| d.get_temp(legend_id)).unwrap_or(LEGEND);
+    let room = room - legend_height;
+    let wanted = (budget - legend_height).min(room);
+    let cell_in = |across: bool, height: f32, rows: u32| {
         let (columns, stacked) = if across { (sides, 1.0) } else { (1.0, sides) };
-        let each_width = (width * share - SIDE_GAP * (columns - 1.0)) / columns;
+        let each_width = (width - SIDE_GAP * (columns - 1.0)) / columns;
         let by_width = (each_width - LABEL - (ROW - 1) as f32 * gap) / ROW as f32;
-        let each = (height - SIDE_GAP * 0.5 * (stacked - 1.0)) / stacked;
+        let each = (height - STACK_GAP * (stacked - 1.0)) / stacked;
         let by_height = (each - TITLE + gap) / rows as f32 - gap;
         by_width.min(by_height)
     };
     // The usual size where it fits, larger where the budget allows.
     let cell_for = |across: bool| {
-        let fits = cell_in(across, room, 1.0, rows);
+        let fits = cell_in(across, room, rows);
         let usual = CELL.min(fits);
-        cell_in(across, wanted, WIDTH_SHARE, rows.min(SIZED_ROWS))
+        cell_in(across, wanted, rows.min(SIZED_ROWS))
             .min(fits)
             .max(usual)
             .min(MAX_CELL)
@@ -82,7 +84,7 @@ pub fn show(
     );
     let size = match across {
         true => vec2(grid.x * sides + SIDE_GAP * (sides - 1.0), grid.y),
-        false => vec2(grid.x, grid.y * sides + SIDE_GAP * 0.5 * (sides - 1.0)),
+        false => vec2(grid.x, grid.y * sides + STACK_GAP * (sides - 1.0)),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
@@ -90,7 +92,7 @@ pub fn show(
     let square = |i: usize, cyl: u32| {
         let origin = match across {
             true => rect.min + vec2(i as f32 * (grid.x + SIDE_GAP), 0.0),
-            false => rect.min + vec2(0.0, i as f32 * (grid.y + SIDE_GAP * 0.5)),
+            false => rect.min + vec2(0.0, i as f32 * (grid.y + STACK_GAP)),
         };
         let x = snap(origin.x + LABEL) + (cyl % ROW) as f32 * step;
         let y = snap(origin.y + TITLE) + (cyl / ROW - first / ROW) as f32 * step;
@@ -156,8 +158,14 @@ pub fn show(
             }
         });
     }
+    let top = ui.cursor().top();
     ui.add_space(6.0);
     legend(ui, &shown, progress, p);
+    let height = ui.cursor().top() - top;
+    if height != legend_height {
+        ui.data_mut(|d| d.insert_temp(legend_id, height));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// How far a square has faded in, 0 to 1. Timed from the frame it lit up,
