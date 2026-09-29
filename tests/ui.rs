@@ -1180,6 +1180,38 @@ fn clear_empties_the_log() {
 }
 
 #[test]
+fn a_line_gw_is_still_printing_shows_under_the_result_and_in_the_log() {
+    let mut w = window(Settings {
+        page: Page::Command("clean".into()),
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    let app = app_mut(&mut w);
+    let mut job = Job::replay("clean", "");
+    job.ended = None;
+    app.log.begin("gw clean".into(), &mut job);
+    // gw clean prints each cylinder as the heads reach it, and ends the
+    // line with the pass.
+    job.partial = "Pass 0: 0 10 20".into();
+    app.tool = Some(job);
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(2);
+    assert_eq!(w.query_all_by_label("Pass 0: 0 10 20").count(), 2);
+}
+
+#[test]
+fn a_tool_that_printed_nothing_says_so() {
+    let mut w = window(Settings {
+        page: Page::Command("reset".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).tool = Some(Job::replay("reset", ""));
+    w.run();
+    w.get_by_label("gw printed nothing.");
+    assert!(w.query_by_label("gw's output appears here.").is_none());
+}
+
+#[test]
 fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
     let mut w = first_track_read(
         Harness::builder()

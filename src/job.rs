@@ -5,10 +5,10 @@ use crate::engine::Engine;
 use crate::progress::Progress;
 use crate::service::Repaint;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 // Line prefixes for gw's questions and the bridge's result. Must match bridge.py.
@@ -51,6 +51,9 @@ pub struct Job {
     pub step: u32,
     /// Which disk of a session this is, counting from 1, and how many.
     pub part: Option<(usize, usize)>,
+    /// The line gw is printing, until it ends it: gw clean prints each
+    /// cylinder as the heads reach it.
+    pub partial: String,
     /// Lines of `log` the session log has taken.
     logged: usize,
     /// The line number of the job's heading in the session log, and the heading.
@@ -59,7 +62,7 @@ pub struct Job {
     /// None for a job replayed from its output.
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    lines: Receiver<String>,
+    lines: Receiver<Chunk>,
     eof: bool,
 }
 
@@ -82,22 +85,7 @@ impl Job {
         let stdin = child.stdin.take();
         let stderr = child.stderr.take().expect("stderr is piped");
         let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = Vec::new();
-            while matches!(reader.read_until(b'\n', &mut buf), Ok(1..)) {
-                let line = String::from_utf8_lossy(&buf)
-                    .trim_end_matches(['\n', '\r'])
-                    .to_owned();
-                buf.clear();
-                if tx.send(line).is_err() {
-                    break;
-                }
-                repaint();
-            }
-            drop(tx); // before the repaint, so the poll it wakes sees the end
-            repaint();
-        });
+        std::thread::spawn(move || relay(stderr, tx, repaint));
         Ok(Job {
             child: Some(child),
             stdin,
@@ -150,7 +138,11 @@ impl Job {
     pub fn poll(&mut self) {
         loop {
             match self.lines.try_recv() {
-                Ok(line) => self.take(line),
+                Ok(Chunk::Line(line)) => {
+                    self.partial.clear();
+                    self.take(line);
+                }
+                Ok(Chunk::Partial(text)) => self.partial = text,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.eof = true;
@@ -216,7 +208,7 @@ impl Job {
         self.question = None;
     }
 
-    fn new(command: &str, args: Vec<String>, lines: Receiver<String>) -> Job {
+    fn new(command: &str, args: Vec<String>, lines: Receiver<Chunk>) -> Job {
         let mut progress = Progress::default();
         progress.raw = command == "read" && args.iter().any(|a| a == "--raw");
         Job {
@@ -233,6 +225,7 @@ impl Job {
             detected: Vec::new(),
             step: 1,
             part: None,
+            partial: String::new(),
             logged: 0,
             head: None,
             stopping: None,
@@ -268,6 +261,56 @@ impl Job {
             self.log.push(line);
         }
     }
+}
+
+/// What the reader passes on from gw's output.
+enum Chunk {
+    Line(String),
+    /// The line so far, where gw has not ended it yet.
+    Partial(String),
+}
+
+/// Passes on gw's output from `from` as it comes: each line, and a line not
+/// yet ended each time it grows.
+fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
+    let mut reader = BufReader::new(from);
+    let mut line = Vec::new();
+    loop {
+        let (used, ended) = match reader.fill_buf() {
+            Ok([]) if line.is_empty() => break,
+            // The end of the output ends the line too.
+            Ok([]) => (0, true),
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(end) => {
+                    line.extend_from_slice(&buf[..end]);
+                    (end + 1, true)
+                }
+                None => {
+                    line.extend_from_slice(buf);
+                    (buf.len(), false)
+                }
+            },
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        reader.consume(used);
+        let text = String::from_utf8_lossy(&line)
+            .trim_end_matches('\r')
+            .to_owned();
+        let chunk = match ended {
+            true => {
+                line.clear();
+                Chunk::Line(text)
+            }
+            false => Chunk::Partial(text),
+        };
+        if to.send(chunk).is_err() {
+            return;
+        }
+        repaint();
+    }
+    drop(to); // before the repaint, so the poll it wakes sees the end
+    repaint();
 }
 
 /// Most lines the session log keeps; it drops the oldest past this.
@@ -309,6 +352,14 @@ impl SessionLog {
     /// Whether `lines()[index]` heads a job.
     pub fn is_head(&self, index: usize) -> bool {
         self.heads.binary_search(&(self.dropped + index)).is_ok()
+    }
+
+    /// The line `job` has not ended yet, while its lines are the last here.
+    pub fn tail<'j>(&self, job: &'j Job) -> &'j str {
+        match &job.head {
+            Some((at, _)) if self.last == Some(*at) => &job.partial,
+            _ => "",
+        }
     }
 
     /// Starts a job's lines under `heading`.
@@ -488,6 +539,44 @@ mod tests {
         );
         let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
         assert_eq!(heads, [0, 3, 6, 10]);
+    }
+
+    /// Polls `job` until `done`, for up to five seconds.
+    fn poll_until(job: &mut Job, done: impl Fn(&Job) -> bool) {
+        let start = Instant::now();
+        while !done(job) {
+            assert!(start.elapsed() < Duration::from_secs(5), "{:?}", job.log);
+            std::thread::sleep(Duration::from_millis(5));
+            job.poll();
+        }
+    }
+
+    #[test]
+    fn a_line_gw_has_not_ended_shows_as_it_grows() {
+        let (from, mut gw) = std::io::pipe().unwrap();
+        let (to, lines) = mpsc::channel();
+        std::thread::spawn(move || relay(from, to, Box::new(|| ())));
+        let mut clean = Job::new("clean", Vec::new(), lines);
+        gw.write_all(b"Pass 0: 0 10 ").unwrap();
+        poll_until(&mut clean, |j| j.partial == "Pass 0: 0 10 ");
+        assert!(clean.log.is_empty());
+        gw.write_all(b"20\r\nPass 1: 0").unwrap();
+        poll_until(&mut clean, |j| j.partial == "Pass 1: 0");
+        assert_eq!(clean.log, ["Pass 0: 0 10 20"]);
+        drop(gw);
+        poll_until(&mut clean, |j| j.eof);
+        assert_eq!(
+            clean.log,
+            ["Pass 0: 0 10 20", "Pass 1: 0"],
+            "the end ends it"
+        );
+        assert_eq!(clean.partial, "");
+        let mut log = SessionLog::default();
+        log.begin("gw clean".into(), &mut clean);
+        clean.partial = "Pass 2: 0".into();
+        assert_eq!(log.tail(&clean), "Pass 2: 0");
+        log.begin("gw info".into(), &mut job("info"));
+        assert_eq!(log.tail(&clean), "", "another job's lines came after");
     }
 
     #[test]

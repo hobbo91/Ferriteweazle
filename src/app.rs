@@ -1802,11 +1802,10 @@ impl App {
             .default_size(DRAWER)
             .size_range(DRAWER..=tallest)
             .show_collapsible(ui, &mut log, |ui| {
-                let log = &self.log;
-                let note = log.trimmed().then_some("Older lines were dropped.");
-                let lines = log.lines();
-                let heads = |i| log.is_head(i);
-                (clear, unsaved) = output(ui, "Log", note, lines, heads, None, true);
+                let jobs = [&self.disk, &self.tool].into_iter().flatten();
+                let tail = jobs.map(|j| self.log.tail(j)).find(|t| !t.is_empty());
+                let shown = Shown::Log(&self.log, tail.unwrap_or_default());
+                (clear, unsaved) = output(ui, shown);
             });
         if clear {
             self.log.clear();
@@ -3005,8 +3004,7 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
     {
         device_table(ui, &info, p);
     } else {
-        let height = Some(260.0);
-        (_, unsaved) = output(ui, "Output", None, &job.log, |_| false, height, false);
+        (_, unsaved) = output(ui, Shown::Job(job));
     }
     (install, unsaved)
 }
@@ -3123,25 +3121,35 @@ fn error_box(ui: &mut Ui, colour: Color32, add: impl FnOnce(&mut Ui)) {
         });
 }
 
-/// gw's output under `heading`, with Copy and Save, and Clear if `clearable`,
-/// `height` tall or, with none, as tall as the room left. `head` picks the
-/// lines that head a job. Gives whether Clear was pressed, and why a save
-/// failed.
-fn output(
-    ui: &mut Ui,
-    heading: &str,
-    note: Option<&str>,
-    log: &[String],
-    head: impl Fn(usize) -> bool,
-    height: Option<f32>,
-    clearable: bool,
-) -> (bool, Option<String>) {
+/// What an output box shows.
+#[derive(Clone, Copy)]
+enum Shown<'a> {
+    /// Every job's output this session, and the line the last is still printing.
+    Log(&'a SessionLog, &'a str),
+    /// A job's output under its page.
+    Job(&'a Job),
+}
+
+/// A job's output box, in points.
+const OUTPUT_HEIGHT: f32 = 260.0;
+
+/// gw's output with Copy and Save: the Log as tall as the room left, with
+/// Clear, or a job's in a box of its own. Gives whether Clear was pressed,
+/// and why a save failed.
+fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
     let p = theme::palette(ui);
+    let (heading, log, tail) = match shown {
+        Shown::Log(log, tail) => ("Log", log.lines(), tail),
+        Shown::Job(job) => ("Output", job.log.as_slice(), job.partial.as_str()),
+    };
+    let drawer = matches!(shown, Shown::Log(..));
     let (mut clear, mut unsaved) = (false, None);
     ui.horizontal(|ui| {
         ui.label(RichText::new(heading).strong());
-        if let Some(note) = note {
-            ui.label(RichText::new(note).small().weak());
+        if let Shown::Log(log, _) = shown
+            && log.trimmed()
+        {
+            ui.label(RichText::new("Older lines were dropped.").small().weak());
         }
         right(ui, |ui| {
             let save = ui.add_enabled(!log.is_empty(), egui::Button::new("Save…"));
@@ -3164,7 +3172,7 @@ fn output(
             {
                 ui.ctx().copy_text(log.join("\n"));
             }
-            if clearable {
+            if drawer {
                 let button = ui.add_enabled(!log.is_empty(), egui::Button::new("Clear"));
                 clear = button
                     .on_hover_text("Clear the log.")
@@ -3181,16 +3189,25 @@ fn output(
     // Exactly the room left: a drawer a little taller than its contents
     // would shrink to them, frame by frame.
     let room = || ui.available_height() - frame.total_margin().sum().y;
-    let fill = height.is_none();
-    let height = height.unwrap_or_else(room).max(LOG_LINE);
+    let height = match drawer {
+        true => room(),
+        false => OUTPUT_HEIGHT,
+    }
+    .max(LOG_LINE);
     frame.show(ui, |ui| {
-        if log.is_empty() {
-            let least = if fill { height } else { height.min(80.0) };
+        if log.is_empty() && tail.is_empty() {
+            let least = if drawer { height } else { height.min(80.0) };
             ui.set_min_size(vec2(ui.available_width(), least));
-            ui.label(RichText::new("gw's output appears here.").weak());
+            let empty = match shown {
+                Shown::Job(job) if !job.running() => "gw printed nothing.",
+                _ => "gw's output appears here.",
+            };
+            ui.label(RichText::new(empty).weak());
             return;
         }
         let row = ui.text_style_height(&TextStyle::Monospace);
+        // A line gw has not ended yet comes last.
+        let lines = log.len() + usize::from(!tail.is_empty());
         // Bars drawn whenever there is more to see, as a text view's: a
         // floating one hides until hovered, and a wheel does not scroll
         // sideways. The theme paints an idle handle in the card's colour.
@@ -3202,14 +3219,15 @@ fn output(
             .auto_shrink([false, false])
             .max_height(height)
             .min_scrolled_height(height)
-            .show_rows(ui, row, log.len(), |ui, rows| {
+            .show_rows(ui, row, lines, |ui, rows| {
                 for i in rows {
+                    let line = log.get(i).map_or(tail, String::as_str);
                     let before = i.checked_sub(1).map(|b| log[b].as_str());
-                    let colour = match head(i) {
-                        true => Some(p.accent),
-                        false => log_colour(&log[i], before, p),
+                    let colour = match shown {
+                        Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
+                        _ => log_colour(line, before, p),
                     };
-                    let mut text = RichText::new(&log[i]).monospace();
+                    let mut text = RichText::new(line).monospace();
                     if let Some(colour) = colour {
                         text = text.color(colour);
                     }
