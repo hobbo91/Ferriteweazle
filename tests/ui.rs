@@ -2381,6 +2381,41 @@ fn formats_within_a_family_run_in_numeric_order() {
 }
 
 #[test]
+fn the_maps_row_numbers_keep_a_line_apart_in_the_smallest_window() {
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    };
+    let small = ferriteweazle::SMALLEST;
+    let job = Job::replay("read", &damaged_read());
+    let mut w = start(Harness::builder().with_size(small), settings, Some(job));
+    w.run();
+    let pane = w.get_by_label("Disk status").rect().left();
+    let map = squares(&w)
+        .map(|s| s.rect.left())
+        .fold(f32::INFINITY, f32::min);
+    let mut rows: Vec<f32> = w
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Text(t)
+                if t.pos.x > pane && t.pos.x < map && t.galley.text().parse::<u32>().is_ok() =>
+            {
+                Some(t.visual_bounding_rect().center().y)
+            }
+            _ => None,
+        })
+        .collect();
+    rows.sort_by(f32::total_cmp);
+    assert!(rows.len() >= 4, "{rows:?}");
+    // The numbers are 11 points: closer than that, they crowd.
+    for pair in rows.windows(2) {
+        assert!(pair[1] - pair[0] >= 11.0, "row numbers crowd: {rows:?}");
+    }
+}
+
+#[test]
 fn image_options_end_within_the_field_in_the_smallest_window() {
     let mut settings = chosen();
     settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();

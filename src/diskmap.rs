@@ -21,6 +21,8 @@ const CELL: f32 = 18.0;
 const MAX_CELL: f32 = 96.0;
 /// Room for the row numbers left of a grid.
 const LABEL: f32 = 24.0;
+/// Row numbers' size, in points: rows shorter than it are numbered every other one.
+const ROW_NUMBER: f32 = 11.0;
 /// Room for a side's name above its grid.
 const TITLE: f32 = 18.0;
 /// Rows the squares are sized for, 90 cylinders, past any drive: every disk
@@ -119,13 +121,14 @@ pub fn show(
             FontId::proportional(12.0),
             p.dim,
         );
-        for row in first / ROW..=last / ROW {
+        let every = if step < ROW_NUMBER { 2 } else { 1 };
+        for row in (first / ROW..=last / ROW).filter(|r| r % every == 0) {
             let at = square(i, row * ROW);
             painter.text(
                 pos2(at.left() - 7.0, at.center().y),
                 Align2::RIGHT_CENTER,
                 row * ROW,
-                FontId::proportional(11.0),
+                FontId::proportional(ROW_NUMBER),
                 p.dim,
             );
         }

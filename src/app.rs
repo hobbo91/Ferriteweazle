@@ -104,8 +104,9 @@ const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 /// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and as tall
 /// as 21-point squares need, which fits a 1920x1080 screen at 125% on Windows 11.
 pub const WINDOW: egui::Vec2 = egui::vec2(1116.0, 773.0);
-/// The smallest window, in points: fits a 1024 by 768 screen beside a dock or taskbar.
-pub const SMALLEST: egui::Vec2 = egui::vec2(960.0, 640.0);
+/// The smallest window, in points: fits a 1024 by 600 screen, or 1366 by 768 at 125%,
+/// beside a taskbar.
+pub const SMALLEST: egui::Vec2 = egui::vec2(880.0, 520.0);
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
 const STATUS_MIN: f32 = 320.0;
