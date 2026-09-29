@@ -1434,7 +1434,6 @@ impl App {
         let values = self.settings.values.get(&cmd.name).unwrap_or(&empty);
         let output = |dest: &str| form::OUTPUTS.contains(&(cmd.name.as_str(), dest));
         let missing: Vec<String> = command::missing(cmd, values)
-            .filter_map(|d| cmd.arg(d))
             .filter(|a| !form::GLOBAL.contains(&a.dest.as_str()) && !output(&a.dest))
             .filter(|a| form::batch_input(cmd, values) != Some(a.dest.as_str()))
             .map(|a| form::label(a).to_lowercase())
@@ -3235,8 +3234,7 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-/// What Detect found. `undone`: it turned off the double step an earlier
-/// disk needed.
+/// `undone`: Detect turned off the double step an earlier disk needed.
 fn found_note(formats: &[String], step: u32, undone: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {

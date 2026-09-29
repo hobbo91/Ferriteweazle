@@ -56,11 +56,10 @@ pub fn argv(cmd: &Command, values: &Values) -> Vec<String> {
 }
 
 /// Required arguments with no value yet.
-pub fn missing<'a>(cmd: &'a Command, values: &Values) -> impl Iterator<Item = &'a str> {
+pub fn missing<'a>(cmd: &'a Command, values: &Values) -> impl Iterator<Item = &'a Arg> {
     cmd.args
         .iter()
         .filter(|a| a.required && values.get(&a.dest).is_empty())
-        .map(|a| a.dest.as_str())
 }
 
 /// A pasted gw command line, as its command name and settings.
@@ -247,10 +246,10 @@ mod tests {
     fn required_arguments_are_reported_until_set() {
         let s = schema();
         let convert = s.command("convert").unwrap();
-        assert_eq!(
-            missing(convert, &Values::default()).collect::<Vec<_>>(),
-            ["in_file", "out_file"]
-        );
+        let dests: Vec<&str> = missing(convert, &Values::default())
+            .map(|a| a.dest.as_str())
+            .collect();
+        assert_eq!(dests, ["in_file", "out_file"]);
         let v = values(&[("in_file", "a.scp"), ("out_file", "b.img")]);
         assert_eq!(missing(convert, &v).count(), 0);
     }
