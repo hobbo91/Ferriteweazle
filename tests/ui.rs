@@ -9,8 +9,10 @@ use common::{
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
+use ferriteweazle::command::Values;
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, LOG_LINES, Outcome};
+use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
@@ -283,6 +285,89 @@ fn a_preset_is_a_file_that_brings_back_the_settings_it_saved() {
     w.run();
     assert_eq!(app(&w).settings.values["read"].get("revs"), "5");
     std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
+fn a_preset_is_deleted_from_its_menu_after_asking() {
+    let folder = std::env::temp_dir().join(format!("fw-ui-delete-{}", std::process::id()));
+    std::fs::remove_dir_all(&folder).ok();
+    let preset = Preset {
+        command: "read".into(),
+        ..Preset::default()
+    };
+    let file = presets::save(&folder, "Five revs", &preset).unwrap();
+    let mut w = window(Settings {
+        presets_folder: Some(folder.clone()),
+        ..Settings::default()
+    });
+    let choose = |w: &mut Window| {
+        w.get_by_label("Presets").click();
+        w.run();
+        w.get_by_label_contains("Delete").click();
+        w.run();
+        // The submenu's entry, after the one that loads the preset.
+        w.get_all_by_label("Five revs").last().unwrap().click();
+        w.run();
+    };
+    choose(&mut w);
+    w.get_by_label("Delete \"Five revs\"?");
+    w.get_by_label("This cannot be undone.");
+    w.get_by_label("Cancel").click();
+    w.run();
+    assert!(file.is_file(), "Cancel deleted it");
+    choose(&mut w);
+    w.get_by_role_and_label(Role::Button, "Delete").click();
+    w.run();
+    assert!(!file.exists());
+    w.get_by_label("Presets").click();
+    w.run();
+    w.get_by_label("No presets saved yet.");
+    assert!(
+        w.query_by_label_contains("Delete").is_none(),
+        "nothing to delete"
+    );
+    std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
+fn restore_defaults_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_choices() {
+    let mut settings = Settings {
+        images_folder: Some("/disks".into()),
+        drive: "B".into(),
+        ..chosen()
+    };
+    set(&mut settings, "read", "revs", "5");
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    out.name = "Game".into();
+    out.disks = 3;
+    let mut w = window(settings);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    fn restore(w: &Window) -> Node<'_> {
+        w.get_by_role_and_label(Role::Button, "Restore defaults")
+    }
+    w.get_by_label("Presets").click();
+    w.run();
+    restore(&w).click();
+    w.run();
+    let app = app(&w);
+    assert_eq!(app.settings.values["read"], Values::default());
+    let fresh = Output {
+        folder: "/disks".into(),
+        ..Output::default()
+    };
+    assert_eq!(app.settings.outputs["read/file"], fresh);
+    assert!(
+        app.notices.is_empty(),
+        "the detected format's notice stayed"
+    );
+    assert_eq!(app.settings.drive, "B");
+    w.get_by_label("Presets").click();
+    w.run();
+    assert!(restore(&w).accesskit_node().is_disabled());
+    restore(&w).hover();
+    w.run();
+    w.get_by_label("No changes.");
 }
 
 #[test]
@@ -1338,6 +1423,55 @@ fn a_long_job_description_wraps_within_the_status_pane() {
     );
 }
 
+/// The status pane's link to a job's image, in the file manager's own words.
+const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in folder"
+};
+
+#[test]
+fn an_image_a_job_left_can_be_shown_in_its_folder() {
+    let shown = |command: &str, outcome: Option<Outcome>, no_image: bool| {
+        let mut job = Job::replay(command, &damaged_read());
+        job.output = Some("/d/Game.img".into());
+        job.ended = outcome.map(|o| (job.started, o));
+        job.no_image = no_image;
+        let mut w = start(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        w.query_by_label(REVEAL).is_some()
+    };
+    assert!(shown("read", Some(Outcome::Succeeded), false));
+    assert!(
+        shown("read", Some(Outcome::Stopped), false),
+        "gw keeps what it read"
+    );
+    assert!(
+        !shown("convert", Some(Outcome::Stopped), false),
+        "gw deletes it"
+    );
+    assert!(!shown("read", Some(Outcome::Failed), true), "gw deleted it");
+    assert!(!shown("read", None, false), "it is still being read");
+}
+
+#[test]
+fn showing_an_image_that_has_gone_says_so() {
+    let gone = std::env::temp_dir().join("ferriteweazle-no-such-image.img");
+    std::fs::remove_file(&gone).ok();
+    let mut job = Job::replay("read", &damaged_read());
+    job.output = Some(gone.clone());
+    let mut w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    w.get_by_label(REVEAL).hover();
+    w.run();
+    w.get_by_label("Show the image in its folder.");
+    w.get_by_label(REVEAL).click();
+    w.run();
+    w.get_by_label(&format!("{} has been moved or deleted.", gone.display()));
+}
+
 #[test]
 fn at_its_smallest_the_window_shows_the_whole_sidebar() {
     let w = window_at(DEFAULT, Settings::default());
@@ -1802,6 +1936,69 @@ fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() 
     w.run();
     w.get_by_label("No copy of the rule ships with this build.");
     w.get_by_label("sudo cp scripts/49-greaseweazle.rules /etc/udev/rules.d/");
+}
+
+#[test]
+fn settings_names_the_default_folders_it_goes_back_to() {
+    let mut w = window(Settings {
+        page: Page::Settings,
+        images_folder: Some("/elsewhere".into()),
+        presets_folder: Some("/elsewhere".into()),
+        ..Settings::default()
+    });
+    let defaults = [
+        ferriteweazle::form::images_folder(),
+        presets::default_folder(),
+    ];
+    for (n, folder) in defaults.iter().enumerate() {
+        // One tooltip at a time: the last must close first.
+        w.event(egui::Event::PointerGone);
+        w.run();
+        w.get_all_by_label("Use the default")
+            .nth(n)
+            .unwrap()
+            .hover();
+        w.run();
+        w.get_by_label(&format!("Go back to {}.", folder.display()));
+    }
+}
+
+#[test]
+fn the_sound_setting_shows_on_every_system() {
+    let w = window(Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    });
+    w.get_by_role_and_label(Role::CheckBox, "Play a sound when a job ends");
+}
+
+#[test]
+fn settings_links_gws_getting_started_guide() {
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    // Tall enough to show About without scrolling.
+    let mut w = window_at(egui::vec2(1240.0, 1400.0), settings);
+    w.get_by_role_and_label(Role::Link, "Getting started with Greaseweazle")
+        .hover();
+    w.run();
+    w.get_by_label("https://github.com/keirf/greaseweazle/wiki/Getting-Started");
+}
+
+#[test]
+fn read_pin_says_it_reads_a_pin_and_set_pin_keeps_gws_words() {
+    let page = |name: &str| {
+        window(Settings {
+            page: Page::Command(name.into()),
+            ..Settings::default()
+        })
+    };
+    let gws = "Change the setting of a user-modifiable interface pin.";
+    let w = page("pin get");
+    w.get_by_label("Read the level of a floppy interface pin.");
+    assert!(w.query_by_label(gws).is_none(), "it changes nothing");
+    page("pin set").get_by_label(gws);
 }
 
 #[test]

@@ -1607,7 +1607,11 @@ fn a_broken_definition_stops_only_a_page_that_uses_it() {
         w.query_by_label("mine.800").is_some()
     });
     w.get_by_label("mine.800").click();
-    w.run_steps(3);
+    // The format's details move the header down when gw's answer comes.
+    until_shown(&mut w, "the format's details", |w| {
+        w.query_by_label_contains("cylinders").is_some()
+    });
+    w.run_steps(2);
     w.get_by_label_contains("Advanced options").click();
     until_shown(&mut w, "gw's objection", |w| {
         w.query_by_label_contains("mixed.cfg, line 11").is_some()
@@ -1855,4 +1859,53 @@ fn image_options_offer_gws_names_and_show_its_objections() {
     until_shown(&mut w, "gw's complaint on the page", |w| {
         w.query_by_label("HFE: Invalid version: '2'.").is_some()
     });
+}
+
+/// A port no computer has: gw fails to open it, and touches no device.
+const NO_SUCH_PORT: &str = "/dev/ferriteweazle-no-such-port";
+
+#[test]
+fn a_disk_that_fails_is_read_again_into_its_own_file() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("again");
+    let mut settings = Settings {
+        drawer: Some(Drawer::Cli),
+        ..Settings::default()
+    };
+    let values = settings.values.entry("read".into()).or_default();
+    values.set("format", "ibm.1440");
+    let out = Output {
+        folder: path(&dir),
+        name: "Game".into(),
+        ext: ".img".into(),
+        disks: 2,
+        ..Output::default()
+    };
+    settings.outputs.insert("read/file".into(), out);
+    let mut w = window(&engine, settings);
+    let port = Port {
+        device: NO_SUCH_PORT.into(),
+        ..greaseweazle()
+    };
+    app_mut(&mut w).pin_ports(vec![port]);
+    w.run_steps(2);
+    let device = format!("--device={NO_SUCH_PORT}");
+    assert!(cli_line(&w).contains(&device), "{}", cli_line(&w));
+    run_button(&w, "Read disks").click();
+    let reads = |app: &App| {
+        let ended = app.disk.as_ref().is_some_and(|j| !j.running());
+        let lines = app.log.lines().iter();
+        ended.then(|| lines.filter(|l| l.starts_with("gw read")).count())
+    };
+    until(&mut w, "disk 1 to fail", |app| reads(app) == Some(1));
+    w.run_steps(2);
+    w.get_by_label("Disk 1 failed. The Log says why.");
+    w.get_by_label("Read disk 1 again").click();
+    until(&mut w, "disk 1 again", |app| reads(app) == Some(2));
+    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    assert_eq!(job.part, Some((1, 2)));
+    assert_eq!(job.output, Some(dir.join("Game_Disk1.img")));
+    let error = job.progress.error.as_deref().unwrap_or_default();
+    assert!(error.contains(NO_SUCH_PORT), "{:#?}", job.log);
+    std::fs::remove_dir_all(dir).ok();
 }

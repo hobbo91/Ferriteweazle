@@ -18,10 +18,11 @@ use eframe::egui::{
     Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
     ViewportCommand, pos2, vec2,
 };
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// How long the device card waits for `gw info`.
@@ -65,6 +66,9 @@ const NAMES: &[(&str, &str, &str)] = &[
     (DETECT, "Detect disk format", "Detect"),
 ];
 
+/// Page descriptions in place of gw's: gw describes pin get in pin set's words.
+const ABOUTS: &[(&str, &str)] = &[("pin get", "Read the level of a floppy interface pin.")];
+
 /// Commands that ask first, and what they do to the disk.
 const DESTRUCTIVE: &[(&str, &str)] = &[
     ("write", "The tracks written lose what they hold."),
@@ -79,6 +83,8 @@ const BUSY: &str = "Wait for the job that is running.";
 const INSTALLING: &str = "Wait for the update to install.";
 /// Why a command that uses the device waits while the card runs gw info.
 const ASKING: &str = "Wait for gw info to finish.";
+/// Why a page cannot run while its command line shows what gw cannot take.
+const CLI_FAULT: &str = "Fix the command line or Reset it.";
 /// Settings' gw line while a Windows folder copy replaces itself.
 const UPDATING: &str = "Updating Ferriteweazle\u{2026}";
 
@@ -87,6 +93,8 @@ const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", D
 
 const REPO: &str = "https://github.com/hobbo91/ferriteweazle";
 const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
+/// gw's guide to setting up a Greaseweazle, its drives and its cables.
+const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";
 
 /// The page's minimum width: room for a label beside its field.
 const PAGE_MIN: f32 = 420.0;
@@ -184,19 +192,26 @@ enum Dialog {
         command: String,
         runs: Runs,
     },
-    /// Between the disks of a session.
+    /// Between the disks of a session. Disks count from 1.
     NextDisk {
         command: String,
-        disk: usize,
+        /// The disk to insert next: none when the one that failed was the last.
+        disk: Option<usize>,
         total: usize,
-        /// The disk before failed.
-        failed: bool,
+        /// The disk that failed, which can be tried again.
+        failed: Option<usize>,
         /// The image the next disk gets, when writing.
         image: Option<String>,
     },
     SavePreset {
         command: String,
         name: String,
+    },
+    DeletePreset {
+        /// The page that shows why the file could not be deleted.
+        command: String,
+        name: String,
+        path: PathBuf,
     },
     /// How to give this account the port Linux refused it.
     Access {
@@ -248,6 +263,16 @@ struct Runs {
     makes: Vec<PathBuf>,
 }
 
+/// A page's Presets menu while it is open, so the folder is read once, not
+/// every frame.
+struct PresetsMenu {
+    page: String,
+    /// The page's presets, by name.
+    saved: Vec<(String, PathBuf)>,
+    /// Whether the page differs from gw's defaults.
+    changed: bool,
+}
+
 /// The command line drawer's text, and why it does not parse.
 #[derive(Default)]
 struct Cli {
@@ -297,9 +322,8 @@ pub struct App {
     kept_drive: String,
     gw_update: Update,
     app_update: Update,
-    /// The page's presets while its Presets menu is open, so the folder is
-    /// read once, not every frame.
-    presets: Option<(String, Vec<(String, PathBuf)>)>,
+    /// The Presets menu, while it is open.
+    presets: Option<PresetsMenu>,
     /// gw's bridge is stopped while a Windows folder copy replaces its data
     /// folder: the ports it had listed.
     gw_paused: Option<Vec<Port>>,
@@ -738,12 +762,24 @@ impl App {
     }
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
-    fn cannot_detect(&self, page: &str) -> Option<&'static str> {
-        self.busy().or(match page {
-            "read" if self.probe.is_some() => Some(ASKING),
-            "read" if !self.connected() => Some(NO_DEVICE),
+    fn cannot_detect(&self, page: &str) -> Option<Cow<'static, str>> {
+        if let Some(why) = self.busy() {
+            return Some(why.into());
+        }
+        match page {
+            "read" if self.probe.is_some() => Some(ASKING.into()),
+            "read" if !self.connected() => Some(self.no_device()),
             _ => None,
-        })
+        }
+    }
+
+    /// Why the sidebar shows no Greaseweazle: gw's reason when it could not
+    /// list the ports, else NO_DEVICE.
+    fn no_device(&self) -> Cow<'static, str> {
+        match self.service.ports_error() {
+            Some(why) => why.to_owned().into(),
+            None => NO_DEVICE.into(),
+        }
     }
 
     /// Runs `gw info` for the device card, when nothing else is using the device.
@@ -799,6 +835,15 @@ impl App {
             job.log
                 .extend(udev::advice(&port, self.udev_rule.as_deref()));
         }
+        // gw's message cites its wiki, whose steps are for gw's own install.
+        if let Some(error) = &mut job.progress.error
+            && error.contains("Could not find SPS/CAPS library")
+        {
+            let advice = caps_advice(self.engine.as_ref());
+            error.push('\n');
+            error.push_str(&advice);
+            job.log.push(advice);
+        }
         self.log.end(job, ending(job));
         let command = job.command.clone();
         let detected = std::mem::take(&mut job.detected);
@@ -817,18 +862,20 @@ impl App {
             if failed {
                 session.failed.push(session.next - 1);
             }
+            let total = session.runs.args.len();
+            let next = (session.next < total).then_some(session.next + 1);
+            // A batch of images goes on alone; a disk can be tried again.
+            let again = (failed && command != "convert").then_some(session.next);
             // Quit is asking: the window closes once this run has ended.
-            let more = session.next < session.runs.args.len()
-                && !matches!(self.dialog, Some(Dialog::Quit));
-            if !more {
+            if matches!(self.dialog, Some(Dialog::Quit)) || (next.is_none() && again.is_none()) {
                 self.end_session();
             } else if command == "convert" {
                 self.next_disk(ctx);
             } else {
                 self.dialog = Some(Dialog::NextDisk {
-                    disk: session.next + 1,
-                    total: session.runs.args.len(),
-                    failed,
+                    disk: next,
+                    total,
+                    failed: again,
                     image: session.runs.images.get(session.next).cloned(),
                     command: command.clone(),
                 });
@@ -1050,6 +1097,8 @@ impl App {
                             .on_disabled_hover_text(BUSY)
                             .clicked();
                     }
+                } else if let Some(why) = self.service.ports_error() {
+                    ui.label(RichText::new(why).small().color(p.bad));
                 }
                 ui.add_space(4.0);
                 let shown = match &found {
@@ -1272,7 +1321,11 @@ impl App {
                         ui.heading(title(name));
                         right(ui, |ui| self.presets_menu(ui, name));
                     });
-                    ui.label(RichText::new(form::sentence(&cmd.about)).weak());
+                    let about = match ABOUTS.iter().find(|(c, _)| *c == name) {
+                        Some((_, about)) => (*about).to_owned(),
+                        None => form::sentence(&cmd.about),
+                    };
+                    ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
                     ui.add_space(14.0);
                     let values = self.settings.values.entry(name.to_owned()).or_default();
@@ -1282,7 +1335,7 @@ impl App {
                         values,
                         outputs: &mut self.settings.outputs,
                         service: &mut self.service,
-                        cannot_detect,
+                        cannot_detect: cannot_detect.as_deref(),
                     }
                     .show(ui);
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
@@ -1379,7 +1432,14 @@ impl App {
                         true => "Stop gw and the drive's motor.",
                         false => "Stop gw.",
                     };
-                    if stop.on_hover_text(tip).clicked() {
+                    let warning = flash_warning(job);
+                    let stop = stop.on_hover_ui(|ui| {
+                        ui.label(tip);
+                        if let Some(warning) = warning {
+                            ui.label(warning);
+                        }
+                    });
+                    if stop.clicked() {
                         self.stop();
                     }
                 }
@@ -1454,17 +1514,26 @@ impl App {
             Some(why.to_owned())
         } else if self.probe.is_some() && device {
             Some(ASKING.to_owned())
+        } else if self.settings.drawer == Some(Drawer::Cli)
+            && self.cli.page == cmd.name
+            && self.cli.error.is_some()
+        {
+            // The page holds the last line that parsed, not the one shown.
+            Some(CLI_FAULT.to_owned())
         } else if !missing.is_empty() {
             Some(format!("Choose the {} first.", missing.join(" and ")))
         } else {
             // The page's own settings first: they can be made ready with no device.
             let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
-            self.diskdefs_fault(values)
+            match self
+                .diskdefs_fault(values)
                 .or_else(|| form::missing_image(cmd, values))
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
-                .or(no_device.then_some(NO_DEVICE))
-                .map(str::to_owned)
+            {
+                Some(why) => Some(why.to_owned()),
+                None => no_device.then(|| self.no_device().into_owned()),
+            }
         }
     }
 
@@ -1560,6 +1629,15 @@ impl App {
         }
     }
 
+    /// Runs the session's disk that failed again.
+    fn disk_again(&mut self, ctx: &egui::Context) {
+        if let Some(session) = &mut self.session {
+            session.next -= 1;
+            session.failed.pop();
+        }
+        self.next_disk(ctx);
+    }
+
     /// Ends the session, saying on its page how it went.
     fn end_session(&mut self) {
         let Some(session) = self.session.take() else {
@@ -1592,7 +1670,7 @@ impl App {
     }
 
     fn confirm_or_run(&mut self, ctx: &egui::Context, command: &str, args: Vec<String>) {
-        if destructive(command) {
+        if destructive(command) || flashes_bootloader(command, &args) {
             self.dialog = Some(Dialog::Confirm {
                 command: command.to_owned(),
                 args,
@@ -1701,9 +1779,22 @@ impl App {
             .as_ref()
             .map(|f| format!("{} {f}", form::family_name(f).replace(' ', "\u{a0}")));
         let about: Vec<String> = format.into_iter().chain(file).collect();
+        let mut show = false;
         if !about.is_empty() {
-            let text = RichText::new(about.join("  ·  ")).small().color(p.dim);
-            ui.add(egui::Label::new(text).wrap());
+            // As tall as its text, and the link runs on after it.
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = 0.0;
+                ui.horizontal_wrapped(|ui| {
+                    let text = RichText::new(about.join("  ·  ")).small().color(p.dim);
+                    ui.add(egui::Label::new(text).wrap());
+                    if image_kept(job) {
+                        show = ui
+                            .link(RichText::new(REVEAL).small())
+                            .on_hover_text("Show the image in its folder.")
+                            .clicked();
+                    }
+                });
+            });
         }
         ui.add_space(6.0);
         progress_bar(ui, job, p);
@@ -1731,6 +1822,25 @@ impl App {
         }
         if install {
             self.install_rule(ui.ctx());
+        }
+        if show {
+            self.show_image(page);
+        }
+    }
+
+    /// Shows the disk job's image in the file manager. A fault shows on `page`.
+    fn show_image(&mut self, page: &str) {
+        let Some(file) = self.disk.as_ref().and_then(|j| j.output.clone()) else {
+            return;
+        };
+        let failed = match file.exists() {
+            true => reveal(&file)
+                .err()
+                .map(|e| format!("Could not show {}: {e}", file.display())),
+            false => Some(format!("{} has been moved or deleted.", file.display())),
+        };
+        if let Some(why) = failed {
+            self.notices.insert(page.to_owned(), why);
         }
     }
 
@@ -1935,18 +2045,22 @@ impl App {
     fn presets_menu(&mut self, ui: &mut Ui, command: &str) {
         let folder = self.presets_folder();
         let mut load = None;
-        let mut save = false;
-        let mut pick = false;
+        let mut delete = None;
+        let (mut save, mut pick, mut defaults) = (false, false, false);
         let menu = ui.menu_button("Presets", |ui| {
             ui.set_min_width(220.0);
-            let (_, saved) = match &mut self.presets {
-                Some(open) if open.0 == command => open,
-                slot => slot.insert((command.into(), presets::list(&folder, command))),
-            };
-            if saved.is_empty() {
+            if self.presets.as_ref().is_none_or(|m| m.page != command) {
+                self.presets = Some(PresetsMenu {
+                    page: command.to_owned(),
+                    saved: presets::list(&folder, command),
+                    changed: self.changed(command),
+                });
+            }
+            let Some(menu) = &self.presets else { return };
+            if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
-            for (name, path) in saved.iter() {
+            for (name, path) in &menu.saved {
                 if ui
                     .button(name.as_str())
                     .on_hover_text("Use these settings.")
@@ -1965,12 +2079,42 @@ impl App {
                 .button("Load…")
                 .on_hover_text("Load a preset from a file.")
                 .clicked();
-            if save || pick {
+            if !menu.saved.is_empty() {
+                ui.menu_button("Delete", |ui| {
+                    for (name, path) in &menu.saved {
+                        if ui
+                            .button(name.as_str())
+                            .on_hover_text("Delete this preset.")
+                            .clicked()
+                        {
+                            delete = Some((name.clone(), path.clone()));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            defaults = ui
+                .add_enabled(menu.changed, egui::Button::new("Restore defaults"))
+                .on_hover_text("Put this page's options back to gw's defaults.")
+                .on_disabled_hover_text("No changes.")
+                .clicked();
+            if save || pick || defaults {
                 ui.close();
             }
         });
         if menu.inner.is_none() {
             self.presets = None;
+        }
+        if defaults {
+            self.restore_defaults(command);
+        }
+        if let Some((name, path)) = delete {
+            self.dialog = Some(Dialog::DeletePreset {
+                command: command.to_owned(),
+                name,
+                path,
+            });
         }
         if save {
             self.dialog = Some(Dialog::SavePreset {
@@ -2067,7 +2211,9 @@ impl App {
             });
         });
         section(ui, "Paths", |ui| {
-            let default = ("Use the default", "Documents/Ferriteweazle/Images.");
+            static IMAGES: OnceLock<String> = OnceLock::new();
+            static PRESETS: OnceLock<String> = OnceLock::new();
+            let default = ("Use the default", back_to(&IMAGES, form::images_folder));
             let images = self.images_folder();
             let back = self.settings.images_folder.is_some().then_some(default);
             match path_row(
@@ -2088,7 +2234,10 @@ impl App {
                 None => {}
             }
             ui.add_space(8.0);
-            let default = ("Use the default", "Documents/Ferriteweazle/Presets.");
+            let default = (
+                "Use the default",
+                back_to(&PRESETS, presets::default_folder),
+            );
             let presets = self.presets_folder();
             let back = self.settings.presets_folder.is_some().then_some(default);
             match path_row(
@@ -2142,14 +2291,12 @@ impl App {
                 "Writes the gw command and its output to name.ext.log where gw read or \
                  gw convert puts its image.",
             );
-            if cfg!(target_os = "macos") {
-                setting(
-                    ui,
-                    &mut self.settings.sound,
-                    "Play a sound when a job ends",
-                    "Glass when it works, Basso when it fails.",
-                );
-            }
+            setting(
+                ui,
+                &mut self.settings.sound,
+                "Play a sound when a job ends",
+                SOUND_TIP,
+            );
         });
         section(ui, "Troubleshooting", |ui| {
             setting(
@@ -2178,6 +2325,8 @@ impl App {
                      This is merely a fancy GUI front end.",
                 );
             });
+            ui.hyperlink_to("Getting started with Greaseweazle", GW_GUIDE)
+                .on_hover_text(GW_GUIDE);
         });
     }
 
@@ -2213,25 +2362,33 @@ impl App {
                     args,
                     disks,
                 } => {
-                    let drive = match self.settings.drive.as_str() {
-                        "" => self.default_drive(),
-                        drive => drive.to_owned(),
-                    };
-                    let verb = title(command);
-                    let verb = verb.split(' ').next().unwrap_or_default();
                     let disks = *disks;
-                    let heading = match disks {
-                        1 => format!("{verb} the disk in drive {drive}?"),
-                        n => format!("{verb} {n} disks in drive {drive}?"),
-                    };
-                    dialog_heading(ui, &heading);
-                    let why = DESTRUCTIVE
-                        .iter()
-                        .find(|(c, _)| c == command)
-                        .map_or("", |(_, w)| *w);
-                    ui.label(why);
-                    if disks > 1 {
-                        ui.label("It asks for each disk in turn.");
+                    if flashes_bootloader(command, args) {
+                        dialog_heading(ui, "Update the bootloader?");
+                        ui.label(
+                            "If the flash fails, the Greaseweazle may need reflashing with a \
+                             programming adapter.",
+                        );
+                    } else {
+                        let drive = match self.settings.drive.as_str() {
+                            "" => self.default_drive(),
+                            drive => drive.to_owned(),
+                        };
+                        let verb = title(command);
+                        let verb = verb.split(' ').next().unwrap_or_default();
+                        let heading = match disks {
+                            1 => format!("{verb} the disk in drive {drive}?"),
+                            n => format!("{verb} {n} disks in drive {drive}?"),
+                        };
+                        dialog_heading(ui, &heading);
+                        let why = DESTRUCTIVE
+                            .iter()
+                            .find(|(c, _)| c == command)
+                            .map_or("", |(_, w)| *w);
+                        ui.label(why);
+                        if disks > 1 {
+                            ui.label("It asks for each disk in turn.");
+                        }
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
@@ -2299,23 +2456,48 @@ impl App {
                     failed,
                     image,
                 } => {
-                    dialog_heading(ui, &format!("Insert disk {disk} of {total}"));
-                    let p = theme::palette(ui);
-                    if *failed {
-                        let text = format!("Disk {} failed. The Log says why.", *disk - 1);
+                    let (disk, failed) = (*disk, *failed);
+                    let (verb, p) = (run_label(command), theme::palette(ui));
+                    let heading = match disk {
+                        Some(disk) => format!("Insert disk {disk} of {total}"),
+                        None => format!("{verb} {total} again?"),
+                    };
+                    dialog_heading(ui, &heading);
+                    if let Some(failed) = failed {
+                        let text = format!("Disk {failed} failed. The Log says why.");
                         ui.label(RichText::new(text).color(p.bad));
                     }
-                    ui.label("Eject, then insert the next disk in the drive.");
+                    if disk.is_some() {
+                        ui.label("Eject, then insert the next disk in the drive.");
+                    }
                     if let Some(image) = image {
                         ui.label(RichText::new(format!("Next image: {image}")).color(p.dim));
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let next = format!("{} {disk}", run_label(command));
-                        if ui.add(dialog_button(&next, p.accent, p)).clicked() {
-                            let ctx = ctx.clone();
-                            action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
-                            close = true;
+                        if let Some(disk) = disk {
+                            let next = format!("{verb} {disk}");
+                            if ui.add(dialog_button(&next, p.accent, p)).clicked() {
+                                let ctx = ctx.clone();
+                                action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
+                                close = true;
+                            }
+                        }
+                        if let Some(failed) = failed {
+                            let again = format!("{verb} {failed} again");
+                            let button = match disk {
+                                Some(_) => dialog_plain(&again),
+                                None => dialog_button(&again, p.accent, p),
+                            };
+                            if ui
+                                .add(button)
+                                .on_hover_text("Try the disk that failed again.")
+                                .clicked()
+                            {
+                                let ctx = ctx.clone();
+                                action = Some(Box::new(move |app: &mut App| app.disk_again(&ctx)));
+                                close = true;
+                            }
                         }
                         let tip = match command.as_str() {
                             "read" => "End the session. The disks read so far are kept.",
@@ -2367,6 +2549,28 @@ impl App {
                         }
                     });
                 }
+                Dialog::DeletePreset {
+                    command,
+                    name,
+                    path,
+                } => {
+                    dialog_heading(ui, &format!("Delete \"{name}\"?"));
+                    ui.label("This cannot be undone.");
+                    ui.add_space(10.0);
+                    right(ui, |ui| {
+                        let p = theme::palette(ui);
+                        if ui.add(dialog_button("Delete", p.bad, p)).clicked() {
+                            let (command, path) = (command.clone(), path.clone());
+                            action = Some(Box::new(move |app: &mut App| {
+                                app.delete_preset(&command, &path)
+                            }));
+                            close = true;
+                        }
+                        if ui.add(dialog_plain("Cancel")).clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::Access { port } => {
                     let refused = Refused {
                         port: port.clone(),
@@ -2392,6 +2596,9 @@ impl App {
                         true => "gw stops the drive first, then the window closes.",
                         false => "gw stops, then the window closes.",
                     });
+                    if let Some(warning) = job.and_then(flash_warning) {
+                        ui.label(warning);
+                    }
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let p = theme::palette(ui);
@@ -2581,6 +2788,49 @@ impl App {
             let text = format!("Could not save the preset: {e}");
             self.notices.insert(command.to_owned(), text);
         }
+    }
+
+    /// Deletes a preset's file. A fault shows on `page`.
+    fn delete_preset(&mut self, page: &str, path: &Path) {
+        if let Err(e) = std::fs::remove_file(path) {
+            let text = format!("Could not delete the preset: {e}");
+            self.notices.insert(page.to_owned(), text);
+        }
+    }
+
+    /// Output settings as a new page has them: gw's defaults, and the
+    /// images folder.
+    fn fresh_output(&self) -> Output {
+        Output {
+            folder: self.images_folder().to_string_lossy().into_owned(),
+            ..Output::default()
+        }
+    }
+
+    /// Whether a page differs from what Restore defaults leaves.
+    fn changed(&self, command: &str) -> bool {
+        let fresh = self.fresh_output();
+        let mut keys = form::OUTPUTS
+            .iter()
+            .filter(|(c, _)| *c == command)
+            .map(|(c, dest)| form::output_key(c, dest));
+        let options = self.settings.values.get(command);
+        options.is_some_and(|v| *v != Values::default())
+            || keys.any(|k| self.settings.outputs.get(&k).is_some_and(|o| *o != fresh))
+    }
+
+    /// Puts a page's options and output settings back to gw's defaults. The
+    /// device and drive are the sidebar's, and stay.
+    fn restore_defaults(&mut self, command: &str) {
+        self.settings.values.remove(command);
+        for (c, dest) in form::OUTPUTS.iter().filter(|(c, _)| *c == command) {
+            let fresh = self.fresh_output();
+            self.settings
+                .outputs
+                .insert(form::output_key(c, dest), fresh);
+        }
+        // Such as the format detection found, which the page no longer has.
+        self.notices.remove(command);
     }
 
     /// Applies a preset file's settings and opens its page. A fault shows on `page`.
@@ -2787,6 +3037,22 @@ fn destructive(command: &str) -> bool {
     DESTRUCTIVE.iter().any(|(c, _)| *c == command)
 }
 
+/// Whether gw update flashes the bootloader, which asks first.
+fn flashes_bootloader(command: &str, args: &[String]) -> bool {
+    command == "update" && args.iter().any(|a| a == "--bootloader")
+}
+
+/// What an update stopped part way through its flash leaves to put right.
+fn flash_warning(job: &Job) -> Option<&'static str> {
+    if job.command != "update" {
+        None
+    } else if flashes_bootloader(&job.command, &job.args) {
+        Some("A bootloader flash stopped part way may need reflashing with a programming adapter.")
+    } else {
+        Some("A flash stopped part way leaves the firmware erased until Update runs again.")
+    }
+}
+
 fn installing(update: &Update) -> bool {
     matches!(update, Update::Installing(..))
 }
@@ -2929,21 +3195,105 @@ fn sections(schema: Option<&Schema>) -> Vec<(&'static str, Vec<&str>)> {
     out
 }
 
-/// Plays a system sound for how a job ended, on macOS only.
+/// Where gw looks for the SPS/CAPS library, which reads IPF and CTRaw
+/// images and which gw does not ship.
+fn caps_advice(engine: Option<&Engine>) -> String {
+    if cfg!(target_os = "macos") {
+        "gw looks for CAPSImage.framework or CAPSImg.framework in /Library/Frameworks.".into()
+    } else if cfg!(windows) {
+        // Python loads a DLL by name from python.exe's folder or System32.
+        let bundled = engine.filter(|e| e.origin == Origin::Bundled);
+        match bundled.and_then(|e| e.python.parent()) {
+            Some(folder) => format!(
+                "This gw looks for CAPSImg_x64.dll or CAPSImg.dll in {} and in System32.",
+                folder.display()
+            ),
+            None => "gw looks for CAPSImg_x64.dll or CAPSImg.dll beside its python.exe and in \
+                     System32."
+                .into(),
+        }
+    } else {
+        "gw looks for libcapsimage.so.5 or libcapsimage.so.4 in the system's library folders, \
+         such as /usr/lib."
+            .into()
+    }
+}
+
+/// The tip of Play a sound when a job ends: the sounds this system plays.
+const SOUND_TIP: &str = if cfg!(target_os = "macos") {
+    "Glass when it works, Basso when it fails."
+} else if cfg!(windows) {
+    "The Notification sound when it works, Critical Stop when it fails."
+} else {
+    "The sound theme's complete sound when it works, dialog-error when it fails."
+};
+
+/// Plays the system's sound for how a job ended.
 fn chime(outcome: Option<Outcome>) {
-    let sound = match outcome {
-        Some(Outcome::Succeeded) => "Glass",
-        Some(Outcome::Failed) => "Basso",
-        _ => return,
+    let players = players(outcome);
+    if players.is_empty() {
+        return;
+    }
+    // A thread waits for the player, so it is reaped when it ends. The next
+    // is tried only if this one is not installed.
+    std::thread::spawn(move || {
+        for mut player in players {
+            let null = std::process::Stdio::null;
+            if player.stdout(null()).stderr(null()).status().is_ok() {
+                break;
+            }
+        }
+    });
+}
+
+/// The commands that play the system's sound for how a job ended, best
+/// first: none for a job that was stopped.
+fn players(outcome: Option<Outcome>) -> Vec<std::process::Command> {
+    use std::process::Command;
+    let worked = match outcome {
+        Some(Outcome::Succeeded) => true,
+        Some(Outcome::Failed) => false,
+        _ => return Vec::new(),
     };
     if cfg!(target_os = "macos") {
-        let file = format!("/System/Library/Sounds/{sound}.aiff");
-        // A thread waits for afplay, so it is reaped when it ends.
-        std::thread::spawn(move || {
-            std::process::Command::new("/usr/bin/afplay")
-                .arg(file)
-                .status()
+        let sound = if worked { "Glass" } else { "Basso" };
+        let mut afplay = Command::new("/usr/bin/afplay");
+        afplay.arg(format!("/System/Library/Sounds/{sound}.aiff"));
+        vec![afplay]
+    } else if cfg!(windows) {
+        // The file the sound scheme gives the event: none if turned off.
+        let event = if worked {
+            "Notification.Default"
+        } else {
+            "SystemHand"
+        };
+        let script = format!(
+            "$f = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty \
+             'HKCU:\\AppEvents\\Schemes\\Apps\\.Default\\{event}\\.Current').'(default)'); \
+             if ($f) {{ (New-Object Media.SoundPlayer $f).PlaySync() }}"
+        );
+        let mut powershell = Command::new("powershell");
+        powershell.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            powershell.creation_flags(CREATE_NO_WINDOW);
+        }
+        vec![powershell]
+    } else {
+        // The desktop's sound theme, which heeds its event sound setting,
+        // else the freedesktop theme's own file.
+        let id = if worked { "complete" } else { "dialog-error" };
+        let mut canberra = Command::new("canberra-gtk-play");
+        canberra.args(["--id", id, "--description", "Ferriteweazle"]);
+        let file = format!("/usr/share/sounds/freedesktop/stereo/{id}.oga");
+        let files = ["pw-play", "paplay"].map(|player| {
+            let mut player = Command::new(player);
+            player.arg(&file);
+            player
         });
+        std::iter::once(canberra).chain(files).collect()
     }
 }
 
@@ -2986,6 +3336,56 @@ fn left_behind(job: &Job) -> Option<&'static str> {
         (Outcome::Stopped, "convert") => Some("Stopped: no image made."),
         _ => None,
     }
+}
+
+/// Whether a disk job has ended and left its image: gw deletes a failed
+/// job's, and a stopped conversion's.
+fn image_kept(job: &Job) -> bool {
+    job.output.is_some()
+        && match job.outcome() {
+            Some(Outcome::Succeeded) => true,
+            Some(Outcome::Failed) => !job.no_image,
+            Some(Outcome::Stopped) => job.command == "read",
+            None => false,
+        }
+}
+
+/// The file manager's own words for showing a file in it.
+const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Show in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in folder"
+};
+
+/// Shows `file` in the system's file manager: selected in Finder or
+/// Explorer, elsewhere by opening its folder.
+fn reveal(file: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("/usr/bin/open");
+        cmd.arg("-R").arg(file);
+        cmd
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("explorer");
+        // explorer reads /select, and the quoted path as one argument.
+        cmd.raw_arg(format!("/select,\"{}\"", file.display()));
+        cmd
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(file.parent().unwrap_or(file));
+        cmd
+    };
+    let mut child = cmd.spawn()?;
+    // Waited on, so it is reaped when it ends.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// What a command other than a disk job did, under its page. Gives whether
@@ -3344,6 +3744,12 @@ enum PathClick {
     Default,
 }
 
+/// "Go back to" a default folder, made once: the folder is fixed while the
+/// app runs.
+fn back_to(tip: &'static OnceLock<String>, folder: fn() -> PathBuf) -> &'static str {
+    tip.get_or_init(|| format!("Go back to {}.", folder().display()))
+}
+
 /// A path in Settings: its name, where it is, Choose…, and with `back` a
 /// button and tip that restore the default. Both wait while `busy` says why.
 fn path_row(
@@ -3620,7 +4026,7 @@ mod tests {
         let mut probe = Job::replay("info", "");
         probe.ended = None;
         app.probe = Some(probe);
-        assert_eq!(app.cannot_detect("read"), Some(ASKING));
+        assert_eq!(app.cannot_detect("read").as_deref(), Some(ASKING));
         assert_eq!(app.cannot_detect("convert"), None, "it reads a file");
     }
 
@@ -3734,7 +4140,7 @@ mod tests {
             }) => (command.as_str(), *disk, image.as_deref()),
             _ => panic!("no next disk"),
         };
-        assert_eq!(next, ("write", 2, Some("b.adf")));
+        assert_eq!(next, ("write", Some(2), Some("b.adf")));
 
         app.dialog = None;
         app.session.as_mut().unwrap().next = 2;
@@ -3743,9 +4149,57 @@ mod tests {
             "Command Failed: GetFluxStatus: No Index",
         ));
         app.ended(&ctx, true);
-        assert!(app.session.is_none());
+        let again = matches!(
+            app.dialog,
+            Some(Dialog::NextDisk {
+                disk: None,
+                failed: Some(2),
+                ..
+            })
+        );
+        assert!(again, "it can be tried again");
+        // Stop here.
+        app.end_session();
         let note = "Wrote 1 of 2 disks. Failed: b.adf. The Log says why.";
         assert_eq!(app.notices["write"], note);
+    }
+
+    #[test]
+    fn a_disk_that_fails_can_be_tried_again_the_last_one_too() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.session = Some(Session {
+            command: "read".into(),
+            runs: reads(&["a.adf", "b.adf", "c.adf"]),
+            next: 2,
+            failed: Vec::new(),
+        });
+        let no_index = || {
+            Some(Job::replay(
+                "read",
+                "Command Failed: GetFluxStatus: No Index",
+            ))
+        };
+        app.disk = no_index();
+        app.ended(&ctx, true);
+        let mut w = window(app);
+        w.get_by_label("Insert disk 3 of 3");
+        w.get_by_label("Disk 2 failed. The Log says why.");
+        w.get_by_label("Read disk 3");
+        w.get_by_label("Read disk 2 again");
+
+        let app = w.state_mut();
+        app.dialog = None;
+        app.session.as_mut().unwrap().next = 3;
+        app.disk = no_index();
+        app.ended(&ctx, true);
+        assert!(app.session.is_some(), "the session ended");
+        w.run_steps(2);
+        w.get_by_label("Read disk 3 again?");
+        w.get_by_label("Disk 3 failed. The Log says why.");
+        w.get_by_role_and_label(egui::accesskit::Role::Button, "Read disk 3 again");
+        let next = "Eject, then insert the next disk in the drive.";
+        assert!(w.query_by_label(next).is_none(), "no disk is left");
     }
 
     #[test]
@@ -3904,6 +4358,42 @@ mod tests {
     }
 
     #[test]
+    fn an_image_that_needs_the_caps_library_says_where_this_gw_looks_for_it() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let missing = "** FATAL ERROR:\nCould not find SPS/CAPS library\n\
+                       For installation instructions please read the wiki:\n\
+                       <https://github.com/keirf/greaseweazle/wiki/IPF-Images>";
+        app.disk = Some(Job::replay("convert", missing));
+        app.ended(&ctx, true);
+        let place = match () {
+            _ if cfg!(target_os = "macos") => "/Library/Frameworks.",
+            _ if cfg!(windows) => "System32.",
+            _ => "/usr/lib.",
+        };
+        let advice = app.log.lines().iter().rev().nth(1).unwrap();
+        assert!(advice.ends_with(place), "{:#?}", app.log.lines());
+        let error = app.disk.unwrap().progress.error.unwrap_or_default();
+        assert!(
+            error.ends_with(advice.as_str()),
+            "the status pane lacks it: {error}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_caps_library_goes_beside_the_built_in_gws_python() {
+        let engine = Engine {
+            python: r"C:\Program Files\Ferriteweazle\ferriteweazle-data\python.exe".into(),
+            origin: Origin::Bundled,
+        };
+        assert_eq!(
+            caps_advice(Some(&engine)),
+            r"This gw looks for CAPSImg_x64.dll or CAPSImg.dll in C:\Program Files\Ferriteweazle\ferriteweazle-data and in System32."
+        );
+    }
+
+    #[test]
     fn gw_info_on_a_port_linux_denies_puts_the_fix_in_the_log() {
         let ctx = egui::Context::default();
         let mut app = offline();
@@ -3928,10 +4418,73 @@ mod tests {
         assert_eq!(app.why_not(&schema, info), None);
         app.gw_update = installing();
         assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
-        assert_eq!(app.cannot_detect("convert"), Some(INSTALLING));
+        assert_eq!(app.cannot_detect("convert").as_deref(), Some(INSTALLING));
         app.gw_update = Update::Idle;
         app.app_update = installing();
         assert_eq!(app.why_not(&schema, info).as_deref(), Some(INSTALLING));
+    }
+
+    #[test]
+    fn a_port_list_gw_could_not_make_gives_its_reason_on_the_card_and_the_buttons() {
+        use egui::accesskit::Role;
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.service = Service::start(&no_gw(), Box::new(|| {}));
+        let asked = std::time::Instant::now();
+        let why = loop {
+            app.service.poll();
+            if let Some(why) = app.service.ports_error() {
+                break why.to_owned();
+            }
+            assert!(asked.elapsed() < Duration::from_secs(10), "no reason came");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(app.cannot_detect("read").as_deref(), Some(why.as_str()));
+        app.settings.page = Page::Command("info".into());
+        let mut w = window(app);
+        w.get_by_label("Disconnected");
+        w.get_by_label(&why);
+        w.get_by_role_and_label(Role::Button, "Get info").hover();
+        w.run_steps(4);
+        assert_eq!(
+            w.get_all_by_label(&why).count(),
+            2,
+            "not the run button's reason"
+        );
+        assert!(w.query_by_label(NO_DEVICE).is_none());
+    }
+
+    #[test]
+    fn a_command_line_gw_cannot_take_holds_up_its_page_until_reset() {
+        use egui::accesskit::Role;
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("/dev/cu.usbmodem14201", false)]);
+        app.settings.page = Page::Command("info".into());
+        app.settings.drawer = Some(Drawer::Cli);
+        let mut w = window(app);
+        let greyed = |w: &Harness<'_, App>| {
+            let run = w.get_by_role_and_label(Role::Button, "Get info");
+            run.accesskit_node().is_disabled()
+        };
+        assert!(!greyed(&w));
+        w.get_by_role(Role::MultilineTextInput).click();
+        w.run_steps(2);
+        w.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        w.event(egui::Event::Text("gw info --bogus".into()));
+        w.run_steps(2);
+        w.get_by_label("gw info has no option --bogus.");
+        assert!(greyed(&w), "Get info runs a line other than the one shown");
+        w.get_by_role_and_label(Role::Button, "Get info").hover();
+        w.run_steps(4);
+        w.get_by_label(CLI_FAULT);
+        let heading = w.get_by_label("Command line").rect().top();
+        let reset = w
+            .get_all_by_label("Reset")
+            .find(|b| b.rect().top() > heading - 10.0);
+        reset.expect("the command line's Reset").click();
+        w.run_steps(2);
+        assert!(!greyed(&w));
     }
 
     #[test]
@@ -4192,6 +4745,66 @@ mod tests {
     }
 
     #[test]
+    fn an_update_of_the_bootloader_asks_first() {
+        let schema = schema();
+        let update = schema.command("update").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.start(&ctx, update);
+        assert!(app.dialog.is_none(), "the main firmware updates at once");
+        let values = app.settings.values.entry("update".into()).or_default();
+        values.set("bootloader", command::ON);
+        app.start(&ctx, update);
+        let asks = |args: &Vec<String>| args.contains(&"--bootloader".to_owned());
+        assert!(matches!(&app.dialog, Some(Dialog::Confirm { args, .. }) if asks(args)));
+        let w = window(app);
+        w.get_by_label("Update the bootloader?");
+        w.get_by_label(
+            "If the flash fails, the Greaseweazle may need reflashing with a programming adapter.",
+        );
+        w.get_by_role_and_label(egui::accesskit::Role::Button, "Update");
+    }
+
+    #[test]
+    fn stopping_an_update_warns_what_a_flash_stopped_part_way_leaves() {
+        let firmware =
+            "A flash stopped part way leaves the firmware erased until Update runs again.";
+        let bootloader =
+            "A bootloader flash stopped part way may need reflashing with a programming adapter.";
+        for (args, warning) in [
+            (&["update"][..], firmware),
+            (&["update", "--bootloader"], bootloader),
+        ] {
+            let mut app = offline();
+            app.settings.page = Page::Command("update".into());
+            let mut job = running("update");
+            job.args = args.iter().map(|a| a.to_string()).collect();
+            app.tool = Some(job);
+            let mut w = window(app);
+            w.get_by_role_and_label(egui::accesskit::Role::Button, "Stop")
+                .hover();
+            // Past the tooltip's delay.
+            w.run_steps(4);
+            w.get_by_label("Stop gw.");
+            w.get_by_label(warning);
+            w.event(egui::Event::PointerGone);
+            w.state_mut().dialog = Some(Dialog::Quit);
+            w.run_steps(2);
+            w.get_by_label("Stop Update firmware and quit?");
+            w.get_by_label("gw stops, then the window closes.");
+            w.get_by_label(warning);
+        }
+        let mut app = offline();
+        app.disk = Some(running("read"));
+        app.dialog = Some(Dialog::Quit);
+        let w = window(app);
+        assert!(
+            w.query_by_label(firmware).is_none(),
+            "a read flashes nothing"
+        );
+    }
+
+    #[test]
     fn write_and_erase_ask_about_the_drive_the_card_shows() {
         let mut schema = schema();
         let drives = schema.commands.iter_mut().flat_map(|c| &mut c.args);
@@ -4206,6 +4819,20 @@ mod tests {
             disks: 1,
         });
         window(app).get_by_label("Erase the disk in drive B?");
+    }
+
+    #[test]
+    fn a_job_that_works_or_fails_has_a_sound_on_every_system_and_a_stopped_one_none() {
+        let first = |outcome| {
+            let players = players(Some(outcome));
+            let args = players.first().map(|p| p.get_args().collect::<Vec<_>>());
+            args.map(|a| a.join(std::ffi::OsStr::new(" ")))
+        };
+        let (worked, failed) = (first(Outcome::Succeeded), first(Outcome::Failed));
+        assert!(worked.is_some() && failed.is_some());
+        assert_ne!(worked, failed, "one sound for both");
+        assert!(players(Some(Outcome::Stopped)).is_empty());
+        assert!(players(None).is_empty());
     }
 
     #[test]
