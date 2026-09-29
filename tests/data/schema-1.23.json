@@ -60,6 +60,7 @@
       "--revs"
      ],
      "help": "number of revolutions to read per track",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -68,6 +69,7 @@
       "--tracks"
      ],
      "help": "which tracks to read",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -85,6 +87,7 @@
      ],
      "group": 0,
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -102,6 +105,7 @@
       "--adjust-speed"
      ],
      "help": "scale track data to effective drive SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -111,6 +115,7 @@
       "--retries"
      ],
      "help": "number of retries per seek-retry",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -120,6 +125,7 @@
       "--seek-retries"
      ],
      "help": "number of seek retries",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -137,6 +143,7 @@
       "--pll"
      ],
      "help": "manual PLL parameter override",
+     "metavar": "PLLSPEC",
      "type": "PLL"
     },
     {
@@ -147,6 +154,7 @@
      ],
      "group": 1,
      "help": "drive interface density select on pin 2 (H,L)",
+     "metavar": "LEVEL",
      "type": "level"
     },
     {
@@ -214,6 +222,7 @@
       "--tracks"
      ],
      "help": "which tracks to write",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -239,6 +248,7 @@
      ],
      "group": 0,
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -265,6 +275,7 @@
       "--retries"
      ],
      "help": "number of retries on verify failure",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -291,6 +302,7 @@
      ],
      "group": 1,
      "help": "drive interface density select on pin 2 (H,L)",
+     "metavar": "LEVEL",
      "type": "level"
     },
     {
@@ -334,6 +346,7 @@
       "--tracks"
      ],
      "help": "which tracks to read & convert from input",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -342,6 +355,7 @@
       "--out-tracks"
      ],
      "help": "which tracks to output (default: --tracks)",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -350,6 +364,7 @@
       "--adjust-speed"
      ],
      "help": "scale track data to effective drive SPEED",
+     "metavar": "SPEED",
      "type": "period"
     },
     {
@@ -367,6 +382,7 @@
       "--pll"
      ],
      "help": "manual PLL parameter override",
+     "metavar": "PLLSPEC",
      "type": "PLL"
     },
     {
@@ -426,6 +442,7 @@
       "--revs"
      ],
      "help": "number of revolutions to erase per track",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -434,6 +451,7 @@
       "--tracks"
      ],
      "help": "which tracks to erase",
+     "metavar": "TSPEC",
      "type": "TrackSet"
     },
     {
@@ -450,6 +468,7 @@
       "--fake-index"
      ],
      "help": "fake index pulses at SPEED",
+     "metavar": "SPEED",
      "type": "period"
     }
    ],
@@ -481,6 +500,7 @@
       "--cyls"
      ],
      "help": "number of drive cylinders",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -490,6 +510,7 @@
       "--passes"
      ],
      "help": "number of passes across the cleaning disk",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -499,6 +520,7 @@
       "--linger"
      ],
      "help": "linger time per step, milliseconds",
+     "metavar": "N",
      "type": "min_int"
     }
    ],
@@ -565,6 +587,7 @@
       "--select"
      ],
      "help": "Select Delay (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -573,6 +596,7 @@
       "--step"
      ],
      "help": "Step Delay (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -581,6 +605,7 @@
       "--settle"
      ],
      "help": "Settle Time (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -589,6 +614,7 @@
       "--motor"
      ],
      "help": "Motor Delay (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -597,6 +623,7 @@
       "--watchdog"
      ],
      "help": "Watchdog (msecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -605,6 +632,7 @@
       "--pre-write"
      ],
      "help": "Pre-Write (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -613,6 +641,7 @@
       "--post-write"
      ],
      "help": "Post-Write (usecs)",
+     "metavar": "N",
      "type": "min_int"
     },
     {
@@ -621,6 +650,7 @@
       "--index-mask"
      ],
      "help": "Index Mask (usecs)",
+     "metavar": "N",
      "type": "min_int"
     }
    ],
@@ -670,7 +700,7 @@
    "name": "update"
   },
   {
-   "about": "Change the setting of a user-modifiable interface pin.",
+   "about": "Read the level of a user-modifiable interface pin.",
    "args": [
     {
      "dest": "device",
@@ -785,6 +815,7 @@
       "--nr"
      ],
      "help": "number of iterations",
+     "metavar": "N",
      "type": "min_int"
     }
    ],
@@ -793,23 +824,23 @@
  ],
  "formats": [
   "acorn.adfs.160",
-  "acorn.adfs.1600",
   "acorn.adfs.320",
   "acorn.adfs.640",
   "acorn.adfs.800",
+  "acorn.adfs.1600",
   "acorn.dfs.ds",
   "acorn.dfs.ds80",
   "acorn.dfs.ss",
   "acorn.dfs.ss80",
-  "akai.1600",
   "akai.800",
+  "akai.1600",
   "amiga.amigados",
   "amiga.amigados_hd",
   "apple2.appledos.140",
   "apple2.nofs.140",
   "apple2.prodos.140",
-  "atari.130",
   "atari.90",
+  "atari.130",
   "atarist.360",
   "atarist.400",
   "atarist.440",
@@ -837,8 +868,8 @@
   "dragon.80ss",
   "eagle.dsqd.800",
   "eagle.ssqd.400",
-  "ensoniq.1600",
   "ensoniq.800",
+  "ensoniq.1600",
   "ensoniq.mirage",
   "epson.qx10.320",
   "epson.qx10.396",
@@ -849,38 +880,38 @@
   "gem.1600",
   "hp.mmfm.9885",
   "hp.mmfm.9895",
-  "ibm.1200",
-  "ibm.1440",
   "ibm.160",
-  "ibm.1680",
   "ibm.180",
-  "ibm.2880",
   "ibm.320",
   "ibm.360",
   "ibm.720",
   "ibm.800",
+  "ibm.1200",
+  "ibm.1440",
+  "ibm.1680",
+  "ibm.2880",
   "ibm.dmf",
   "ibm.scan",
   "kaypro.dsdd.40",
   "kaypro.dsdd.80",
   "kaypro.ssdd.40",
-  "luxor.1000.abcnet",
-  "luxor.1000.data",
-  "luxor.1000.program",
+  "luxor.80",
   "luxor.160",
   "luxor.320",
   "luxor.640",
-  "luxor.80",
+  "luxor.1000.abcnet",
+  "luxor.1000.data",
+  "luxor.1000.program",
   "mac.400",
   "mac.800",
-  "micropolis.100tpi.ds",
-  "micropolis.100tpi.ds.275",
-  "micropolis.100tpi.ss",
-  "micropolis.100tpi.ss.275",
   "micropolis.48tpi.ds",
   "micropolis.48tpi.ds.275",
   "micropolis.48tpi.ss",
   "micropolis.48tpi.ss.275",
+  "micropolis.100tpi.ds",
+  "micropolis.100tpi.ds.275",
+  "micropolis.100tpi.ss",
+  "micropolis.100tpi.ss.275",
   "mm1.os9.80dshd_32",
   "mm1.os9.80dshd_33",
   "mm1.os9.80dshd_36",
@@ -906,9 +937,9 @@
   "raw.500",
   "sci.prophet",
   "sega.sf7000",
+  "thomson.1s80",
   "thomson.1s160",
   "thomson.1s320",
-  "thomson.1s80",
   "thomson.2s160",
   "thomson.2s320",
   "tsc.flex.dsdd",
@@ -939,7 +970,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "A2R",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -947,7 +980,9 @@
    "default_format": "amiga.amigados",
    "finds_format": false,
    "name": "ADF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -955,7 +990,9 @@
    "default_format": "acorn.adfs.640",
    "finds_format": false,
    "name": "ADL",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -963,7 +1000,9 @@
    "default_format": "acorn.adfs.320",
    "finds_format": false,
    "name": "ADM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -971,7 +1010,9 @@
    "default_format": "acorn.adfs.160",
    "finds_format": false,
    "name": "ADS",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -979,7 +1020,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "CTRaw",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -987,7 +1030,9 @@
    "default_format": "commodore.cmd.fd2000.dd",
    "finds_format": false,
    "name": "D1M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -995,7 +1040,9 @@
    "default_format": "commodore.cmd.fd2000.hd",
    "finds_format": false,
    "name": "D2M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1003,7 +1050,9 @@
    "default_format": "commodore.cmd.fd4000.ed",
    "finds_format": false,
    "name": "D4M",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1011,7 +1060,9 @@
    "default_format": "commodore.1541",
    "finds_format": false,
    "name": "D64",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1019,7 +1070,9 @@
    "default_format": "commodore.1571",
    "finds_format": false,
    "name": "D71",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1027,7 +1080,9 @@
    "default_format": "commodore.1581",
    "finds_format": false,
    "name": "D81",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1035,12 +1090,14 @@
    "default_format": null,
    "finds_format": false,
    "name": "D88",
+   "needs_format": false,
    "read_opts": [
     {
      "default": 0,
      "name": "index"
     }
    ],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1048,7 +1105,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "DCP",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1056,7 +1115,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "DIM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1064,7 +1125,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "DMK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1072,7 +1135,9 @@
    "default_format": "apple2.appledos.140",
    "finds_format": false,
    "name": "DO",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1080,7 +1145,9 @@
    "default_format": "acorn.dfs.ds",
    "finds_format": false,
    "name": "DSD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1088,7 +1155,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "DSK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1096,7 +1165,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "EDSK",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1104,7 +1175,9 @@
    "default_format": "thomson.1s320",
    "finds_format": false,
    "name": "FD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1112,7 +1185,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "FDI",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": false,
    "write_opts": []
   },
@@ -1120,7 +1195,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "HDM",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1128,7 +1205,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "HFE",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
@@ -1140,11 +1219,55 @@
      "name": "version"
     },
     {
-     "default": 255,
+     "choices": [
+      "amiga_dd",
+      "amiga_hd",
+      "atarist_dd",
+      "atarist_hd",
+      "c64_dd",
+      "cpc_dd",
+      "emu_shugart",
+      "generic_shugart_dd",
+      "ibmpc_dd",
+      "ibmpc_dd_hd",
+      "ibmpc_ed",
+      "ibmpc_hd",
+      "msx2_dd",
+      "quickdisk",
+      "s950_dd",
+      "s950_dd_hd",
+      "s950_hd",
+      "unknown"
+     ],
+     "default": "unknown",
      "name": "interface"
     },
     {
-     "default": 255,
+     "choices": [
+      "aed6200p_mfm",
+      "amiga_mfm",
+      "appleii_gcr1",
+      "appleii_gcr2",
+      "appleii_hddd_a2_gcr1",
+      "appleii_hddd_a2_gcr2",
+      "applemac_gcr",
+      "arburgdat",
+      "arburgsys",
+      "c64_gcr",
+      "dec_rx02_m2fm",
+      "emu_fm",
+      "heathkit_hs_fm",
+      "isoibm_fm",
+      "isoibm_mfm",
+      "membrain_mfm",
+      "micraln_hs_fm",
+      "northstar_hs_mfm",
+      "qd_mo5",
+      "tycom_fm",
+      "unknown",
+      "victor9k_gcr"
+     ],
+     "default": "unknown",
      "name": "encoding"
     },
     {
@@ -1161,7 +1284,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1169,7 +1294,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1177,7 +1304,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1185,7 +1314,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IPF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1193,7 +1324,9 @@
    "default_format": "ibm.800",
    "finds_format": false,
    "name": "MGT",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1201,7 +1334,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "MSA",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": []
   },
@@ -1209,7 +1344,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "NFD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1217,7 +1354,9 @@
    "default_format": null,
    "finds_format": true,
    "name": "NSI",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1225,7 +1364,9 @@
    "default_format": "apple2.prodos.140",
    "finds_format": false,
    "name": "PO",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1233,7 +1374,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "KryoFlux",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
@@ -1250,11 +1393,48 @@
    "default_format": null,
    "finds_format": false,
    "name": "SCP",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": true,
    "write_opts": [
     {
-     "default": 128,
+     "choices": [
+      "amiga",
+      "amigahd",
+      "amstrad-cpc",
+      "apple-1m44",
+      "apple-400k",
+      "apple-800k",
+      "appleii",
+      "appleiipro",
+      "atari800-dd",
+      "atari800-ed",
+      "atari800-sd",
+      "atarist-ds",
+      "atarist-ss",
+      "c64",
+      "hdd-mfm",
+      "hdd-rll",
+      "ibmpc-1m2",
+      "ibmpc-1m44",
+      "ibmpc-360k",
+      "ibmpc-720k",
+      "other-1m2",
+      "other-1m44",
+      "other-320k",
+      "other-720k",
+      "roland-d20",
+      "tape-gcr1",
+      "tape-gcr2",
+      "tape-mfm",
+      "ti-99/4a",
+      "trs80_dsdd",
+      "trs80_dssd",
+      "trs80_ssdd",
+      "trs80_sssd"
+     ],
+     "default": "other-320k",
      "name": "disktype"
     },
     {
@@ -1271,7 +1451,9 @@
    "default_format": "sega.sf7000",
    "finds_format": false,
    "name": "SF7",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1279,7 +1461,9 @@
    "default_format": "acorn.dfs.ss",
    "finds_format": false,
    "name": "SSD",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1287,7 +1471,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "IMG",
+   "needs_format": true,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   },
@@ -1295,7 +1481,9 @@
    "default_format": null,
    "finds_format": false,
    "name": "TD0",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": true,
    "writable": false,
    "write_opts": []
   },
@@ -1303,7 +1491,9 @@
    "default_format": "pc98.2hd",
    "finds_format": false,
    "name": "XDF",
+   "needs_format": false,
    "read_opts": [],
+   "tracks": false,
    "writable": true,
    "write_opts": []
   }

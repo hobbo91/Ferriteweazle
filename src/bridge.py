@@ -61,12 +61,13 @@ def arg(a, groups, prog):
         'flags': a.option_strings,
         'dest': a.dest,
         'switch': a.nargs == 0 or None,
-        'multi': a.nargs in ('+', '*') or (type(a.nargs) is int and a.nargs > 1) or None,
         'type': type_name(a.type),
         'default': str(a.default) if type(a.default) in (str, int, float) else None,
         'choices': [str(c) for c in a.choices] if a.choices else None,
         'required': a.required or None,
         'group': groups.get(id(a)),
+        # The kind of value, such as TSPEC, whose help is in the schema's notes.
+        'metavar': a.metavar if isinstance(a.metavar, str) else None,
         'help': h.strip() or None,
     }
     return {k: v for k, v in d.items() if v is not None}
@@ -104,27 +105,72 @@ def opts_class(cls):
 
 
 def settings(o, names):
-    """File options with their defaults. A bool default marks a flag, which gw
-    takes as `::name` since any value it is given counts as true."""
+    """File options with their defaults, and the names gw takes for one with
+    named values. A bool default marks a flag, which gw takes as `::name`
+    since any value it is given counts as true."""
     try:
         inst = o()
     except Exception:
         inst = None
-    defaults = [getattr(inst, n, None) for n in names]
-    return [{'name': n, 'default': d if type(d) in (bool, int, float, str) else None}
-            for n, d in zip(names, defaults)]
+    out = []
+    for n in names:
+        d = getattr(inst, n, None)
+        opt = {'name': n, 'default': d if type(d) in (bool, int, float, str) else None}
+        if choices := named(o, n):
+            opt['choices'] = choices
+            # The default by its name, as gw lists it: other-320k, not 128.
+            opt['default'] = next((c for c in choices if set_to(o, n, c) == d), opt['default'])
+        out.append(opt)
+    return out
+
+
+def named(o, n):
+    """The names gw lists when it refuses a value of option n, if it lists any."""
+    try:
+        setattr(o(), n, '\x01')
+    except Exception as e:
+        lines = str(e).split('\n')
+        at = next((i for i, line in enumerate(lines) if line.startswith('Valid')), None)
+        if at is not None:
+            return ' '.join(lines[at + 1:]).split()
+    return []
+
+
+def set_to(o, n, value):
+    """What option n holds once set to value."""
+    inst = o()
+    setattr(inst, n, value)
+    return getattr(inst, n)
+
+
+def check_opt(ext, name, value):
+    """gw's objection to a value of a file option, from its own setter, or None."""
+    from greaseweazle.tools import util
+    try:
+        set_to(opts_class(util.get_image_class('x' + ext)), name, value)
+    except Exception as e:
+        return str(e).strip().split('\n')[0]
+    return None
 
 
 def images():
     from greaseweazle.tools import util
+    from greaseweazle.image.image import Image
+    from greaseweazle.image.img import IMG
     out = {}
     for ext, spec in util.image_types.items():
         cls = util.get_image_class('x' + ext)
         o = opts_class(cls)
+        sectors = issubclass(cls, IMG)
+        own_open = cls.from_file.__func__ is not Image.from_file.__func__
         out[ext] = {'name': spec if isinstance(spec, str) else spec[0],
                     'writable': not cls.read_only,
                     'default_format': cls.default_format,
                     'finds_format': finds_format(cls),
+                    # Tracks as they lie on the disk, flux or decoded, not sectors.
+                    'tracks': not sectors,
+                    # A sector image gw opens only with a format, as it does an .img.
+                    'needs_format': sectors and not cls.default_format and not own_open,
                     'read_opts': settings(o, o.a_settings + o.r_settings),
                     'write_opts': settings(o, o.a_settings + o.w_settings)}
     return out
@@ -151,29 +197,34 @@ def image_format(path):
 
 
 def formats(diskdefs=None):
+    """Format names with their numbers in numeric order: ibm.360 before ibm.1200."""
     from greaseweazle.codec import codec
-    return sorted(codec.get_all_formats('', codec.DiskDef_File(diskdefs)))
+    return sorted(codec.get_all_formats('', codec.DiskDef_File(diskdefs)),
+                  key=lambda name: [int(p) if p.isdigit() else p for p in re.split(r'(\d+)', name)])
 
 
 def diskdefs(path):
-    """The formats a disk definitions file adds, and gw's error for each one
-    it cannot use."""
+    """The formats a disk definitions file adds that gw can use, those it
+    cannot, and gw's errors, each once. gw reads the file only as far as the
+    format asked for, so a broken definition spoils only those after it."""
     from greaseweazle.codec import codec
+    path = os.path.expanduser(path)  # as gw does
     if not os.path.isfile(path):
         raise ValueError('There is no such file.')
     names = formats(path)
-    errors = []
+    usable, failed, errors = [], [], []
     for name in names:
         try:
             with quiet():
                 codec.get_diskdef(name, path)
+            usable.append(name)
         except Exception as e:
-            errors.append(str(e) or type(e).__name__)
+            failed.append(name)
+            if (error := str(e) or type(e).__name__) not in errors:
+                errors.append(error)
     if not names:
         errors.append('It defines no disks.')
-    # gw reads the file from the top for each disk, so a mistake above them
-    # all comes once for each.
-    return {'formats': names, 'errors': list(dict.fromkeys(errors))}
+    return {'formats': usable, 'failed': failed, 'errors': errors}
 
 
 def format_info(name, diskdefs=None):
@@ -184,16 +235,43 @@ def format_info(name, diskdefs=None):
     tracks = [t for c in range(d.cyls) for h in range(d.heads) if (t := d.mk_track(c, h))]
     info = {'cyls': d.cyls, 'heads': d.heads}
     if tracks:
-        names = dict.fromkeys(re.sub(r'\s*\(.*', '', t.summary_string()) for t in tracks)
-        names.pop('IBM Empty', None)  # gw's name for a scan track not yet read
-        if names:
-            info['encoding'] = ' and '.join(names)
-        if len(counts := {t.nsec for t in tracks}) == 1 and 0 not in counts:
-            info['sectors'] = tracks[0].nsec
+        # Every encoding on the disk. A scan's tracks are empty until read:
+        # IBM, of any layout.
+        names = dict.fromkeys(re.sub(r'\s*(\(.*|Empty)$', '', t.summary_string()) for t in tracks)
+        info['encoding'] = ' and '.join(names)
+        if most := max(t.nsec for t in tracks):
+            info['sectors'] = [min(t.nsec for t in tracks), most]
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
     return info
+
+
+def fits(ext, name, diskdefs=None):
+    """gw's objection to an image of type `ext` in format `name`, or None. It
+    is made in memory from the format's own tracks, as a read makes it, and
+    read back where gw reads the type as sectors."""
+    from greaseweazle.codec import codec
+    from greaseweazle.image.img import IMG
+    from greaseweazle.tools import util
+    d = codec.get_diskdef(name, diskdefs)
+    if d is None:
+        raise ValueError(f'unknown format: {name}')
+    cls = util.get_image_class('x' + ext)
+    try:
+        with quiet():
+            image = cls.to_file('x' + ext, d, False, {})
+            for c in range(d.cyls):
+                for h in range(d.heads):
+                    if (t := d.mk_track(c, h)) is not None:
+                        image.emit_track(c, h, t)
+            data = image.get_image()
+            if issubclass(cls, IMG):
+                cls('x' + ext, d).from_bytes(data)
+    except Exception as e:
+        # Some fail on an assertion, which says nothing.
+        return str(e).strip().split('\n')[0] or 'gw cannot make this image type of the format.'
+    return None if data else 'The image would be empty.'
 
 
 def ports():
@@ -242,7 +320,8 @@ def schema():
 
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
-           'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check}
+           'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check,
+           'fits': fits, 'check_opt': check_opt}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)
@@ -272,6 +351,8 @@ def detect(argv):
     a = p.parse_args(argv)
     found = []
     if a.file:
+        # First: gw 1.23's track image modules import it in a circle.
+        importlib.import_module('greaseweazle.codec.codec')
         image = util.get_image_class(a.file).from_file(a.file, None, {})
         found.append(probe(image.get_track, a.diskdefs))
     else:

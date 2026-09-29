@@ -40,6 +40,8 @@ pub struct Arg {
     pub required: bool,
     /// Arguments sharing a group are mutually exclusive.
     pub group: Option<usize>,
+    /// gw's name for the kind of value, such as TSPEC, which `Schema::note` explains.
+    pub metavar: Option<String>,
     #[serde(default)]
     pub help: String,
 }
@@ -52,6 +54,12 @@ pub struct Image {
     /// gw finds the disk format in the file itself, as it does an .nsi's from its size.
     #[serde(default)]
     pub finds_format: bool,
+    /// Holds tracks as they lie on the disk, flux or decoded, not sectors.
+    #[serde(default)]
+    pub tracks: bool,
+    /// A sector image gw opens only with a disk format, as it does an .img.
+    #[serde(default)]
+    pub needs_format: bool,
     /// Settings for `file.ext::opt=value`.
     #[serde(default)]
     pub read_opts: Vec<ImageOpt>,
@@ -62,7 +70,11 @@ pub struct Image {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageOpt {
     pub name: String,
+    /// gw's own: a name, for an option with `choices`.
     pub default: Option<serde_json::Value>,
+    /// The names gw takes for the value, such as SCP disk types.
+    #[serde(default)]
+    pub choices: Vec<String>,
 }
 
 impl ImageOpt {
@@ -77,8 +89,8 @@ pub struct FormatInfo {
     pub cyls: u32,
     pub heads: u32,
     pub encoding: Option<String>,
-    /// Sectors on the first track.
-    pub sectors: Option<u32>,
+    /// The fewest and most sectors on a track.
+    pub sectors: Option<(u32, u32)>,
     /// Size of a sector image of the whole disk.
     pub bytes: Option<u64>,
 }
@@ -86,8 +98,12 @@ pub struct FormatInfo {
 /// What a disk definitions file adds, checked with gw's own parser.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct DiskDefs {
+    /// The formats gw can use.
     pub formats: Vec<String>,
-    /// gw's objection to each definition it cannot use.
+    /// The formats it names that gw cannot use.
+    #[serde(default)]
+    pub failed: Vec<String>,
+    /// gw's objections to those, each once.
     pub errors: Vec<String>,
 }
 

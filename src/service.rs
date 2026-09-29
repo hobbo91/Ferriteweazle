@@ -99,6 +99,8 @@ pub struct Service {
     /// The file times in the keys of `diskdefs`, `image_formats` and
     /// `infos`, which `watch` keeps current.
     times: Arc<Times>,
+    /// gw's objections, or none, by the request that asked for them.
+    objections: HashMap<String, Load<Option<String>>>,
 }
 
 impl Service {
@@ -137,6 +139,7 @@ impl Service {
             checks: HashMap::new(),
             folders: HashMap::new(),
             times,
+            objections: HashMap::new(),
         }
     }
 
@@ -157,6 +160,9 @@ impl Service {
             load.poll();
         }
         for load in self.checks.values_mut() {
+            load.poll();
+        }
+        for load in self.objections.values_mut() {
             load.poll();
         }
     }
@@ -219,14 +225,14 @@ impl Service {
         })
     }
 
-    /// The formats a disk definitions file adds, once gw has read it without
-    /// fault. Asks gw if it has not read this file yet.
+    /// The formats a disk definitions file adds that gw can use. Asks gw if
+    /// it has not read this file yet.
     pub fn custom_formats(&mut self, path: &str) -> &[String] {
         if path.is_empty() {
             return &[];
         }
         match self.diskdefs(path) {
-            Load::Ready(d) if d.errors.is_empty() => &d.formats,
+            Load::Ready(d) => &d.formats,
             _ => &[],
         }
     }
@@ -239,7 +245,7 @@ impl Service {
     /// As `custom_formats`, from what gw has already said.
     pub fn known_custom_formats(&self, path: &str) -> &[String] {
         match self.known_diskdefs(path) {
-            Some(Load::Ready(d)) if d.errors.is_empty() => &d.formats,
+            Some(Load::Ready(d)) => &d.formats,
             _ => &[],
         }
     }
@@ -341,6 +347,49 @@ impl Service {
             time
         })
     }
+
+    /// gw's objection to an image of type `ext` in `format`, or none, as gw
+    /// finds when it makes one in memory. Asks gw if it has not tried yet.
+    pub fn fits(&mut self, diskdefs: &str, format: &str, ext: &str) -> &Load<Option<String>> {
+        self.ask(fits_body(diskdefs, format, ext))
+    }
+
+    /// gw's complaint about a value of an image type's option, if it has one.
+    pub fn check_opt(&mut self, ext: &str, name: &str, value: &str) -> Option<&str> {
+        let body = json!({"op": "check_opt", "ext": ext, "name": name, "value": value});
+        self.ask(body).ready().and_then(|e| e.as_deref())
+    }
+
+    /// What gw objects to in `body`'s request, asked once.
+    fn ask(&mut self, body: Value) -> &Load<Option<String>> {
+        let requests = &self.requests;
+        self.objections
+            .entry(body.to_string())
+            .or_insert_with(|| Load::Waiting(call(requests, body)))
+    }
+
+    /// As `format_info`, from what gw has already said.
+    pub fn known_format_info(&self, diskdefs: &str, name: &str) -> Option<&Load<FormatInfo>> {
+        let key = (
+            diskdefs.to_owned(),
+            self.modified(diskdefs),
+            name.to_owned(),
+        );
+        self.infos.get(&key)
+    }
+
+    /// As `fits`, the objection alone, from what gw has already said.
+    pub fn known_fits(&self, diskdefs: &str, format: &str, ext: &str) -> Option<&str> {
+        let load = self
+            .objections
+            .get(&fits_body(diskdefs, format, ext).to_string())?;
+        load.ready()?.as_deref()
+    }
+}
+
+fn fits_body(diskdefs: &str, format: &str, ext: &str) -> Value {
+    let diskdefs = (!diskdefs.is_empty()).then_some(diskdefs);
+    json!({"op": "fits", "ext": ext, "name": format, "diskdefs": diskdefs})
 }
 
 fn stat(path: &str) -> Option<SystemTime> {

@@ -397,7 +397,7 @@ fn the_service_describes_gw_and_checks_values() {
     });
     assert_eq!(
         (info.cyls, info.heads, info.sectors, info.bytes),
-        (80, 2, Some(11), Some(901_120))
+        (80, 2, Some((11, 11)), Some(901_120))
     );
     let complaint = wait("a check", || {
         service.poll();
@@ -423,18 +423,20 @@ fn format_details_describe_the_whole_disk_not_its_first_track() {
     };
     // FM on cylinder 0, with 10 sectors a track; MFM with 18 after.
     let flex = info("tsc.flex.dsdd");
-    assert_eq!(
-        flex,
-        (Some("IBM FM and IBM MFM".into()), None, Some(733_184))
-    );
+    let both = Some("IBM FM and IBM MFM".into());
+    assert_eq!(flex, (both, Some((10, 18)), Some(733_184)));
     // 21 sectors a track on the outer cylinders, 17 on the inner.
     let c64 = info("commodore.1541");
-    assert_eq!(c64, (Some("Commodore GCR".into()), None, Some(196_608)));
-    // A scan's tracks have no layout until gw reads them.
-    assert_eq!(info("ibm.scan"), (None, None, None));
+    let gcr = Some("Commodore GCR".into());
+    assert_eq!(c64, (gcr, Some((17, 21)), Some(196_608)));
+    // A scan's tracks have no layout until gw reads them: IBM, of any layout.
+    assert_eq!(info("ibm.scan"), (Some("IBM".into()), None, None));
     assert_eq!(info("raw.250"), (Some("Raw Bitcell".into()), None, None));
     let pc = info("ibm.1440");
-    assert_eq!(pc, (Some("IBM MFM".into()), Some(18), Some(1_474_560)));
+    assert_eq!(
+        pc,
+        (Some("IBM MFM".into()), Some((18, 18)), Some(1_474_560))
+    );
 }
 
 #[test]
@@ -1261,13 +1263,15 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
         (vec!["mine.800".to_owned()], vec![])
     );
     let bad = read(&bad).unwrap();
-    assert_eq!(bad.formats, ["mine.bad", "mine.worse"]);
+    assert!(bad.formats.is_empty(), "{bad:?}");
+    assert_eq!(bad.failed, ["mine.bad", "mine.worse"]);
     assert!(
         bad.errors[0].ends_with("line 6: unrecognised track option bogus"),
         "{bad:?}"
     );
     assert!(bad.errors[1].contains("line 10"), "{bad:?}");
-    // gw reads the file from the top for each disk.
+    // gw reads the file from the top for each disk, so a mistake above them
+    // all spoils each, and is named once.
     let stray = dir.join("stray.cfg");
     let disks = std::fs::read_to_string(dir.join("mine.cfg")).unwrap();
     std::fs::write(
@@ -1276,7 +1280,8 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
     )
     .unwrap();
     let stray = read(&stray).unwrap();
-    assert_eq!(stray.formats, ["mine.800", "mine.900"]);
+    assert!(stray.formats.is_empty(), "{stray:?}");
+    assert_eq!(stray.failed, ["mine.800", "mine.900"]);
     assert_eq!(stray.errors.len(), 1, "{stray:?}");
     assert!(
         stray.errors[0].ends_with("line 1: syntax error"),
@@ -1566,7 +1571,9 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
     );
     assert!(line.contains("--format=mine.800"), "{line}");
     // Non-breaking spaces keep each fact in the format's description whole.
-    w.get_by_label_contains("5\u{a0}sectors");
+    until_shown(&mut w, "the format's description", |w| {
+        w.query_by_label_contains("5\u{a0}sectors").is_some()
+    });
 
     choose_format(&mut w, "ibm.1440");
     let line = cli_line(&w);
@@ -1579,29 +1586,75 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
 }
 
 #[test]
-fn a_broken_disk_definitions_file_stops_the_page_and_says_why() {
+fn a_broken_definition_stops_only_a_page_that_uses_it() {
     let Some(engine) = engine() else { return };
     let dir = scratch("diskdefs-broken");
-    let bad = dir.join("bad.cfg");
-    std::fs::write(&bad, "disk mine.worse\n    cyls = eighty\nend\n").unwrap();
+    let defs = dir.join("mixed.cfg");
+    let sound = std::fs::read_to_string(custom_defs(&dir)).unwrap();
+    let later = "disk two.800\n    cyls = 80\n    heads = 2\nend\n";
+    let three = later.replace("two", "three");
+    std::fs::write(&defs, format!("{sound}garbage\n{later}{three}")).unwrap();
     let mut settings = Settings::default();
     let values = settings.values.entry("read".into()).or_default();
-    values.set("diskdefs", bad.to_string_lossy());
+    values.set("diskdefs", defs.to_string_lossy());
     let mut w = window(&engine, settings);
-    choose_format(&mut w, "amiga.amigados");
-    // The format's details move the rows below down as they arrive.
-    until_shown(&mut w, "the format's details", |w| {
-        w.query_by_label_contains("880\u{a0}KB").is_some()
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    w.get_all_by_role(egui::accesskit::Role::ComboBox)
+        .nth(1)
+        .expect("a format picker")
+        .click();
+    until_shown(&mut w, "the file's sound format", |w| {
+        w.query_by_label("mine.800").is_some()
     });
+    w.get_by_label("mine.800").click();
+    w.run_steps(3);
     w.get_by_label_contains("Advanced options").click();
     until_shown(&mut w, "gw's objection", |w| {
-        w.query_by_label_contains("bad.cfg, line 2").is_some()
+        w.query_by_label_contains("mixed.cfg, line 11").is_some()
     });
+    let objections = w.query_all_by_label_contains("line 11").count();
+    assert_eq!(objections, 1, "one error spoils two definitions, said once");
+    until_shown(&mut w, "Read ready", |w| {
+        !read_button(w).accesskit_node().is_disabled()
+    });
+
+    let values = app_mut(&mut w).settings.values.get_mut("read").unwrap();
+    values.set("format", "two.800");
+    w.run_steps(3);
     assert!(read_button(&w).accesskit_node().is_disabled());
     read_button(&w).hover();
-    w.run_steps(3);
-    w.get_by_label_contains("has errors");
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("The format's definition has errors. See Advanced options.")
+            .is_some()
+    });
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_disk_definitions_path_may_start_at_the_home_folder() {
+    let Some(engine) = engine() else { return };
+    let home = scratch("diskdefs-home");
+    custom_defs(&home);
+    let mut bridge = engine
+        .bridge("serve")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the bridge starts");
+    let mut input = bridge.stdin.take().unwrap();
+    let ask = b"{\"op\": \"diskdefs\", \"path\": \"~/mine.cfg\"}\n";
+    std::io::Write::write_all(&mut input, ask).unwrap();
+    drop(input);
+    let out = bridge.wait_with_output().unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        reply["ok"]["formats"],
+        serde_json::json!(["mine.800"]),
+        "{reply}"
+    );
+    std::fs::remove_dir_all(home).ok();
 }
 
 #[test]
@@ -1634,4 +1687,172 @@ fn detection_finds_a_format_from_a_disk_definitions_file() {
         job.log
     );
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("kryoflux");
+    let mut settings = convert_page(&dir);
+    settings.outputs.get_mut("convert/out_file").unwrap().ext = ".raw".into();
+    let mut w = window(&engine, settings);
+    w.get_by_label("Convert").click();
+    until(&mut w, "the conversion", |app| {
+        app.disk.as_ref().is_some_and(|j| !j.running())
+    });
+    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
+    for track in ["00.0", "39.1"] {
+        assert!(dir.join(format!("Game{track}.raw")).is_file(), "{track}");
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn detection_finds_the_format_of_a_track_image() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("detect-imd");
+    let (img, imd) = (dir.join("d.img"), dir.join("d.imd"));
+    let data: Vec<u8> = (0..737_280).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&img, data).unwrap();
+    run(
+        &engine,
+        &["convert", "--format=ibm.720", &path(&img), &path(&imd)],
+    );
+    let job = detect(&engine, &imd);
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("ibm.720"),
+        "{:#?}",
+        job.log
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn an_image_type_that_cannot_hold_the_format_stops_the_read_and_says_why() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut fits = |format: &str, ext: &str| {
+        wait("gw's answer", || {
+            service.poll();
+            match service.fits("", format, ext) {
+                Load::Ready(e) => Some(e.clone()),
+                Load::Failed(e) => panic!("no answer: {e}"),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    assert_eq!(fits("amiga.amigados", ".adf"), None);
+    let imd = fits("amiga.amigados", ".imd").unwrap_or_default();
+    assert!(imd.contains("Not IBM.FM nor IBM.MFM"), "{imd}");
+    assert!(
+        fits("ibm.1440", ".d64").is_some(),
+        "gw reads a .d64 as C64 only"
+    );
+    assert!(
+        fits("acorn.dfs.ss", ".d81").is_some(),
+        "one side where it swaps two"
+    );
+    assert_eq!(
+        fits("raw.250", ".img").as_deref(),
+        Some("The image would be empty.")
+    );
+
+    let mut w = window(&engine, Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    choose_format(&mut w, "amiga.amigados");
+    assert!(!read_button(&w).accesskit_node().is_disabled());
+    let out = app_mut(&mut w)
+        .settings
+        .outputs
+        .get_mut("read/file")
+        .unwrap();
+    out.ext = ".imd".into();
+    until_shown(&mut w, "gw's objection", |w| {
+        w.query_by_label_contains("Not IBM.FM nor IBM.MFM")
+            .is_some()
+    });
+    w.run_steps(2);
+    assert!(read_button(&w).accesskit_node().is_disabled());
+    read_button(&w).hover();
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("The image type cannot hold the disk format. See Image type.")
+            .is_some()
+    });
+}
+
+#[test]
+fn a_format_says_how_its_sectors_vary_and_a_broken_one_stops_the_read() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut info = |name: &str| {
+        wait("format details", || {
+            service.poll();
+            match service.format_info("", name) {
+                Load::Ready(info) => Some(Ok(info.clone())),
+                Load::Failed(e) => Some(Err(e.clone())),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    let c64 = info("commodore.1541").unwrap();
+    assert_eq!(c64.sectors, Some((17, 21)));
+    let scan = info("ibm.scan").unwrap();
+    assert_eq!(scan.encoding.as_deref(), Some("IBM"), "not IBM Empty");
+    let broken = info("zx.rocky.ss40").unwrap_err();
+    assert!(broken.contains("cylinder out of range"), "{broken}");
+
+    let mut w = window(&engine, Settings::default());
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    choose_format(&mut w, "zx.rocky.ss40");
+    until_shown(&mut w, "gw's objection to the format", |w| {
+        w.query_by_label_contains("cylinder out of range").is_some()
+    });
+    w.run_steps(2);
+    assert!(read_button(&w).accesskit_node().is_disabled());
+    read_button(&w).hover();
+    until_shown(&mut w, "why it cannot read", |w| {
+        w.query_by_label("gw cannot use this disk format. See Disk format.")
+            .is_some()
+    });
+}
+
+#[test]
+fn image_options_offer_gws_names_and_show_its_objections() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let schema = wait("the schema", || {
+        service.poll();
+        service.schema.ready().cloned()
+    });
+    let opt = |ext: &str, name: &str| {
+        let opts = &schema.images[ext].write_opts;
+        opts.iter().find(|o| o.name == name).unwrap().clone()
+    };
+    let disktype = opt(".scp", "disktype");
+    for name in ["amiga", "ibmpc-1m44"] {
+        assert!(disktype.choices.iter().any(|c| c == name), "{name}");
+    }
+    let default = disktype.default.as_ref().and_then(|d| d.as_str());
+    assert_eq!(default, Some("other-320k"));
+    let interface = opt(".hfe", "interface");
+    assert!(interface.choices.iter().any(|c| c == "ibmpc_dd"));
+    let complaint = wait("a complaint", || {
+        service.poll();
+        service.check_opt(".hfe", "version", "2").map(str::to_owned)
+    });
+    assert_eq!(complaint, "HFE: Invalid version: '2'");
+
+    let mut settings = Settings::default();
+    let mut out = Output {
+        ext: ".hfe".into(),
+        ..Output::default()
+    };
+    out.opts.insert("version".into(), "2".into());
+    settings.outputs.insert("read/file".into(), out);
+    let mut w = window(&engine, settings);
+    until_shown(&mut w, "gw's complaint on the page", |w| {
+        w.query_by_label("HFE: Invalid version: '2'.").is_some()
+    });
 }

@@ -864,10 +864,11 @@ impl App {
         };
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
-        if step > 1 {
-            values.set("tracks", form::double_step(values.get("tracks")));
-        }
-        self.notices.insert(page, found_note(&formats, step));
+        let tracks = form::with_step(values.get("tracks"), step);
+        let undone = step == 1 && tracks != values.get("tracks");
+        values.set("tracks", tracks);
+        self.notices
+            .insert(page, found_note(&formats, step, undone));
     }
 
     /// Whether `job` runs the drive's motor, which gw turns off as it stops.
@@ -1173,6 +1174,11 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
+        // The Overwrite question stands in for gw's -n, which would refuse
+        // once it is answered.
+        if form::OUTPUTS.iter().any(|(c, _)| *c == cmd.name) {
+            values.set("no_clobber", "");
+        }
         if cmd.name == "update" {
             form::Firmware::only(&mut values);
         }
@@ -1437,7 +1443,6 @@ impl App {
         let values = self.settings.values.get(&cmd.name).unwrap_or(&empty);
         let output = |dest: &str| form::OUTPUTS.contains(&(cmd.name.as_str(), dest));
         let missing: Vec<String> = command::missing(cmd, values)
-            .filter_map(|d| cmd.arg(d))
             .filter(|a| !form::GLOBAL.contains(&a.dest.as_str()) && !output(&a.dest))
             .filter(|a| form::batch_input(cmd, values) != Some(a.dest.as_str()))
             .map(|a| form::label(a).to_lowercase())
@@ -1456,6 +1461,7 @@ impl App {
             let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
             self.diskdefs_fault(values)
+                .or_else(|| form::missing_image(cmd, values))
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
                 .or(no_device.then_some(NO_DEVICE))
                 .map(str::to_owned)
@@ -1471,8 +1477,9 @@ impl App {
         match self.service.known_diskdefs(path) {
             None | Some(Load::Waiting(_)) => Some("Checking the disk definitions file…"),
             Some(Load::Failed(_)) => Some("The disk definitions file cannot be read."),
-            Some(Load::Ready(d)) if !d.errors.is_empty() => {
-                Some("The disk definitions file has errors. See Advanced options.")
+            // gw reads the file only for one of its own formats.
+            Some(Load::Ready(d)) if d.failed.iter().any(|f| f == values.get("format")) => {
+                Some("The format's definition has errors. See Advanced options.")
             }
             Some(Load::Ready(_)) => None,
         }
@@ -2115,7 +2122,7 @@ impl App {
             let busy = self.busy();
             match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    if let Some(path) = form::file_dialog(&gw).pick_file() {
                         self.settings.engine = Some(path);
                         self.connect(ui.ctx());
                     }
@@ -2433,6 +2440,7 @@ impl App {
                 values.set(dest, "");
             }
         }
+        form::anchor_images(&name, &mut values, &self.images_folder());
         for (cmd, dest) in form::OUTPUTS.iter().filter(|(c, _)| *c == name) {
             let file = values.get(dest);
             let key = form::output_key(cmd, dest);
@@ -2443,7 +2451,11 @@ impl App {
                 .get(&key)
                 .is_some_and(|o| o.value(1) == file);
             if !file.is_empty() && !same {
-                self.settings.outputs.insert(key, Output::from_value(file));
+                let mut out = Output::from_value(file);
+                // The name given holds while the input is the one given with it.
+                let input = values.get("in_file").split("::").next().unwrap_or_default();
+                out.named_for = input.to_owned();
+                self.settings.outputs.insert(key, out);
             }
         }
         // The line leaves out a definitions file the chosen format does not use.
@@ -2947,7 +2959,7 @@ fn right<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// A switch with its label, and help on both.
 fn setting(ui: &mut Ui, on: &mut bool, label: &str, tip: &str) {
     ui.horizontal(|ui| {
-        form::toggle(ui, on).on_hover_text(tip);
+        form::toggle(ui, on, label).on_hover_text(tip);
         ui.label(label).on_hover_text(tip);
     });
 }
@@ -3294,10 +3306,13 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-fn found_note(formats: &[String], step: u32) -> String {
+/// `undone`: Detect turned off the double step an earlier disk needed.
+fn found_note(formats: &[String], step: u32, undone: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {
         note += " It is a 40-track disk in an 80-track drive, so Double step is on.";
+    } else if undone {
+        note += " It needs no double step, so Double step is off.";
     }
     match &formats[1..] {
         [] => {}
@@ -3612,13 +3627,13 @@ mod tests {
     #[test]
     fn a_detected_format_names_the_others_the_disk_also_matches() {
         let formats = ["akai.800", "eagle.dsqd.800", "epson.qx10.400"].map(String::from);
-        assert_eq!(found_note(&formats[..1], 1), "Found akai.800.");
+        assert_eq!(found_note(&formats[..1], 1, false), "Found akai.800.");
         assert_eq!(
-            found_note(&formats[..2], 1),
+            found_note(&formats[..2], 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800."
         );
         assert_eq!(
-            found_note(&formats, 1),
+            found_note(&formats, 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800 and epson.qx10.400."
         );
         let atari = [
@@ -3632,7 +3647,7 @@ mod tests {
         ]
         .map(String::from);
         assert_eq!(
-            found_note(&atari, 1),
+            found_note(&atari, 1, false),
             "Found atarist.720. Disk also matches ibm.360, ibm.720, msx.2d, msx.2dd and 2 more."
         );
     }
@@ -3777,17 +3792,6 @@ mod tests {
             "the page's own run"
         );
         assert_eq!(app.argv(info, &app.device_only(info)), ["info"]);
-    }
-
-    #[test]
-    fn a_pasted_output_path_becomes_folder_name_and_type() {
-        let out = Output::from_value("/disks/Game Disk.HFE::version=3");
-        assert_eq!(
-            (out.folder.as_str(), out.name.as_str(), out.ext.as_str()),
-            ("/disks", "Game Disk", ".hfe")
-        );
-        let sep = std::path::MAIN_SEPARATOR;
-        assert_eq!(out.value(1), format!("/disks{sep}Game Disk.hfe::version=3"));
     }
 
     #[test]
@@ -4295,5 +4299,53 @@ mod tests {
         let advice = " - The only available action is \"gw update\"";
         let before = Some("ERROR: Device is in Firmware Update Mode");
         assert_eq!(log_colour(advice, before, p), None);
+    }
+
+    #[test]
+    fn write_waits_for_an_image_that_is_there() {
+        let schema = schema();
+        let write = schema.command("write").unwrap();
+        let mut app = offline();
+        app.engine = Some(no_gw());
+        let values = app.settings.values.entry("write".into()).or_default();
+        values.set("file", "/no/such/Game.adf");
+        let why = app.why_not(&schema, write);
+        assert_eq!(why.as_deref(), Some("The image file does not exist."));
+    }
+
+    #[test]
+    fn detect_takes_double_step_away_from_a_disk_that_needs_none() {
+        let mut app = offline();
+        app.detect_for = Some("read".into());
+        app.found(vec!["ibm.360".into()], 2);
+        assert_eq!(app.settings.values["read"].get("tracks"), "step=2");
+        app.detect_for = Some("read".into());
+        app.found(vec!["ibm.1440".into()], 1);
+        assert_eq!(app.settings.values["read"].get("tracks"), "");
+        let note = &app.notices["read"];
+        assert!(note.contains("so Double step is off"), "{note}");
+    }
+
+    #[test]
+    fn a_pasted_no_clobber_is_left_to_the_overwrite_question() {
+        let schema = schema();
+        let read = schema.command("read").unwrap();
+        let mut app = offline();
+        let line = "gw read --format=ibm.1440 -n /d/x.img";
+        let (name, values) = command::parse(&schema, line).unwrap();
+        app.fill_in(name, values);
+        let args = app.args(read);
+        assert!(args.iter().all(|a| a != "-n"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--format=ibm.1440"), "{args:?}");
+    }
+
+    #[test]
+    fn a_pasted_conversion_keeps_the_name_it_gives_its_image() {
+        let schema = schema();
+        let mut app = offline();
+        let (name, values) = command::parse(&schema, "gw convert /d/a.scp /o/b.adf").unwrap();
+        app.fill_in(name, values);
+        let w = window(app);
+        assert_eq!(w.state().settings.outputs["convert/out_file"].name, "b");
     }
 }

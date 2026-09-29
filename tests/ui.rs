@@ -9,7 +9,7 @@ use common::{
 use eframe::egui::{self, ThemePreference, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
-use ferriteweazle::form::Output;
+use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, LOG_LINES, Outcome};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::{App, Drawer, Page, Settings};
@@ -128,7 +128,22 @@ fn typing_a_command_line_fills_in_its_page() {
     assert_eq!(values.get("drive"), "");
     assert_eq!(values.get("tracks"), "c=0-39:h=0");
     assert_eq!(values.get("no_verify"), "on");
-    assert_eq!(values.get("file"), "game.adf");
+    let file = form::images_folder().join("game.adf");
+    assert_eq!(values.get("file"), file.to_string_lossy());
+}
+
+#[test]
+fn a_pasted_line_takes_a_relative_path_in_the_images_folder_and_tilde_as_home() {
+    let mut w = window(Settings::default());
+    type_line(&mut w, "gw convert ~/in.scp out.img");
+    let app = app(&w);
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let input = std::path::PathBuf::from(home.unwrap()).join("in.scp");
+    let values = &app.settings.values["convert"];
+    assert_eq!(values.get("in_file"), input.to_string_lossy());
+    let out = &app.settings.outputs["convert/out_file"];
+    assert_eq!(std::path::Path::new(&out.folder), form::images_folder());
+    assert_eq!((out.name.as_str(), out.ext.as_str()), ("out", ".img"));
 }
 
 #[test]
@@ -1804,4 +1819,30 @@ fn the_device_card_names_a_port_linux_denies_and_shows_how_to_grant_access() {
     w.get_by_label("Grant access…").click();
     w.run();
     shows_the_fix(&w);
+}
+
+#[test]
+fn formats_within_a_family_run_in_numeric_order() {
+    let mut w = window(Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    });
+    combo(&w, 1).click();
+    w.run();
+    let top = |name| w.get_by_label(name).rect().top();
+    assert!(top("ibm.360") < top("ibm.1200"));
+    assert!(top("ibm.720") < top("ibm.1440"));
+}
+
+#[test]
+fn image_options_end_within_the_field_in_the_smallest_window() {
+    let mut settings = chosen();
+    settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();
+    let w = window_at(DEFAULT, settings);
+    let right = combo(&w, 2).rect().right();
+    let lists: Vec<_> = w.get_all_by_role(Role::ComboBox).skip(3).collect();
+    assert!(lists.len() >= 4, "bitrate, version, interface and encoding");
+    for list in lists {
+        assert!(list.rect().right() <= right + 0.5, "{:?}", list.value());
+    }
 }
