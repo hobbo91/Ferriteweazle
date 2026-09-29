@@ -21,7 +21,7 @@ fn windows() {
         // Task Manager and Open With show this as the program's name.
         .set("FileDescription", "Ferriteweazle")
         .set("OriginalFilename", "Ferriteweazle.exe")
-        .set("LegalCopyright", "Copyright 2026 Lee Hobson. MIT licence.")
+        .set("LegalCopyright", "Copyright 2026 Lee Hobson. MIT License.")
         .compile()
         .expect("the Windows SDK's rc.exe compiles the icon and version");
     // The standard library calls ProcessPrng, which Windows 7 and 8 lack, so
