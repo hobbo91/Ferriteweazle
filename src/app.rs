@@ -2664,17 +2664,34 @@ fn progress_bar(ui: &mut Ui, job: &Job, p: &Palette) {
 /// The progress bar's thickness.
 const PROGRESS_BAR: f32 = 6.0;
 
-fn log_line(line: &str, p: &Palette) -> RichText {
-    let text = RichText::new(line).monospace();
-    if line.starts_with("** FATAL")
+/// How gw's errors begin, which the log shows in red.
+const ERRORS: [&str; 5] = [
+    "** FATAL ERROR:",
+    "** UPDATE FAILED",
+    "ERROR: ",
+    "Command Failed",
+    "Traceback (most recent call last):",
+];
+
+/// A log line's colour: red for gw's errors and a fatal error's first
+/// line, which follows the line `before`; orange for warnings, retries
+/// and what an update leaves to do.
+fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> {
+    if ERRORS.iter().any(|e| line.starts_with(e))
         || line.contains(": error:")
-        || line.starts_with("Command Failed")
+        || before == Some("** FATAL ERROR:")
     {
-        text.color(p.bad)
-    } else if line.contains("WARNING") || line.contains("Giving up") || line.contains("(Retry #") {
-        text.color(p.partial)
+        Some(p.bad)
+    } else if ["WARNING", "Giving up", "Retry #"]
+        .iter()
+        .any(|w| line.contains(w))
+        || ["** SKIPPING UPDATE", "** Unplug device"]
+            .iter()
+            .any(|u| line.starts_with(u))
+    {
+        Some(p.partial)
     } else {
-        text
+        None
     }
 }
 
@@ -3169,10 +3186,15 @@ fn output(
             .min_scrolled_height(height)
             .show_rows(ui, row, log.len(), |ui, rows| {
                 for i in rows {
-                    let text = match head(i) {
-                        true => RichText::new(&log[i]).monospace().color(p.accent),
-                        false => log_line(&log[i], p),
+                    let before = i.checked_sub(1).map(|b| log[b].as_str());
+                    let colour = match head(i) {
+                        true => Some(p.accent),
+                        false => log_colour(&log[i], before, p),
                     };
+                    let mut text = RichText::new(&log[i]).monospace();
+                    if let Some(colour) = colour {
+                        text = text.color(colour);
+                    }
                     ui.add(egui::Label::new(text).extend().selectable(true));
                 }
             });
@@ -4169,5 +4191,32 @@ mod tests {
         w.run();
         w.get_by_label("Second");
         std::fs::remove_dir_all(folder).ok();
+    }
+
+    #[test]
+    fn the_log_shows_gws_errors_in_red_and_its_retries_and_warnings_in_orange() {
+        let p = &theme::DARK;
+        for line in [
+            "ERROR: Device is in Firmware Update Mode",
+            "ERROR: USB write data garbled (Host -> Device)",
+            "** UPDATE FAILED: Please retry!",
+            "Traceback (most recent call last):",
+            "Command Failed: GetFluxStatus: No Index",
+        ] {
+            assert_eq!(log_colour(line, None, p), Some(p.bad), "{line}");
+        }
+        let message = log_colour("Failed to verify Track 3.0", Some("** FATAL ERROR:"), p);
+        assert_eq!(message, Some(p.bad), "the fatal error's message");
+        for line in [
+            "T0.1: Writing Track (Verify Failure: Retry #1)",
+            "T1.0: IBM MFM (17/18 sectors) from Raw Flux (1 flux in 200.00ms) (Retry #1.1)",
+            "** SKIPPING UPDATE:",
+            "** Unplug device and remove the Update Jumper",
+        ] {
+            assert_eq!(log_colour(line, None, p), Some(p.partial), "{line}");
+        }
+        let advice = " - The only available action is \"gw update\"";
+        let before = Some("ERROR: Device is in Firmware Update Mode");
+        assert_eq!(log_colour(advice, before, p), None);
     }
 }
