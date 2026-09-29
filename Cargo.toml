@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 description = "A desktop app for Greaseweazle, the floppy disk flux reader and writer"
-repository = "https://github.com/hobbo91/ferriteweazle"
+repository = "https://github.com/hobbo91/Ferriteweazle"
 publish = false
 
 [dependencies]

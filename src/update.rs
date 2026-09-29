@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 /// An install has no limit: the bridge gives up on a download that stalls.
 const CHECK_LIMIT: Duration = Duration::from_secs(20);
 /// Must match bridge.py's APP_REPO.
-pub const APP_REPO: &str = "hobbo91/ferriteweazle";
+pub const APP_REPO: &str = "hobbo91/Ferriteweazle";
 
 type Answer = Receiver<Result<String, String>>;
 
@@ -524,7 +524,7 @@ mod tests {
         check.poll(Some("1.23"));
         let latest = "Greaseweazle Tools 1.23 is the latest release on GitHub.";
         assert_eq!(check.button(GW), (false, latest.into()));
-        let why = "hobbo91/ferriteweazle has no release on GitHub.";
+        let why = "hobbo91/Ferriteweazle has no release on GitHub.";
         let mut check = Update::Checking(answered(Err(why)));
         check.poll(Some("0.9.0"));
         assert_eq!(check.button("Ferriteweazle"), (false, why.into()));

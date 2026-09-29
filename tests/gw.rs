@@ -342,7 +342,7 @@ fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed()
 /// whose SHA-256 is not the one in SHA256SUMS.
 const FAKE_RELEASE: &str = r#"
 import hashlib, io, os, sys, tarfile
-folder = f'{sys.argv[1]}/hobbo91/ferriteweazle/releases/download/v0.9.1'
+folder = f'{sys.argv[1]}/hobbo91/Ferriteweazle/releases/download/v0.9.1'
 os.makedirs(folder)
 def tarball(name, text):
     data = io.BytesIO()

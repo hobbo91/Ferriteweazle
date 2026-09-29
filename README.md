@@ -74,8 +74,8 @@ DOS 3.3.
 You need [Rust](https://rustup.rs) 1.95 or later.
 
 ```sh
-git clone https://github.com/hobbo91/ferriteweazle
-cd ferriteweazle
+git clone https://github.com/hobbo91/Ferriteweazle
+cd Ferriteweazle
 bundle/build.sh     # optional: gw with its own Python
 cargo run --release
 ```

@@ -100,7 +100,7 @@ const UPDATING: &str = "Updating Ferriteweazle\u{2026}";
 /// Commands the status pane shows. Others show their results under their page.
 const DISK_COMMANDS: &[&str] = &["read", "write", "convert", "erase", "align", DETECT];
 
-const REPO: &str = "https://github.com/hobbo91/ferriteweazle";
+const REPO: &str = "https://github.com/hobbo91/Ferriteweazle";
 const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
 /// gw's guide to setting up a Greaseweazle, its drives and its cables.
 const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";

@@ -10,4 +10,4 @@ Public License 2.1 or later (its text is above). The program's Wayland
 code includes code generated from them. Their source is in
 LGPL-sources-@VERSION@.tar, published with this
 package. To build the program with changed descriptions, use
-Ferriteweazle's own source: https://github.com/hobbo91/ferriteweazle
+Ferriteweazle's own source: https://github.com/hobbo91/Ferriteweazle

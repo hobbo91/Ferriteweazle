@@ -14,7 +14,7 @@ RESULT = '@ferriteweazle result '
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
 GITHUB_API = os.environ.get('FERRITEWEAZLE_GITHUB_API', 'https://api.github.com')
 GW_REPO = 'keirf/greaseweazle'
-APP_REPO = 'hobbo91/ferriteweazle'  # must match update.rs's APP_REPO
+APP_REPO = 'hobbo91/Ferriteweazle'  # must match update.rs's APP_REPO
 
 
 class Captured(Exception):

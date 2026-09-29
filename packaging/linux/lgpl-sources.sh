@@ -42,7 +42,7 @@ $crate
     descriptions, under the GNU LGPL 2.1 or later, from which the
     program's Wayland code is generated. To build the program with
     changed descriptions, use Ferriteweazle's source:
-    https://github.com/hobbo91/ferriteweazle
+    https://github.com/hobbo91/Ferriteweazle
 
 type2-runtime-$RUNTIME_COMMIT.tar.gz
     The AppImage runtime at the front of each AppImage (MIT licence).
