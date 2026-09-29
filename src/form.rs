@@ -466,7 +466,7 @@ impl<'a> Form<'a> {
             dest if dest.ends_with("file") => self.path(ui, a, "None", None),
             _ if a.switch => {
                 let mut on = self.values.on(&a.dest);
-                if toggle(ui, &mut on).changed() {
+                if toggle(ui, &mut on, &label(a)).changed() {
                     self.values.set(&a.dest, if on { ON } else { "" });
                 }
             }
@@ -2863,16 +2863,17 @@ fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
 const CHECK: f32 = 16.0;
 const CHECK_GAP: f32 = 7.0;
 
-/// An on/off switch.
-pub fn toggle(ui: &mut Ui, on: &mut bool) -> egui::Response {
+/// An on/off switch, named `label` for screen readers.
+pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(36.0, 20.0), Sense::click());
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
     }
     let (enabled, state) = (ui.is_enabled(), *on);
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, state, ""));
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, state, label)
+    });
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_responsive(response.id, state);
         let p = theme::palette(ui);
@@ -3299,6 +3300,12 @@ mod tests {
         h.run();
         h.get_by_label("40");
         assert!(h.query_by_label_contains("Default").is_none());
+    }
+
+    #[test]
+    fn a_switch_is_named_by_its_row() {
+        let h = page("write", Values::default(), BTreeMap::new());
+        h.get_by_role_and_label(Role::CheckBox, "Skip verify");
     }
 
     #[test]

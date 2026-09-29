@@ -2919,7 +2919,7 @@ fn right<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// A switch with its label, and help on both.
 fn setting(ui: &mut Ui, on: &mut bool, label: &str, tip: &str) {
     ui.horizontal(|ui| {
-        form::toggle(ui, on).on_hover_text(tip);
+        form::toggle(ui, on, label).on_hover_text(tip);
         ui.label(label).on_hover_text(tip);
     });
 }
