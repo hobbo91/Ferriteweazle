@@ -162,8 +162,10 @@ def image_format(path):
 
 
 def formats(diskdefs=None):
+    """Format names with their numbers in numeric order: ibm.360 before ibm.1200."""
     from greaseweazle.codec import codec
-    return sorted(codec.get_all_formats('', codec.DiskDef_File(diskdefs)))
+    return sorted(codec.get_all_formats('', codec.DiskDef_File(diskdefs)),
+                  key=lambda name: [int(p) if p.isdigit() else p for p in re.split(r'(\d+)', name)])
 
 
 def diskdefs(path):

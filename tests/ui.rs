@@ -1646,3 +1646,16 @@ fn the_device_card_names_a_port_linux_denies_and_shows_how_to_grant_access() {
     w.run();
     shows_the_fix(&w);
 }
+
+#[test]
+fn formats_within_a_family_run_in_numeric_order() {
+    let mut w = window(Settings {
+        page: Page::Command("write".into()),
+        ..Settings::default()
+    });
+    combo(&w, 1).click();
+    w.run();
+    let top = |name| w.get_by_label(name).rect().top();
+    assert!(top("ibm.360") < top("ibm.1200"));
+    assert!(top("ibm.720") < top("ibm.1440"));
+}
