@@ -45,7 +45,10 @@ pub struct Progress {
     /// The track being worked on.
     pub current: Option<(u32, u32)>,
     pub error: Option<String>,
+    /// The lines that follow belong to the error.
     fatal: bool,
+    /// Inside a Python traceback, whose last unindented line is the error.
+    traceback: bool,
 }
 
 impl Progress {
@@ -61,6 +64,8 @@ impl Progress {
     pub fn feed(&mut self, line: &str) {
         let line = line.trim_end();
         if self.fatal {
+            // gw indents some lines, such as its bootloader warning's second.
+            let line = line.trim_start();
             let error = self.error.get_or_insert_default();
             if !line.is_empty() {
                 error.push_str(if error.is_empty() { "" } else { "\n" });
@@ -75,8 +80,23 @@ impl Progress {
             }
             return;
         }
+        if self.traceback {
+            if !line.is_empty() && !line.starts_with(' ') {
+                self.error = Some(line.to_owned());
+            }
+            return;
+        }
         if line == "** FATAL ERROR:" {
             self.fatal = true;
+        } else if let Some(e) = ["ERROR: ", "** UPDATE FAILED: "]
+            .iter()
+            .find_map(|p| line.strip_prefix(p))
+        {
+            // gw's advice, if any, follows on the next lines.
+            self.error = Some(e.to_owned());
+            self.fatal = true;
+        } else if line == "Traceback (most recent call last):" {
+            self.traceback = true;
         } else if let Some(e) = line
             .strip_prefix("Command Failed: ")
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
@@ -402,8 +422,65 @@ mod tests {
             Some("argument --revs: must be 1 or greater")
         );
         assert_eq!(
-            fed("Command Failed: No Index").error.as_deref(),
-            Some("No Index")
+            fed("Command Failed: GetFluxStatus: No Index")
+                .error
+                .as_deref(),
+            Some("GetFluxStatus: No Index")
+        );
+    }
+
+    #[test]
+    fn update_failed_and_error_lines_are_errors_with_the_lines_after_them() {
+        assert_eq!(
+            fed("** UPDATE FAILED: Please retry!").error.as_deref(),
+            Some("Please retry!")
+        );
+        let bootloader = fed(
+            "** UPDATE FAILED: Please retry immediately or your Weazle may need\n        \
+             full reflashing via a suitable programming adapter!",
+        );
+        assert_eq!(
+            bootloader.error.as_deref(),
+            Some(
+                "Please retry immediately or your Weazle may need\n\
+                 full reflashing via a suitable programming adapter!"
+            )
+        );
+        let unsupported = fed("ERROR: Device firmware version 0.29 is unsupported\n\
+            To perform an Update:\n \
+            - Run \"gw update\" to download and install latest firmware");
+        assert_eq!(
+            unsupported.error.as_deref(),
+            Some(
+                "Device firmware version 0.29 is unsupported\nTo perform an Update:\n\
+                 - Run \"gw update\" to download and install latest firmware"
+            )
+        );
+    }
+
+    #[test]
+    fn a_python_traceback_gives_its_last_exception_as_the_error() {
+        let p = fed(r#"Traceback (most recent call last):
+  File "greaseweazle/image/scp.py", line 150, in from_bytes
+    checksum) = struct.unpack("<3s9BI", dat[0:16])
+                ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+struct.error: unpack requires a buffer of 16 bytes"#);
+        assert_eq!(
+            p.error.as_deref(),
+            Some("struct.error: unpack requires a buffer of 16 bytes")
+        );
+        let chained = fed(r#"Traceback (most recent call last):
+  File "serial/serialposix.py", line 322, in open
+PermissionError: [Errno 13] Permission denied: '/dev/ttyACM0'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "serial/serialposix.py", line 325, in open
+serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0"#);
+        assert_eq!(
+            chained.error.as_deref(),
+            Some("serial.serialutil.SerialException: [Errno 13] could not open port /dev/ttyACM0")
         );
     }
 
