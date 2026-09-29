@@ -410,7 +410,8 @@ fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
 
 /// packaging/release.sh and a stub Mac build committed in `dir`, a clone tagged v1.22
 /// and v1.23, and the PATH to an ssh stub that logs each command and a "--" line to
-/// ssh.log; a remote build returns one file, or fails on the host in FAIL.
+/// ssh.log; a remote build prints to stdout as the real ones do, or fails on the
+/// host in FAIL, and its dist folder holds one file.
 fn stub_release(dir: &Path) -> String {
     let packaging = dir.join("packaging");
     std::fs::create_dir_all(packaging.join("macos")).unwrap();
@@ -440,8 +441,14 @@ fn stub_release(dir: &Path) -> String {
 host=$1
 shift
 printf '%s\n--\n' "$*" >>ssh.log
-case "$*" in *bundle.sh*) ;; *) cat >/dev/null; exit 0 ;; esac
-[ "${FAIL:-}" != "$host" ] || exit 1
+case "$*" in
+    *bundle.sh*)
+        [ "${FAIL:-}" != "$host" ] || exit 1
+        echo "building on $host"
+        exit 0 ;;
+    *"tar -cf - dist"*) ;;
+    *) cat >/dev/null; exit 0 ;;
+esac
 out=$(mktemp -d)
 mkdir "$out/dist"
 echo "$host" >"$out/dist/Ferriteweazle-0.9.0-$host"
