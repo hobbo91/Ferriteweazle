@@ -97,41 +97,7 @@ fn xdg_documents(dirs: &str, home: &std::path::Path) -> Option<PathBuf> {
 /// FOLDERID_Documents, which OneDrive or a policy may have moved.
 #[cfg(windows)]
 fn known_documents() -> Option<PathBuf> {
-    use std::ffi::c_void;
-    use std::os::windows::ffi::OsStringExt;
-    #[repr(C)]
-    struct Guid(u32, u16, u16, [u8; 8]);
-    const DOCUMENTS: Guid = Guid(
-        0xfdd3_9ad0,
-        0x238f,
-        0x46af,
-        [0xad, 0xb4, 0x6c, 0x85, 0x48, 0x03, 0x69, 0xc7],
-    );
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn SHGetKnownFolderPath(
-            id: *const Guid,
-            flags: u32,
-            token: *mut c_void,
-            path: *mut *mut u16,
-        ) -> i32;
-    }
-    #[link(name = "ole32")]
-    unsafe extern "system" {
-        fn CoTaskMemFree(memory: *mut c_void);
-    }
-    let mut path = std::ptr::null_mut();
-    // SAFETY: on success `path` is a NUL-terminated string that Windows
-    // allocated; it is freed whatever the result, as the API requires.
-    unsafe {
-        let found = SHGetKnownFolderPath(&DOCUMENTS, 0, std::ptr::null_mut(), &mut path) == 0;
-        let folder = found.then(|| {
-            let len = (0..).take_while(|&i| *path.add(i) != 0).count();
-            OsString::from_wide(std::slice::from_raw_parts(path, len)).into()
-        });
-        CoTaskMemFree(path.cast());
-        folder
-    }
+    known_folders::get_known_folder_path(known_folders::KnownFolder::Documents)
 }
 
 #[cfg(test)]
