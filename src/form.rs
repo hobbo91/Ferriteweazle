@@ -1438,13 +1438,15 @@ pub fn blocked(
         return Some("gw cannot use this disk format. See Disk format.");
     }
     // gw would stop at the image before it opens the drive.
-    if values.get("format").is_empty()
+    if chosen.is_empty()
         && format_in_file(schema, cmd, values)
         && service.image_fault(input_file(cmd, values)).is_some()
     {
         return Some("gw cannot read this image. See Disk format.");
     }
-    if values.get("format").is_empty()
+    // gw opens a plain sector image only with a format; Read and Convert
+    // wait for one below.
+    if chosen.is_empty()
         && !OUTPUTS.iter().any(|(c, _)| *c == cmd.name)
         && schema
             .image(input_file(cmd, values))
