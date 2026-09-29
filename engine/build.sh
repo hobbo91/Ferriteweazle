@@ -80,5 +80,7 @@ case "$triple" in *linux*)
             "https://raw.githubusercontent.com/keirf/greaseweazle/$tag/$rule"
     fi ;;
 esac
+# greaseweazle-version goes last: it marks a finished build.
+echo "$PYTHON+$PYTHON_RELEASE" >"$dest/python-version"
 echo "$tag" >"$dest/greaseweazle-version"
 du -sh "$dest"
