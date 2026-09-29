@@ -23,9 +23,9 @@ const MAX_CELL: f32 = 34.0;
 const LABEL: f32 = 24.0;
 /// Room for a side's name above its grid.
 const TITLE: f32 = 18.0;
-/// Rows the squares are sized for, 80 cylinders: the 82 gw erases add a row
-/// below, not smaller squares, while the pane has room for it.
-const SIZED_ROWS: u32 = 8;
+/// Rows the squares are sized for, 90 cylinders, past any drive: every disk
+/// gets one square size, which the least Log leaves be.
+const SIZED_ROWS: u32 = 9;
 const SIDE_GAP: f32 = 28.0;
 const STACK_GAP: f32 = 8.0;
 
@@ -69,7 +69,7 @@ pub fn show(
     let cell_for = |across: bool| {
         let fits = cell_in(across, room, rows);
         let usual = CELL.min(fits);
-        cell_in(across, wanted, rows.min(SIZED_ROWS))
+        cell_in(across, wanted, rows.max(SIZED_ROWS))
             .min(fits)
             .max(usual)
             .min(MAX_CELL)

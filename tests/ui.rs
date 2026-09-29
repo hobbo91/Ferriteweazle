@@ -2088,15 +2088,34 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
 }
 
 #[test]
-fn the_map_grows_with_the_window_to_34_point_squares() {
-    let sizes = [(1040.0, 744.0), (1280.0, 800.0), (1920.0, 1080.0)].map(|(x, y)| {
-        let mut w = start(
-            Harness::builder().with_size(egui::vec2(x, y)),
-            chosen(),
-            Some(Job::replay("read", &damaged_read())),
+fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
+    let size = |window: egui::Vec2, cyls: u32, drawer: Option<Drawer>| {
+        let settings = Settings {
+            page: Page::Command("erase".into()),
+            drawer,
+            ..Settings::default()
+        };
+        let header = format!("Erasing c=0-{}:h=0-1, revs=1", cyls - 1);
+        let tracks =
+            (0..cyls).flat_map(|c| (0..2).map(move |h| format!("T{c}.{h}: Erasing Track")));
+        let log = std::iter::once(header).chain(tracks).collect::<Vec<_>>();
+        let mut w = build(
+            Harness::builder().with_size(window),
+            settings,
+            Some(Job::replay("erase", &log.join("\n"))),
         );
         w.run();
         squares(&w).next().unwrap().rect.width()
-    });
-    assert_eq!(sizes, [19.0, 23.0, 34.0]);
+    };
+    for (window, cell) in [(DEFAULT, 18.0), (egui::vec2(1920.0, 1080.0), 34.0)] {
+        for cyls in [40, 80, 82, 90] {
+            for drawer in [None, Some(Drawer::Log)] {
+                assert_eq!(
+                    size(window, cyls, drawer),
+                    cell,
+                    "{window:?} {cyls} {drawer:?}"
+                );
+            }
+        }
+    }
 }
