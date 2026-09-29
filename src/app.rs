@@ -1695,7 +1695,7 @@ impl App {
         if let Some(e) = &job.progress.error {
             ui.add_space(6.0);
             let refused = self.refused(job);
-            error_box(ui, p, |ui| match &refused {
+            error_box(ui, p.bad, |ui| match &refused {
                 Some(refused) => install = access(ui, refused),
                 None => {
                     ui.label(RichText::new(e).color(p.bad));
@@ -2973,10 +2973,18 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
         });
     });
     match (&refused, &job.progress.error) {
-        (Some(refused), _) => error_box(ui, p, |ui| install = access(ui, refused)),
-        (None, Some(e)) => error_box(ui, p, |ui| {
-            ui.label(RichText::new(e).color(p.bad));
-        }),
+        (Some(refused), _) => error_box(ui, p.bad, |ui| install = access(ui, refused)),
+        (None, Some(e)) => {
+            // Orange for a job that worked all the same, as gw info does
+            // when only its check for newer firmware fails.
+            let colour = match job.outcome() {
+                Some(Outcome::Succeeded) => p.partial,
+                _ => p.bad,
+            };
+            error_box(ui, colour, |ui| {
+                ui.label(RichText::new(e).color(colour));
+            });
+        }
         (None, None) => {}
     }
     ui.add_space(4.0);
@@ -3093,10 +3101,10 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
     pressed
 }
 
-/// A tinted box for what went wrong.
-fn error_box(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) {
+/// A box tinted `colour`, for what went wrong.
+fn error_box(ui: &mut Ui, colour: Color32, add: impl FnOnce(&mut Ui)) {
     Frame::new()
-        .fill(p.bad.gamma_multiply(0.14))
+        .fill(colour.gamma_multiply(0.14))
         .corner_radius(8)
         .inner_margin(10)
         .show(ui, |ui| {

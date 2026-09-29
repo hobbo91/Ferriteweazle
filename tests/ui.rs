@@ -1233,6 +1233,28 @@ fn device_info_fits_the_window_as_it_opens() {
 }
 
 #[test]
+fn device_info_is_done_when_its_device_answers_and_failed_when_gw_finds_none() {
+    let settings = Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    };
+    let mut w = window(settings);
+    // gw info's report, then its check for newer firmware fails.
+    let offline = "Host Tools: 1.23\nDevice:\n  Model:    Greaseweazle V4.1\n  Firmware: 1.6\n  \
+                   USB:      Full Speed (12 Mbit/s), 128kB Buffer\n\
+                   ** FATAL ERROR:\nGitHub API Rate Limit exceeded";
+    app_mut(&mut w).tool = Some(Job::replay("info", offline));
+    w.run();
+    w.get_by_label("Done");
+    w.get_by_label("GitHub API Rate Limit exceeded");
+    w.get_by_label("Greaseweazle V4.1");
+    let none = "Host Tools: 1.23\nDevice:\n  Not found";
+    app_mut(&mut w).tool = Some(Job::replay("info", none));
+    w.run();
+    w.get_by_label("Failed");
+}
+
+#[test]
 fn next_to_the_input_file_starts_off_and_greys_out_where_it_would_replace_the_input() {
     let mut settings = Settings {
         page: Page::Command("convert".into()),

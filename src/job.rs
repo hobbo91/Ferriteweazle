@@ -1,5 +1,6 @@
 //! One gw command, run through the bridge, with its output as it arrives.
 
+use crate::device;
 use crate::engine::Engine;
 use crate::progress::Progress;
 use crate::service::Repaint;
@@ -109,9 +110,9 @@ impl Job {
             ..Job::new(command, Vec::new(), mpsc::channel().1)
         };
         log.lines().for_each(|l| job.take(l.to_owned()));
-        let outcome = match job.progress.error {
-            Some(_) => Outcome::Failed,
-            None => Outcome::Succeeded,
+        let outcome = match job.worked(true) {
+            true => Outcome::Succeeded,
+            false => Outcome::Failed,
         };
         job.ended = Some((job.started, outcome));
         job.progress.finish();
@@ -166,7 +167,7 @@ impl Job {
         {
             let outcome = if self.stopping.is_some() {
                 Outcome::Stopped
-            } else if status.success() && self.progress.error.is_none() {
+            } else if self.worked(status.success()) {
                 Outcome::Succeeded
             } else {
                 Outcome::Failed
@@ -183,6 +184,18 @@ impl Job {
             self.stdin = None; // the bridge stops gw when its input closes
             self.stopping = Some(Instant::now());
             self.question = None;
+        }
+    }
+
+    /// Whether a job that ran to its end worked. gw info exits 0 when it
+    /// finds no Greaseweazle, and 1 when its device has answered in full and
+    /// only the check online for newer firmware fails.
+    fn worked(&self, exited_ok: bool) -> bool {
+        let clean = exited_ok && self.progress.error.is_none();
+        match self.command.as_str() {
+            // USB ends gw info's report on the device.
+            "info" => device::parse(&self.log).is_some_and(|d| clean || d.get("USB").is_some()),
+            _ => clean,
         }
     }
 
@@ -455,5 +468,23 @@ mod tests {
         );
         let heads: Vec<usize> = (0..log.lines().len()).filter(|&i| log.is_head(i)).collect();
         assert_eq!(heads, [0, 3, 6, 10]);
+    }
+
+    #[test]
+    fn gw_info_works_when_its_device_answers_in_full_and_fails_when_it_finds_none() {
+        let outcome = |log: &str| Job::replay("info", log).outcome();
+        // gw info exits 0 here.
+        let none = "Host Tools: 1.23\nDevice:\n  Not found";
+        assert_eq!(outcome(none), Some(Outcome::Failed));
+        // And 1 here, offline.
+        let report = "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem1\n  \
+                      Model:    Greaseweazle V4.1\n  Firmware: 1.6\n  Serial:   GW01\n  \
+                      USB:      Full Speed (12 Mbit/s), 128kB Buffer";
+        let offline = format!("{report}\n** FATAL ERROR:\nGitHub API Rate Limit exceeded");
+        assert_eq!(outcome(&offline), Some(Outcome::Succeeded));
+        assert_eq!(outcome(report), Some(Outcome::Succeeded));
+        let cut = "Host Tools: 1.23\nDevice:\n  Port:     /dev/cu.usbmodem1\n\
+                   ** FATAL ERROR:\nThe Greaseweazle did not answer.";
+        assert_eq!(outcome(cut), Some(Outcome::Failed));
     }
 }
