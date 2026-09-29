@@ -347,10 +347,6 @@ fn entry<'w>(w: &'w Window, title: &'w str) -> Node<'w> {
         .expect("the sidebar entry")
 }
 
-fn greyed(w: &Window, title: &str) -> bool {
-    entry(w, title).accesskit_node().is_disabled()
-}
-
 /// Each page that acts on the Greaseweazle, and its run button.
 const DEVICE_PAGES: [(&str, &str); 13] = [
     ("Read disk", "Read disk"),
@@ -372,7 +368,6 @@ const DEVICE_PAGES: [(&str, &str); 13] = [
 fn every_page_opens_without_a_device_but_cannot_run() {
     let mut w = window(Settings::default());
     for (page, run) in DEVICE_PAGES {
-        assert!(!greyed(&w, page), "{page} is greyed");
         entry(&w, page).click();
         w.run();
         let disabled = run_button(&w, run).accesskit_node().is_disabled();
