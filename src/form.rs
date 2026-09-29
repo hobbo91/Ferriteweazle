@@ -1428,6 +1428,14 @@ pub fn blocked(
                 "Choose a disk format first."
             });
         }
+        // Raw keeps the flux as read, with no format: gw's sector and track
+        // types refuse it, and HFE takes it only at a set bitrate.
+        if values.on("raw") && !FLUX.contains(&out.ext.as_str()) {
+            return Some("With Raw on, choose SCP, HFE or KryoFlux.");
+        }
+        if values.on("raw") && out.ext == ".hfe" && !out.opts.contains_key("bitrate") {
+            return Some("With Raw on, HFE needs a bitrate. See Image options.");
+        }
     }
     // Paths, not strings, as in the page's warning: /a//b is /a/b.
     let input = input_file(cmd, values);
@@ -1597,7 +1605,9 @@ pub fn choose_format(
     let ext = type_for(schema, format);
     for (_, dest) in OUTPUTS.iter().filter(|(c, _)| *c == cmd.name) {
         let out = outputs.entry(output_key(&cmd.name, dest)).or_default();
-        if out.ext != ext {
+        // With Raw on the image keeps the flux, and the format only verifies it.
+        let raw = values.on("raw") && FLUX.contains(&out.ext.as_str());
+        if out.ext != ext && !raw {
             out.ext = ext.clone();
             out.opts.clear();
         }
@@ -2534,6 +2544,36 @@ mod tests {
             None,
             "an IPF's tracks have a bitrate"
         );
+    }
+
+    #[test]
+    fn raw_waits_for_a_type_that_holds_flux_and_a_format_keeps_it() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |out: Output| {
+            let v = values(&[("format", "ibm.1440"), ("raw", ON)]);
+            let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+            blocked(&s, read, &v, &outputs, &service)
+        };
+        let flux = Some("With Raw on, choose SCP, HFE or KryoFlux.");
+        assert_eq!(why(output(".img")), flux);
+        assert_eq!(why(output(".imd")), flux);
+        assert_eq!(why(output(".scp")), None);
+        assert_eq!(why(output(".raw")), None);
+        let bitrate = Some("With Raw on, HFE needs a bitrate. See Image options.");
+        assert_eq!(why(output(".hfe")), bitrate, "the format does not give it");
+        let mut hfe = output(".hfe");
+        hfe.opts.insert("bitrate".into(), "250".into());
+        assert_eq!(why(hfe), None);
+
+        let mut v = values(&[("raw", ON)]);
+        let mut outputs = BTreeMap::from([(output_key("read", "file"), output(".scp"))]);
+        choose_format(&s, read, &mut v, &mut outputs, "amiga.amigados");
+        assert_eq!(outputs["read/file"].ext, ".scp", "the format only verifies");
+        v.set("raw", "");
+        choose_format(&s, read, &mut v, &mut outputs, "amiga.amigados");
+        assert_eq!(outputs["read/file"].ext, ".adf");
     }
 
     #[test]
