@@ -1624,6 +1624,9 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
+                let schema = self.schema.as_deref();
+                job.progress.verifies = command == "write"
+                    && schema.is_some_and(|s| form::verifies(&mut self.service, s, &job.args));
                 self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);

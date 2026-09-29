@@ -93,6 +93,9 @@ pub struct FormatInfo {
     pub sectors: Option<(u32, u32)>,
     /// Size of a sector image of the whole disk.
     pub bytes: Option<u64>,
+    /// gw write verifies each track of this format before the next.
+    #[serde(default)]
+    pub verifies: bool,
 }
 
 /// What a disk definitions file adds, checked with gw's own parser.

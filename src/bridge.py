@@ -244,6 +244,11 @@ def format_info(name, diskdefs=None):
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
+        # gw write checks a track only if its codec gives what it writes a
+        # verify, as all but bitcells do: one track of each kind shows it.
+        with quiet(), contextlib.suppress(Exception):
+            kinds = {type(t): t for t in tracks}.values()
+            info['verifies'] = all(t.master_track().verify is not None for t in kinds)
     return info
 
 

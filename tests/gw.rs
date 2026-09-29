@@ -1804,3 +1804,36 @@ fn image_options_offer_gws_names_and_show_its_objections() {
         w.query_by_label("HFE: Invalid version: '2'.").is_some()
     });
 }
+
+#[test]
+fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let schema = wait("the schema", || {
+        service.poll();
+        service.schema.ready().cloned()
+    });
+    let mut info = |name: &str| {
+        wait(name, || {
+            service.poll();
+            service.format_info("", name).ready().cloned()
+        })
+    };
+    assert!(info("ibm.1440").verifies);
+    assert!(info("amiga.amigados").verifies);
+    assert!(!info("raw.250").verifies, "gw cannot check bitcells");
+    let mut verifies = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        form::verifies(&mut service, &schema, &args)
+    };
+    assert!(verifies(&["write", "--format=ibm.1440", "a.img"]));
+    assert!(verifies(&["write", "a.adf"]), "an .adf's own format");
+    assert!(!verifies(&[
+        "write",
+        "--format=ibm.1440",
+        "--no-verify",
+        "a.img"
+    ]));
+    assert!(!verifies(&["write", "--format=raw.250", "a.hfe"]));
+    assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
+}

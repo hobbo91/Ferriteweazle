@@ -50,6 +50,8 @@ pub struct Progress {
     pub warnings: Vec<String>,
     /// A read with --raw: gw keeps the flux of tracks outside the format.
     pub raw: bool,
+    /// A write gw verifies: it goes on from a track only once that verified.
+    pub verifies: bool,
     /// The cylinders of gw's sector map, those it read. A conversion's
     /// track lines name the tracks it writes.
     columns: Vec<u32>,
@@ -106,6 +108,7 @@ impl Progress {
                     t.status = Status::Bad;
                 } else if let Some((key, text)) = track_line(line) {
                     // gw stopped before the track, as for sectors its input lacks.
+                    self.moved_to(key);
                     let t = self.tracks.entry(key).or_insert(Track {
                         status: Status::Bad,
                         retries: 0,
@@ -236,6 +239,7 @@ impl Progress {
         if count.is_none() && !RESULTS.iter().any(|r| text.starts_with(r)) {
             return;
         }
+        self.moved_to(key);
         self.current = Some(key);
         let t = self.tracks.entry(key).or_insert(Track {
             status: Status::Flux,
@@ -275,6 +279,19 @@ impl Progress {
         } else {
             Status::Flux
         };
+    }
+
+    /// gw has gone on to track `key`, so a write that verifies has checked
+    /// the track before.
+    fn moved_to(&mut self, key: (u32, u32)) {
+        if !self.verifies || self.current == Some(key) {
+            return;
+        }
+        if let Some(t) = self.current.and_then(|c| self.tracks.get_mut(&c))
+            && t.status == Status::Written
+        {
+            t.status = Status::Good;
+        }
     }
 
     fn map_row(&mut self, head: u32, sector: usize, cells: &str) {
@@ -762,5 +779,31 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
             track_set("c=4294967295:h=0"),
             Some((vec![u32::MAX], vec![0]))
         );
+    }
+
+    #[test]
+    fn a_failed_or_stopped_write_keeps_the_tracks_gw_verified_before_it() {
+        use Status::{Bad, Good, Written};
+        let log = "Writing c=0-2:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Erasing Track\n\
+            T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Writing Track (Verify Failure: Retry #1)";
+        let status = |log: &str, verifies: bool| {
+            let mut p = Progress {
+                verifies,
+                ..Progress::default()
+            };
+            log.lines().for_each(|l| p.feed(l));
+            [0, 1, 2].map(|c| p.tracks.get(&(c, 0)).map(|t| t.status))
+        };
+        let stopped = status(log, true);
+        assert_eq!(stopped, [Some(Good), Some(Written), None]);
+        let failed = format!("{log}\n** FATAL ERROR:\nFailed to verify Track 1.0");
+        assert_eq!(status(&failed, true), [Some(Good), Some(Bad), None]);
+        let lacking = format!("{log}\n** FATAL ERROR:\nT2.0: 3 missing sectors in input image");
+        assert_eq!(status(&lacking, true), [Some(Good), Some(Good), Some(Bad)]);
+        let unchecked = status(log, false);
+        assert_eq!(unchecked, [Some(Written), Some(Written), None]);
     }
 }
