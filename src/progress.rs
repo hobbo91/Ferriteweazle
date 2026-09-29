@@ -142,6 +142,8 @@ impl Progress {
         } else if let Some(e) = line
             .strip_prefix("Command Failed: ")
             .or_else(|| Some(line.strip_prefix("gw ")?.split_once(": error: ")?.1))
+            // Detection's own parser, bridge.py's.
+            .or_else(|| line.strip_prefix("detect: error: "))
         {
             self.error = Some(e.to_owned());
         } else if let Some(rest) = ["Reading ", "Writing ", "Converting ", "Erasing "]
@@ -805,5 +807,15 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
         assert_eq!(status(&lacking, true), [Some(Good), Some(Good), Some(Bad)]);
         let unchecked = status(log, false);
         assert_eq!(unchecked, [Some(Written), Some(Written), None]);
+    }
+
+    #[test]
+    fn a_page_setting_detection_cannot_take_is_its_error() {
+        let p = fed("usage: detect [-h] [--device DEVICE] [--drive DRIVE]\n\
+            detect: error: argument --fake-index: invalid period value: 'abc'");
+        assert_eq!(
+            p.error.as_deref(),
+            Some("argument --fake-index: invalid period value: 'abc'")
+        );
     }
 }

@@ -1205,35 +1205,47 @@ impl App {
         self.argv(cmd, &self.values_for(cmd))
     }
 
-    /// What a detect job needs: the drive when reading, else the input file.
+    /// What a detect job needs: the drive and how the page reads it, or the
+    /// image and how the page takes it in. A write's drive settings are for
+    /// the disk it writes, not its image.
     fn detect_args(&self, cmd: &Command) -> Vec<String> {
         let mut values = self.values_for(cmd);
         // Detection tries a definitions file's formats beside gw's own.
         if let Some(page) = self.settings.values.get(&cmd.name) {
             values.set("diskdefs", page.get("diskdefs"));
         }
-        let mut args: Vec<String> = ["device", "drive", "diskdefs"]
-            .into_iter()
-            .filter(|d| cmd.name == "read" || *d == "diskdefs")
-            .filter(|d| !values.get(d).is_empty())
-            .map(|d| format!("--{d}={}", values.get(d)))
-            .collect();
+        let dests: &[&str] = match cmd.name.as_str() {
+            "write" => &["diskdefs"],
+            _ => &[
+                "device",
+                "drive",
+                "diskdefs",
+                "tracks",
+                "densel",
+                "gen_tg43",
+                "fake_index",
+                "hard_sectors",
+                "reverse",
+                "adjust_speed",
+            ],
+        };
+        let mut with = Values::default();
+        for dest in dests {
+            with.set(dest, values.get(dest));
+        }
         if cmd.name != "read" {
             let dest = if cmd.arg("in_file").is_some() {
                 "in_file"
             } else {
                 "file"
             };
-            args.push(
-                values
-                    .get(dest)
-                    .split("::")
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned(),
+            with.set(
+                dest,
+                values.get(dest).split("::").next().unwrap_or_default(),
             );
         }
-        args
+        // As gw spells them, less the command's name.
+        command::argv(cmd, &with).split_off(1)
     }
 
     fn page(&mut self, ui: &mut Ui, name: &str) {
@@ -4350,5 +4362,69 @@ mod tests {
         app.fill_in(name, values);
         let w = window(app);
         assert_eq!(w.state().settings.outputs["convert/out_file"].name, "b");
+    }
+
+    #[test]
+    fn detect_reads_as_its_page_does_but_takes_only_a_writes_image() {
+        let schema = schema();
+        let mut settings = Settings {
+            drive: "B".into(),
+            ..Settings::default()
+        };
+        let pages = [
+            (
+                "read",
+                &[
+                    ("tracks", "c=0-39:h0.off=+2:hswap"),
+                    ("fake_index", "300rpm"),
+                    ("adjust_speed", "360rpm"),
+                    ("densel", "H"),
+                    ("reverse", command::ON),
+                    ("revs", "5"),
+                ][..],
+            ),
+            (
+                "convert",
+                &[
+                    ("in_file", "/d/x.scp"),
+                    ("tracks", "hswap"),
+                    ("hard_sectors", command::ON),
+                    ("reverse", command::ON),
+                ],
+            ),
+            (
+                "write",
+                &[
+                    ("file", "/d/y.scp"),
+                    ("tracks", "hswap"),
+                    ("densel", "H"),
+                    ("reverse", command::ON),
+                ],
+            ),
+        ];
+        for (page, pairs) in pages {
+            let values = settings.values.entry(page.into()).or_default();
+            pairs
+                .iter()
+                .for_each(|(dest, value)| values.set(dest, *value));
+        }
+        let app = App::offline(&egui::Context::default(), settings, Ok(schema.clone()));
+        let args = |page| app.detect_args(schema.command(page).unwrap());
+        assert_eq!(
+            args("read"),
+            [
+                "--drive=B",
+                "--tracks=c=0-39:h0.off=+2:hswap",
+                "--fake-index=300rpm",
+                "--adjust-speed=360rpm",
+                "--densel=H",
+                "--reverse"
+            ]
+        );
+        assert_eq!(
+            args("convert"),
+            ["--tracks=hswap", "--hard-sectors", "--reverse", "/d/x.scp"]
+        );
+        assert_eq!(args("write"), ["/d/y.scp"], "they are for the disk written");
     }
 }

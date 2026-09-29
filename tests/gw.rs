@@ -1837,3 +1837,98 @@ fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
     assert!(!verifies(&["write", "--format=raw.250", "a.hfe"]));
     assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
 }
+
+/// Runs the bridge's (argv[1]) detection with the options after argv[2] on
+/// a made-up Greaseweazle, whose drive holds the disk of the image argv[2]
+/// two cylinders out with its sides swapped and gives no index pulses when
+/// asked for none. Prints what it found and what it did to the drive.
+const FAKE_DRIVE: &str = r#"
+import contextlib, io, json, runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle.flux import Flux
+from greaseweazle.tools import util
+image = util.get_image_class(sys.argv[2]).from_file(sys.argv[2], None, {})
+
+class Unit:
+    sample_freq = image.get_track(0, 0).sample_freq
+    def __init__(self):
+        self.pin2, self.pins, self.seeks, self.revs = False, [], [], set()
+    def get_pin(self, pin):
+        return self.pin2
+    def set_pin(self, pin, level):
+        self.pin2 = level
+        self.pins.append(level)
+    def seek(self, c, h):
+        self.seeks.append([c, h])
+        self.at = c - 2, 1 - h
+    def read_track(self, revs, ticks=0):
+        self.revs.add(revs)
+        track = image.get_track(*self.at) if self.at[0] >= 0 else None
+        if track is None:
+            return Flux([], [], self.sample_freq, index_cued=False)
+        return Flux(track.index_list if revs else [], track.list, track.sample_freq, index_cued=False)
+    def __getattr__(self, name):  # selecting the drive, turning its motor
+        return lambda *args: None
+
+unit = Unit()
+util.usb_open = lambda device: unit
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    bridge['detect'](sys.argv[3:])
+result = next(l for l in out.getvalue().splitlines() if l.startswith(bridge['RESULT']))
+found = json.loads(result[len(bridge['RESULT']):])
+print(json.dumps({**found, 'pins': unit.pins, 'seeks': unit.seeks[:3], 'revs': sorted(unit.revs)}))
+"#;
+
+#[test]
+fn detection_reads_the_disk_or_image_as_its_page_would() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("detect-options");
+    let disk = flux_of(&engine, &dir, "ibm.1440", 1_474_560);
+    // A flippy's side B, as a drive reads it without --reverse.
+    let flipped = dir.join("flipped.scp");
+    run(
+        &engine,
+        &["convert", "--reverse", &path(&disk), &path(&flipped)],
+    );
+    let job = finish(
+        start(&engine, DETECT, &["--reverse", &path(&flipped)]),
+        "detection",
+    );
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("ibm.1440"),
+        "{:#?}",
+        job.log
+    );
+
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let drive = |image: &Path, options: &[&str]| {
+        let out = std::process::Command::new(&engine.python)
+            .args(["-c", FAKE_DRIVE])
+            .arg(&bridge)
+            .arg(image)
+            .arg("--tracks=h0.off=+2:h1.off=+2:hswap")
+            .args(options)
+            .output()
+            .expect("python runs");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)))
+    };
+    let flippy = drive(&flipped, &["--reverse", "--densel=H"]);
+    assert_eq!(flippy["formats"][0], "ibm.1440", "{flippy}");
+    assert_eq!(
+        flippy["pins"],
+        serde_json::json!([true, false]),
+        "pin 2 high, then as it was"
+    );
+    assert_eq!(flippy["seeks"], serde_json::json!([[2, 1], [2, 0], [4, 1]]));
+    let no_index = drive(&disk, &["--fake-index=300rpm"]);
+    assert_eq!(no_index["formats"][0], "ibm.1440", "{no_index}");
+    assert_eq!(
+        no_index["revs"],
+        serde_json::json!([0]),
+        "no index pulse waited for"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
