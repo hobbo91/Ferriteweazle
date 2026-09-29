@@ -1355,9 +1355,6 @@ pub const MAX_DISKS: u32 = 99;
 pub const USUAL_DISK: (u32, u32) = (82, 2);
 
 /// Why settings with every argument filled in still cannot run.
-/// Why a page that makes an image cannot run before its image is named.
-const NO_OUTPUT: &str = "Choose the output file and location first.";
-
 pub fn blocked(
     schema: &Schema,
     cmd: &Command,
@@ -1391,10 +1388,10 @@ pub fn blocked(
     if let Some((_, dest)) = OUTPUTS.iter().find(|(c, _)| *c == cmd.name) {
         let out = outputs.get(&output_key(&cmd.name, dest));
         let Some(out) = out.filter(|o| !o.ext.is_empty()) else {
-            return Some(NO_OUTPUT);
+            return Some("Choose an image type first.");
         };
-        if batch.is_none() && out.value(1).is_empty() {
-            return Some(NO_OUTPUT);
+        if batch.is_none() && out.name.trim().is_empty() {
+            return Some("Name the image first.");
         }
         if batch.is_some() {
             let files = service.known_folder(values.get(BATCH_FOLDER));
@@ -1423,9 +1420,10 @@ pub fn blocked(
             });
         }
     }
-    let path = |dest: &str| split_opts(values.get(dest)).0;
-    let same = cmd.arg("in_file").is_some() && !path("in_file").is_empty();
-    (same && path("in_file") == path("out_file")).then_some(REPLACES_INPUT)
+    // Paths, not strings, as in the page's warning: /a//b is /a/b.
+    let input = input_file(cmd, values);
+    let same = !input.is_empty() && Path::new(input) == Path::new(output_file(cmd, values));
+    same.then_some(REPLACES_INPUT)
 }
 
 /// Where a new image is saved.
@@ -2491,6 +2489,45 @@ mod tests {
             why("convert", "/f/x.ipf", output(".hfe")),
             None,
             "an IPF's tracks have a bitrate"
+        );
+    }
+
+    #[test]
+    fn a_page_that_makes_an_image_says_whether_it_lacks_the_type_or_the_name() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let service = Service::offline(Ok(s.clone()));
+        let v = values(&[("format", "ibm.1440")]);
+        let mut outputs = BTreeMap::new();
+        let why = |outputs: &_| blocked(&s, read, &v, outputs, &service);
+        assert_eq!(why(&outputs), Some("Choose an image type first."));
+        let unnamed = Output {
+            name: " ".into(),
+            ..output(".img")
+        };
+        outputs.insert(output_key("read", "file"), unnamed);
+        assert_eq!(why(&outputs), Some("Name the image first."));
+    }
+
+    #[test]
+    fn an_output_that_is_the_input_cannot_run_however_its_folder_is_typed() {
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let out = Output {
+            folder: "/f//g".into(),
+            name: "x".into(),
+            ..output(".img")
+        };
+        let v = values(&[
+            ("in_file", "/f/g/x.img"),
+            ("out_file", &out.value(1)),
+            ("format", "ibm.1440"),
+        ]);
+        let outputs = BTreeMap::from([(output_key("convert", "out_file"), out)]);
+        let convert = s.command("convert").unwrap();
+        assert_eq!(
+            blocked(&s, convert, &v, &outputs, &service),
+            Some(REPLACES_INPUT)
         );
     }
 
