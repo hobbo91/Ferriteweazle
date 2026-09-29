@@ -1485,11 +1485,7 @@ impl App {
                         ui.add(egui::Label::new(notice).wrap());
                     });
                     right(ui, |ui| {
-                        if ui
-                            .small_button("Dismiss")
-                            .on_hover_text("Acknowledge message")
-                            .clicked()
-                        {
+                        if ui.small_button("Dismiss").clicked() {
                             self.notices.remove(page);
                         }
                     });
