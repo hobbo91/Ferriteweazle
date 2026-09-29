@@ -2870,6 +2870,10 @@ fn device_table(ui: &mut Ui, info: &DeviceInfo, p: &Palette) {
             if let Some(update) = &info.update {
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("Firmware {update} is available.")).color(p.accent));
+                // gw's own steps: an F1 needs its Update Jumper fitted first.
+                for step in &info.steps {
+                    ui.label(RichText::new(step).small().weak());
+                }
             }
         });
 }

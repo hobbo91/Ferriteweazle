@@ -1362,6 +1362,29 @@ fn device_info_fits_the_window_as_it_opens() {
 }
 
 #[test]
+fn device_info_gives_gws_steps_to_update_an_f1() {
+    // An F1 updates only with its jumper fitted, and gw says where.
+    let f1 = "Host Tools: 1.23\nDevice:\n  Port:     COM3\n  Model:    Greaseweazle F1\n  \
+              Firmware: 1.0\n  Serial:   GW01\n  USB:      Full Speed (12 Mbit/s)\n\n\
+              *** New firmware version 1.6 is available\n\
+              To perform an Update:\n \
+              - Disconnect from USB\n \
+              - Install the Update Jumper at pins DCLK-GND\n \
+              - Reconnect to USB\n \
+              - Run \"gw update\" to download and install latest firmware";
+    let settings = Settings {
+        page: Page::Command("info".into()),
+        ..Settings::default()
+    };
+    let mut w = window(settings);
+    app_mut(&mut w).tool = Some(Job::replay("info", f1));
+    w.run();
+    w.get_by_label("Firmware 1.6 is available.");
+    w.get_by_label("- Install the Update Jumper at pins DCLK-GND");
+    w.get_by_label("- Run \"gw update\" to download and install latest firmware");
+}
+
+#[test]
 fn device_info_is_done_when_its_device_answers_and_failed_when_gw_finds_none() {
     let settings = Settings {
         page: Page::Command("info".into()),
