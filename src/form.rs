@@ -597,9 +597,9 @@ impl<'a> Form<'a> {
                 self.values.set(&a.dest, value.as_str());
             }
             if browse_button(ui).own_tip("Choose a file.").clicked() {
-                let mut dialog = rfd::FileDialog::new();
+                let mut dialog = file_dialog(Path::new(&value));
                 if let Some((name, exts)) = only {
-                    dialog = dialog.add_filter(name, exts);
+                    dialog = dialog.add_filter(name, &both_cases(exts.iter().copied()));
                 }
                 if let Some(path) = dialog.pick_file() {
                     self.values.set(&a.dest, path.to_string_lossy());
@@ -1105,20 +1105,11 @@ impl<'a> Form<'a> {
                     .hint_text("Required")
                     .desired_width(beside_button(ui, BROWSE_BUTTON));
                 changed |= ui.add(edit).changed();
-                if browse_button(ui).own_tip("Choose an image.").clicked() {
-                    let exts: Vec<&str> = self
-                        .schema
-                        .images
-                        .keys()
-                        .map(|e| e.trim_start_matches('.'))
-                        .collect();
-                    if let Some(p) = rfd::FileDialog::new()
-                        .add_filter("Disk images", &exts)
-                        .pick_file()
-                    {
-                        path = p.to_string_lossy().into_owned();
-                        changed = true;
-                    }
+                if browse_button(ui).own_tip("Choose an image.").clicked()
+                    && let Some(p) = image_dialog(self.schema, &path).pick_file()
+                {
+                    path = p.to_string_lossy().into_owned();
+                    changed = true;
                 }
             });
             if split_path(self.values.get(&a.dest)) {
@@ -1560,6 +1551,44 @@ pub fn blocked(
     let input = input_file(cmd, values);
     let same = !input.is_empty() && Path::new(input) == Path::new(output_file(cmd, values));
     same.then_some(REPLACES_INPUT)
+}
+
+/// A file dialog that opens where `current`, a file or a folder, is.
+pub fn file_dialog(current: &Path) -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new();
+    let folder = match current.is_dir() {
+        true => Some(current),
+        false => current.parent().filter(|p| p.is_dir()),
+    };
+    match folder {
+        Some(f) => dialog.set_directory(f),
+        None => dialog,
+    }
+}
+
+/// The dialog for an image: every type gw reads, then each alone, by name.
+fn image_dialog(schema: &Schema, current: &str) -> rfd::FileDialog {
+    let all = both_cases(schema.images.keys().map(|e| e.trim_start_matches('.')));
+    let mut types: Vec<(String, Vec<String>)> = schema
+        .images
+        .iter()
+        .map(|(e, i)| {
+            let suffix = std::iter::once(e.trim_start_matches('.'));
+            (image_name(e, &i.name), both_cases(suffix))
+        })
+        .collect();
+    types.sort();
+    let dialog = file_dialog(Path::new(current)).add_filter("Disk images", &all);
+    types
+        .into_iter()
+        .fold(dialog, |d, (name, exts)| d.add_filter(name, &exts))
+}
+
+/// Suffixes as a dialog filter takes them. GTK matches them by case, so
+/// each comes in upper case too: GAME.ADF as well as game.adf.
+fn both_cases<'e>(exts: impl Iterator<Item = &'e str>) -> Vec<String> {
+    exts.flat_map(|e| [e.to_ascii_lowercase(), e.to_ascii_uppercase()])
+        .collect()
 }
 
 /// Where a new image is saved.
@@ -3729,6 +3758,29 @@ mod tests {
         }
         assert_eq!(image_name(".dsk", "DSK"), "Sector image (.dsk)");
         assert_eq!(image_name(".2d", "TwoD"), "TwoD (.2d)", "a newer gw's");
+    }
+
+    #[test]
+    fn a_file_dialog_opens_where_the_file_chosen_is() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-dialog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.scp");
+        std::fs::write(&file, b"").unwrap();
+        let start = |p: &Path| format!("{:?}", file_dialog(p));
+        let folder = format!("starting_directory: Some({dir:?})");
+        assert!(start(&file).contains(&folder), "{}", start(&file));
+        assert!(start(&dir).contains(&folder));
+        assert!(start(Path::new("")).contains("starting_directory: None"));
+        let gone = dir.join("gone/a.scp");
+        assert!(start(&gone).contains("starting_directory: None"));
+
+        let dialog = format!("{:?}", image_dialog(&schema(), &file.to_string_lossy()));
+        assert!(dialog.contains(&folder));
+        let all = dialog.find("\"Disk images\"").expect("every type first");
+        let raw = r#""KryoFlux stream (.raw)", extensions: ["raw", "RAW"]"#;
+        assert!(dialog.find(raw).is_some_and(|at| at > all), "{dialog}");
+        assert!(dialog.contains(r#""adf", "ADF""#), "GTK matches by case");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -2108,7 +2108,7 @@ impl App {
             let busy = self.busy();
             match path_row(ui, "Greaseweazle Tools (gw cli)", &gw, tip, back, busy) {
                 Some(PathClick::Choose) => {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    if let Some(path) = form::file_dialog(&gw).pick_file() {
                         self.settings.engine = Some(path);
                         self.connect(ui.ctx());
                     }
