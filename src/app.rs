@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long the device card waits for `gw info`.
 const INFO_TIMEOUT: Duration = Duration::from_secs(12);
@@ -341,6 +341,15 @@ pub struct App {
     live: bool,
     /// The drive as last kept in drive_file().
     kept_drive: String,
+    /// Where the window's size is kept: size_file() in the real app.
+    pub size_file: Option<PathBuf>,
+    /// The window's size as last kept, or as it opened.
+    kept_size: egui::Vec2,
+    /// A new size of the window, and when it was first seen: kept once it
+    /// has stayed SIZE_SETTLE, so a drag writes the file once.
+    new_size: Option<(egui::Vec2, Instant)>,
+    /// Whether a kept size too large for the screen has been fitted to it.
+    fitted: bool,
     gw_update: Update,
     app_update: Update,
     /// The Presets menu, while it is open.
@@ -371,6 +380,8 @@ impl App {
         let mut app = App::with_settings(&cc.egui_ctx, settings);
         app.live = true;
         app.kept_drive = drive;
+        app.kept_size = opening_size();
+        app.size_file = Some(size_file());
         update::tidy();
         app.look_for_updates(&cc.egui_ctx);
         #[cfg(target_os = "linux")]
@@ -412,6 +423,10 @@ impl App {
             probed: None,
             live: false,
             kept_drive: String::new(),
+            size_file: None,
+            kept_size: WINDOW,
+            new_size: None,
+            fitted: false,
             gw_update: Update::default(),
             app_update: Update::default(),
             presets: None,
@@ -514,6 +529,7 @@ impl App {
         self.poll(&ctx);
         self.poll_updates(&ctx);
         self.guard_close(&ctx);
+        self.keep_size(&ctx);
         self.take_dropped_files(&ctx);
         let p = theme::palette(ui);
         egui::Panel::left("nav")
@@ -570,6 +586,52 @@ impl App {
             }
         }
         self.dialogs(&ctx);
+        size_corner(&ctx);
+    }
+
+    /// Keeps the window's size for the next run once it settles, and fits a
+    /// kept size to a smaller screen than it was kept on.
+    fn keep_size(&mut self, ctx: &egui::Context) {
+        let Some(file) = self.size_file.clone() else {
+            return;
+        };
+        let (whole, monitor) = ctx.input(|i| {
+            let v = i.viewport();
+            let whole = [v.maximized, v.fullscreen, v.minimized].contains(&Some(true));
+            (whole, v.monitor_size)
+        });
+        let size = ctx.content_rect().size();
+        if !self.fitted
+            && let Some(monitor) = monitor
+        {
+            self.fitted = true;
+            // Room for a title bar and a taskbar or menu bar.
+            let fit = size.min(monitor - vec2(0.0, SCREEN_BARS)).max(SMALLEST);
+            if fit != size {
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(fit));
+                return;
+            }
+        }
+        if whole || same_size(size, self.kept_size) {
+            self.new_size = None;
+            return;
+        }
+        match self.new_size {
+            Some((seen, at)) if same_size(seen, size) => {
+                let left = SIZE_SETTLE.saturating_sub(at.elapsed());
+                if left.is_zero() {
+                    save_size(&file, size);
+                    self.kept_size = size;
+                    self.new_size = None;
+                } else {
+                    ctx.request_repaint_after(left);
+                }
+            }
+            _ => {
+                self.new_size = Some((size, Instant::now()));
+                ctx.request_repaint_after(SIZE_SETTLE);
+            }
+        }
     }
 
     /// Changes the theme, cross-fading when the window will look different.
@@ -3735,9 +3797,93 @@ fn save_log(path: &Path, log: &[String]) -> Option<String> {
     Some(format!("Could not save {}: {failed}", path.display()))
 }
 
-/// Where the drive identifier is kept between runs: the one setting kept.
+/// Where the drive identifier is kept between runs.
 fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
+}
+
+/// Where the window's size is kept between runs.
+fn size_file() -> PathBuf {
+    crate::data_folder().join("window.txt")
+}
+
+/// How long a new window size must stay before it is kept.
+const SIZE_SETTLE: Duration = Duration::from_millis(500);
+/// Height a screen keeps for a title bar and a taskbar or menu bar, in points.
+const SCREEN_BARS: f32 = 80.0;
+/// The corner that resets the window's size, in points.
+const SIZE_CORNER: f32 = 16.0;
+
+/// The window's size as it opens: as last kept, else WINDOW.
+pub fn opening_size() -> egui::Vec2 {
+    kept_size(&size_file()).unwrap_or(WINDOW)
+}
+
+/// The size kept in `file`, "width height" in points, no smaller than SMALLEST.
+fn kept_size(file: &Path) -> Option<egui::Vec2> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut numbers = text.split_whitespace().map(|n| n.parse::<f32>().ok());
+    let (width, height) = (numbers.next()??, numbers.next()??);
+    let size = vec2(width, height);
+    size.is_finite().then(|| size.max(SMALLEST))
+}
+
+/// Keeps `size` in `file`, or removes the file for WINDOW.
+fn save_size(file: &Path, size: egui::Vec2) {
+    let _ = match same_size(size, WINDOW) {
+        true => std::fs::remove_file(file),
+        false => file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(file, format!("{} {}", size.x.round(), size.y.round()))),
+    };
+}
+
+/// Sizes within half a point, as a window reports its size in pixels.
+fn same_size(a: egui::Vec2, b: egui::Vec2) -> bool {
+    (a - b).abs().max_elem() < 0.5
+}
+
+/// The window's bottom right corner: right-click it to put back WINDOW. It
+/// shows only when hovered, as it cannot start a resize on macOS.
+fn size_corner(ctx: &egui::Context) {
+    let size = ctx.content_rect().size();
+    let maximized = ctx.input(|i| i.viewport().maximized == Some(true));
+    let changed = maximized || !same_size(size, WINDOW);
+    egui::Area::new(Id::new("size-corner"))
+        .order(egui::Order::Foreground)
+        .anchor(Align2::RIGHT_BOTTOM, vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let (rect, corner) =
+                ui.allocate_exact_size(vec2(SIZE_CORNER, SIZE_CORNER), Sense::click());
+            corner.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Window size")
+            });
+            if corner.hovered() {
+                let stroke = Stroke::new(1.0, theme::palette(ui).dim);
+                for inset in [4.0, 8.0] {
+                    let (a, b) = (
+                        rect.right_top() + vec2(0.0, inset),
+                        rect.left_bottom() + vec2(inset, 0.0),
+                    );
+                    ui.painter().line_segment([a, b], stroke);
+                }
+            }
+            corner
+                .on_hover_text("Right-click to reset the window's size.")
+                .context_menu(|ui| {
+                    let reset = ui.add_enabled(changed, egui::Button::new("Reset window size"));
+                    if reset
+                        .on_hover_text("Put back the size the window first opens at.")
+                        .on_disabled_hover_text("The window is its default size.")
+                        .clicked()
+                    {
+                        ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
+                        ctx.send_viewport_cmd(ViewportCommand::InnerSize(WINDOW));
+                        ui.close();
+                    }
+                });
+        });
 }
 
 /// The drive kept in `file`, empty for gw's default.
@@ -4045,6 +4191,25 @@ mod tests {
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
         w.run_steps(2);
         w
+    }
+
+    #[test]
+    fn the_window_size_is_kept_no_smaller_than_the_smallest_and_the_default_keeps_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-size-{}", std::process::id()));
+        let file = dir.join("window.txt");
+        assert_eq!(kept_size(&file), None, "no file");
+        save_size(&file, vec2(1400.4, 900.0));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "1400 900");
+        assert_eq!(kept_size(&file), Some(vec2(1400.0, 900.0)));
+        std::fs::write(&file, "10 10").unwrap();
+        assert_eq!(kept_size(&file), Some(SMALLEST));
+        for bad in ["", "wide", "1200", "NaN 800", "inf 800"] {
+            std::fs::write(&file, bad).unwrap();
+            assert_eq!(kept_size(&file), None, "{bad:?}");
+        }
+        save_size(&file, WINDOW);
+        assert!(!file.exists(), "the default is no file");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

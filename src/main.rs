@@ -13,7 +13,7 @@ fn main() -> eframe::Result {
                 eframe::icon_data::from_png_bytes(ferriteweazle::theme::LOGO)
                     .expect("the logo is a PNG"),
             )
-            .with_inner_size(ferriteweazle::WINDOW)
+            .with_inner_size(ferriteweazle::opening_size())
             .with_min_inner_size(ferriteweazle::SMALLEST),
         ..Default::default()
     };

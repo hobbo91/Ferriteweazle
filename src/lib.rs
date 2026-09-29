@@ -21,7 +21,7 @@ pub mod theme;
 mod udev;
 pub mod update;
 
-pub use app::{App, Drawer, Page, SMALLEST, Settings, WINDOW};
+pub use app::{App, Drawer, Page, SMALLEST, Settings, WINDOW, opening_size};
 
 use std::ffi::OsString;
 use std::path::PathBuf;

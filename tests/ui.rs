@@ -1696,6 +1696,53 @@ fn the_page_ends_as_far_from_the_status_pane_as_it_starts_from_the_sidebar() {
 }
 
 #[test]
+fn a_resized_window_keeps_its_size_once_it_settles() {
+    let dir = std::env::temp_dir().join(format!("ferriteweazle-window-{}", std::process::id()));
+    let file = dir.join("window.txt");
+    let mut w = window_at(DEFAULT, chosen());
+    app_mut(&mut w).size_file = Some(file.clone());
+    w.set_size(DEFAULT + egui::vec2(100.0, 50.0));
+    w.run();
+    assert!(!file.exists(), "kept while it may still be changing");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    w.run();
+    let kept = std::fs::read_to_string(&file).unwrap_or_default();
+    let want = format!("{} {}", DEFAULT.x + 100.0, DEFAULT.y + 50.0);
+    assert_eq!(kept, want);
+    w.set_size(DEFAULT);
+    w.run();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    w.run();
+    assert!(!file.exists(), "the default size keeps no file");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_bottom_right_corner_puts_back_the_default_size_once_the_window_is_resized() {
+    let reset = |w: &Window| {
+        w.get_by_label("Window size").click_secondary();
+    };
+    let mut w = window_at(DEFAULT, chosen());
+    reset(&w);
+    w.run();
+    let item = w.get_by_role_and_label(Role::Button, "Reset window size");
+    assert!(
+        item.accesskit_node().is_disabled(),
+        "the window is its default size"
+    );
+
+    let mut w = window_at(DEFAULT + egui::vec2(200.0, 100.0), chosen());
+    reset(&w);
+    w.run();
+    w.get_by_role_and_label(Role::Button, "Reset window size")
+        .click();
+    w.step();
+    let commands = &w.output().viewport_output[&egui::ViewportId::ROOT].commands;
+    let size = egui::ViewportCommand::InnerSize(ferriteweazle::WINDOW);
+    assert!(commands.contains(&size), "{commands:?}");
+}
+
+#[test]
 fn the_device_card_lines_up_with_the_pages_description() {
     let w = window_at(DEFAULT, Settings::default());
     let about = w
