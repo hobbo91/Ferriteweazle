@@ -65,6 +65,9 @@ const NAMES: &[(&str, &str, &str)] = &[
     (DETECT, "Detect disk format", "Detect"),
 ];
 
+/// Page descriptions where gw's does not fit: gw gives pin get pin set's.
+const ABOUTS: &[(&str, &str)] = &[("pin get", "Read the level of a floppy interface pin.")];
+
 /// Commands that ask first, and what they do to the disk.
 const DESTRUCTIVE: &[(&str, &str)] = &[
     ("write", "The tracks written lose what they hold."),
@@ -1266,7 +1269,11 @@ impl App {
                         ui.heading(title(name));
                         right(ui, |ui| self.presets_menu(ui, name));
                     });
-                    ui.label(RichText::new(form::sentence(&cmd.about)).weak());
+                    let about = match ABOUTS.iter().find(|(c, _)| *c == name) {
+                        Some((_, about)) => (*about).to_owned(),
+                        None => form::sentence(&cmd.about),
+                    };
+                    ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
                     ui.add_space(14.0);
                     let values = self.settings.values.entry(name.to_owned()).or_default();

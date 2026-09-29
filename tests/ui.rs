@@ -1790,6 +1790,21 @@ fn with_no_rule_shipped_the_commands_name_gws_own_and_the_button_says_why_not() 
 }
 
 #[test]
+fn read_pin_says_it_reads_a_pin_and_set_pin_keeps_gws_words() {
+    let page = |name: &str| {
+        window(Settings {
+            page: Page::Command(name.into()),
+            ..Settings::default()
+        })
+    };
+    let gws = "Change the setting of a user-modifiable interface pin.";
+    let w = page("pin get");
+    w.get_by_label("Read the level of a floppy interface pin.");
+    assert!(w.query_by_label(gws).is_none(), "it changes nothing");
+    page("pin set").get_by_label(gws);
+}
+
+#[test]
 fn the_device_card_names_a_port_linux_denies_and_shows_how_to_grant_access() {
     let mut w = window(Settings::default());
     let app = app_mut(&mut w);
