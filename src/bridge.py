@@ -17,7 +17,7 @@ import argparse, builtins, contextlib, functools, importlib, io, json, os, queue
 ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
 
-# gw on GitHub; the variables point tests at a server of their own.
+# The variables point tests at a server of their own.
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
 GITHUB_API = os.environ.get('FERRITEWEAZLE_GITHUB_API', 'https://api.github.com')
 GW_REPO = 'keirf/greaseweazle'
@@ -76,7 +76,10 @@ def command(name, mod, p):
     groups = {id(a): i for i, g in enumerate(p._mutually_exclusive_groups)
               for a in g._group_actions}
     skip = (argparse._HelpAction, argparse._VersionAction)
-    return {'name': name, 'about': mod.description,
+    # gw gives pin get and pin set one description, which is set's.
+    about = 'Read the level of a user-modifiable interface pin.' if name == 'pin get' \
+        else mod.description
+    return {'name': name, 'about': about,
             'args': [arg(a, groups, p.prog) for a in p._actions if not isinstance(a, skip)]}
 
 
@@ -92,14 +95,8 @@ def commands(name):
 
 
 def opts_class(cls):
-    """The options class behind `file.ext::opt=val`."""
-    import inspect
+    """The options class behind `file.ext::opt=val`: the one its module defines."""
     from greaseweazle.image.image import ImageOpts
-    for k in cls.__mro__:
-        t = inspect.get_annotations(k).get('opts')
-        t = getattr(sys.modules[k.__module__], t, None) if isinstance(t, str) else t
-        if isinstance(t, type):
-            return t
     mod = sys.modules[cls.__module__]
     own = [v for v in vars(mod).values() if isinstance(v, type)
            and issubclass(v, ImageOpts) and v.__module__ == mod.__name__]
@@ -174,7 +171,9 @@ def diskdefs(path):
             errors.append(str(e) or type(e).__name__)
     if not names:
         errors.append('It defines no disks.')
-    return {'formats': names, 'errors': errors}
+    # gw reads the file from the top for each disk, so a mistake above them
+    # all comes once for each.
+    return {'formats': names, 'errors': list(dict.fromkeys(errors))}
 
 
 def format_info(name, diskdefs=None):
@@ -185,10 +184,15 @@ def format_info(name, diskdefs=None):
     tracks = [t for c in range(d.cyls) for h in range(d.heads) if (t := d.mk_track(c, h))]
     info = {'cyls': d.cyls, 'heads': d.heads}
     if tracks:
-        info['encoding'] = re.sub(r'\s*\(.*', '', tracks[0].summary_string())
-        info['sectors'] = tracks[0].nsec
+        names = dict.fromkeys(re.sub(r'\s*\(.*', '', t.summary_string()) for t in tracks)
+        names.pop('IBM Empty', None)  # gw's name for a scan track not yet read
+        if names:
+            info['encoding'] = ' and '.join(names)
+        if len(counts := {t.nsec for t in tracks}) == 1 and 0 not in counts:
+            info['sectors'] = tracks[0].nsec
         with contextlib.suppress(Exception):
-            info['bytes'] = sum(len(t.get_img_track()) for t in tracks)
+            if size := sum(len(t.get_img_track()) for t in tracks):
+                info['bytes'] = size
     return info
 
 
@@ -207,7 +211,7 @@ def ports():
             for s, p in found]
 
 
-@functools.cache
+@functools.lru_cache(None)
 def parser(command):
     argv = command.split()
     return parser_for(importlib.import_module('greaseweazle.tools.' + argv[0]), argv)[0]
@@ -590,10 +594,7 @@ def detect_like_gw(args):
 def latest(repo=GW_REPO):
     """The tag of a repository's newest release. GitHub leaves out prereleases."""
     import requests
-    try:
-        reply = requests.get(f'{GITHUB_API}/repos/{repo}/releases/latest', timeout=(5, 15))
-    except requests.RequestException:
-        raise ValueError('Could not reach GitHub to check for a newer release.') from None
+    reply = requests.get(f'{GITHUB_API}/repos/{repo}/releases/latest', timeout=(5, 15))
     if reply.status_code == 404:
         raise ValueError(f'{repo} has no release on GitHub.')
     reply.raise_for_status()
@@ -650,7 +651,7 @@ def update(tag, bundled, folder):
     from greaseweazle import optimised
     new = source(tag)
     if compiled_from(new) != compiled_from(source(bundled)):
-        raise ValueError(f'gw {tag} changes its C code or its dependencies, '
+        raise ValueError(f'gw {tag.lstrip("v")} changes its C code or its dependencies, '
                          'so it needs a new build of Ferriteweazle.')
     part, done = os.path.join(folder, tag + '.part'), os.path.join(folder, tag)
     shutil.rmtree(part, ignore_errors=True)
@@ -675,8 +676,13 @@ def update(tag, bundled, folder):
 
 def reported(work):
     """Prints what `work` returns, or exits with its error for the app to show."""
+    import requests
     try:
         print(work(), flush=True)
+    except requests.Timeout:
+        sys.exit('GitHub did not answer in time.')
+    except requests.ConnectionError:
+        sys.exit('Could not reach GitHub.')
     except Exception as e:
         sys.exit(str(e) or type(e).__name__)
 

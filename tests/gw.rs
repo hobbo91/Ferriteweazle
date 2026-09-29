@@ -147,6 +147,33 @@ fn a_command_lost_after_opening_the_port_is_sent_again() {
     );
 }
 
+/// Prints what the bridge in argv[1] uses that gw's oldest Python, 3.8,
+/// lacks: newer syntax fails to parse, and these came in 3.9 and 3.10.
+const NEWER_PYTHON: &str = r#"
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read(), feature_version=(3, 8))
+newer = {'cache', 'get_annotations', 'removeprefix', 'removesuffix'}
+print(sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & newer))
+"#;
+
+#[test]
+fn the_bridge_runs_on_the_oldest_python_gw_does() {
+    let Some(engine) = engine() else { return };
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&engine.python)
+        .args(["-c", NEWER_PYTHON])
+        .arg(&bridge)
+        .output()
+        .expect("python runs");
+    let used = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        used.trim(),
+        "[]",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Lays out a GitHub for gw in argv[1], its latest release v1.99: source
 /// zips made from the installed gw, v1.98's with different C code.
 const FAKE_GITHUB: &str = r#"
@@ -231,7 +258,7 @@ fn update_installs_a_newer_gw_beside_the_bundled_one_unless_its_c_code_changed()
     std::fs::create_dir_all(&updates).unwrap();
     let folder = path(&updates);
     let (ok, _, why) = bridge(&["update", "v1.98", "v1.23", &folder]);
-    assert!(!ok && why.contains("changes its C code"), "{why}");
+    assert!(!ok && why.contains("gw 1.98 changes its C code"), "{why}");
     let (ok, tag, why) = bridge(&["update", "v1.99", "v1.23", &folder]);
     assert!(ok, "{why}");
     assert_eq!(tag, "v1.99");
@@ -301,6 +328,36 @@ fn a_release_is_downloaded_checked_against_its_sums_and_unpacked() {
 }
 
 #[test]
+fn github_out_of_reach_is_one_sentence_whatever_asked_it() {
+    let Some(engine) = engine() else { return };
+    let dir = scratch("unreachable");
+    let folder = path(&dir);
+    for args in [
+        vec!["latest"],
+        vec![
+            "fetch",
+            "v0.9.1",
+            "Ferriteweazle-0.9.1-linux-x86_64.tar.gz",
+            &folder,
+        ],
+        vec!["update", "v1.99", "v1.23", &folder],
+    ] {
+        // Nothing listens on the discard port.
+        let out = engine
+            .bridge(args[0])
+            .args(&args[1..])
+            .env("FERRITEWEAZLE_GITHUB", "http://127.0.0.1:9")
+            .env("FERRITEWEAZLE_GITHUB_API", "http://127.0.0.1:9")
+            .output()
+            .expect("the bridge runs");
+        let why = String::from_utf8_lossy(&out.stderr);
+        let last = why.lines().last().unwrap_or_default();
+        assert_eq!(last, "Could not reach GitHub.", "{}: {why}", args[0]);
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn the_service_describes_gw_and_checks_values() {
     let Some(engine) = engine() else { return };
     let mut service = Service::start(&engine, Box::new(|| {}));
@@ -319,6 +376,15 @@ fn the_service_describes_gw_and_checks_values() {
         );
     }
     assert!(schema.formats.iter().any(|f| f == "ibm.1440"));
+    let about = |name| schema.command(name).map(|c| c.about.as_str());
+    assert_eq!(
+        about("pin get"),
+        Some("Read the level of a user-modifiable interface pin.")
+    );
+    assert_eq!(
+        about("pin set"),
+        Some("Change the setting of a user-modifiable interface pin.")
+    );
     let info = wait("format details", || {
         service.poll();
         match service.format_info("", "amiga.amigados") {
@@ -336,6 +402,37 @@ fn the_service_describes_gw_and_checks_values() {
         service.check("read", "revs", "0").map(str::to_owned)
     });
     assert_eq!(complaint, "must be 1 or greater");
+}
+
+#[test]
+fn format_details_describe_the_whole_disk_not_its_first_track() {
+    let Some(engine) = engine() else { return };
+    let mut service = Service::start(&engine, Box::new(|| {}));
+    let mut info = |name: &str| {
+        let info = wait(name, || {
+            service.poll();
+            match service.format_info("", name) {
+                Load::Ready(info) => Some(info.clone()),
+                Load::Failed(e) => panic!("{name}: {e}"),
+                Load::Waiting(_) => None,
+            }
+        });
+        (info.encoding, info.sectors, info.bytes)
+    };
+    // FM on cylinder 0, with 10 sectors a track; MFM with 18 after.
+    let flex = info("tsc.flex.dsdd");
+    assert_eq!(
+        flex,
+        (Some("IBM FM and IBM MFM".into()), None, Some(733_184))
+    );
+    // 21 sectors a track on the outer cylinders, 17 on the inner.
+    let c64 = info("commodore.1541");
+    assert_eq!(c64, (Some("Commodore GCR".into()), None, Some(196_608)));
+    // A scan's tracks have no layout until gw reads them.
+    assert_eq!(info("ibm.scan"), (None, None, None));
+    assert_eq!(info("raw.250"), (Some("Raw Bitcell".into()), None, None));
+    let pc = info("ibm.1440");
+    assert_eq!(pc, (Some("IBM MFM".into()), Some(18), Some(1_474_560)));
 }
 
 #[test]
@@ -1209,6 +1306,21 @@ fn gw_checks_a_disk_definitions_file_line_by_line() {
         "{bad:?}"
     );
     assert!(bad.errors[1].contains("line 10"), "{bad:?}");
+    // gw reads the file from the top for each disk.
+    let stray = dir.join("stray.cfg");
+    let disks = std::fs::read_to_string(dir.join("mine.cfg")).unwrap();
+    std::fs::write(
+        &stray,
+        format!("oops\n{disks}{}", disks.replace("mine.800", "mine.900")),
+    )
+    .unwrap();
+    let stray = read(&stray).unwrap();
+    assert_eq!(stray.formats, ["mine.800", "mine.900"]);
+    assert_eq!(stray.errors.len(), 1, "{stray:?}");
+    assert!(
+        stray.errors[0].ends_with("line 1: syntax error"),
+        "{stray:?}"
+    );
     assert_eq!(
         read(&dir.join("missing.cfg")),
         Err("There is no such file.".into())
