@@ -2,7 +2,8 @@
 # Writes to stdout the THIRD-PARTY-NOTICES.txt a package carries: the licences
 # of the Rust crates built into the program for each TRIPLE, then of what the
 # engine at ENGINE holds: Python and the libraries linked into it, gw and its
-# Python packages. packaging/licences has the texts their sources leave out.
+# Python packages, and the SPS/CAPS library. packaging/licences has the texts
+# their sources leave out.
 #
 #   packaging/notices.sh ENGINE TRIPLE...
 set -eu
@@ -156,3 +157,16 @@ if [ "$packages" -eq 0 ]; then
     echo "notices: $engine holds no Python packages" >&2
     exit 1
 fi
+
+if [ ! -f "$engine/caps-version" ]; then
+    echo "notices: $engine has no SPS/CAPS library; rebuild it with engine/build.sh" >&2
+    exit 1
+fi
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+section "The SPS Decoder Library"
+echo
+fold -s -w 72 <<EOF | sed 's/ *$//'
+gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$engine/caps-version")), which is free for non-commercial use only. Its source is in Ferriteweazle-$version-capsimage-source.tar.gz, published with this package.
+EOF
+echo
+cat "$engine/caps/LICENCE.txt"

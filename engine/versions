@@ -2,7 +2,9 @@
 # unless GREASEWEAZLE, here or in the environment, names a tag. PYTHON and
 # PYTHON_RELEASE pick python-build-standalone's build; engine/python.sha256
 # must list its archives, and packaging/python-licences.sh must then write
-# its licence texts.
+# its licence texts. CAPS_COMMIT is the SPS/CAPS library's source
+# (engine/caps.sh), which engine/caps.sha256 must list.
 GREASEWEAZLE=
 PYTHON=3.14.7
 PYTHON_RELEASE=20260924
+CAPS_COMMIT=502015b6e117e7c52fd143025856f9b5b242b6d6

@@ -34,5 +34,10 @@ tar -xf target/windows-dist.tar
 # The source of the LGPL code in the Linux packages, published with them.
 packaging/linux/lgpl-sources.sh "dist/Ferriteweazle-$version-linux-lgpl-sources.tar"
 
+# The SPS/CAPS library's source, which its licence wants with the packages.
+. engine/versions
+cp "target/engine-cache/capsimage-$CAPS_COMMIT.tar.gz" \
+    "dist/Ferriteweazle-$version-capsimage-source.tar.gz"
+
 (cd dist && shasum -a 256 Ferriteweazle-* >"Ferriteweazle-$version-SHA256SUMS.txt")
 ls -l dist

@@ -19,10 +19,12 @@ const UPSTREAM: &str = "latest v0.1 v0.10 v0.11 v0.12 v0.13 v0.14 v0.15 v0.16 v0
 
 /// The Python every scratch versions file names, as engine/build.sh records it.
 const PYTHON: &str = "3.14.7+1";
+/// The SPS/CAPS library's commit every scratch versions file names.
+const CAPS: &str = "c1";
 
 /// A folder with engine/greaseweazle.sh, a versions file pinning `pin` (or
-/// nothing) and naming [`PYTHON`], and an engine/build.sh that logs the tag it
-/// was asked for.
+/// nothing) and naming [`PYTHON`] and [`CAPS`], and an engine/build.sh that
+/// logs the tag it was asked for.
 fn repo(test: &str, pin: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ferriteweazle-release-{test}-{}",
@@ -33,7 +35,8 @@ fn repo(test: &str, pin: &str) -> PathBuf {
     std::fs::create_dir_all(&engine).unwrap();
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/greaseweazle.sh");
     std::fs::copy(script, engine.join("greaseweazle.sh")).unwrap();
-    let versions = format!("GREASEWEAZLE={pin}\nPYTHON=3.14.7\nPYTHON_RELEASE=1\n");
+    let versions =
+        format!("GREASEWEAZLE={pin}\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\n");
     std::fs::write(engine.join("versions"), versions).unwrap();
     let build = "#!/bin/sh\necho \"$GREASEWEAZLE\" >>built.log\n";
     executable(&engine.join("build.sh"), build);
@@ -193,22 +196,23 @@ fn no_release_found_is_an_error_that_says_how_to_pin_one() {
 }
 
 /// Records in `dir`'s engine the gw tag and Python it was built from.
-fn built(dir: &Path, tag: &str, python: &str) {
+fn built(dir: &Path, tag: &str, python: &str, caps: &str) {
     let engine = dir.join("target/engine");
     std::fs::create_dir_all(&engine).unwrap();
     std::fs::write(engine.join("python-version"), format!("{python}\n")).unwrap();
+    std::fs::write(engine.join("caps-version"), format!("{caps}\n")).unwrap();
     std::fs::write(engine.join("greaseweazle-version"), format!("{tag}\n")).unwrap();
 }
 
 #[test]
-fn packaging_rebuilds_the_engine_only_for_another_release_or_python() {
+fn packaging_rebuilds_the_engine_only_for_another_release_python_or_caps_library() {
     let dir = repo("refresh", "");
     let clone = clone(&dir, &["v1.22", "v1.23"]);
     let source = [("GREASEWEAZLE_SOURCE", path(&clone))];
     run(&dir, &source, "", "refresh");
     assert_eq!(builds(&dir), "v1.23\n", "no engine yet");
 
-    built(&dir, "v1.23", PYTHON);
+    built(&dir, "v1.23", PYTHON, CAPS);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
@@ -216,7 +220,7 @@ fn packaging_rebuilds_the_engine_only_for_another_release_or_python() {
         "the engine holds the latest release"
     );
 
-    built(&dir, "v1.22", PYTHON);
+    built(&dir, "v1.22", PYTHON, CAPS);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
@@ -224,12 +228,20 @@ fn packaging_rebuilds_the_engine_only_for_another_release_or_python() {
         "the engine is a release behind"
     );
 
-    built(&dir, "v1.23", "3.14.7+0");
+    built(&dir, "v1.23", "3.14.7+0", CAPS);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
         "v1.23\nv1.23\nv1.23\n",
         "the engine holds another Python build"
+    );
+
+    built(&dir, "v1.23", PYTHON, "c0");
+    run(&dir, &source, "", "refresh");
+    assert_eq!(
+        builds(&dir),
+        "v1.23\nv1.23\nv1.23\nv1.23\n",
+        "the engine holds another SPS/CAPS library"
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -247,7 +259,7 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
     let out = sh(&dir, &source, "", "refresh");
     assert!(!out.status.success(), "a half-built engine is not kept");
 
-    built(&dir, "v1.22", "3.14.7+0");
+    built(&dir, "v1.22", "3.14.7+0", "c0");
     run(&dir, &source, "", "refresh");
     assert_eq!(builds(&dir), "", "nothing was rebuilt");
     std::fs::remove_dir_all(dir).ok();
@@ -255,13 +267,18 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
 
 /// engine/build.sh in `dir`, and the PATH that finds its stubs: a download
 /// passes its check and holds its URL, and unpacks a Python that logs its
-/// arguments and the compiler it would build with.
+/// arguments and the compiler it would build with; engine/caps.sh logs its
+/// arguments to caps.log.
 fn stub_build(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/engine/build.sh");
     std::fs::copy(script, dir.join("engine/build.sh")).unwrap();
-    let versions = "GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\n";
+    let versions = format!("GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\n");
     std::fs::write(dir.join("engine/versions"), versions).unwrap();
     std::fs::write(dir.join("engine/python.sha256"), "").unwrap();
+    executable(
+        &dir.join("engine/caps.sh"),
+        "#!/bin/sh\necho \"$*\" >>caps.log\n",
+    );
     let stubs = dir.join("stubs");
     std::fs::create_dir(&stubs).unwrap();
     let curl = r#"#!/bin/sh
@@ -299,6 +316,13 @@ fn a_build_installs_the_release_wanted_and_records_it() {
     let record = |file: &str| std::fs::read_to_string(dir.join("target/engine").join(file));
     assert_eq!(record("greaseweazle-version").unwrap(), "v1.30\n");
     assert_eq!(record("python-version").unwrap(), format!("{PYTHON}\n"));
+    assert_eq!(record("caps-version").unwrap(), format!("{CAPS}\n"));
+    let caps = std::fs::read_to_string(dir.join("caps.log")).unwrap();
+    assert!(caps.ends_with(" target/engine\n"), "{caps}");
+    assert!(
+        python.contains(".CAPSInit() == 0"),
+        "the check loads the SPS/CAPS library: {python}"
+    );
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -406,6 +430,9 @@ fn stub_release(dir: &Path) -> String {
     std::fs::create_dir_all(packaging.join("linux")).unwrap();
     let sources = "#!/bin/sh\necho sources >\"$1\"\n";
     executable(&packaging.join("linux/lgpl-sources.sh"), sources);
+    let cache = dir.join("target/engine-cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join(format!("capsimage-{CAPS}.tar.gz")), "caps\n").unwrap();
     let ignore = "/dist\n/target\n/stubs\n/greaseweazle\n/*.log\n";
     std::fs::write(dir.join(".gitignore"), ignore).unwrap();
     clone(dir, &["v1.22", "v1.23"]);
@@ -456,6 +483,7 @@ fn a_release_builds_every_package_from_one_gw_release() {
         "linux",
         "windows",
         "linux-lgpl-sources.tar",
+        "capsimage-source.tar.gz",
     ] {
         assert!(
             sums.contains(&format!("  Ferriteweazle-0.9.0-{file}\n")),
@@ -514,6 +542,9 @@ fn stub_notices(dir: &Path) -> String {
         ),
         ("packaging/licences/pyserial.txt", "pyserial's text.\n"),
         ("data/python-version", "3.14.7+1\n"),
+        ("data/caps-version", "c1\n"),
+        ("data/caps/LICENCE.txt", "The SPS licence.\n"),
+        ("Cargo.toml", "[package]\nversion = \"0.9.0\"\n"),
     ];
     let crates = [
         ("alpha-1.0.0/LICENSE-MIT", "Alpha's MIT.\n"),
@@ -594,6 +625,9 @@ fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
     once("gw's Unlicense.");
     once("pyserial 3.5\n");
     once("pyserial's text.");
+    once("The SPS licence.");
+    once("commit c1), which is free");
+    once("Ferriteweazle-0.9.0-capsimage-source.tar.gz,");
     std::fs::remove_dir_all(dir).ok();
 }
 

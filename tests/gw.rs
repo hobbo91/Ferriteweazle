@@ -473,6 +473,33 @@ fn the_port_list_says_which_ports_linux_denies_this_account() {
 }
 
 #[test]
+fn a_packaged_engine_opens_ipf_images_with_its_own_caps_library() {
+    let Some(engine) = engine() else { return };
+    let root = engine.python.parent().unwrap();
+    let root = if cfg!(windows) {
+        root
+    } else {
+        root.parent().unwrap()
+    };
+    if !root.join("caps").is_dir() {
+        eprintln!("skipped: this engine has no SPS/CAPS library");
+        return;
+    }
+    let dir = scratch("caps");
+    let ipf = dir.join("junk.ipf");
+    std::fs::write(&ipf, b"not an IPF").unwrap();
+    let args = [path(&ipf), path(&dir.join("junk.hfe"))];
+    let job = finish(
+        start(&engine, "convert", &["convert", &args[0], &args[1]]),
+        "the job to end",
+    );
+    let log = job.log.join("\n");
+    // The library's own complaint, not gw's "Could not find SPS/CAPS library".
+    assert!(log.contains("CAPS: IPF: Could not open image"), "{log}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     let Some(engine) = engine() else { return };
     let dir = scratch("round-trip");

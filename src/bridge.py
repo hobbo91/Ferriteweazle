@@ -1,5 +1,6 @@
 """Ferriteweazle's link to gw, through gw's own modules. gw is left as it is,
-but for a time limit on the first reply from the device (steady_handshake).
+but for a time limit on the first reply from the device (steady_handshake)
+and a package's own SPS/CAPS library (bundled_caps).
 
   python bridge.py serve        one JSON request per stdin line, one reply per stdout line
   python bridge.py run ARGS     runs `gw ARGS`; stdin takes 'answer TEXT', anything else stops
@@ -692,6 +693,29 @@ def steady_handshake():
     usb.Unit.__init__ = patient
 
 
+def bundled_caps():
+    """Points gw at the SPS/CAPS library a package keeps beside its Python.
+    gw's own search misses it, and once gw is updated looks elsewhere."""
+    name = {'darwin': 'libcapsimage.dylib', 'win32': 'CAPSImg.dll'}.get(sys.platform, 'libcapsimage.so.5')
+    path = os.path.join(sys.prefix, 'caps', name)
+    if not os.path.isfile(path):
+        return
+    import ctypes
+    from greaseweazle import error
+    from greaseweazle.image import caps
+    search = caps.open_libcaps
+
+    def bundled():
+        try:
+            lib = ctypes.cdll.LoadLibrary(path)
+        except OSError:
+            return search()
+        error.check(lib.CAPSInit() == 0, "Failure initialising CAPS/SPS library '%s'" % path)
+        return lib
+
+    caps.open_libcaps = bundled
+
+
 def gw(args):
     from greaseweazle import cli
     steady_handshake()
@@ -808,6 +832,8 @@ def reported(work):
 
 if __name__ == '__main__':
     mode, args = sys.argv[1], sys.argv[2:]
+    if mode in ('serve', 'run', 'detect'):
+        bundled_caps()
     {'serve': serve,
      'run': lambda: run(lambda: gw(args)),
      'detect': lambda: run(lambda: detect_like_gw(args)),

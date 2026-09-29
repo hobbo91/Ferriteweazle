@@ -90,7 +90,13 @@ case "$triple" in *linux*)
             "https://raw.githubusercontent.com/keirf/greaseweazle/$tag/$rule"
     fi ;;
 esac
+engine/caps.sh "$triple" "$dest"
+"$py" -I -c 'import ctypes, sys, os
+name = {"darwin": "libcapsimage.dylib", "win32": "CAPSImg.dll"}.get(sys.platform, "libcapsimage.so.5")
+assert ctypes.cdll.LoadLibrary(os.path.join(sys.prefix, "caps", name)).CAPSInit() == 0'
+
 # greaseweazle-version goes last: it marks a finished build.
 echo "$PYTHON+$PYTHON_RELEASE" >"$dest/python-version"
+echo "$CAPS_COMMIT" >"$dest/caps-version"
 echo "$tag" >"$dest/greaseweazle-version"
 du -sh "$dest"
