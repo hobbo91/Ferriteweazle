@@ -427,9 +427,6 @@ fn stub_release(dir: &Path) -> String {
     std::fs::create_dir_all(packaging.join("linux")).unwrap();
     let sources = "#!/bin/sh\necho sources >\"$1\"\n";
     executable(&packaging.join("linux/lgpl-sources.sh"), sources);
-    let cache = dir.join("target/engine-cache");
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join(format!("capsimage-{CAPS}.tar.gz")), "caps\n").unwrap();
     let ignore = "/dist\n/target\n/stubs\n/greaseweazle\n/*.log\n";
     std::fs::write(dir.join(".gitignore"), ignore).unwrap();
     clone(dir, &["v1.22", "v1.23"]);
@@ -479,20 +476,17 @@ fn a_release_builds_every_package_from_one_gw_release() {
     ];
     run(&dir, &env, "", "packaging/release.sh");
 
-    let sums = std::fs::read_to_string(dir.join("dist/Ferriteweazle-0.9.0-SHA256SUMS.txt"));
+    let sums = std::fs::read_to_string(dir.join("dist/SHA256SUMS-0.9.0.txt"));
     let sums = sums.unwrap();
     for file in [
-        "macos-universal.dmg",
-        "linux",
-        "windows",
-        "linux-lgpl-sources.tar",
-        "capsimage-source.tar.gz",
+        "Ferriteweazle-0.9.0-macos-universal.dmg",
+        "Ferriteweazle-0.9.0-linux",
+        "Ferriteweazle-0.9.0-windows",
+        "LGPL-sources-0.9.0.tar",
     ] {
-        assert!(
-            sums.contains(&format!("  Ferriteweazle-0.9.0-{file}\n")),
-            "{sums}"
-        );
+        assert!(sums.contains(&format!("  {file}\n")), "{sums}");
     }
+    assert_eq!(sums.lines().count(), 4, "{sums}");
     let dmg = std::fs::read_to_string(dir.join("dist/Ferriteweazle-0.9.0-macos-universal.dmg"));
     assert_eq!(dmg.unwrap(), "v1.23\n", "the Mac builds the release found");
     let builds = remote_builds(&dir);
@@ -520,7 +514,7 @@ fn a_failed_build_on_another_machine_stops_the_release() {
         ];
         let out = sh(&dir, &env, "", "packaging/release.sh");
         assert!(!out.status.success(), "{machine}");
-        let sums = dir.join("dist/Ferriteweazle-0.9.0-SHA256SUMS.txt");
+        let sums = dir.join("dist/SHA256SUMS-0.9.0.txt");
         assert!(!sums.exists(), "no sums without {machine}'s packages");
         let last = remote_builds(&dir).pop().unwrap();
         assert!(last.contains(&format!("{machine}/bundle.sh")), "{last}");
@@ -629,7 +623,7 @@ fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
     once("pyserial's text.");
     once("The SPS licence.");
     once("commit c1), which is free");
-    once("Ferriteweazle-0.9.0-capsimage-source.tar.gz,");
+    assert!(!notices.contains("capsimage-source"), "{notices}");
     std::fs::remove_dir_all(dir).ok();
 }
 

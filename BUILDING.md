@@ -101,7 +101,7 @@ emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
 
 `packaging/release.sh`, on a Mac, builds every package of the commit checked out:
 macOS there, Windows and Linux over SSH on the machines named in
-`packaging/release.env` (copy `packaging/release.env.example`). It adds the source
-of the LGPL code in the Linux packages, the CAPS library's source, and
-`Ferriteweazle-VERSION-SHA256SUMS.txt`, which the app's Update checks downloads
-against. Publishing is up to you.
+`packaging/release.env` (copy `packaging/release.env.example`). It adds
+`LGPL-sources-VERSION.tar`, the source of the LGPL code in the Linux packages, and
+`SHA256SUMS-VERSION.txt`, which the app's Update checks downloads against.
+Publishing is up to you.

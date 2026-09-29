@@ -2,8 +2,8 @@
 # Builds every release file of the commit checked out into dist/: the macOS
 # disk image here, the Windows zips and MSIs and the Linux tarballs and
 # AppImages on the machines packaging/release.env names (see
-# release.env.example), then Ferriteweazle-VERSION-SHA256SUMS.txt, which the
-# app's Update checks downloads against. Publishing them is left to you.
+# release.env.example), then LGPL-sources-VERSION.tar and SHA256SUMS-VERSION.txt,
+# which the app's Update checks downloads against. Publishing is left to you.
 set -eu
 cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain)" ] || { echo "release: commit first" >&2; exit 1; }
@@ -33,12 +33,7 @@ ssh $WINDOWS_SSH "$git_bash \"cd \$(cygpath '$WINDOWS_DIR') && tar -cf - dist\""
 tar -xf target/windows-dist.tar
 
 # The source of the LGPL code in the Linux packages, published with them.
-packaging/linux/lgpl-sources.sh "dist/Ferriteweazle-$version-linux-lgpl-sources.tar"
-
-# The SPS/CAPS library's source, which its licence wants with the packages.
-. engine/versions
-cp "target/engine-cache/capsimage-$CAPS_COMMIT.tar.gz" \
-    "dist/Ferriteweazle-$version-capsimage-source.tar.gz"
-
-(cd dist && shasum -a 256 Ferriteweazle-* >"Ferriteweazle-$version-SHA256SUMS.txt")
+# Named to list after the packages on the release page.
+packaging/linux/lgpl-sources.sh "dist/LGPL-sources-$version.tar"
+(cd dist && shasum -a 256 Ferriteweazle-* LGPL-sources-* >"SHA256SUMS-$version.txt")
 ls -l dist

@@ -758,7 +758,7 @@ def fetch(tag, name, folder):
     or folder/unpacked for a zip or tarball."""
     import hashlib, requests, shutil, tarfile, zipfile
     base = f'{GITHUB}/{APP_REPO}/releases/download/{tag}'
-    sums = requests.get(f'{base}/Ferriteweazle-{tag.lstrip("v")}-SHA256SUMS.txt', timeout=(5, 30))
+    sums = requests.get(f'{base}/SHA256SUMS-{tag.lstrip("v")}.txt', timeout=(5, 30))
     sums.raise_for_status()
     wanted = dict(reversed(line.split()) for line in sums.text.splitlines() if line.strip())
     path, digest = os.path.join(folder, name), hashlib.sha256()

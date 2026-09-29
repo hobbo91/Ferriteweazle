@@ -4,7 +4,7 @@
 # descriptions the program's Wayland code is generated from, and the
 # AppImage runtime with the libfuse and squashfuse it links.
 #
-#   packaging/linux/lgpl-sources.sh dist/Ferriteweazle-VERSION-linux-lgpl-sources.tar
+#   packaging/linux/lgpl-sources.sh dist/LGPL-sources-VERSION.tar
 set -eu
 cd "$(dirname "$0")/../.."
 . packaging/linux/runtime.sh

@@ -8,6 +8,6 @@ wayland-protocols-plasma, listed above under the MIT licence, holds KDE's
 Wayland protocol descriptions, which are under the GNU Lesser General
 Public License 2.1 or later (its text is above). The program's Wayland
 code includes code generated from them. Their source is in
-Ferriteweazle-@VERSION@-linux-lgpl-sources.tar, published with this
+LGPL-sources-@VERSION@.tar, published with this
 package. To build the program with changed descriptions, use
 Ferriteweazle's own source: https://github.com/hobbo91/ferriteweazle

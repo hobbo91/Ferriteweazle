@@ -164,7 +164,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 section "The SPS Decoder Library"
 echo
 fold -s -w 72 <<EOF | sed 's/ *$//'
-gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$engine/caps-version")), which is free for non-commercial use only. Its source is in Ferriteweazle-$version-capsimage-source.tar.gz, published with this package.
+gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$engine/caps-version")), which is free for non-commercial use only.
 EOF
 echo
 cat "$engine/caps/LICENCE.txt"

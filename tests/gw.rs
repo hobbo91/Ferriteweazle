@@ -354,7 +354,7 @@ def tarball(name, text):
     return hashlib.sha256(data.getvalue()).hexdigest()
 good = tarball('good.tar.gz', b'0.9.1')
 tarball('bad.tar.gz', b'tampered')
-with open(f'{folder}/Ferriteweazle-0.9.1-SHA256SUMS.txt', 'w') as f:
+with open(f'{folder}/SHA256SUMS-0.9.1.txt', 'w') as f:
     f.write(f'{good}  good.tar.gz\n{"0" * 64}  bad.tar.gz\n')
 "#;
 
