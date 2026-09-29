@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub const GLOBAL: [&str; 2] = ["device", "drive"];
 
 /// Arguments a command shows first, in this order. The rest go under Advanced options.
-pub const FIRST: &[(&str, &[&str])] = &[
+const FIRST: &[(&str, &[&str])] = &[
     ("read", &["format", "file", "tracks", "revs"]),
     ("write", &["file", "format", "tracks", "no_verify"]),
     ("convert", &["in_file", "format", "out_file", "tracks"]),
@@ -28,12 +28,8 @@ pub const FIRST: &[(&str, &[&str])] = &[
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
 
-/// The kind of file an open dialog shows for an argument that takes one kind.
-const FILE_TYPES: &[(&str, &str, &str, &[&str])] =
-    &[("update", "file", "Firmware updates", &["upd"])];
-
 /// The update page's firmware source, kept with its settings. Not a gw argument.
-pub const FIRMWARE: &str = "firmware";
+const FIRMWARE: &str = "firmware";
 
 /// A page's batch settings, kept with its values. Not gw arguments.
 pub const BATCH: &str = "batch";
@@ -43,7 +39,7 @@ pub const BATCH_TYPE: &str = "batch_type";
 
 /// Commands that take a folder of images one at a time, and the argument
 /// each image goes to.
-pub const BATCHES: &[(&str, &str)] = &[("write", "file"), ("convert", "in_file")];
+const BATCHES: &[(&str, &str)] = &[("write", "file"), ("convert", "in_file")];
 
 /// Where gw update takes the firmware from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +83,7 @@ impl Firmware {
 
     /// The source chosen on the page, else the one its settings name, as
     /// when a command line is typed.
-    pub fn of(values: &Values) -> Firmware {
+    fn of(values: &Values) -> Firmware {
         let chosen = Firmware::ALL
             .into_iter()
             .find(|f| f.name() == values.get(FIRMWARE));
@@ -119,21 +115,16 @@ impl Firmware {
 
 /// Labels where gw's own argument name would not read well.
 const LABELS: &[(&str, &str)] = &[
-    ("adjust_speed", "Adjust speed"),
     ("cyls", "Cylinders"),
     ("densel", "Density select"),
     ("diskdefs", "Disk definitions"),
     ("erase_empty", "Erase empty tracks"),
-    ("fake_index", "Fake index"),
     ("format", "Disk format"),
     ("gen_tg43", "TG43 signal"),
-    ("hard_sectors", "Hard sectors"),
     ("hfreq", "High frequency"),
     ("in_file", "Input"),
     ("linger", "Time per step"),
     ("motor", "Motor delay"),
-    ("motor_on", "Motor on"),
-    ("no_clobber", "Keep existing files"),
     ("no_verify", "Skip verify"),
     ("nr", "Measurements"),
     ("out_file", "Output"),
@@ -145,7 +136,6 @@ const LABELS: &[(&str, &str)] = &[
     ("precomp", "Precompensation"),
     ("reverse", "Reverse (flippy)"),
     ("revs", "Revolutions"),
-    ("seek_retries", "Seek retries"),
     ("select", "Select delay"),
     ("settle", "Settle time"),
     ("step", "Step delay"),
@@ -215,7 +205,6 @@ const FAMILIES: &[(&str, &str)] = &[
 
 /// The image type for formats that gw pairs with none, by prefix.
 const TYPES: &[(&str, &str)] = &[
-    ("ibm.", ".img"),
     ("atarist.", ".st"),
     ("amiga.", ".adf"),
     ("acorn.dfs.ss", ".ssd"),
@@ -436,8 +425,10 @@ impl<'a> Form<'a> {
             "file" | "in_file" if a.positional() => self.input(ui, a),
             "diskdefs" => self.diskdefs(ui, a),
             // Shown once File is chosen, so it is needed.
-            "file" if self.cmd.name == "update" => self.path(ui, a, "Required"),
-            dest if dest.ends_with("file") => self.path(ui, a, "None"),
+            "file" if self.cmd.name == "update" => {
+                self.path(ui, a, "Required", Some(("Firmware updates", &["upd"])))
+            }
+            dest if dest.ends_with("file") => self.path(ui, a, "None", None),
             _ if a.switch => {
                 let mut on = self.values.on(&a.dest);
                 if toggle(ui, &mut on).changed() {
@@ -590,8 +581,9 @@ impl<'a> Form<'a> {
         }
     }
 
-    /// A file for gw to read, typed or chosen in an open dialog.
-    fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str) {
+    /// A file for gw to read, typed or chosen in an open dialog. `only` keeps
+    /// the dialog to one kind of file: its name and suffixes.
+    fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str, only: Option<(&str, &[&str])>) {
         let mut value = self.values.get(&a.dest).to_owned();
         ui.horizontal(|ui| {
             let edit = edit(&mut value)
@@ -600,17 +592,21 @@ impl<'a> Form<'a> {
             if ui.add(edit).changed() {
                 self.values.set(&a.dest, value.as_str());
             }
-            if browse_button(ui).own_tip("Choose a file.").clicked()
-                && let Some(path) = open_dialog(&self.cmd.name, &a.dest).pick_file()
-            {
-                self.values.set(&a.dest, path.to_string_lossy());
+            if browse_button(ui).own_tip("Choose a file.").clicked() {
+                let mut dialog = rfd::FileDialog::new();
+                if let Some((name, exts)) = only {
+                    dialog = dialog.add_filter(name, exts);
+                }
+                if let Some(path) = dialog.pick_file() {
+                    self.values.set(&a.dest, path.to_string_lossy());
+                }
             }
         });
     }
 
     /// A disk definitions file, and what gw makes of it.
     fn diskdefs(&mut self, ui: &mut Ui, a: &Arg) {
-        self.path(ui, a, "None");
+        self.path(ui, a, "None", None);
         let path = self.values.get(&a.dest).to_owned();
         if path.is_empty() {
             return;
@@ -1358,7 +1354,7 @@ const REPLACES_INPUTS: &str =
     "An image would replace its input. Choose another type, folder, prefix or suffix.";
 
 /// The most disks one session reads.
-pub const MAX_DISKS: u32 = 99;
+const MAX_DISKS: u32 = 99;
 
 /// gw's tracks when no format gives them: c=0-81:h=0-1.
 pub const USUAL_DISK: (u32, u32) = (82, 2);
@@ -1657,7 +1653,7 @@ fn own_tip_id() -> egui::Id {
 }
 
 /// The arguments shown first, and the rest.
-pub fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
+fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
     let shown = |a: &&Arg| {
         !GLOBAL.contains(&a.dest.as_str())
             && !(a.dest == "no_clobber" && OUTPUTS.iter().any(|(c, _)| *c == cmd.name))
@@ -1694,7 +1690,7 @@ fn plain(names: &[(&str, &str)], name: &str) -> String {
 }
 
 /// What an argument does, in one short sentence: from TIPS, else gw's help.
-pub fn tip(command: &str, a: &Arg) -> String {
+fn tip(command: &str, a: &Arg) -> String {
     let own = TIPS
         .iter()
         .find(|(c, d, _)| *c == command && *d == a.dest)
@@ -1728,8 +1724,6 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("reset", "delays", "Reset the delays as well."),
     ("", "densel", "Set the density select signal on pin 2."),
     ("", "diskdefs", "A file of disk formats to add to gw's own."),
-    ("", "drive", "The drive, by bus unit."),
-    ("", "device", "The Greaseweazle's port."),
     (
         "write",
         "erase_empty",
@@ -1779,7 +1773,6 @@ const TIPS: &[(&str, &str, &str)] = &[
     ("clean", "linger", "Time on each step, in milliseconds."),
     ("delays", "motor", "Motor delay, in milliseconds."),
     ("seek", "motor_on", "Run the motor while seeking."),
-    ("", "no_clobber", "Keep an existing file."),
     (
         "write",
         "no_verify",
@@ -1895,7 +1888,7 @@ fn format_name(format: &str) -> String {
 
 /// The image type that suits a format: the one gw pairs with it (.adf for
 /// Amiga, .d64 for the C64), else one for its family, else a sector image.
-pub fn type_for(schema: &Schema, format: &str) -> String {
+fn type_for(schema: &Schema, format: &str) -> String {
     let writable = |e: &str| schema.images.get(e).is_some_and(|i| i.writable);
     // gw pairs ibm.800 with .mgt, which is SAM Coupé's; PC disks want .img.
     let paired = schema.images.iter().find(|(e, i)| {
@@ -1937,7 +1930,6 @@ fn describe(info: &FormatInfo) -> String {
 /// Plain names for image options, where gw's own would not read well.
 const OPTION_NAMES: &[(&str, &str)] = &[
     ("disktype", "Disk type"),
-    ("double_step", "Double step"),
     ("legacy_ss", "Legacy single-sided"),
     ("revs", "Revolutions"),
     ("sck", "Sample clock"),
@@ -1960,7 +1952,6 @@ const KNOWN_IMAGES: &[(&str, &str)] = &[
     (".d64", "Commodore 1541"),
     (".d71", "Commodore 1571"),
     (".d81", "Commodore 1581"),
-    (".dsk", "DSK"),
     (".edsk", "Extended DSK"),
     (".hfe", "HxC floppy emulator"),
     (".ima", "Sector image"),
@@ -2001,19 +1992,6 @@ fn join_opts(path: &str, opts: &BTreeMap<String, String>) -> String {
         path.to_owned()
     } else {
         format!("{path}::{}", set.join(":"))
-    }
-}
-
-/// An open dialog for a file argument, showing only its kind of file where
-/// gw takes one kind.
-fn open_dialog(command: &str, dest: &str) -> rfd::FileDialog {
-    let dialog = rfd::FileDialog::new();
-    match FILE_TYPES
-        .iter()
-        .find(|(c, d, _, _)| *c == command && *d == dest)
-    {
-        Some((_, _, name, exts)) => dialog.add_filter(*name, exts),
-        None => dialog,
     }
 }
 
@@ -2104,16 +2082,14 @@ impl Output {
         Output {
             folder: lossy(path.parent().map(Path::as_os_str)),
             name: lossy(path.file_stem()),
-            ext: path.extension().map_or_else(String::new, |e| {
-                format!(".{}", e.to_string_lossy().to_lowercase())
-            }),
+            ext: extension(value).unwrap_or_default(),
             opts,
             ..Output::default()
         }
     }
 
     /// The file for one disk, counting from 1: `Game_Disk2.adf` of three.
-    pub fn file_name(&self, disk: u32) -> String {
+    fn file_name(&self, disk: u32) -> String {
         let (name, ext) = (&self.name, &self.ext);
         if self.disks <= 1 {
             return format!("{name}{ext}");
@@ -2291,7 +2267,7 @@ impl std::fmt::Display for TrackSpec {
 }
 
 /// A checkbox with a clean tick, drawn here: egui's own is lopsided.
-pub fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
+fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
@@ -2324,7 +2300,6 @@ pub fn checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     let round = CornerRadius::same(4);
     if *on {
         painter.rect_filled(square, round, fade(p.accent));
-        // A short stroke down to the left, a long one up to the right.
         let at = |x: f32, y: f32| square.min + square.size() * vec2(x, y);
         let tick = vec![at(0.24, 0.52), at(0.42, 0.70), at(0.77, 0.32)];
         let stroke = egui::Stroke::new(2.0, fade(p.on_accent));
@@ -2945,10 +2920,14 @@ mod tests {
     }
 
     #[test]
-    fn every_argument_has_a_short_tooltip_and_every_tooltip_an_argument() {
+    fn every_field_has_a_short_tooltip_and_every_tooltip_a_field() {
+        fn shown(cmd: &Command) -> Vec<&Arg> {
+            let (first, rest) = sections(cmd);
+            first.into_iter().chain(rest).collect()
+        }
         let s = schema();
         for cmd in &s.commands {
-            for a in &cmd.args {
+            for a in shown(cmd) {
                 let tip = tip(&cmd.name, a);
                 assert!(tip.ends_with('.'), "gw {} {}: {tip}", cmd.name, a.dest);
                 assert!(tip.len() <= 70, "gw {} {} is long: {tip}", cmd.name, a.dest);
@@ -2962,11 +2941,10 @@ mod tests {
             }
         }
         for (c, d, _) in TIPS {
-            let found = s
-                .commands
-                .iter()
-                .any(|cmd| (c.is_empty() || cmd.name == *c) && cmd.arg(d).is_some());
-            assert!(found, "no gw {c} has {d}");
+            let found = s.commands.iter().any(|cmd| {
+                (c.is_empty() || cmd.name == *c) && shown(cmd).iter().any(|a| a.dest == *d)
+            });
+            assert!(found, "no gw {c} shows {d}");
         }
     }
 
