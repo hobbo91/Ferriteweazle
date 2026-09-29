@@ -2,6 +2,9 @@
 //! built, else an installed one. They skip when there is neither. None opens
 //! a device.
 
+mod common;
+
+use common::{Window, app, app_mut, greaseweazle, line, run_button, squares};
 use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
@@ -549,8 +552,6 @@ fn a_question_from_gw_waits_for_an_answer() {
     assert!(job.log.is_empty(), "{:?}", job.log);
 }
 
-type Window = egui_kittest::Harness<'static, Option<App>>;
-
 /// The app's window on `engine`, stepped until gw has described itself.
 /// It sees no Greaseweazle, whatever is plugged in, until gw restarts.
 fn window(engine: &Engine, settings: Settings) -> Window {
@@ -616,7 +617,7 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
 
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(dir.join("Game.scp").is_file());
     let log =
@@ -659,7 +660,7 @@ fn a_folder_of_images_converts_one_by_one_into_another_type_and_says_how_it_went
         app.notices.contains_key("convert")
     });
 
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     assert_eq!(app.notices["convert"], "Converted 3 of 3 images.");
     let last = outputs.join("Backup_Game_Disk10.scp");
     assert_eq!(
@@ -700,7 +701,7 @@ fn a_job_that_would_replace_a_file_asks_first() {
     w.get_by_label("Overwrite \"Game.scp\"?");
     w.get_by_label("Cancel").click();
     w.run_steps(2);
-    assert!(w.state().as_ref().unwrap().disk.is_none(), "nothing ran");
+    assert!(app(&w).disk.is_none(), "nothing ran");
     assert_eq!(std::fs::read(dir.join("Game.scp")).unwrap(), b"keep me");
 
     w.get_by_label("Convert").click();
@@ -709,27 +710,14 @@ fn a_job_that_would_replace_a_file_asks_first() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(std::fs::metadata(dir.join("Game.scp")).unwrap().len() > 1000);
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// The page's run button, not the sidebar's entry of the same name.
-fn run_button<'w>(w: &'w Window, label: &'w str) -> egui_kittest::Node<'w> {
-    w.get_all_by_role_and_label(egui::accesskit::Role::Button, label)
-        .last()
-        .expect("a run button")
-}
-
 fn read_button(w: &Window) -> egui_kittest::Node<'_> {
     run_button(w, "Read disk")
-}
-
-fn app_mut(w: &mut Window) -> &mut App {
-    w.state_mut()
-        .as_mut()
-        .expect("the first frame made the app")
 }
 
 /// Starts `seek 90` as the tool job; it waits on gw's question, so it runs
@@ -739,16 +727,6 @@ fn waiting_tool(w: &mut Window, engine: &Engine) {
     until(w, "gw's question", |app| {
         app.tool.as_ref().is_some_and(|j| j.question.is_some())
     });
-}
-
-/// A Greaseweazle as gw lists it, on a made-up port.
-fn greaseweazle() -> Port {
-    Port {
-        device: "/dev/cu.usbmodem14201".into(),
-        name: Some("Greaseweazle".into()),
-        score: 20,
-        denied: false,
-    }
 }
 
 #[test]
@@ -834,21 +812,15 @@ fn the_sidebar_keeps_its_entries_while_gw_restarts() {
     let mut w = window(&engine, settings);
     let before = entries(&w);
     assert!(before.contains(&"Erase disk".to_owned()), "{before:?}");
-    let version = format!(
-        "gw {}",
-        w.state().as_ref().unwrap().schema().unwrap().version
-    );
+    let version = format!("gw {}", app(&w).schema().unwrap().version);
     w.get_by_label("Restart").click();
     w.step();
-    assert!(
-        w.state().as_ref().unwrap().schema().is_none(),
-        "gw restarts"
-    );
+    assert!(app(&w).schema().is_none(), "gw restarts");
     wait("gw to start again", || {
         w.step();
         assert_eq!(entries(&w), before);
         assert!(painted(&w, &version), "the version beside Settings went");
-        w.state().as_ref().unwrap().schema().map(|_| ())
+        app(&w).schema().map(|_| ())
     });
     w.run_steps(2);
     assert_eq!(entries(&w), before);
@@ -895,7 +867,7 @@ fn closing_the_window_during_a_job_asks_then_stops_gw_before_closing() {
         app.tool.as_ref().is_some_and(|j| !j.running())
     });
     assert_eq!(
-        w.state().as_ref().unwrap().tool.as_ref().unwrap().outcome(),
+        app(&w).tool.as_ref().unwrap().outcome(),
         Some(Outcome::Stopped)
     );
     wait("the window to close", || {
@@ -1017,7 +989,7 @@ fn the_detect_button_chooses_the_format_of_the_input_and_says_so_on_its_page() {
     w.get_by_label("Detect").click();
     until(&mut w, "detection", ended(DETECT));
     w.run_steps(2);
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     assert_eq!(
         app.settings.values["convert"].get("format"),
         "amiga.amigados"
@@ -1082,7 +1054,7 @@ fn the_log_keeps_every_job_of_the_session_in_order_under_its_command_line() {
     });
     w.run_steps(2);
 
-    let app = w.state().as_ref().unwrap();
+    let app = app(&w);
     let lines = app.log.lines();
     let at = |line: &str| {
         lines
@@ -1338,12 +1310,6 @@ fn until_shown(w: &mut Window, what: &str, shown: impl Fn(&Window) -> bool) {
     }
 }
 
-fn cli_line(w: &Window) -> String {
-    w.get_by_role(egui::accesskit::Role::MultilineTextInput)
-        .value()
-        .unwrap_or_default()
-}
-
 /// Chooses a format from the page's list by searching for it.
 fn choose_format(w: &mut Window, format: &str) {
     w.get_all_by_role(egui::accesskit::Role::ComboBox)
@@ -1404,23 +1370,6 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     assert!(w.query_by_label("Which tracks to read.").is_none());
 }
 
-/// The status pane's squares, one per track of the disk map.
-fn squares(w: &Window) -> usize {
-    let left = w.get_by_label("Disk status").rect().left();
-    w.output()
-        .shapes
-        .iter()
-        .filter(|c| match &c.shape {
-            egui::Shape::Rect(r) => {
-                r.rect.left() > left
-                    && (r.rect.width() - r.rect.height()).abs() < 0.5
-                    && r.rect.width() > 8.0
-            }
-            _ => false,
-        })
-        .count()
-}
-
 #[test]
 fn the_write_page_takes_a_north_star_images_format_from_gw() {
     let Some(engine) = engine() else { return };
@@ -1452,7 +1401,7 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         .nth(1)
         .and_then(|c| c.accesskit_node().numeric_value());
     assert_eq!(last, Some(34.0), "cylinders 0 to 34");
-    assert_eq!(squares(&w), 35, "the blank map is the disk's");
+    assert_eq!(squares(&w).count(), 35, "the blank map is the disk's");
 
     // The file is looked at again when it changes.
     std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();
@@ -1528,7 +1477,7 @@ fn a_north_star_image_converts_with_the_format_gw_finds_in_it() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     assert!(
         job.log.iter().any(|l| l.contains("northstar.mfm.ss")),
@@ -1563,23 +1512,23 @@ fn a_disk_definitions_file_puts_its_formats_first_and_goes_to_gw_only_with_them(
     assert!(top("Custom disk definitions") < top("Acorn"));
     w.get_by_label("mine.800").click();
     w.run_steps(3);
-    let line = cli_line(&w);
+    let cli = line(&w);
     assert!(
-        line.contains(&format!("--diskdefs={}", defs.display())),
-        "{line}"
+        cli.contains(&format!("--diskdefs={}", defs.display())),
+        "{cli}"
     );
-    assert!(line.contains("--format=mine.800"), "{line}");
+    assert!(cli.contains("--format=mine.800"), "{cli}");
     // Non-breaking spaces keep each fact in the format's description whole.
     until_shown(&mut w, "the format's description", |w| {
         w.query_by_label_contains("5\u{a0}sectors").is_some()
     });
 
     choose_format(&mut w, "ibm.1440");
-    let line = cli_line(&w);
-    assert!(line.contains("--format=ibm.1440"), "{line}");
+    let cli = line(&w);
+    assert!(cli.contains("--format=ibm.1440"), "{cli}");
     assert!(
-        !line.contains("--diskdefs"),
-        "gw's own format needs no file: {line}"
+        !cli.contains("--diskdefs"),
+        "gw's own format needs no file: {cli}"
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -1699,7 +1648,7 @@ fn a_kryoflux_stream_is_saved_as_the_set_of_files_gw_names() {
     until(&mut w, "the conversion", |app| {
         app.disk.as_ref().is_some_and(|j| !j.running())
     });
-    let job = w.state().as_ref().unwrap().disk.as_ref().unwrap();
+    let job = app(&w).disk.as_ref().unwrap();
     assert_eq!(job.outcome(), Some(Outcome::Succeeded), "{:#?}", job.log);
     for track in ["00.0", "39.1"] {
         assert!(dir.join(format!("Game{track}.raw")).is_file(), "{track}");
