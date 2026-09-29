@@ -1,73 +1,77 @@
 # Ferriteweazle
 
-<img src="assets/ferriteweazle.png" alt="" width="160">
+**Ferriteweazle is a cross-platform, graphical front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
 
-A desktop app for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's
-floppy disk flux reader and writer. It runs on macOS, Windows and Linux.
+![Ferriteweazle](docs/images/intro_demo.gif)
 
-![Reading a disk](docs/images/intro_demo.gif)
+## What does it do?
 
-## What it does
+- Full feature parity with [Greaseweazle Tools](https://github.com/keirf/greaseweazle) by [Keir Fraser](https://github.com/keirf)
+- Modern UI for macOS, Windows and Linux, on x86_64 and arm64
+- Supports Greaseweazle and the Adafruit Feather RP2040
+- Detects the most likely disk format(s) for reading and writing images
+- Single or batched reads, writes and image conversions
+- Built-in log viewer that can save to a file
+- Shows the command line version of any action, as well as letting you pass extra arguments
+- Drag and drop images into the app
+- Most settings/options have a helpful tooltip 
+- Various safety features, such as confirmations before destructive actions and waiting for an action to finish. 
+- Releases bundle the latest [Greaseweazle Tools](https://github.com/keirf/greaseweazle) unmodified, with its dependencies. This is optional: you can point the app at your own `gw` or `gw.exe`
 
-- Gives every `gw` command a page: read, write, convert, erase, clean, seek, drive
-  speed, device info, firmware update, delays, pins, reset and bandwidth.
-- Greys out the pages that need a Greaseweazle until one is connected.
-- Offers every option of every command. Common options have their own controls; the
-  others are under **Advanced options**.
-- Finds the format of a disk. **Detect** decodes a few tracks of the disk in the
-  drive, or of a flux image, with every format gw knows, and chooses the best
-  match and the image type that suits it (Akai to .img, Amiga to .adf).
-- Draws a disk map as gw works: a square per track, ten cylinders to a row.
-- Shows gw's output from every job since the app opened, to copy, save or clear.
-- Shows each page as its `gw` command line with **CLI**. Change either and the
-  other follows. It takes only `gw` commands and runs nothing: the page's own
-  button runs gw, with no shell.
-- Reads a set of disks one after another into numbered files, asking for each.
-- Asks before replacing a file.
-- Shows the Greaseweazle's model and firmware as soon as it is connected.
-- Saves images and presets in Documents/Ferriteweazle, under Images and Presets,
-  or in folders chosen under **Settings > Paths**. Between runs it keeps only the
-  window size, the drive and the device: every other setting starts afresh.
-- Follows the system's light or dark mode, or keeps to either. Choosing one in
-  Settings fades to it.
-- Takes image files by drag and drop.
-- Takes a disk definitions file of your own. gw's parser checks it line by line,
-  and its formats come first in the format list.
-- Can save gw's output beside each image, and play a sound when a job ends.
-- Asks before closing while gw is working, and lets gw stop the drive first.
+## How it can auto-detect a disk format
 
-## How it keeps up with Greaseweazle
+Greaseweazle Tools can't detect formats itself, so the bridge does it using `gw`'s codecs. It decodes both sides of cylinder 0 with every format gw knows and keeps the formats that find every sector. Many formats pass that test, so it ranks them by how closely each sector's position matches that format's layout. If the best still disagree about the track count or an unformatted track, it reads that track to settle it. Cylinder 2 shows whether a 40-track disk needs double step. Apple II disks are told apart by filesystem: ProDOS or DOS 3.3.
 
-Ferriteweazle ships `gw` unmodified, with its own Python, so there is nothing else
-to install.
+Detection isn't always right, so the app also groups formats and image types to make choosing the right one yourself easier.
 
-At start-up a bridge ([`src/bridge.py`](src/bridge.py)) reads the commands and
-options from gw's argument parsers, and the app builds its pages from them. A new
-gw release works once it is bundled: its new options appear under **Advanced options**,
-and options it drops disappear.
+## Why bundle Greaseweazle Tools in the releases?
 
-`bundle/build.sh` bundles gw's latest release on GitHub, never a nightly build or a
-prerelease. The packaging scripts rebuild the bundle first when gw has a newer
-release. To stay on one release, set `GREASEWEAZLE` in [`bundle/versions`](bundle/versions)
-to its tag. `cargo build` never checks: a build script that went online would slow
-every build and fail offline.
+Greaseweazle still amazes me: a cheap interface and almost any floppy drive can read almost any 3.5" or 5.25" disk format. Greaseweazle Tools, though, run from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical interface and ships with Greaseweazle Tools included, so you can download it, run it and get straight to work.
 
-**Settings > Paths > gw** points the app at any installed `gw` instead, such as a
-pipx install or a development checkout.
+**You don't have to use the bundled copy.** Like other Greaseweazle front ends, Ferriteweazle can use your own installation instead: set the path in **Settings > Paths**.
 
-## How it finds a format
+## Installing
 
-gw has no format detection of its own, so the bridge builds it from gw's codecs.
-It decodes both sides of cylinder 0 with every format gw knows. It keeps those
-that account for every sector on the disk. Many formats agree that far: in gw
-1.23, 22 groups share sector IDs, sizes and data rate. gw's template for each
-format places every sector, so the bridge ranks them by how far the sectors sit
-from where each format writes them. That tells apart the index mark, interleave,
-skew and gaps. Where the best still disagree about some track, such as a 40 or
-80 track length or an unformatted track, it reads that track. Physical cylinder
-2 shows whether a 40-track disk sits in an 80-track drive, which needs double
-step. Apple II formats write the same disk, so its filesystem decides: ProDOS or
-DOS 3.3.
+Download the package for your system from the [latest release](https://github.com/hobbo91/Ferriteweazle/releases/latest).
+
+### macOS
+
+macOS 10.15 or newer, Apple Silicon or Intel.
+
+1. Open [`Ferriteweazle-1.0.0-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-macos-universal.dmg).
+2. Drag **Ferriteweazle** to **Applications**.
+3. Open Ferriteweazle. The app isn't notarised, so macOS blocks it the first time.
+4. Open **System Settings > Privacy & Security** and click **Open Anyway**.
+
+### Windows
+
+Windows 10 or newer, x64 or ARM64.
+
+1. Run [`Ferriteweazle-1.0.0-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-x64.msi), or [`Ferriteweazle-1.0.0-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-arm64.msi) on an ARM PC.
+2. If SmartScreen warns you, click **More info**, then **Run anyway**.
+3. Follow the installer.
+
+To run without installing, unzip [`Ferriteweazle-1.0.0-win-x64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-x64.zip) or [`Ferriteweazle-1.0.0-win-arm64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-arm64.zip) and run `Ferriteweazle.exe`.
+
+### Linux
+
+x86-64 or ARM64, glibc 2.17 or newer.
+
+AppImage: [`Ferriteweazle-1.0.0-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-x86_64.AppImage) or [`Ferriteweazle-1.0.0-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-aarch64.AppImage)
+
+```sh
+chmod +x Ferriteweazle-1.0.0-x86_64.AppImage
+./Ferriteweazle-1.0.0-x86_64.AppImage
+```
+
+Or the tarball: [`Ferriteweazle-1.0.0-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-linux-x86_64.tar.gz) or [`Ferriteweazle-1.0.0-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-linux-aarch64.tar.gz)
+
+```sh
+tar -xzf Ferriteweazle-1.0.0-linux-x86_64.tar.gz
+./Ferriteweazle/ferriteweazle
+```
+
+On ARM, use the `aarch64` files in the commands.
 
 ## Building
 
@@ -80,13 +84,10 @@ bundle/build.sh     # optional: gw with its own Python
 cargo run --release
 ```
 
-Without the bundle, the app uses an installed `gw`. `bundle/build.sh` needs curl,
-git and a C/C++ compiler: Xcode's command line tools on macOS, zig on Linux, and on
-Windows Visual Studio's C++ build tools and LLVM, in Git Bash.
+Without the bundle, the app uses an installed `gw`. `bundle/build.sh` needs curl, git and a C/C++ compiler: Xcode's command line tools on macOS, zig on Linux, and on Windows Visual Studio's C++ build tools and LLVM, in Git Bash.
 
 Tests and packages: [BUILDING.md](BUILDING.md).
 
 ## Licence
 
-Ferriteweazle is MIT licensed. Greaseweazle is by Keir Fraser and is in the public
-domain.
+Ferriteweazle is MIT licensed and comes with no warranty; see [LICENSE](LICENSE). Greaseweazle is by Keir Fraser and is in the public domain. Make an image of any disk you care about before writing to it, use a write-protected disk when you only want to read.
