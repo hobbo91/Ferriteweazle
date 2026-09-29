@@ -2,7 +2,7 @@
 //!
 //! Greaseweazle's `gw` does the work. A small Python bridge reads gw's command
 //! line as data and runs gw commands. The app builds its pages from that data,
-//! so a new gw needs no new app.
+//! so options a new gw adds get fields with no change to the app.
 
 mod app;
 pub mod command;
@@ -23,18 +23,27 @@ pub mod update;
 
 pub use app::{App, Drawer, Page, Settings};
 
-/// The user's home folder, if the system names one.
-fn home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(Into::into)
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// The user's home folder, if the system names one. On Windows, the profile
+/// folder, whatever HOME says.
+fn home() -> Option<PathBuf> {
+    std::env::home_dir()
+}
+
+/// The folder an environment variable names, if a whole path: the XDG rules
+/// ignore an empty or relative one.
+fn absolute(value: Option<OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
 /// The system's per-user folder for what the app keeps for itself, such as
 /// gw releases installed by Update.
-pub fn data_folder() -> std::path::PathBuf {
+pub fn data_folder() -> PathBuf {
     let home = home().unwrap_or_default();
-    let var = |name, or: &str| std::env::var_os(name).map_or_else(|| home.join(or), Into::into);
+    let var = |name, or: &str| absolute(std::env::var_os(name)).unwrap_or_else(|| home.join(or));
     let base = match () {
         _ if cfg!(target_os = "macos") => home.join("Library/Application Support"),
         _ if cfg!(windows) => var("LOCALAPPDATA", "AppData/Local"),
@@ -43,10 +52,119 @@ pub fn data_folder() -> std::path::PathBuf {
     base.join("Ferriteweazle")
 }
 
-/// Documents/Ferriteweazle in the home folder, where the app saves by default.
-pub fn app_folder() -> std::path::PathBuf {
-    home()
-        .unwrap_or_default()
-        .join("Documents")
-        .join("Ferriteweazle")
+/// Ferriteweazle in the user's Documents folder, where the app saves by default.
+pub fn app_folder() -> PathBuf {
+    // Looked up once: Settings asks for it every frame.
+    static FOLDER: OnceLock<PathBuf> = OnceLock::new();
+    FOLDER
+        .get_or_init(|| documents().join("Ferriteweazle"))
+        .clone()
+}
+
+/// Where the system puts the user's Documents, which may be redirected or
+/// have a name in the desktop's language.
+fn documents() -> PathBuf {
+    let home = home().unwrap_or_default();
+    #[cfg(windows)]
+    let found = known_documents();
+    #[cfg(not(windows))]
+    let found = match cfg!(target_os = "macos") {
+        true => None,
+        false => {
+            let config = absolute(std::env::var_os("XDG_CONFIG_HOME"))
+                .unwrap_or_else(|| home.join(".config"));
+            let dirs = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+            xdg_documents(&dirs, &home)
+        }
+    };
+    found.unwrap_or_else(|| home.join("Documents"))
+}
+
+/// XDG_DOCUMENTS_DIR in xdg-user-dirs' file: `"$HOME/Dokumente"`, or a
+/// whole path.
+#[cfg(not(windows))]
+fn xdg_documents(dirs: &str, home: &std::path::Path) -> Option<PathBuf> {
+    let value = dirs
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("XDG_DOCUMENTS_DIR="))?
+        .trim_matches('"');
+    match value.strip_prefix("$HOME") {
+        Some(rest) => Some(home.join(rest.trim_start_matches('/'))),
+        None => absolute(Some(value.into())),
+    }
+}
+
+/// FOLDERID_Documents, which OneDrive or a policy may have moved.
+#[cfg(windows)]
+fn known_documents() -> Option<PathBuf> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStringExt;
+    #[repr(C)]
+    struct Guid(u32, u16, u16, [u8; 8]);
+    const DOCUMENTS: Guid = Guid(
+        0xfdd3_9ad0,
+        0x238f,
+        0x46af,
+        [0xad, 0xb4, 0x6c, 0x85, 0x48, 0x03, 0x69, 0xc7],
+    );
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHGetKnownFolderPath(
+            id: *const Guid,
+            flags: u32,
+            token: *mut c_void,
+            path: *mut *mut u16,
+        ) -> i32;
+    }
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoTaskMemFree(memory: *mut c_void);
+    }
+    let mut path = std::ptr::null_mut();
+    // SAFETY: on success `path` is a NUL-terminated string that Windows
+    // allocated; it is freed whatever the result, as the API requires.
+    unsafe {
+        let found = SHGetKnownFolderPath(&DOCUMENTS, 0, std::ptr::null_mut(), &mut path) == 0;
+        let folder = found.then(|| {
+            let len = (0..).take_while(|&i| *path.add(i) != 0).count();
+            OsString::from_wide(std::slice::from_raw_parts(path, len)).into()
+        });
+        CoTaskMemFree(path.cast());
+        folder
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_or_relative_folder_variable_is_ignored() {
+        assert_eq!(absolute(Some("".into())), None);
+        assert_eq!(absolute(Some("Ferriteweazle".into())), None);
+        let whole = std::env::temp_dir();
+        assert_eq!(absolute(Some(whole.clone().into())), Some(whole));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn documents_is_where_the_xdg_user_directories_put_it() {
+        let home = std::path::Path::new("/home/anna");
+        let dirs = "# Written by xdg-user-dirs-update\n\
+                    XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n\
+                    XDG_DOCUMENTS_DIR=\"$HOME/Dokumente\"\n";
+        assert_eq!(xdg_documents(dirs, home), Some(home.join("Dokumente")));
+        let whole = "XDG_DOCUMENTS_DIR=\"/data/docs\"\n";
+        assert_eq!(xdg_documents(whole, home), Some("/data/docs".into()));
+        assert_eq!(xdg_documents("XDG_DOCUMENTS_DIR=\"docs\"\n", home), None);
+        assert_eq!(xdg_documents("", home), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn documents_is_windows_known_folder() {
+        let documents = known_documents().expect("Windows names a Documents folder");
+        assert!(documents.is_absolute(), "{documents:?}");
+        assert_eq!(app_folder(), documents.join("Ferriteweazle"));
+    }
 }
