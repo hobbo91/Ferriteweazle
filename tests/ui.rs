@@ -1163,13 +1163,31 @@ fn side_0_stays_in_view_as_a_swapped_map_goes_to_one_side() {
 fn a_jobs_map_keeps_the_sides_as_the_job_took_them() {
     let mut job = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
     job.args = vec!["read".into(), "--tracks=hswap".into()];
-    // Write's own list does not swap them.
-    let settings = Settings {
-        page: Page::Command("write".into()),
-        ..chosen()
-    };
-    let w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // The page's list no longer swaps them.
+    let w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
     assert!(painted(&w, "Side 1").y < painted(&w, "Side 0").y);
+}
+
+#[test]
+fn a_finished_job_shows_on_its_own_page_and_a_running_one_on_every_page() {
+    let mut job = Job::replay(DETECT, "T0.0: Raw Flux (500 flux in 400.00ms)");
+    job.format = Some("ibm.1440".into());
+    job.page = "read".into();
+    let mut settings = chosen();
+    set(&mut settings, "read", "format", "ibm.1440");
+    set(&mut settings, "write", "format", "ibm.1440");
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Detect disk format");
+    for page in ["write", "erase", "convert"] {
+        app_mut(&mut w).settings.page = Page::Command(page.into());
+        w.run();
+        let detect = w.query_by_label("Detect disk format");
+        assert!(detect.is_none(), "{page} shows Read's Detect");
+    }
+    app_mut(&mut w).disk.as_mut().unwrap().ended = None;
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(2);
+    w.get_by_label("Detect disk format");
 }
 
 #[test]
@@ -1360,9 +1378,13 @@ fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
 #[test]
 fn gws_warning_about_a_damaged_input_shows_in_the_status_pane() {
     // The Log, which also shows it, is shut.
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        ..chosen()
+    };
     let w = build(
         Harness::builder().with_size(DEFAULT),
-        chosen(),
+        settings,
         Some(Job::replay("convert", DAMAGED)),
     );
     let pane = w.get_by_label("Disk status").rect().left();
@@ -1692,7 +1714,11 @@ fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
         .with_size(DEFAULT)
         .with_step_dt(1.0 / 60.0)
         .with_max_steps(120);
-    let mut w = build(builder, chosen(), Some(job));
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    let mut w = build(builder, settings, Some(job));
     let first = |w: &Window| squares(w).next().unwrap().fill;
     let written = first(&w);
     // gw goes on to the next track, so the first verified.
@@ -1743,6 +1769,7 @@ fn detects_tracks_fade_in_as_it_reads_them() {
 fn detects_tracks_give_way_to_the_pages_map_once_another_format_is_chosen() {
     let mut job = Job::replay(DETECT, "T0.0: Raw Flux (500 flux in 400.00ms)");
     job.format = Some("ibm.1440".into());
+    job.page = "read".into();
     let mut settings = chosen();
     settings.page = Page::Command("read".into());
     set(&mut settings, "read", "format", "ibm.1440");

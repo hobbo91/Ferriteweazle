@@ -31,6 +31,8 @@ pub enum Outcome {
 pub struct Job {
     /// The gw command, such as `read`.
     pub command: String,
+    /// The page that ran it: its command's, or the page Detect chooses a format on.
+    pub page: String,
     pub args: Vec<String>,
     pub log: Vec<String>,
     pub progress: Progress,
@@ -246,6 +248,7 @@ impl Job {
         progress.raw = command == "read" && args.iter().any(|a| a == "--raw");
         Job {
             command: command.to_owned(),
+            page: command.to_owned(),
             args,
             log: Vec::new(),
             progress,

@@ -2182,6 +2182,11 @@ impl App {
             "read" => pass_env(self.settings.outputs.get("read/file"), output.as_deref()),
             _ => Vec::new(),
         };
+        let page = match command {
+            DETECT => self.detect_for.clone(),
+            _ => None,
+        }
+        .unwrap_or_else(|| command.to_owned());
         match Job::start(
             tools,
             self.settings.kind.name(),
@@ -2192,8 +2197,9 @@ impl App {
         ) {
             Ok(mut job) => {
                 job.output = output;
-                let (_, _, planned) = self.blank_map(command);
+                let (_, _, planned) = self.blank_map(&page);
                 job.planned = Some((planned.cyls, planned.heads));
+                job.page = page;
                 job.format = job
                     .args
                     .iter()
@@ -2208,12 +2214,6 @@ impl App {
                 true
             }
             Err(e) => {
-                // A detect job's page is the one it chooses the format on.
-                let page = match command {
-                    DETECT => self.detect_for.clone(),
-                    _ => None,
-                };
-                let page = page.unwrap_or_else(|| command.to_owned());
                 self.notices
                     .insert(page, format!("Could not start Greaseweazle Tools: {e}"));
                 false
@@ -2239,18 +2239,16 @@ impl App {
         let (format, disk, blank) = self.blank_map(page);
         let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
         let swapped = tracks.is_some_and(form::swapped);
-        // A finished job's map stands until its page takes other tracks, and
-        // Detect's until the page takes another format.
+        // A running job shows on every page. A finished one shows on its own page
+        // until that page takes other tracks, or for Detect another format.
         let preview = (&blank.cyls, &blank.heads);
         let shown = self.disk.as_ref().filter(|j| {
             j.running()
-                || match j.command.as_str() {
-                    DETECT => j.format == format,
-                    command if command == page => {
-                        j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview)
+                || j.page == page
+                    && match j.command.as_str() {
+                        DETECT => j.format == format,
+                        _ => j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
                     }
-                    _ => true,
-                }
         });
         let top = ui.cursor().top();
         // The map's height above a drawer at its least height and below a job's rows, even
