@@ -10,6 +10,9 @@ use eframe::egui::{
 /// Seconds a square takes to fade in.
 const FILL_TIME: f32 = 0.4;
 
+/// Seconds the sides take to change places when their heads swap.
+const SWAP_TIME: f32 = 0.25;
+
 /// Cylinders to a row, so rows start at 0, 10, 20.
 const ROW: u32 = 10;
 const GAP: f32 = 3.0;
@@ -45,10 +48,12 @@ pub fn width_for(budget: f32) -> f32 {
 /// come and go. Squares are CELL points: smaller if `room`, the pane's height below
 /// its top, lacks space for SIZED_ROWS rows; larger if a `budget`-point map (legend
 /// included) and the width allow. More rows run on, and the pane scrolls.
+/// `swapped`: the heads swap, and side 1 takes side 0's place.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
     disk: (u32, u32),
+    swapped: bool,
     verifying: bool,
     budget: f32,
     room: f32,
@@ -105,10 +110,17 @@ pub fn show(
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let radius = CornerRadius::same((cell / 5.0).round() as u8);
+    let id = egui::Id::new("swap");
+    let easing = egui::emath::easing::cubic_in_out;
+    let t =
+        ui.ctx()
+            .animate_bool_with_time_and_easing(id, swapped && sides == 2, SWAP_TIME, easing);
+    // Each side's place, 0 first, sliding to the other's as the heads swap.
+    let place = |head: u32| if head == 0 { t } else { 1.0 - t };
     let square = |head: u32, cyl: u32| {
         let origin = match across {
-            true => rect.min + vec2(head as f32 * (grid.x + SIDE_GAP), 0.0),
-            false => rect.min + vec2(0.0, head as f32 * (grid.y + STACK_GAP)),
+            true => rect.min + vec2(place(head) * (grid.x + SIDE_GAP), 0.0),
+            false => rect.min + vec2(0.0, place(head) * (grid.y + STACK_GAP)),
         };
         let x = snap(origin.x + LABEL) + (cyl % ROW) as f32 * step;
         let y = snap(origin.y + TITLE) + (cyl / ROW) as f32 * step;

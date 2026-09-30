@@ -40,6 +40,11 @@ const HEADINGS: &[(&str, &str, &str)] = &[
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
 
+/// Whether a track list swaps the sides' heads.
+pub fn swapped(tracks: &str) -> bool {
+    TrackSpec::parse(tracks).hswap
+}
+
 /// Whether `command` makes an image the page names.
 pub fn has_output(command: &str) -> bool {
     OUTPUTS.iter().any(|(c, _)| *c == command)
@@ -267,7 +272,10 @@ const NUMBER_BOX: f32 = 32.0;
 const DETECT_BUTTON: f32 = 68.0;
 /// The browse button, beside a path.
 const BROWSE_BUTTON: f32 = 34.0;
-const ROW_GAP: f32 = 12.0;
+const ROW_GAP: f32 = 10.0;
+
+/// Space above a heading, beside the rows' own gap.
+const GROUP_GAP: f32 = 6.0;
 
 /// A field fills the room beside its label, up to a point.
 fn field_width(ui: &Ui) -> f32 {
@@ -404,27 +412,24 @@ impl<'a> Form<'a> {
             let name = self.cmd.name.as_str();
             if let Some((.., text)) = HEADINGS.iter().find(|(c, d, _)| *c == name && *d == a.dest) {
                 if i > 0 {
-                    ui.add_space(8.0);
+                    ui.add_space(GROUP_GAP);
                 }
-                heading(ui, text);
+                heading(ui, text, |_| {});
             }
             action = action.or(self.arg(ui, a));
         }
         // A track list is a group of its own, after the page's other rows.
         if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
             if first.len() > 1 {
-                ui.add_space(8.0);
+                ui.add_space(GROUP_GAP);
             }
             self.tracks(ui, a);
         }
         if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
-            ui.add_space(4.0);
             self.disks(ui);
-            ui.add_space(4.0);
             self.passes(ui);
         }
         if !rest.is_empty() {
-            ui.add_space(4.0);
             // Set values go to gw while the header is shut; the Adafruit
             // RP2040's greyed ones do not.
             let impossible =
@@ -949,10 +954,6 @@ impl<'a> Form<'a> {
             "out_tracks" => "Output track settings",
             _ => "Track settings",
         };
-        let tip = tip(&self.cmd.name, a);
-        let grammar = grammar(self.schema, a);
-        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
-        heading(ui, name).on_hover_ui(help);
         let format = self.effective_format();
         let (cyls, heads) = format
             .as_ref()
@@ -974,6 +975,25 @@ impl<'a> Form<'a> {
         let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
         let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
+        let tip = tip(&self.cmd.name, a);
+        let grammar = grammar(self.schema, a);
+        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+        let simple = spec.simple();
+        heading(ui, name, |ui| {
+            let flip = if as_text {
+                "Use the track picker"
+            } else {
+                "Type a track list"
+            };
+            if ui
+                .add_enabled(simple, egui::Link::new(RichText::new(flip).small()))
+                .on_disabled_hover_text("The track picker cannot show this track list.")
+                .clicked()
+            {
+                ui.data_mut(|d| d.insert_temp(text_id, !as_text));
+            }
+        })
+        .on_hover_ui(help);
         if as_text {
             let (name, field) = row(ui, "Track list", |ui| {
                 ui.horizontal(|ui| {
@@ -1087,20 +1107,6 @@ impl<'a> Form<'a> {
                 self.values.set(&a.dest, spec.to_string());
             }
         }
-        row(ui, "", |ui| {
-            let flip = if as_text {
-                "Use the track picker"
-            } else {
-                "Type a track list"
-            };
-            if ui
-                .add_enabled(spec.simple(), egui::Link::new(RichText::new(flip).small()))
-                .on_disabled_hover_text("The track picker cannot show this track list.")
-                .clicked()
-            {
-                ui.data_mut(|d| d.insert_temp(text_id, !as_text));
-            }
-        });
     }
 
     /// The image to read, with its type and options; Write and Convert also take a folder.
@@ -3392,14 +3398,29 @@ fn offset(v: &str) -> Option<i32> {
     }
 }
 
-/// A group's heading, with a rule to the fields' right edge.
-fn heading(ui: &mut Ui, text: &str) -> egui::Response {
+/// A group's heading, with a rule to the fields' right edge, or to what `end`
+/// lays out there.
+fn heading(ui: &mut Ui, text: &str, end: impl FnOnce(&mut Ui)) -> egui::Response {
     let p = theme::palette(ui);
-    let label = ui.label(RichText::new(text).small().strong().color(p.dim));
-    let y = label.rect.center().y;
-    let rule = label.rect.right() + 10.0..=ui.max_rect().right();
-    ui.painter().hline(rule, y, egui::Stroke::new(1.0, p.line));
-    label
+    ui.scope(|ui| {
+        // As tall as its words, not a row of fields.
+        ui.spacing_mut().interact_size.y = 0.0;
+        ui.horizontal(|ui| {
+            let label = ui.label(RichText::new(text).small().strong().color(p.dim));
+            let right = egui::Layout::right_to_left(egui::Align::Center);
+            let end = ui.with_layout(right, end).response.rect;
+            let stop = match end.width() > 0.0 {
+                true => end.left() - 10.0,
+                false => end.right(),
+            };
+            let y = label.rect.center().y;
+            let rule = label.rect.right() + 10.0..=stop;
+            ui.painter().hline(rule, y, egui::Stroke::new(1.0, p.line));
+            label
+        })
+        .inner
+    })
+    .inner
 }
 
 /// A checkbox as a row's field, centred on the row's label.

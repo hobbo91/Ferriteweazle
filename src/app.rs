@@ -1669,7 +1669,7 @@ impl App {
                     }
                     ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
-                    ui.add_space(14.0);
+                    ui.add_space(10.0);
                     let reported = (name == "delays").then(|| self.reported_delays()).flatten();
                     let values = self.settings.values.entry(name.to_owned()).or_default();
                     let action = Form {
@@ -1696,7 +1696,7 @@ impl App {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));
                     }
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
                     action
                 })
                 .inner
@@ -2209,6 +2209,8 @@ impl App {
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
         let (format, disk, blank) = self.blank_map(page);
+        let swapped =
+            (self.settings.values.get(page)).is_some_and(|v| form::swapped(v.get("tracks")));
         // A finished job's map stands until its page takes other tracks, and
         // Detect's until the page takes another format.
         let preview = (&blank.cyls, &blank.heads);
@@ -2246,7 +2248,7 @@ impl App {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
-            diskmap::show(ui, &blank, disk, false, budget, room);
+            diskmap::show(ui, &blank, disk, swapped, false, budget, room);
             return;
         };
         // These rows wrap, so the job shows in full.
@@ -2306,10 +2308,10 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, disk, false, budget, room),
+            true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
                 let verifying = job.running() && job.progress.verifies;
-                diskmap::show(ui, &job.progress, disk, verifying, budget, room);
+                diskmap::show(ui, &job.progress, disk, swapped, verifying, budget, room);
             }
         }
         if install {

@@ -842,7 +842,8 @@ fn a_drawer_slides_open_and_shut_and_the_map_stays_where_it_fits() {
         shutting.iter().all(|f| f[1] == legend),
         "the map moved: {shutting:?}"
     );
-    assert_eq!(w.run(), 1, "the window keeps drawing");
+    // The scroll bar fades out as the form fits again.
+    assert!(w.run() < 10, "the window keeps drawing");
 }
 
 #[test]
@@ -1093,6 +1094,36 @@ fn row_number(w: &Window, n: &str) -> Option<egui::Color32> {
         }
         _ => None,
     })
+}
+
+/// Where the map writes `text`, such as Side 0.
+fn painted(w: &Window, text: &str) -> egui::Pos2 {
+    let left = w.get_by_label("Disk status").rect().left();
+    let found = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Text(t) if t.pos.x > left && t.galley.text() == text => Some(t.pos),
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("the map shows no {text}"))
+}
+
+#[test]
+fn swapping_sides_slides_each_side_into_the_others_place() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(40);
+    let mut w = build(builder, chosen(), None);
+    let (side0, side1) = (painted(&w, "Side 0"), painted(&w, "Side 1"));
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "hswap");
+    w.step();
+    w.step();
+    let moving = painted(&w, "Side 1");
+    assert!(moving != side1 && moving != side0, "a slide, not a jump");
+    w.run();
+    assert_eq!(
+        (painted(&w, "Side 0"), painted(&w, "Side 1")),
+        (side1, side0)
+    );
 }
 
 #[test]
@@ -1649,6 +1680,16 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
         legend.bottom() < drawer.top(),
         "the map runs into the log: {legend:?}, {drawer:?}"
     );
+}
+
+#[test]
+fn the_window_as_it_opens_needs_no_scrolling() {
+    let w = window_at(DEFAULT, chosen());
+    let bars: Vec<_> = w
+        .query_all_by_role(Role::ScrollBar)
+        .map(|b| b.rect())
+        .collect();
+    assert!(bars.is_empty(), "something scrolls: {bars:?}");
 }
 
 #[test]
