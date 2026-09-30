@@ -164,7 +164,7 @@ impl Default for Page {
     }
 }
 
-/// The choices made in the window; only the drive and device are kept between runs.
+/// The choices made in the window; the drive, device, gw and theme are kept between runs.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
@@ -361,7 +361,7 @@ pub struct App {
     probe_failed: Option<String>,
     /// The port the card last asked about, and whether Linux denied it then.
     probed: Option<(String, bool)>,
-    /// The real app, not a test window: it keeps the drive and device in their files,
+    /// The real app, not a test window: it keeps the drive, device, gw and theme in their files,
     /// runs gw info on each Greaseweazle that appears, and checks GitHub for updates.
     live: bool,
     /// The drive as last kept in drive_file().
@@ -370,6 +370,8 @@ pub struct App {
     kept_device: (Kind, String),
     /// The gw chosen in Settings as last kept in tools_file().
     kept_tools: Option<PathBuf>,
+    /// The theme as last kept in theme_file().
+    kept_theme: ThemePreference,
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
@@ -409,11 +411,13 @@ impl App {
         let drive = kept_drive(&drive_file());
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
+        let theme = kept_theme(&theme_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
             tools: tools.clone(),
+            theme,
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
@@ -421,6 +425,7 @@ impl App {
         app.kept_drive = drive;
         app.kept_device = (kind, port);
         app.kept_tools = tools;
+        app.kept_theme = theme;
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -466,6 +471,7 @@ impl App {
             kept_drive: String::new(),
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
+            kept_theme: ThemePreference::System,
             found_note: None,
             format_fits: BTreeMap::new(),
             size_file: None,
@@ -578,6 +584,10 @@ impl App {
         if self.live && self.settings.tools != self.kept_tools {
             self.kept_tools.clone_from(&self.settings.tools);
             keep_tools(&tools_file(), self.kept_tools.as_deref());
+        }
+        if self.live && self.settings.theme != self.kept_theme {
+            self.kept_theme = self.settings.theme;
+            keep_theme(&theme_file(), self.kept_theme);
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -4304,6 +4314,28 @@ fn keep_tools(file: &Path, tools: Option<&Path>) {
     keep(file, tools.map(|p| p.to_string_lossy().into_owned()));
 }
 
+/// Where the theme chosen in Settings is kept between runs; System keeps no file.
+fn theme_file() -> PathBuf {
+    crate::data_folder().join("theme.txt")
+}
+
+fn kept_theme(file: &Path) -> ThemePreference {
+    match std::fs::read_to_string(file).unwrap_or_default().trim() {
+        "dark" => ThemePreference::Dark,
+        "light" => ThemePreference::Light,
+        _ => ThemePreference::System,
+    }
+}
+
+fn keep_theme(file: &Path, theme: ThemePreference) {
+    let text = match theme {
+        ThemePreference::Dark => Some("dark".to_owned()),
+        ThemePreference::Light => Some("light".to_owned()),
+        ThemePreference::System => None,
+    };
+    keep(file, text);
+}
+
 /// Where the drive identifier is kept between runs.
 fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
@@ -4880,6 +4912,22 @@ mod tests {
         assert!(!file.exists(), "gw finds a Greaseweazle by itself");
         std::fs::write(&file, "something else\nCOM3").unwrap();
         assert_eq!(kept_device(&file), (Kind::Greaseweazle, String::new()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_theme_is_kept_and_system_keeps_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-theme-{}", std::process::id()));
+        let file = dir.join("theme.txt");
+        assert_eq!(kept_theme(&file), ThemePreference::System);
+        for theme in [ThemePreference::Light, ThemePreference::Dark] {
+            keep_theme(&file, theme);
+            assert_eq!(kept_theme(&file), theme);
+        }
+        keep_theme(&file, ThemePreference::System);
+        assert!(!file.exists(), "System is the default");
+        std::fs::write(&file, "purple").unwrap();
+        assert_eq!(kept_theme(&file), ThemePreference::System);
         std::fs::remove_dir_all(&dir).ok();
     }
 
