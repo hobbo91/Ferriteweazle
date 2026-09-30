@@ -363,6 +363,8 @@ pub struct App {
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
+    /// By page, the format its settings fit.
+    format_fits: BTreeMap<String, form::FormatFit>,
     /// Where the window's size is kept: size_file() in the real app.
     pub size_file: Option<PathBuf>,
     /// The window's size as last kept, or as it opened.
@@ -455,6 +457,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             found_note: None,
+            format_fits: BTreeMap::new(),
             size_file: None,
             kept_size: WINDOW,
             new_size: None,
@@ -1525,6 +1528,14 @@ impl App {
         self.argv(cmd, &self.values_for(cmd))
     }
 
+    /// Fits the page's settings to its format: see `form::fit_format`.
+    fn fit_format(&mut self, schema: &Schema, cmd: &Command) -> bool {
+        let values = self.settings.values.entry(cmd.name.clone()).or_default();
+        let outputs = &mut self.settings.outputs;
+        let fit = self.format_fits.entry(cmd.name.clone()).or_default();
+        form::fit_format(&mut self.service, schema, cmd, values, outputs, fit)
+    }
+
     /// What a detect job needs: the drive and how the page reads it, or the
     /// image and how the page takes it in. A write's drive settings are for
     /// the disk it writes, not its image.
@@ -1626,6 +1637,10 @@ impl App {
                         adafruit: self.settings.kind == Kind::Adafruit,
                     }
                     .show(ui);
+                    // After the form, which names the page's images.
+                    if self.fit_format(&schema, cmd) {
+                        ui.ctx().request_repaint();
+                    }
                     if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));
@@ -3077,6 +3092,8 @@ impl App {
             values.set("diskdefs", kept);
         }
         self.settings.values.insert(name.clone(), values);
+        // Its settings suit its own format.
+        self.format_fits.remove(&name);
         self.settings.page = Page::Command(name);
     }
 
@@ -3247,6 +3264,8 @@ impl App {
                     .values
                     .insert(preset.command.clone(), preset.values);
                 self.settings.outputs.extend(preset.outputs);
+                // Its settings suit its own format.
+                self.format_fits.remove(&preset.command);
                 self.settings.page = Page::Command(preset.command);
             }
             Err(e) => {
@@ -5988,6 +6007,63 @@ mod tests {
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
         assert!(note.contains("Disabling Double step"), "{note}");
+    }
+
+    #[test]
+    fn a_page_takes_the_cylinders_of_a_format_from_its_image_type_or_from_detect() {
+        use egui::accesskit::Role;
+        let mut app = offline();
+        app.settings.page = Page::Command("read".into());
+        let out = Output {
+            folder: "/f".into(),
+            ext: ".adf".into(),
+            ..Output::default()
+        };
+        app.settings.outputs.insert("read/file".into(), out);
+        let read = app.settings.values.entry("read".into()).or_default();
+        read.set("tracks", "c=0-9:h=0");
+        let mut w = window(app);
+        let tracks = |w: &Harness<App>| w.state().settings.values["read"].get("tracks").to_owned();
+        assert_eq!(tracks(&w), "c=0-9:h=0", "set by hand");
+        w.get_all_by_role(Role::ComboBox)
+            .find(|c| c.value().is_some_and(|v| v.contains("(.adf)")))
+            .unwrap()
+            .click();
+        w.run_steps(2);
+        w.get_by_label_contains("(.d64)").click();
+        w.run_steps(2);
+        assert_eq!(tracks(&w), "", "a D64's format");
+
+        let read = w.state_mut().settings.values.get_mut("read").unwrap();
+        read.set("tracks", "c=0-9:h=0");
+        w.run_steps(2);
+        let app = w.state_mut();
+        app.detect_for = Some("read".into());
+        app.found(vec!["ibm.360".into()], 2);
+        w.run_steps(2);
+        assert_eq!(tracks(&w), "step=2", "Detect's format, and its double step");
+    }
+
+    #[test]
+    fn a_preset_or_a_pasted_command_keeps_the_track_list_it_brings() {
+        let schema = schema();
+        let mut app = offline();
+        app.settings.page = Page::Command("read".into());
+        let read = app.settings.values.entry("read".into()).or_default();
+        read.set("format", "ibm.1440");
+        let mut w = window(app);
+        let tracks = |w: &Harness<App>| w.state().settings.values["read"].get("tracks").to_owned();
+        let line = "gw read --format=ibm.720 --tracks=c=0-9 /d/x.img";
+        let (name, values, _) = command::parse(&schema, line).unwrap();
+        w.state_mut().fill_in(name, values);
+        w.run_steps(2);
+        assert_eq!(tracks(&w), "c=0-9");
+        let preset = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("presets")
+            .join("Read Amiga 880 KB, 84 cylinders.json");
+        w.state_mut().load_preset("read", &preset);
+        w.run_steps(2);
+        assert_eq!(tracks(&w), "c=0-83");
     }
 
     #[test]

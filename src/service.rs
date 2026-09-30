@@ -382,6 +382,21 @@ impl Service {
             .or_insert_with(|| Load::Waiting(call(requests, body)))
     }
 
+    /// Takes a format's size as if gw had given it, for tests.
+    #[cfg(test)]
+    pub fn describe(&mut self, name: &str, cyls: u32, heads: u32) {
+        let info = FormatInfo {
+            cyls,
+            heads,
+            encoding: None,
+            sectors: None,
+            bytes: None,
+            verifies: false,
+        };
+        let key = (String::new(), None, name.to_owned());
+        self.infos.insert(key, Load::Ready(info));
+    }
+
     /// As `format_info`, from what gw has already said.
     pub fn known_format_info(&self, diskdefs: &str, name: &str) -> Option<&Load<FormatInfo>> {
         let key = (

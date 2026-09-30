@@ -1568,8 +1568,25 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     w.run_steps(2);
     assert_eq!(sides(&w), [(true, false), (true, true)]);
 
-    // The list keeps side 1 alone, so a click still changes the sides.
+    // Another format brings its own sides.
     choose_format(&mut w, "ibm.160");
+    until_shown(&mut w, "one side", |w| {
+        w.query_by_label_contains("1\u{a0}side").is_some()
+    });
+    assert_eq!(sides(&w), [(false, true), (false, false)]);
+    side(&w, "1").hover();
+    until_shown(&mut w, "why side 1 is greyed", |w| {
+        w.query_by_label("This format is single sided.").is_some()
+    });
+    assert!(w.query_by_label("Which tracks to read.").is_none());
+
+    // A list of the page's own, such as a preset's, keeps side 1 alone, so a
+    // click still changes the sides.
+    let mut settings = Settings::default();
+    let read = settings.values.entry("read".into()).or_default();
+    read.set("format", "ibm.160");
+    read.set("tracks", "h=1");
+    let mut w = window(&tools, settings);
     until_shown(&mut w, "one side", |w| {
         w.query_by_label_contains("1\u{a0}side").is_some()
     });
@@ -1577,12 +1594,6 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     side(&w, "0").click();
     w.run_steps(2);
     assert_eq!(sides(&w), [(false, true), (false, false)]);
-
-    side(&w, "1").hover();
-    until_shown(&mut w, "why side 1 is greyed", |w| {
-        w.query_by_label("This format is single sided.").is_some()
-    });
-    assert!(w.query_by_label("Which tracks to read.").is_none());
 }
 
 #[test]

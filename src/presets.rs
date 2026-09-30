@@ -166,7 +166,7 @@ mod tests {
             );
             let last = crate::form::last_cylinder(preset.values.get("tracks"), None);
             assert!(
-                last.is_none_or(|c| c <= 83),
+                last.is_none_or(|c| c <= crate::form::LAST_USUAL_CYLINDER),
                 "{name} steps to cylinder {last:?}"
             );
             // A read makes the type the page picks for its format, or flux without one.

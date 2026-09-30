@@ -1485,6 +1485,9 @@ pub const USUAL_DISK: (u32, u32) = (82, 2);
 /// Cylinders of gw's 0-81 still within reach when double stepped: 0-40.
 const DOUBLE_REACH: u32 = USUAL_DISK.0.div_ceil(2);
 
+/// The last cylinder gw seeks to without asking: it calls any further one extreme.
+pub const LAST_USUAL_CYLINDER: u32 = 83;
+
 /// Why settings with every argument filled in still cannot run.
 pub fn blocked(
     schema: &Schema,
@@ -2836,6 +2839,98 @@ pub fn with_step(tracks: &str, step: u32) -> String {
     spec.to_string()
 }
 
+/// The format a page's settings fit, once the page is seen, and whether its
+/// double step waits for gw to size that format.
+#[derive(Debug, Default)]
+pub struct FormatFit {
+    format: Option<Option<String>>,
+    sizing: bool,
+}
+
+/// Fits a page's settings to its format whenever that changes, by any route:
+/// the cylinders and sides, and an HFE's bitrate, become the new format's,
+/// as gw takes them unset. Double step belongs to the drive and stays, unless
+/// the format double stepped would pass LAST_USUAL_CYLINDER. A page not yet
+/// seen is taken as it is. True if the page changed.
+pub fn fit_format(
+    service: &mut Service,
+    schema: &Schema,
+    cmd: &Command,
+    values: &mut Values,
+    outputs: &mut BTreeMap<String, Output>,
+    fit: &mut FormatFit,
+) -> bool {
+    if cmd.arg("format").is_none() || cmd.arg("tracks").is_none() {
+        return false;
+    }
+    let format = effective_format(service, schema, cmd, values);
+    // gw has yet to say which format the input file holds.
+    if format.is_none()
+        && format_in_file(schema, cmd, values)
+        && matches!(
+            service.image_format(input_file(cmd, values)),
+            Load::Waiting(_)
+        )
+    {
+        return false;
+    }
+    let mut changed = false;
+    let put = |values: &mut Values, dest: &str, spec: &TrackSpec| {
+        let spec = spec.to_string();
+        let new = values.get(dest) != spec;
+        values.set(dest, spec);
+        new
+    };
+    match &fit.format {
+        None => fit.format = Some(format),
+        Some(was) if *was == format => {}
+        Some(_) => {
+            let mut spec = TrackSpec::parse(values.get("tracks"));
+            let double = spec.step.as_deref() == Some("2");
+            (spec.c, spec.h) = (None, None);
+            // With no format, as the picker keeps it to what the drive reaches.
+            if double && format.is_none() {
+                spec.c = Some(format!("0-{}", DOUBLE_REACH - 1));
+            }
+            changed |= put(values, "tracks", &spec);
+            if cmd.arg("out_tracks").is_some() {
+                let mut out = TrackSpec::parse(values.get("out_tracks"));
+                (out.c, out.h) = (None, None);
+                changed |= put(values, "out_tracks", &out);
+            }
+            // Flux as read has no bitrate of its own to give.
+            if format.is_some() && !values.on("raw") {
+                for (_, dest) in OUTPUTS.iter().filter(|(c, _)| *c == cmd.name) {
+                    let out = outputs.get_mut(&output_key(&cmd.name, dest));
+                    if let Some(out) = out.filter(|o| o.ext == ".hfe") {
+                        changed |= out.opts.remove("bitrate").is_some();
+                    }
+                }
+            }
+            fit.sizing = double && format.is_some();
+            fit.format = Some(format);
+        }
+    }
+    if fit.sizing
+        && let Some(Some(name)) = &fit.format
+    {
+        let diskdefs = diskdefs_for(service, values, name);
+        match service.format_info(&diskdefs, name) {
+            Load::Waiting(_) => {}
+            Load::Failed(_) => fit.sizing = false,
+            Load::Ready(info) => {
+                fit.sizing = false;
+                if info.cyls.saturating_sub(1) * 2 > LAST_USUAL_CYLINDER {
+                    let mut spec = TrackSpec::parse(values.get("tracks"));
+                    spec.step = None;
+                    changed |= put(values, "tracks", &spec);
+                }
+            }
+        }
+    }
+    changed
+}
+
 /// The furthest physical cylinder of a track list over a format of `cyls`
 /// cylinders, as gw steps to it: None for a list the picker cannot read, such
 /// as one with head offsets.
@@ -3704,6 +3799,138 @@ mod tests {
         h.get_by_label("Double step").click();
         h.run();
         assert_eq!(h.state().0.get("tracks"), "");
+    }
+
+    #[test]
+    fn a_new_format_brings_its_own_cylinders_and_sides_by_any_route() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        let mut fit = |command: &str, v: &mut Values, f: &mut FormatFit| {
+            let cmd = s.command(command).unwrap();
+            fit_format(&mut service, &s, cmd, v, &mut BTreeMap::new(), f)
+        };
+        // The format list.
+        let (mut v, mut f) = (values(&[("format", "ibm.1440")]), FormatFit::default());
+        fit("read", &mut v, &mut f);
+        v.set("tracks", "c=0-39:h=0");
+        assert!(
+            !fit("read", &mut v, &mut f),
+            "a track list set by hand stays"
+        );
+        choose_format(&s, read, &mut v, &mut BTreeMap::new(), "ibm.1440");
+        fit("read", &mut v, &mut f);
+        assert_eq!(v.get("tracks"), "c=0-39:h=0", "the same format again");
+        choose_format(&s, read, &mut v, &mut BTreeMap::new(), "ibm.360");
+        assert!(fit("read", &mut v, &mut f));
+        assert_eq!(v.get("tracks"), "");
+
+        // The image type, with no format chosen.
+        let (mut v, mut f) = (values(&[("file", "/f/x.adf")]), FormatFit::default());
+        fit("read", &mut v, &mut f);
+        v.set("tracks", "c=0-9");
+        v.set("file", "/f/x.d64");
+        fit("read", &mut v, &mut f);
+        assert_eq!(v.get("tracks"), "");
+
+        // The image to write, whose swapped sides are the drive's.
+        let (mut v, mut f) = (values(&[("file", "/f/a.adf")]), FormatFit::default());
+        fit("write", &mut v, &mut f);
+        v.set("tracks", "c=0-9:hswap");
+        v.set("file", "/f/b.adf");
+        fit("write", &mut v, &mut f);
+        assert_eq!(
+            v.get("tracks"),
+            "c=0-9:hswap",
+            "another image of the same format"
+        );
+        v.set("file", "/f/c.d64");
+        fit("write", &mut v, &mut f);
+        assert_eq!(v.get("tracks"), "hswap");
+        // An image that holds its format waits for gw to read it.
+        v.set("tracks", "c=0-9");
+        v.set("file", "/f/d.nsi");
+        fit("write", &mut v, &mut f);
+        assert_eq!(v.get("tracks"), "c=0-9");
+
+        // A conversion's output tracks too.
+        let pairs = [
+            ("in_file", "/f/a.adf"),
+            ("tracks", "c=0-9"),
+            ("out_tracks", "c=0-9:h=0:step=2"),
+        ];
+        let (mut v, mut f) = (values(&pairs), FormatFit::default());
+        fit("convert", &mut v, &mut f);
+        v.set("in_file", "/f/a.d64");
+        fit("convert", &mut v, &mut f);
+        assert_eq!((v.get("tracks"), v.get("out_tracks")), ("", "step=2"));
+
+        // An HFE's bitrate, which a format gives and flux as read cannot.
+        let convert = s.command("convert").unwrap();
+        let mut hfe = output(".hfe");
+        hfe.opts.insert("bitrate".into(), "500".into());
+        let mut o = BTreeMap::from([(output_key("convert", "out_file"), hfe.clone())]);
+        let pairs = [("in_file", "/f/a.scp"), ("out_file", &hfe.value(1))];
+        let (mut v, mut f) = (values(&pairs), FormatFit::default());
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        v.set("in_file", "/f/a.adf");
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        assert_eq!(o["convert/out_file"].opts.get("bitrate"), None);
+        o.insert(output_key("convert", "out_file"), hfe.clone());
+        v.set("in_file", "/f/b.scp");
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        assert!(
+            o["convert/out_file"].opts.contains_key("bitrate"),
+            "no format"
+        );
+        let mut o = BTreeMap::from([(output_key("read", "file"), hfe)]);
+        let pairs = [("format", "ibm.720"), ("raw", ON)];
+        let (mut v, mut f) = (values(&pairs), FormatFit::default());
+        fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+        choose_format(&s, read, &mut v, &mut o, "ibm.1440");
+        fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+        assert!(
+            o["read/file"].opts.contains_key("bitrate"),
+            "Raw keeps the flux"
+        );
+    }
+
+    #[test]
+    fn double_step_stays_with_the_drive_unless_the_new_format_would_pass_cylinder_83() {
+        let s = schema();
+        let read = s.command("read").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        service.describe("ibm.1440", 80, 2);
+        service.describe("c64.42", 42, 1);
+        service.describe("c64.43", 43, 1);
+        // Detect's double step for a 40-track disk, then another format.
+        let mut refit = |to: &str| {
+            let mut v = values(&[("format", "ibm.360"), ("tracks", "c=0-39:step=2")]);
+            let (mut o, mut f) = (BTreeMap::new(), FormatFit::default());
+            fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+            v.set("format", to);
+            fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+            v.get("tracks").to_owned()
+        };
+        assert_eq!(refit("ibm.1440"), "", "double stepped, 80 reach 158");
+        assert_eq!(refit("c64.42"), "step=2", "42 reach 82");
+        assert_eq!(refit("c64.43"), "", "43 reach 84");
+        assert_eq!(
+            refit(""),
+            "c=0-40:step=2",
+            "no format: what the drive reaches"
+        );
+
+        // A format gw has yet to size, as a standalone gw never does, keeps it.
+        let mut v = values(&[("format", "ibm.360"), ("tracks", "step=2")]);
+        let (mut o, mut f) = (BTreeMap::new(), FormatFit::default());
+        fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+        v.set("format", "ibm.720");
+        fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+        assert_eq!(v.get("tracks"), "step=2");
+        service.describe("ibm.720", 80, 2);
+        fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
+        assert_eq!(v.get("tracks"), "");
     }
 
     #[test]
