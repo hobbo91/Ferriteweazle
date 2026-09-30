@@ -1413,7 +1413,9 @@ impl<'a> Form<'a> {
             .id_salt(("passes", &self.cmd.name))
             .show_unindented(ui, |ui| {
                 ui.add_space(6.0);
-                let tip = "Maximum number of times to read a disk with missing or damaged sectors.";
+                let tip = "Maximum number of times to read a disk with missing or damaged sectors. \
+                           Retries re-read a track before moving on. A pass comes back to it after \
+                           the rest of the disk.";
                 let (name, _) = row(ui, "Passes", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
                     let passes = egui::DragValue::new(&mut out.passes).range(1..=MAX_PASSES);
