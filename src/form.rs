@@ -385,8 +385,13 @@ impl<'a> Form<'a> {
         if self.cmd.name == "update" {
             self.firmware(ui);
         }
-        for a in &first {
+        for a in first.iter().filter(|a| !a.is("TrackSet")) {
             action = action.or(self.arg(ui, a));
+        }
+        // A track list is a section of its own, open where it is all the page has.
+        if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
+            ui.add_space(4.0);
+            self.track_section(ui, a, first.len() == 1);
         }
         if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
             ui.add_space(4.0);
@@ -414,7 +419,10 @@ impl<'a> Form<'a> {
                 .show_unindented(ui, |ui| {
                     ui.add_space(6.0);
                     for a in &rest {
-                        action = action.or(self.arg(ui, a));
+                        match a.is("TrackSet") {
+                            true => self.track_section(ui, a, false),
+                            false => action = action.or(self.arg(ui, a)),
+                        }
                     }
                 });
         }
@@ -456,13 +464,7 @@ impl<'a> Form<'a> {
         let tip = tip(&self.cmd.name, a);
         // gw's own help for values such as track lists, its columns kept.
         let grammar = grammar(self.schema, a);
-        let explain = |ui: &mut Ui| {
-            ui.label(&tip);
-            if let Some(g) = grammar {
-                let text = RichText::new(g.trim_end()).monospace();
-                ui.add(egui::Label::new(text).extend());
-            }
-        };
+        let explain = |ui: &mut Ui| explain(ui, &tip, grammar);
         name.on_hover_ui(explain);
         // Laid over the field, so it is hovered along with whatever is under
         // it, unless that has a tooltip of its own.
@@ -491,7 +493,6 @@ impl<'a> Form<'a> {
     fn field(&mut self, ui: &mut Ui, a: &Arg) -> Option<Action> {
         match a.dest.as_str() {
             "format" => return self.format(ui, a),
-            _ if a.is("TrackSet") => self.tracks(ui, a),
             "file" | "in_file" if a.positional() => self.input(ui, a),
             "diskdefs" => self.diskdefs(ui, a),
             // Shown once File is chosen, so it is needed.
@@ -913,13 +914,30 @@ impl<'a> Form<'a> {
         chosen
     }
 
-    fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
+    /// A track list as a section of its own, its title summing the list up.
+    fn track_section(&mut self, ui: &mut Ui, a: &Arg, open: bool) {
+        let title = format!("{} ({})", label(a), self.track_view(a).summary());
+        let r = egui::CollapsingHeader::new(RichText::new(title).strong())
+            .id_salt(("tracks", &self.cmd.name, &a.dest))
+            .default_open(open)
+            .show_unindented(ui, |ui| {
+                ui.add_space(6.0);
+                self.tracks(ui, a);
+            });
+        let tip = tip(&self.cmd.name, a);
+        let grammar = grammar(self.schema, a);
+        r.header_response
+            .on_hover_ui(|ui| explain(ui, &tip, grammar));
+    }
+
+    /// A track list, and what the picker needs to show it.
+    fn track_view(&mut self, a: &Arg) -> TrackView {
         let format = self.effective_format();
         let (cyls, heads) = format
             .as_ref()
             .and_then(|f| self.format_info(f).ready().map(|i| (i.cyls, i.heads)))
             .unwrap_or(USUAL_DISK);
-        let mut spec = TrackSpec::parse(self.values.get(&a.dest));
+        let spec = TrackSpec::parse(self.values.get(&a.dest));
         // Unset, gw's output tracks are the cylinders and sides read.
         let output = a.dest == "out_tracks";
         let base = match output {
@@ -928,28 +946,60 @@ impl<'a> Form<'a> {
         };
         // With no format gw takes 0-81 at any step; stepped further, the
         // picker keeps to those the drive reaches and names them.
-        let step = spec.steps().unwrap_or(1);
-        let short = !output && format.is_none() && step > 1;
-        let cyls = if short { reach(step) } else { cyls };
+        let free = !output && format.is_none();
+        let short = free && spec.steps().unwrap_or(1) > 1;
+        let cyls = match short {
+            true => reach(spec.steps().unwrap_or(1)),
+            false => cyls,
+        };
+        let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
+        TrackView {
+            spec,
+            base,
+            heads,
+            whole,
+            short,
+            free,
+        }
+    }
+
+    /// The track picker's rows, or gw's notation typed where they cannot show the list.
+    fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
+        let TrackView {
+            mut spec,
+            base,
+            heads,
+            whole,
+            short,
+            free,
+        } = self.track_view(a);
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
         let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
-        ui.vertical(|ui| {
-            if as_text {
+        if as_text {
+            let (name, field) = row(ui, "Track list", |ui| {
                 ui.horizontal(|ui| {
                     let hint = example(self.schema, "TSPEC").unwrap_or_default();
                     let width = field_width(ui);
                     self.typed(ui, a, hint, width);
-                });
-            } else {
-                let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
-                let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
-                let mut changed = false;
-                // Wraps rather than run past the field's edge in a narrow window.
-                ui.horizontal_wrapped(|ui| {
+                })
+                .response
+            });
+            let tip = tip(&self.cmd.name, a);
+            let grammar = grammar(self.schema, a);
+            let explain = |ui: &mut Ui| explain(ui, &tip, grammar);
+            name.on_hover_ui(explain);
+            // Laid over the field, as for any other argument.
+            let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
+            over.on_hover_ui(explain);
+        } else {
+            let step = spec.steps().unwrap_or(1);
+            let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
+            let mut changed = false;
+            let (name, _) = row(ui, "Cylinders", |ui| {
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     // Cylinder numbers have three digits at most.
                     ui.spacing_mut().interact_size.x = NUMBER_BOX;
-                    ui.label("Cylinders");
                     changed |= ui
                         .add(egui::DragValue::new(&mut first).range(0..=last))
                         .changed();
@@ -957,30 +1007,19 @@ impl<'a> Form<'a> {
                     changed |= ui
                         .add(egui::DragValue::new(&mut last).range(first..=254))
                         .changed();
-                    if changed {
-                        let default = (first, last) == whole && !short;
-                        spec.c = match spec.half() {
-                            true => Some(format!("{first}-{last}/2")),
-                            false => (!default).then(|| format!("{first}-{last}")),
-                        };
-                    }
-                    // The sides and their buttons wrap together.
-                    let font = egui::TextStyle::Body.resolve(ui.style());
-                    let text = |t: &str| {
-                        let galley = ui.painter().layout_no_wrap(
-                            t.into(),
-                            font.clone(),
-                            Color32::PLACEHOLDER,
-                        );
-                        galley.size().x
-                    };
-                    let button = text("0") + 2.0 * ui.spacing().button_padding.x;
-                    let spacing = ui.spacing().item_spacing.x;
-                    if ui.available_size_before_wrap().x < text("Sides") + 2.0 * (button + spacing)
-                    {
-                        ui.end_row();
-                    }
-                    ui.label("Sides");
+                })
+            });
+            name.on_hover_text("The first and last cylinder.");
+            if changed {
+                let default = (first, last) == whole && !short;
+                spec.c = match spec.half() {
+                    true => Some(format!("{first}-{last}/2")),
+                    false => (!default).then(|| format!("{first}-{last}")),
+                };
+            }
+            let (name, _) = row(ui, "Sides", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     let mut sides = TrackSpec {
                         h: spec.h.clone().or_else(|| base.h.clone()),
                         ..TrackSpec::default()
@@ -991,35 +1030,35 @@ impl<'a> Form<'a> {
                         let r = ui
                             .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
                             .on_disabled_hover_text("This format is single sided.");
-                        if fixed && r.contains_pointer() {
-                            ui.data_mut(|d| d.insert_temp(own_tip_id(), true));
-                        }
                         if r.clicked() {
                             sides.toggle_head(head, heads);
                             spec.h = sides.h.clone();
                             changed = true;
                         }
                     }
-                });
+                    ui.add_space(12.0);
+                    changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
+                        .on_hover_text("Use head 1 for side 0 and head 0 for side 1.")
+                        .changed();
+                })
+            });
+            name.on_hover_text("The sides to use.");
+            let (name, _) = row(ui, "Step", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let tip = "Head steps per cylinder. 2 reads a 40-track disk in an \
-                               80-track drive.";
-                    ui.label("Step").own_tip(tip);
                     let now = spec.step.as_deref().unwrap_or("1");
                     let now = STEPS.iter().position(|&s| s == now);
                     for (i, value) in STEPS.into_iter().enumerate() {
                         let (text, tip) = match value {
                             HALF => ("½", HALF_TIP),
-                            _ => (value, tip),
+                            _ => (value, STEP_TIP),
                         };
                         let r = ui.add(egui::Button::selectable(now == Some(i), text));
-                        if !r.own_tip(tip).clicked() || now == Some(i) {
+                        if !r.on_hover_text(tip).clicked() || now == Some(i) {
                             continue;
                         }
                         // With no format, a list kept to the drive's reach takes the new step's.
                         let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
-                        let free = !output && format.is_none();
                         let kept = free && spec.c == reached(step);
                         if value == HALF {
                             let (a, b) = if kept {
@@ -1043,17 +1082,13 @@ impl<'a> Form<'a> {
                         }
                         changed = true;
                     }
-                    ui.add_space(6.0);
-                    changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
-                        .own_tip("Use head 1 for side 0 and head 0 for side 1.")
-                        .changed();
-                });
+                })
+            });
+            name.on_hover_text(STEP_TIP);
+            let (name, _) = row(ui, "Head offset", |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.spacing_mut().interact_size.x = NUMBER_BOX;
-                    ui.label("Head offset").own_tip(
-                        "Cylinders to move each side's head by, for a flippy-modded drive.",
-                    );
                     let named = TrackSpec {
                         h: spec.h.clone().or_else(|| base.h.clone()),
                         ..TrackSpec::default()
@@ -1063,7 +1098,9 @@ impl<'a> Form<'a> {
                         ("Side 1", "Side 1's offset, in cylinders.", "Needs side 1."),
                     ];
                     for (head, (text, tip, why)) in sides.into_iter().enumerate() {
-                        ui.add_space(6.0);
+                        if head == 1 {
+                            ui.add_space(6.0);
+                        }
                         ui.label(text);
                         let value = egui::DragValue::new(&mut spec.off[head])
                             .range(-MAX_OFFSET..=MAX_OFFSET)
@@ -1074,15 +1111,18 @@ impl<'a> Form<'a> {
                             .custom_parser(|t| t.trim().parse::<i32>().ok().map(f64::from));
                         changed |= ui
                             .add_enabled(named.has_head(head as u32, heads), value)
-                            .own_tip(tip)
+                            .on_hover_text(tip)
                             .on_disabled_hover_text(why)
                             .changed();
                     }
-                });
-                if changed {
-                    self.values.set(&a.dest, spec.to_string());
-                }
+                })
+            });
+            name.on_hover_text("Cylinders to move each side's head by, for a flippy-modded drive.");
+            if changed {
+                self.values.set(&a.dest, spec.to_string());
             }
+        }
+        row(ui, "", |ui| {
             let flip = if as_text {
                 "Use the track picker"
             } else {
@@ -1691,6 +1731,8 @@ const STEPS: [&str; 5] = ["1", "2", "3", "4", HALF];
 
 /// gw's half step: each two of the list's cylinders on one of the drive's.
 const HALF: &str = "1/2";
+
+const STEP_TIP: &str = "Head steps per cylinder. 2 reads a 40-track disk in an 80-track drive.";
 
 const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, 2…, for an image numbered \
      in half tracks.";
@@ -2452,6 +2494,15 @@ const TIPS: &[(&str, &str, &str)] = &[
 ];
 
 /// gw's help for the kind of value an argument takes, such as TSPEC's.
+/// An argument's tip, then gw's grammar for its value, as a hover.
+fn explain(ui: &mut Ui, tip: &str, grammar: Option<&str>) {
+    ui.label(tip);
+    if let Some(g) = grammar {
+        let text = RichText::new(g.trim_end()).monospace();
+        ui.add(egui::Label::new(text).extend());
+    }
+}
+
 fn grammar<'s>(schema: &'s Schema, a: &Arg) -> Option<&'s str> {
     let name = match a.ty.as_deref() {
         // gw 1.23 names this kind in its help but not on the argument.
@@ -3234,6 +3285,53 @@ pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
         .filter(|&h| spec.has_head(h, 2))
         .map(|h| spec.off[h as usize]);
     u32::try_from(last + i64::from(off.max()?)).ok()
+}
+
+/// A track list as the picker shows it.
+struct TrackView {
+    spec: TrackSpec,
+    /// For output tracks, the input's list: unset, they are its cylinders and sides.
+    base: TrackSpec,
+    heads: u32,
+    /// The cylinders shown when the list names none.
+    whole: (u32, u32),
+    /// With no format and a step above 1, kept to the cylinders the drive reaches.
+    short: bool,
+    /// Neither a format nor an input's list limits the cylinders.
+    free: bool,
+}
+
+impl TrackView {
+    /// The list in a few words, "0–79, both sides, step 2", or gw's notation.
+    fn summary(&self) -> String {
+        let spec = &self.spec;
+        if !spec.simple() {
+            return spec.to_string();
+        }
+        let (first, last) = spec.cylinders().unwrap_or(self.whole);
+        let named = TrackSpec {
+            h: spec.h.clone().or_else(|| self.base.h.clone()),
+            ..TrackSpec::default()
+        };
+        let sides = match (named.has_head(0, self.heads), named.has_head(1, self.heads)) {
+            (true, true) => "both sides",
+            (true, false) => "side 0",
+            _ => "side 1",
+        };
+        let mut parts = vec![format!("{first}–{last}"), sides.to_owned()];
+        match spec.step.as_deref() {
+            Some(HALF) => parts.push("half step".into()),
+            Some(s) if s != "1" => parts.push(format!("step {s}")),
+            _ => {}
+        }
+        if spec.hswap {
+            parts.push("sides swapped".into());
+        }
+        for (head, off) in spec.off.iter().enumerate().filter(|(_, o)| **o != 0) {
+            parts.push(format!("side {head} {off:+}"));
+        }
+        parts.join(", ")
+    }
 }
 
 /// Which tracks, in gw's notation: `c=0-79:h=0:step=2:hswap`.
@@ -4435,6 +4533,11 @@ mod tests {
         let mut h = page("convert", v, BTreeMap::new());
         h.get_by_label_contains("Advanced options").click();
         h.run();
+        // Unset, the output tracks are the input's, and say so.
+        for section in ["Tracks (0–39, side 0)", "Output tracks (0–39, side 0)"] {
+            h.get_by_label(section).click();
+            h.run();
+        }
         // Each picker's cylinders, then its head offsets.
         let ends: Vec<_> = h
             .get_all_by_role(Role::SpinButton)
@@ -4451,9 +4554,38 @@ mod tests {
     }
 
     #[test]
+    fn a_track_list_is_a_section_titled_with_the_list_and_open_where_it_is_all_there_is() {
+        let title = |tracks: &str| {
+            let h = page("read", values(&[("tracks", tracks)]), BTreeMap::new());
+            assert!(h.query_by_label("Cylinders").is_none(), "shut");
+            let header = h.get_by_label_contains("Tracks (");
+            header
+                .accesskit_node()
+                .label()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(title(""), "Tracks (0–81, both sides)");
+        assert_eq!(
+            title("c=0-39:h=1:step=2:hswap:h1.off=-8"),
+            "Tracks (0–39, side 1, step 2, sides swapped, side 1 -8)"
+        );
+        assert_eq!(
+            title("c=0-81/2:step=1/2"),
+            "Tracks (0–81, both sides, half step)"
+        );
+        assert_eq!(title("c=0-7,9-12"), "Tracks (c=0-7,9-12)", "gw's notation");
+
+        let h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("Cylinders");
+    }
+
+    #[test]
     fn a_track_list_the_picker_cannot_show_says_so_on_its_link() {
         let v = values(&[("tracks", "c=0-7,9-12")]);
         let mut h = page("read", v, BTreeMap::new());
+        h.get_by_label("Tracks (c=0-7,9-12)").click();
+        h.run();
         h.get_by_label("Use the track picker").hover();
         h.run();
         h.get_by_label("The track picker cannot show this track list.");
@@ -4772,10 +4904,12 @@ mod tests {
     fn a_value_gw_has_a_grammar_for_shows_it_on_hover() {
         let typed = "c=0-7,9-12";
         let mut h = page("read", values(&[("tracks", typed)]), BTreeMap::new());
-        h.get_by_label("Tracks").hover();
+        let header = format!("Tracks ({typed})");
+        h.get_by_label(&header).hover();
         h.run();
         h.get_by_label("Which tracks to read.");
         h.get_by_label_contains("h[01].off");
+        h.get_by_label(&header).click();
         h.event(egui::Event::PointerGone);
         h.run();
         h.get_all_by_role(Role::TextInput)

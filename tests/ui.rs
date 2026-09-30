@@ -1615,20 +1615,13 @@ fn a_rows_tick_box_is_level_with_its_label() {
 }
 
 #[test]
-fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
+fn the_window_as_it_opens_needs_no_scrolling() {
     let w = window_at(DEFAULT, chosen());
     let bars: Vec<_> = w
         .query_all_by_role(Role::ScrollBar)
         .map(|b| b.rect())
         .collect();
     assert!(bars.is_empty(), "something scrolls: {bars:?}");
-    let cylinders = w.get_by_label("Cylinders").rect();
-    // Side 1's button, before Step's 1.
-    let side_1 = w.get_all_by_label("1").rev().nth(1).unwrap().rect();
-    assert!(
-        (side_1.center().y - cylinders.center().y).abs() < 2.0,
-        "the sides wrap under the cylinders: {side_1:?}, {cylinders:?}"
-    );
 }
 
 #[test]
@@ -1660,13 +1653,6 @@ fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
         assert!(
             legend.bottom() < limit,
             "{drawer:?}: the legend at {legend:?}"
-        );
-        // The sides' buttons wrap with their label, not apart.
-        let sides = w.get_by_label("Sides").rect();
-        let side_1 = w.get_all_by_label("1").rev().nth(1).unwrap().rect();
-        assert!(
-            side_1.top() < sides.bottom() && sides.top() < side_1.bottom(),
-            "{drawer:?}: {sides:?}, {side_1:?}"
         );
     }
 }
