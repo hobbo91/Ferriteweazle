@@ -11,8 +11,9 @@
 - Supports Greaseweazle and the Adafruit Feather RP2040
 - Detects the most likely disk format(s) for reading and writing images
 - Single or batched reads, writes and image conversions
+- Ability to run multiple passes over disks with failed reads which exceed the retries 
 - Built-in log viewer that can save to a file
-- Shows the command line version of any action, as well as letting you pass extra arguments
+- Shows the command line version of an action, as well as letting you pass extra arguments
 - Drag and drop images into the app
 - Most settings/options have a helpful tooltip 
 - Various safety features, such as confirmations before destructive actions and waiting for an action to finish. 
