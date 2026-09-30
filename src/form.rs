@@ -1507,11 +1507,23 @@ impl<'a> Form<'a> {
                 let tip = "The number of the first disk to read, to carry on a set.";
                 let (name, _) = row(ui, "First disk", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
-                    let first = egui::DragValue::new(&mut out.first).range(1..=out.disks.max(1));
+                    let width = out.first_digits as usize;
+                    let digits = std::cell::Cell::new(None);
+                    let first = egui::DragValue::new(&mut out.first)
+                        .range(1..=out.disks.max(1))
+                        .custom_formatter(|n, _| format!("{:0width$}", n as u32))
+                        .custom_parser(|text| {
+                            let (n, typed) = typed_number(text)?;
+                            digits.set(Some(typed));
+                            Some(f64::from(n))
+                        });
                     ui.add_enabled_ui(numbered, |ui| ui.add_sized(size, first))
                         .inner
                         .on_hover_text(tip)
                         .on_disabled_hover_text(why);
+                    if let Some(typed) = digits.get() {
+                        out.first_digits = typed;
+                    }
                 });
                 name.on_hover_text(tip);
                 let tip = "The text before each disk number, such as Disk in Samples_Disk1.";
@@ -1546,7 +1558,7 @@ impl<'a> Form<'a> {
                         let text = match out.ask_names {
                             true => "Asks for each disk's name before reading it.".to_owned(),
                             false => {
-                                format!("Asks for each disk sequentially: {}", out.preview_names())
+                                format!("Names each disk sequentially: {}", out.preview_names())
                             }
                         };
                         ui.label(RichText::new(text).small().color(theme::palette(ui).dim));
@@ -1573,6 +1585,13 @@ const REPLACES_INPUTS: &str =
 
 /// The most disks one session reads.
 const MAX_DISKS: u32 = 256;
+
+/// A number as typed, and its digits: `08` is 8 in 2 digits.
+fn typed_number(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim();
+    let digits = text.chars().all(|c| c.is_ascii_digit());
+    Some((text.parse().ok().filter(|_| digits)?, text.len() as u32))
+}
 
 /// The most passes a read makes.
 pub const MAX_PASSES: u32 = 5;
@@ -2780,6 +2799,8 @@ pub struct Output {
     pub disks: u32,
     /// The number of the first disk a session reads, to carry on a set.
     pub first: u32,
+    /// The digits `first` was typed with, 2 for 01: every disk number has at least as many.
+    pub first_digits: u32,
     /// The word before each disk number: `Disk` in `Game_Disk1`.
     pub label: String,
     /// The disk number goes before the name, not after it.
@@ -2811,6 +2832,7 @@ impl Default for Output {
             name: "Floppy".into(),
             disks: 1,
             first: 1,
+            first_digits: 1,
             label: String::new(),
             number_first: false,
             ask_names: false,
@@ -2861,7 +2883,7 @@ impl Output {
         if self.disks <= 1 || self.ask_names {
             return typed_name(name, ext);
         }
-        let width = self.disks.to_string().len();
+        let width = self.first_digits as usize;
         let number = format!("{}{disk:0width$}", self.label.trim());
         let stem = match self.number_first {
             true => format!("{number}_{name}"),
@@ -4255,7 +4277,7 @@ mod tests {
         );
         out.disks = 12;
         out.number_first = true;
-        out.label = "Side".into();
+        (out.label, out.first_digits) = ("Side".into(), 2);
         assert_eq!(out.file_name(2), "Side02_Game.adf");
         out.label.clear();
         assert_eq!(out.file_name(12), "12_Game.adf");
@@ -4584,6 +4606,45 @@ mod tests {
     }
 
     #[test]
+    fn disk_numbers_have_the_digits_the_first_was_typed_with() {
+        assert_eq!(typed_number("08"), Some((8, 2)));
+        assert_eq!(typed_number("1"), Some((1, 1)));
+        assert_eq!(typed_number(" 001 "), Some((1, 3)));
+        assert_eq!(typed_number("1a"), None);
+        let out = Output {
+            name: "Game".into(),
+            label: "Disk".into(),
+            disks: 100,
+            first_digits: 2,
+            ..output(".adf")
+        };
+        let names = [1, 10, 100].map(|d| out.file_name(d));
+        let typed = ["Game_Disk01.adf", "Game_Disk10.adf", "Game_Disk100.adf"];
+        assert_eq!(names, typed, "not padded to the 3 digits of 100");
+
+        let out = Output { disks: 12, ..out };
+        let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+        let mut h = page("read", Values::default(), outputs);
+        h.get_by_label("Multiple disks (12)").click();
+        h.run();
+        for (first, names) in [
+            ("1", "Game_Disk1.adf, Game_Disk2.adf … Game_Disk12.adf"),
+            (
+                "001",
+                "Game_Disk001.adf, Game_Disk002.adf … Game_Disk012.adf",
+            ),
+        ] {
+            h.get_all_by_role(Role::SpinButton).last().unwrap().click();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.event(egui::Event::Text(first.into()));
+            h.key_press(egui::Key::Enter);
+            h.run();
+            h.get_by_label(&format!("Names each disk sequentially: {names}"));
+        }
+    }
+
+    #[test]
     fn a_set_reads_up_to_256_disks() {
         let out = Output {
             name: "Game".into(),
@@ -4596,7 +4657,7 @@ mod tests {
         h.run();
         let out = &h.state().1[&output_key("read", "file")];
         assert_eq!(out.disks, 256);
-        let names = "Game_001.adf, Game_002.adf … Game_256.adf";
+        let names = "Game_1.adf, Game_2.adf … Game_256.adf";
         assert_eq!(out.preview_names(), names);
     }
 
@@ -4656,11 +4717,11 @@ mod tests {
             ..Output::default()
         };
         let paths: Vec<_> = out.paths().collect();
-        let names = (4..=12).map(|d| PathBuf::from(format!("/f/Game_Disk{d:02}.adf")));
+        let names = (4..=12).map(|d| PathBuf::from(format!("/f/Game_Disk{d}.adf")));
         assert_eq!(paths, names.collect::<Vec<_>>());
         assert_eq!(
             out.preview_names(),
-            "Game_Disk04.adf, Game_Disk05.adf … Game_Disk12.adf"
+            "Game_Disk4.adf, Game_Disk5.adf … Game_Disk12.adf"
         );
         out.first = 20;
         assert_eq!(out.first_disk(), 12, "no further than the set's last");
