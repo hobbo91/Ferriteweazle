@@ -422,7 +422,7 @@ impl<'a> Form<'a> {
             action = action.or(self.arg(ui, a));
         }
         // A track list is a group of its own, after the page's other rows.
-        if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
+        for a in first.iter().filter(|a| a.is("TrackSet")) {
             if first.len() > 1 {
                 ui.add_space(GROUP_GAP);
             }
@@ -573,7 +573,7 @@ impl<'a> Form<'a> {
                 self.values.set(&a.dest, value);
             }
             if other {
-                self.typed(ui, a, hint(a, self.schema), SHORT_FIELD);
+                self.typed(ui, a, hint(a, self.schema), false, SHORT_FIELD);
             }
         });
     }
@@ -628,22 +628,23 @@ impl<'a> Form<'a> {
 
     fn text(&mut self, ui: &mut Ui, a: &Arg) {
         let number = matches!(a.ty.as_deref(), Some("min_int" | "int" | "uint"));
-        let shown = match self.reported.and_then(|r| r.get(a.dest.as_str())) {
-            Some(value) => value.clone(),
-            None => hint(a, self.schema),
+        let reported = self.reported.and_then(|r| r.get(a.dest.as_str()));
+        // gw takes its default for an empty field, so it shows as the value.
+        let (shown, default) = match (reported, &a.default) {
+            (Some(value), _) => (value.clone(), false),
+            (None, Some(default)) => (default.clone(), true),
+            (None, None) => (hint(a, self.schema), false),
         };
         ui.horizontal(|ui| {
             let width = if number { SHORT_FIELD } else { field_width(ui) };
-            self.typed(ui, a, shown, width);
+            self.typed(ui, a, shown, default, width);
         });
     }
 
-    /// A box to type the value in, and gw's objection to what is typed.
-    /// A field for `a`'s value. Empty, it shows `hint` greyed, or gw's default
-    /// as if typed: gw takes that for an empty field.
-    fn typed(&mut self, ui: &mut Ui, a: &Arg, hint: String, width: f32) {
+    /// A box to type the value in, and gw's objection to what is typed. Empty,
+    /// it shows `hint` greyed, or as if typed where that is gw's `default`.
+    fn typed(&mut self, ui: &mut Ui, a: &Arg, hint: String, default: bool, width: f32) {
         let mut value = self.values.get(&a.dest).to_owned();
-        let default = a.default.as_ref() == Some(&hint);
         let edit = edit(&mut value).hint_text(hint).desired_width(width);
         let changed = ui
             .scope(|ui| {
@@ -970,9 +971,11 @@ impl<'a> Form<'a> {
     /// A track list under a heading of its own: the picker's rows, or gw's
     /// notation typed where they cannot show the list.
     fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
-        let name = match a.dest.as_str() {
-            "out_tracks" => "Output track settings",
-            _ => "Track settings",
+        // Unset, gw's output tracks are the cylinders and sides read.
+        let output = a.dest == "out_tracks";
+        let title = match output {
+            true => "Output track settings",
+            false => "Track settings",
         };
         let format = self.effective_format();
         let (cyls, heads) = format
@@ -980,8 +983,6 @@ impl<'a> Form<'a> {
             .and_then(|f| self.format_info(f).ready().map(|i| (i.cyls, i.heads)))
             .unwrap_or(USUAL_DISK);
         let mut spec = TrackSpec::parse(self.values.get(&a.dest));
-        // Unset, gw's output tracks are the cylinders and sides read.
-        let output = a.dest == "out_tracks";
         let base = match output {
             true => TrackSpec::parse(self.values.get("tracks")),
             false => TrackSpec::default(),
@@ -994,12 +995,12 @@ impl<'a> Form<'a> {
         let cyls = if short { reach(step) } else { cyls };
         let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
-        let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
+        let simple = spec.simple();
+        let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !simple;
         let tip = tip(&self.cmd.name, a);
         let grammar = grammar(self.schema, a);
         let help = |ui: &mut Ui| explain(ui, &tip, grammar);
-        let simple = spec.simple();
-        heading(ui, name, |ui| {
+        heading(ui, title, |ui| {
             let flip = if as_text {
                 "Use the track picker"
             } else {
@@ -1019,7 +1020,7 @@ impl<'a> Form<'a> {
                 ui.horizontal(|ui| {
                     let hint = example(self.schema, "TSPEC").unwrap_or_default();
                     let width = field_width(ui);
-                    self.typed(ui, a, hint, width);
+                    self.typed(ui, a, hint, false, width);
                 })
                 .response
             });
@@ -2511,14 +2512,14 @@ fn example(schema: &Schema, metavar: &str) -> Option<String> {
     Some(format!("e.g. {quoted}"))
 }
 
-/// What an empty field shows: gw's default, else an example or Required.
+/// An example of a value to type, or Required.
 fn hint(a: &Arg, schema: &Schema) -> String {
     match a.ty.as_deref() {
         Some("period") => "e.g. 300rpm".into(),
         Some("PLL") => "e.g. period=5:phase=60".into(),
         Some("PrecompSpec") => example(schema, "PRECOMP").unwrap_or_default(),
         _ => match &a.default {
-            Some(d) => d.clone(),
+            Some(d) => format!("e.g. {d}"),
             // Density select's pin.
             None if a.dest == "pin" => "e.g. 2".into(),
             None if a.required => "Required".into(),
@@ -3119,18 +3120,21 @@ impl Output {
     }
 }
 
-/// A track list with the head step Detect found: added unless the list
-/// names one, or a larger step taken away for a disk that needs none.
-pub fn with_step(tracks: &str, step: u32) -> String {
+/// A track list with the head step Detect measured in place of its own, or
+/// None if it has that step already.
+pub fn with_step(tracks: &str, step: u32) -> Option<String> {
     let mut spec = TrackSpec::parse(tracks);
-    match step {
-        1 if spec.steps().is_some_and(|s| s > 1) => spec.step = None,
-        1 => {}
-        n => {
-            spec.step.get_or_insert_with(|| n.to_string());
-        }
+    if !spec.half() && spec.steps() == Some(step) {
+        return None;
     }
-    spec.to_string()
+    // A half step's stride goes with it.
+    if spec.half() {
+        spec.c = spec
+            .c
+            .map(|c| c.strip_suffix("/2").unwrap_or(&c).to_owned());
+    }
+    spec.step = (step > 1).then(|| step.to_string());
+    Some(spec.to_string())
 }
 
 /// The cylinders and sides a page takes of a disk of `cyls` and `heads`, as gw
@@ -3203,11 +3207,7 @@ pub fn fit_format(
         Some(_) => {
             let mut spec = TrackSpec::parse(values.get("tracks"));
             let step = spec.steps().filter(|&s| s > 1);
-            (spec.c, spec.h) = (None, None);
-            // A half step pairs with the old format's cylinders, so goes with them.
-            if spec.half() {
-                spec.step = None;
-            }
+            spec.refit();
             // With no format, as the picker keeps it to what the drive reaches.
             if let Some(step) = step
                 && format.is_none()
@@ -3217,7 +3217,7 @@ pub fn fit_format(
             changed |= put(values, "tracks", &spec);
             if cmd.arg("out_tracks").is_some() {
                 let mut out = TrackSpec::parse(values.get("out_tracks"));
-                (out.c, out.h) = (None, None);
+                out.refit();
                 changed |= put(values, "out_tracks", &out);
             }
             // Flux as read has no bitrate of its own to give.
@@ -3244,7 +3244,7 @@ pub fn fit_format(
                 fit.sizing = false;
                 let mut spec = TrackSpec::parse(values.get("tracks"));
                 let step = spec.steps().unwrap_or(1);
-                if info.cyls.saturating_sub(1) * step > LAST_USUAL_CYLINDER {
+                if info.cyls.saturating_sub(1).saturating_mul(step) > LAST_USUAL_CYLINDER {
                     spec.step = None;
                     changed |= put(values, "tracks", &spec);
                 }
@@ -3317,6 +3317,15 @@ impl TrackSpec {
             && self.step.as_deref().is_none_or(|s| STEPS.contains(&s))
             && (!self.half() || self.c.as_deref().is_some_and(|c| c.ends_with("/2")))
             && self.off.iter().all(|o| o.abs() <= MAX_OFFSET)
+    }
+
+    /// Leaves the cylinders and sides to a new format, as gw takes them unset. A
+    /// half step pairs with the old format's cylinders, so goes with them.
+    fn refit(&mut self) {
+        (self.c, self.h) = (None, None);
+        if self.half() {
+            self.step = None;
+        }
     }
 
     /// A half step, which the picker pairs with every other cylinder: `c=0-81/2`.
@@ -3999,6 +4008,26 @@ mod tests {
     }
 
     #[test]
+    fn other_shows_gws_default_as_an_example() {
+        let mut h = page("read", Values::default(), BTreeMap::new());
+        h.get_by_label_contains("Advanced options").click();
+        h.run();
+        let retries = h
+            .get_all_by_role(Role::ComboBox)
+            .find(|c| c.value().as_deref() == Some("Default (3)"))
+            .expect("Retries' list");
+        retries.click();
+        h.run();
+        h.get_by_label(OTHER).click();
+        h.run();
+        let shown: Vec<_> = h
+            .get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .collect();
+        assert!(shown.iter().any(|s| s == "e.g. 3"), "{shown:?}");
+    }
+
+    #[test]
     fn the_pin_field_shows_pin_2_as_its_example() {
         let s = schema();
         for cmd in ["pin get", "pin set"] {
@@ -4263,17 +4292,21 @@ mod tests {
     }
 
     #[test]
-    fn detects_step_joins_a_track_list_but_keeps_a_step_already_there() {
-        assert_eq!(with_step("", 2), "step=2");
-        assert_eq!(with_step("c=0-39:h=0", 2), "c=0-39:h=0:step=2");
-        assert_eq!(with_step("step=1", 2), "step=1");
+    fn detects_step_takes_the_place_of_the_track_lists() {
+        let with = |tracks: &str, step| with_step(tracks, step);
+        assert_eq!(with("", 2).as_deref(), Some("step=2"));
+        assert_eq!(with("c=0-39:h=0", 2).as_deref(), Some("c=0-39:h=0:step=2"));
+        assert_eq!(with("step=1", 2).as_deref(), Some("step=2"), "measured");
+        assert_eq!(with("c=0-26:step=3", 2).as_deref(), Some("c=0-26:step=2"));
         assert_eq!(
-            with_step("c=0-39:step=2", 1),
-            "c=0-39",
-            "the disk needs none"
+            with("c=0-81/2:step=1/2", 2).as_deref(),
+            Some("c=0-81:step=2"),
+            "a half step's stride goes with it"
         );
-        assert_eq!(with_step("h1.off=-8", 1), "h1.off=-8");
-        assert_eq!(with_step("c=0-27:step=3", 1), "c=0-27", "any larger step");
+        assert_eq!(with("c=0-39:step=2", 1).as_deref(), Some("c=0-39"));
+        assert_eq!(with("c=0-27:step=3", 1).as_deref(), Some("c=0-27"));
+        assert_eq!(with("h=0:c=0-39", 1), None, "kept as typed");
+        assert_eq!(with("h1.off=-8:step=2", 2), None);
     }
 
     #[test]
@@ -4525,6 +4558,7 @@ mod tests {
             "no format: what the drive reaches"
         );
         assert_eq!(refit("3", ""), "c=0-27:step=3");
+        assert_eq!(refit("60000000", "ibm.1440"), "", "no overflow");
 
         // A format gw has yet to size, as a standalone gw never does, keeps it.
         let mut v = values(&[("format", "ibm.360"), ("tracks", "step=2")]);
@@ -4536,6 +4570,25 @@ mod tests {
         service.describe("ibm.720", 80, 2);
         fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
         assert_eq!(v.get("tracks"), "");
+    }
+
+    #[test]
+    fn a_new_format_takes_a_half_step_from_both_of_converts_track_lists() {
+        let s = schema();
+        let convert = s.command("convert").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        service.describe("ibm.720", 80, 2);
+        let half = "c=0-39/2:step=1/2";
+        let mut v = values(&[
+            ("format", "ibm.360"),
+            ("tracks", half),
+            ("out_tracks", half),
+        ]);
+        let (mut o, mut f) = (BTreeMap::new(), FormatFit::default());
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        v.set("format", "ibm.720");
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        assert_eq!((v.get("tracks"), v.get("out_tracks")), ("", ""));
     }
 
     #[test]

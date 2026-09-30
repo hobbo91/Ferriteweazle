@@ -1135,6 +1135,44 @@ fn painted(w: &Window, text: &str) -> egui::Pos2 {
 }
 
 #[test]
+fn side_0_stays_in_view_as_a_swapped_map_goes_to_one_side() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(60);
+    let mut settings = chosen();
+    set(&mut settings, "read", "tracks", "hswap");
+    let mut w = build(builder, settings, None);
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "h=0:hswap");
+    // Past FILL_TIME's fade and SLIDE_TIME's slide.
+    for _ in 0..20 {
+        w.step();
+        let left = w.get_by_label("Disk status").rect().left();
+        let side0 = w.output().shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.pos.x > left && t.galley.text() == "Side 0" => {
+                Some((c.clip_rect, t.pos))
+            }
+            _ => None,
+        });
+        let (clip, at) = side0.expect("the map shows side 0");
+        assert!(clip.contains(at), "side 0 at {at:?}, out of {clip:?}");
+    }
+}
+
+#[test]
+fn a_jobs_map_keeps_the_sides_as_the_job_took_them() {
+    let mut job = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    job.args = vec!["read".into(), "--tracks=hswap".into()];
+    // Write's own list does not swap them.
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    let w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert!(painted(&w, "Side 1").y < painted(&w, "Side 0").y);
+}
+
+#[test]
 fn swapping_sides_slides_each_side_into_the_others_place() {
     let builder = Harness::builder()
         .with_size(DEFAULT)

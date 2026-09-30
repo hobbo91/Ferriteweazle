@@ -2308,7 +2308,7 @@ fn a_read_in_passes_takes_every_sector_any_pass_found() {
         serde_json::json!({"FERRITEWEAZLE_PASSES": "2"}),
         "twice.img",
     );
-    assert!(log.contains("Pass 2 of 2: 1 track\n"), "{log}");
+    assert!(log.lines().any(|l| l == "Pass 2 of 2: 1 track"), "{log}");
     assert!(
         log.contains("T0.0: IBM MFM (18/18 sectors) from 2 passes"),
         "{log}"

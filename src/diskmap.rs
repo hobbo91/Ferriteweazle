@@ -96,19 +96,29 @@ pub fn show(
             .max(usual)
             .min(MAX_CELL)
     };
-    // Sides across or stacked, whichever gives larger squares.
-    let across = cell_for(true) >= cell_for(false);
+    // Sides across or stacked, whichever gives larger squares. One side keeps
+    // the way two went, so it slides into place along it.
+    let across_id = ui.id().with("across");
+    let across = match sides {
+        2 => {
+            let across = cell_for(true) >= cell_for(false);
+            ui.data_mut(|d| d.insert_temp(across_id, across));
+            across
+        }
+        _ => ui.data(|d| d.get_temp(across_id)).unwrap_or(true),
+    };
     let cell = (cell_for(across).max(MIN_CELL) * ppp).floor() / ppp;
     let step = cell + gap;
-    // Side 1 and the legend slide as rows come and go.
+    // Side 1 and the legend slide as rows and sides come and go.
     let tall = slide(ui, egui::Id::new("map rows"), rows as f32);
+    let shown = slide(ui, egui::Id::new("map sides"), n);
     let grid = vec2(
         LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
         TITLE + tall * step - gap,
     );
     let size = match across {
-        true => vec2(grid.x * n + SIDE_GAP * (n - 1.0), grid.y),
-        false => vec2(grid.x, grid.y * n + STACK_GAP * (n - 1.0)),
+        true => vec2(grid.x * shown + SIDE_GAP * (shown - 1.0), grid.y),
+        false => vec2(grid.x, grid.y * shown + STACK_GAP * (shown - 1.0)),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));

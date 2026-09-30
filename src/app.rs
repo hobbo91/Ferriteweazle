@@ -895,6 +895,16 @@ impl App {
         } else if self.live && !self.quitting && port != self.probed {
             self.ask_device(ctx);
         }
+        // Unplugged, a Greaseweazle loses the delays it was given.
+        if let Some((device, _)) = &self.delays
+            && !self
+                .service
+                .known_ports()
+                .iter()
+                .any(|p| p.device == *device)
+        {
+            self.delays = None;
+        }
     }
 
     /// The Greaseweazle the sidebar shows.
@@ -1041,8 +1051,10 @@ impl App {
                     self.follow(&port, kind);
                 }
             }
-            // New firmware changes what the device says about itself.
-            "update" => self.probed = None,
+            // New firmware changes what the device says about itself, and
+            // restarts it with its default delays.
+            "update" => (self.probed, self.delays) = (None, None),
+            "reset" if job.args.iter().any(|a| a == "--delays") => self.delays = None,
             // The drive has the delays typed now, and their fields show them greyed.
             "delays" => {
                 if let Some(found) = device::delays(&job.log) {
@@ -1117,10 +1129,14 @@ impl App {
         }
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
-        let tracks = form::with_step(values.get("tracks"), step);
-        let changed = tracks != values.get("tracks");
-        values.set("tracks", tracks);
-        let note = found_note(&formats, step, changed);
+        // On Write, Detect reads the image, whose step is not the drive's.
+        let step = (page != "write").then_some(step);
+        let tracks = step.and_then(|step| form::with_step(values.get("tracks"), step));
+        let changed = tracks.is_some();
+        if let Some(tracks) = tracks {
+            values.set("tracks", tracks);
+        }
+        let note = found_note(&formats, step.unwrap_or(1), changed);
         self.found_note = Some((page.clone(), best.clone(), note.clone()));
         self.notices.insert(page, note);
     }
@@ -2221,8 +2237,8 @@ impl App {
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
         let (format, disk, blank) = self.blank_map(page);
-        let swapped =
-            (self.settings.values.get(page)).is_some_and(|v| form::swapped(v.get("tracks")));
+        let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
+        let swapped = tracks.is_some_and(form::swapped);
         // A finished job's map stands until its page takes other tracks, and
         // Detect's until the page takes another format.
         let preview = (&blank.cyls, &blank.heads);
@@ -2263,6 +2279,9 @@ impl App {
             diskmap::show(ui, &blank, disk, swapped, false, budget, room);
             return;
         };
+        // The sides as the job took them, whatever its page says now.
+        let tracks = job.args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        let swapped = tracks.is_some_and(form::swapped);
         // These rows wrap, so the job shows in full.
         let mut name = match job.part {
             Some((disk, total)) => format!("{} {disk} of {total}", title(&job.command)),
@@ -3132,7 +3151,10 @@ impl App {
                         form::edit(description)
                             .id(about)
                             .char_limit(DESCRIPTION_LIMIT)
-                            .hint_text("Description, optional")
+                            .hint_text(match exists {
+                                true => "Description, empty keeps the old one",
+                                false => "Description, optional",
+                            })
                             .desired_width(f32::INFINITY),
                     )
                     .on_hover_text("Shown when you hover over the preset.");
@@ -3393,13 +3415,21 @@ impl App {
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        let folder = self.presets_folder();
+        // Replaced with no description, a preset keeps its own.
+        let description = match description {
+            "" => presets::load(&presets::path(&folder, name))
+                .map(|p| p.description)
+                .unwrap_or_default(),
+            typed => typed.to_owned(),
+        };
         let preset = Preset {
             command: command.to_owned(),
             values,
             outputs,
-            description: description.to_owned(),
+            description,
         };
-        if let Err(e) = presets::save(&self.presets_folder(), name, &preset) {
+        if let Err(e) = presets::save(&folder, name, &preset) {
             let text = format!("Could not save the preset: {e}");
             self.notices.insert(command.to_owned(), text);
         }
@@ -4536,13 +4566,13 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-/// `changed`: Detect's step changed the page's track list, which keeps a step of its own.
+/// `changed`: Detect's step replaced the track list's.
 fn found_note(formats: &[String], step: u32, changed: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     match (step > 1, changed) {
         (true, true) => note += " 40-track disk in an 80-track drive, setting Step to 2.",
         (true, false) => note += " 40-track disk in an 80-track drive.",
-        (false, true) => note += " Setting Step to 1, the disk does not require a larger step.",
+        (false, true) => note += " The disk's tracks match the drive's, setting Step to 1.",
         (false, false) => {}
     }
     match &formats[1..] {
@@ -5062,6 +5092,59 @@ mod tests {
             "Host Tools: 1.23\nDevice:\n  Port:     {port}\n  Model:    {model}\n  Firmware: 1.6"
         );
         Job::replay("info", &log)
+    }
+
+    #[test]
+    fn replacing_a_preset_keeps_its_description_unless_another_is_typed() {
+        let folder =
+            std::env::temp_dir().join(format!("ferriteweazle-replace-{}", std::process::id()));
+        let settings = Settings {
+            presets_folder: Some(folder.clone()),
+            ..Settings::default()
+        };
+        let mut app = App::offline(&egui::Context::default(), settings, Err(String::new()));
+        let mut saved = |typed: &str| {
+            app.save_preset("read", "Mine", typed);
+            presets::load(&presets::path(&folder, "Mine"))
+                .unwrap()
+                .description
+        };
+        assert_eq!(saved("Both sides"), "Both sides");
+        assert_eq!(saved(""), "Both sides", "kept");
+        assert_eq!(saved("Side 0"), "Side 0");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn the_drives_delays_go_once_it_resets_them_takes_new_firmware_or_is_unplugged() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        let job = |args: &[&str], log: &str| {
+            let mut job = Job::replay(args[0], log);
+            job.args = args.iter().map(|a| a.to_string()).collect();
+            job
+        };
+        let report = || job(&["delays", "--device=COM3"], "Select Delay: 10us");
+        let run = |app: &mut App, job: Job| {
+            app.tool = Some(job);
+            app.ended(&ctx, false);
+            app.reported_delays().is_some()
+        };
+        assert!(run(&mut app, report()));
+        let reset = job(&["reset", "--device=COM3"], "");
+        assert!(run(&mut app, reset), "a reset without --delays keeps them");
+        assert!(!run(
+            &mut app,
+            job(&["reset", "--device=COM3", "--delays"], "")
+        ));
+        assert!(run(&mut app, report()));
+        assert!(!run(&mut app, job(&["update", "--device=COM3"], "")));
+        assert!(run(&mut app, report()));
+        app.pin_ports(Vec::new());
+        app.poll_probe(&ctx);
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        assert!(app.reported_delays().is_none(), "unplugged");
     }
 
     #[test]
@@ -6371,7 +6454,19 @@ mod tests {
         app.found(vec!["ibm.1440".into()], 1);
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
-        assert!(note.contains("Setting Step to 1"), "{note}");
+        assert!(note.contains("setting Step to 1"), "{note}");
+    }
+
+    #[test]
+    fn detect_on_write_leaves_the_drives_step_alone() {
+        let mut app = offline();
+        let values = app.settings.values.entry("write".into()).or_default();
+        values.set("tracks", "step=2");
+        app.detect_for = Some("write".into());
+        // Its step is the image's.
+        app.found(vec!["ibm.360".into()], 1);
+        assert_eq!(app.settings.values["write"].get("tracks"), "step=2");
+        assert_eq!(app.notices["write"], "Found ibm.360.");
     }
 
     #[test]
