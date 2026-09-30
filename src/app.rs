@@ -920,10 +920,10 @@ impl App {
             .as_ref()
             .filter(|j| j.command == "delays" && !j.running())?;
         let port = self.settings.port(self.service.known_ports())?;
-        let asked = format!("--device={}", port.device);
-        job.args
-            .contains(&asked)
-            .then(|| device::delays(&job.log))?
+        if !job.args.contains(&format!("--device={}", port.device)) {
+            return None;
+        }
+        device::delays(&job.log)
     }
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
@@ -1110,9 +1110,9 @@ impl App {
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
         let tracks = form::with_step(values.get("tracks"), step);
-        let undone = step == 1 && tracks != values.get("tracks");
+        let changed = tracks != values.get("tracks");
         values.set("tracks", tracks);
-        let note = found_note(&formats, step, undone);
+        let note = found_note(&formats, step, changed);
         self.found_note = Some((page.clone(), best.clone(), note.clone()));
         self.notices.insert(page, note);
     }
@@ -4498,13 +4498,14 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-/// `undone`: Detect set Step back to 1 from the larger step an earlier disk needed.
-fn found_note(formats: &[String], step: u32, undone: bool) -> String {
+/// `changed`: Detect's step changed the page's track list, which keeps a step of its own.
+fn found_note(formats: &[String], step: u32, changed: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
-    if step > 1 {
-        note += " 40-track disk in an 80-track drive, setting Step to 2.";
-    } else if undone {
-        note += " Setting Step to 1, the disk does not require a larger step.";
+    match (step > 1, changed) {
+        (true, true) => note += " 40-track disk in an 80-track drive, setting Step to 2.",
+        (true, false) => note += " 40-track disk in an 80-track drive.",
+        (false, true) => note += " Setting Step to 1, the disk does not require a larger step.",
+        (false, false) => {}
     }
     match &formats[1..] {
         [] => {}
@@ -5229,6 +5230,16 @@ mod tests {
     fn a_detected_format_names_the_others_the_disk_also_matches() {
         let formats = ["akai.800", "eagle.dsqd.800", "epson.qx10.400"].map(String::from);
         assert_eq!(found_note(&formats[..1], 1, false), "Found akai.800.");
+        let forty = "Found akai.800. 40-track disk in an 80-track drive";
+        assert_eq!(
+            found_note(&formats[..1], 2, true),
+            format!("{forty}, setting Step to 2.")
+        );
+        assert_eq!(
+            found_note(&formats[..1], 2, false),
+            format!("{forty}."),
+            "a list that keeps its own step"
+        );
         assert_eq!(
             found_note(&formats[..2], 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800."

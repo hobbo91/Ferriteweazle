@@ -86,7 +86,7 @@ pub fn delays(log: &[String]) -> Option<BTreeMap<&'static str, String>> {
                 "ms" => "ms",
                 _ => return None,
             };
-            number.parse::<u32>().ok()?;
+            let number: u32 = number.parse().ok()?;
             Some((*dest, format!("{number} {unit}")))
         })
         .collect();

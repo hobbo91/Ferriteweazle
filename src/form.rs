@@ -946,13 +946,14 @@ impl<'a> Form<'a> {
             "out_tracks" => "Output track options",
             _ => "Track options",
         };
-        let title = format!("{name} ({})", self.track_view(a).summary());
+        let view = self.track_view(a);
+        let title = format!("{name} ({})", view.summary());
         let r = egui::CollapsingHeader::new(RichText::new(title).strong())
             .id_salt(("tracks", &self.cmd.name, &a.dest))
             .default_open(open)
             .show_unindented(ui, |ui| {
                 ui.add_space(6.0);
-                self.tracks(ui, a);
+                self.tracks(ui, a, view);
             });
         let tip = tip(&self.cmd.name, a);
         let grammar = grammar(self.schema, a);
@@ -992,7 +993,7 @@ impl<'a> Form<'a> {
     }
 
     /// The track picker's rows, or gw's notation typed where they cannot show the list.
-    fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
+    fn tracks(&mut self, ui: &mut Ui, a: &Arg, view: TrackView) {
         let TrackView {
             mut spec,
             base,
@@ -1000,7 +1001,7 @@ impl<'a> Form<'a> {
             whole,
             short,
             free,
-        } = self.track_view(a);
+        } = view;
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
         let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
         if as_text {
@@ -1729,8 +1730,8 @@ const HALF: &str = "1/2";
 
 const STEP_TIP: &str = "Head steps per cylinder. 2 reads a 40-track disk in an 80-track drive.";
 
-const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, 2…, for an image \
-     numbered in half tracks.";
+const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, \
+                        2…, for an image numbered in half tracks.";
 
 /// The track picker's largest head offset, in cylinders: gw's h0.off=[+-][0-9].
 const MAX_OFFSET: i32 = 9;
@@ -2488,7 +2489,6 @@ const TIPS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// gw's help for the kind of value an argument takes, such as TSPEC's.
 /// An argument's tip, then gw's grammar for its value, as a hover.
 fn explain(ui: &mut Ui, tip: &str, grammar: Option<&str>) {
     ui.label(tip);
@@ -2498,6 +2498,7 @@ fn explain(ui: &mut Ui, tip: &str, grammar: Option<&str>) {
     }
 }
 
+/// gw's help for the kind of value an argument takes, such as TSPEC's.
 fn grammar<'s>(schema: &'s Schema, a: &Arg) -> Option<&'s str> {
     let name = match a.ty.as_deref() {
         // gw 1.23 names this kind in its help but not on the argument.
