@@ -380,6 +380,9 @@ pub struct Form<'a> {
     pub adafruit: bool,
     /// gw runs as a standalone program, which cannot read in passes.
     pub standalone: bool,
+    /// What the Greaseweazle last reported for the page's settings, greyed in
+    /// their empty fields: gw delays's values.
+    pub reported: Option<&'a BTreeMap<&'static str, String>>,
 }
 
 /// Something the form asks of the app.
@@ -610,9 +613,13 @@ impl<'a> Form<'a> {
 
     fn text(&mut self, ui: &mut Ui, a: &Arg) {
         let number = matches!(a.ty.as_deref(), Some("min_int" | "int" | "uint"));
+        let shown = match self.reported.and_then(|r| r.get(a.dest.as_str())) {
+            Some(value) => value.clone(),
+            None => hint(a, self.schema),
+        };
         ui.horizontal(|ui| {
             let width = if number { SHORT_FIELD } else { field_width(ui) };
-            self.typed(ui, a, hint(a, self.schema), width);
+            self.typed(ui, a, shown, width);
         });
     }
 
@@ -3623,6 +3630,7 @@ mod tests {
                         cannot_detect: None,
                         adafruit: false,
                         standalone,
+                        reported: None,
                     };
                     form.show(ui);
                 },
@@ -3965,6 +3973,7 @@ mod tests {
                 cannot_detect: None,
                 adafruit: false,
                 standalone: false,
+                reported: None,
             };
             form.blocker(read.arg(dest).unwrap())
                 .map(|b| b.dest.clone())

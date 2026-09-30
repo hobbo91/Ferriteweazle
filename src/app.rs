@@ -912,6 +912,20 @@ impl App {
         }
     }
 
+    /// The delays the last Get or Set delays reported, if that was of the
+    /// card's Greaseweazle: each delay's argument and value.
+    fn reported_delays(&self) -> Option<BTreeMap<&'static str, String>> {
+        let job = self
+            .tool
+            .as_ref()
+            .filter(|j| j.command == "delays" && !j.running())?;
+        let port = self.settings.port(self.service.known_ports())?;
+        let asked = format!("--device={}", port.device);
+        job.args
+            .contains(&asked)
+            .then(|| device::delays(&job.log))?
+    }
+
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
     fn cannot_detect(&self, page: &str) -> Option<Cow<'static, str>> {
         if self.tools.as_ref().is_some_and(|e| e.standalone) {
@@ -1021,6 +1035,17 @@ impl App {
             }
             // New firmware changes what the device says about itself.
             "update" => self.probed = None,
+            // The drive has the delays typed now, and their fields show them greyed.
+            "delays" => {
+                let values = self.settings.values.entry(command.clone()).or_default();
+                for dest in device::delays(&job.log)
+                    .into_iter()
+                    .flatten()
+                    .map(|(d, _)| d)
+                {
+                    values.set(dest, "");
+                }
+            }
             _ => {}
         }
         if let Some(session) = self.session.as_mut().filter(|s| s.command == command) {
@@ -1645,6 +1670,7 @@ impl App {
                     ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
                     ui.add_space(14.0);
+                    let reported = (name == "delays").then(|| self.reported_delays()).flatten();
                     let values = self.settings.values.entry(name.to_owned()).or_default();
                     let action = Form {
                         schema: &schema,
@@ -1655,13 +1681,18 @@ impl App {
                         cannot_detect: cannot_detect.as_deref(),
                         adafruit: self.settings.kind == Kind::Adafruit,
                         standalone: self.tools.as_ref().is_some_and(|t| t.standalone),
+                        reported: reported.as_ref(),
                     }
                     .show(ui);
                     // After the form, which names the page's images.
                     if self.fit_format(&schema, cmd) {
                         ui.ctx().request_repaint();
                     }
-                    if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
+                    // Delays the drive reported show in their fields, so only
+                    // a failure needs a Result.
+                    if reported.is_none()
+                        && let Some(job) = self.tool.as_ref().filter(|j| j.command == name)
+                    {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));
                     }
@@ -4976,6 +5007,31 @@ mod tests {
             "Host Tools: 1.23\nDevice:\n  Port:     {port}\n  Model:    {model}\n  Firmware: 1.6"
         );
         Job::replay("info", &log)
+    }
+
+    #[test]
+    fn delays_typed_clear_once_the_drive_reports_them() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let mut typed = Values::default();
+        typed.set("step", "3000");
+        app.settings.values.insert("delays".into(), typed);
+        // gw prints a refusal and ends as if it worked.
+        app.tool = Some(Job::replay("delays", "Command Failed: Bad Command"));
+        app.ended(&ctx, false);
+        assert_eq!(
+            app.settings.values["delays"].get("step"),
+            "3000",
+            "kept to try again"
+        );
+        let report = "Select Delay: 10us\nStep Delay:   3000us";
+        app.tool = Some(Job::replay("delays", report));
+        app.ended(&ctx, false);
+        assert_eq!(
+            app.settings.values["delays"].get("step"),
+            "",
+            "the drive has it"
+        );
     }
 
     #[test]

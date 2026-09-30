@@ -1,4 +1,6 @@
-//! What `gw info` says about the connected Greaseweazle.
+//! What `gw info` and `gw delays` say about the connected Greaseweazle.
+
+use std::collections::BTreeMap;
 
 /// The device part of `gw info`, such as `Model: Greaseweazle V4.1`.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +57,40 @@ pub fn parse(log: &[String]) -> Option<DeviceInfo> {
         info.steps.clear();
     }
     (!info.fields.is_empty()).then_some(info)
+}
+
+/// gw delays's name for each delay, and its argument.
+const DELAYS: [(&str, &str); 8] = [
+    ("Select Delay", "select"),
+    ("Step Delay", "step"),
+    ("Settle Time", "settle"),
+    ("Motor Delay", "motor"),
+    ("Watchdog", "watchdog"),
+    ("Pre-Write", "pre_write"),
+    ("Post-Write", "post_write"),
+    ("Index Mask", "index_mask"),
+];
+
+/// Reads `gw delays`'s report: each delay's argument, such as `select`, and
+/// its value, such as `10 µs`. None if it reports none.
+pub fn delays(log: &[String]) -> Option<BTreeMap<&'static str, String>> {
+    let found: BTreeMap<_, _> = log
+        .iter()
+        .filter_map(|l| l.split_once(':'))
+        .filter_map(|(name, value)| {
+            let (_, dest) = DELAYS.iter().find(|(n, _)| *n == name.trim())?;
+            let value = value.trim();
+            let (number, unit) = value.split_at(value.find(|c: char| !c.is_ascii_digit())?);
+            let unit = match unit {
+                "us" => "µs",
+                "ms" => "ms",
+                _ => return None,
+            };
+            number.parse::<u32>().ok()?;
+            Some((*dest, format!("{number} {unit}")))
+        })
+        .collect();
+    (!found.is_empty()).then_some(found)
 }
 
 /// The device the card drives. gw finds a Greaseweazle itself, an Adafruit RP2040
@@ -148,6 +184,21 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn gw_delays_report_gives_each_delay_its_value() {
+        // As gw 1.23 prints them, from firmware without an index mask.
+        let log = lines(
+            "Select Delay: 10us\nStep Delay:   5000us\nSettle Time:  15ms\n\
+             Motor Delay:  750ms\nWatchdog:     10000ms\nPre-Write:    100us\n\
+             Post-Write:   1000us",
+        );
+        let found = delays(&log).unwrap();
+        assert_eq!(found["select"], "10 µs");
+        assert_eq!(found["watchdog"], "10000 ms");
+        assert_eq!(found.len(), 7, "no index mask");
+        assert_eq!(delays(&lines("Command Failed: Bad Command")), None);
     }
 
     #[test]

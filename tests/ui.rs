@@ -480,6 +480,39 @@ fn delays_are_got_until_one_is_typed_then_set() {
 }
 
 #[test]
+fn delays_the_drive_reports_grey_their_fields_and_only_a_failure_shows_a_result() {
+    let mut w = window(Settings {
+        page: Page::Command("delays".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    let ran = |log: &str| {
+        let mut job = Job::replay("delays", log);
+        job.args = vec![
+            "delays".into(),
+            format!("--device={}", greaseweazle().device),
+        ];
+        job
+    };
+    app_mut(&mut w).tool = Some(ran(
+        "Select Delay: 10us\nStep Delay:   5000us\nSettle Time:  15ms",
+    ));
+    w.run();
+    let greyed: Vec<String> = w
+        .get_all_by_role(Role::TextInput)
+        .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+        .filter(|p| !p.is_empty())
+        .collect();
+    assert_eq!(greyed, ["10 µs", "5000 µs", "15 ms"]);
+    assert!(w.query_by_label("Result").is_none(), "the fields say it");
+    run_button(&w, "Get delays");
+
+    app_mut(&mut w).tool = Some(ran("Command Failed: Bad Command"));
+    w.run();
+    w.get_by_label("Result");
+}
+
+#[test]
 fn every_page_opens_without_a_device_but_cannot_run() {
     let mut w = window(Settings::default());
     for (page, run) in DEVICE_PAGES {
