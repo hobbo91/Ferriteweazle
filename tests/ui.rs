@@ -52,7 +52,9 @@ fn start(
 }
 
 fn window_at(size: egui::Vec2, settings: Settings) -> Window {
-    build(Harness::builder().with_size(size), settings, None)
+    // Frames enough for the map's squares to fade and its sides then to slide.
+    let builder = Harness::builder().with_size(size).with_max_steps(8);
+    build(builder, settings, None)
 }
 
 fn window(settings: Settings) -> Window {
@@ -1123,6 +1125,39 @@ fn swapping_sides_slides_each_side_into_the_others_place() {
     assert_eq!(
         (painted(&w, "Side 0"), painted(&w, "Side 1")),
         (side1, side0)
+    );
+}
+
+#[test]
+fn side_1_slides_down_and_back_up_as_the_map_gains_and_loses_rows() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(60);
+    let mut w = build(builder, chosen(), None);
+    let short = painted(&w, "Side 1").y;
+    let mut tracks = |list: &str| {
+        set(&mut app_mut(&mut w).settings, "read", "tracks", list);
+        // Past FILL_TIME's fade and SLIDE_TIME's slide.
+        (0..20)
+            .map(|_| {
+                w.step();
+                painted(&w, "Side 1").y
+            })
+            .collect::<Vec<_>>()
+    };
+    let down = tracks("c=0-99");
+    let long = *down.last().unwrap();
+    assert!(long > short, "side 1 stayed at {short}");
+    assert!(
+        down.iter().any(|&y| y > short && y < long),
+        "a jump down: {down:?}"
+    );
+    let up = tracks("");
+    assert_eq!(*up.last().unwrap(), short);
+    assert!(
+        up.iter().any(|&y| y > short && y < long),
+        "a jump up: {up:?}"
     );
 }
 

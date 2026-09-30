@@ -10,8 +10,9 @@ use eframe::egui::{
 /// Seconds a square takes to fade in.
 const FILL_TIME: f32 = 0.4;
 
-/// Seconds the sides take to change places when their heads swap.
-const SWAP_TIME: f32 = 0.25;
+/// Seconds the sides take to slide: to change places as their heads swap, or
+/// to follow the rows as they come and go.
+const SLIDE_TIME: f32 = 0.25;
 
 /// Cylinders to a row, so rows start at 0, 10, 20.
 const ROW: u32 = 10;
@@ -99,9 +100,11 @@ pub fn show(
     let across = cell_for(true) >= cell_for(false);
     let cell = (cell_for(across).max(MIN_CELL) * ppp).floor() / ppp;
     let step = cell + gap;
+    // Side 1 and the legend slide as rows come and go.
+    let tall = slide(ui, egui::Id::new("map rows"), rows as f32);
     let grid = vec2(
         LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
-        TITLE + rows as f32 * step - gap,
+        TITLE + tall * step - gap,
     );
     let size = match across {
         true => vec2(grid.x * n + SIDE_GAP * (n - 1.0), grid.y),
@@ -114,7 +117,7 @@ pub fn show(
     let easing = egui::emath::easing::cubic_in_out;
     let t =
         ui.ctx()
-            .animate_bool_with_time_and_easing(id, swapped && sides == 2, SWAP_TIME, easing);
+            .animate_bool_with_time_and_easing(id, swapped && sides == 2, SLIDE_TIME, easing);
     // Each side's place, 0 first, sliding to the other's as the heads swap.
     let place = |head: u32| if head == 0 { t } else { 1.0 - t };
     let square = |head: u32, cyl: u32| {
@@ -230,6 +233,27 @@ fn grid(ui: &egui::Ui, want: (u32, u32)) -> (u32, u32) {
     }
     ui.data_mut(|d| d.insert_temp(id, (drawn, want, since)));
     drawn
+}
+
+/// A number's slide over SLIDE_TIME to `to` from where it was when `to` last
+/// changed; `to` at once when first seen.
+fn slide(ui: &egui::Ui, id: egui::Id, to: f32) -> f32 {
+    let now = ui.input(|i| i.time);
+    let at = |(from, to, since): (f32, f32, f64)| {
+        let t = ((now - since) as f32 / SLIDE_TIME).clamp(0.0, 1.0);
+        egui::lerp(from..=to, egui::emath::easing::cubic_in_out(t))
+    };
+    let slide = ui.data_mut(|d| {
+        let slide = d.get_temp_mut_or_insert_with(id, || (to, to, now));
+        if slide.1 != to {
+            *slide = (at(*slide), to, now);
+        }
+        *slide
+    });
+    if now - slide.2 < f64::from(SLIDE_TIME) {
+        ui.ctx().request_repaint();
+    }
+    at(slide)
 }
 
 /// A square's fade from the colour it showed when its target last changed.

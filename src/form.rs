@@ -277,6 +277,9 @@ const ROW_GAP: f32 = 10.0;
 /// Space above a heading, beside the rows' own gap.
 const GROUP_GAP: f32 = 6.0;
 
+/// Space above the sections that open out, beside the rows' own gap.
+const SECTIONS_GAP: f32 = 12.0;
+
 /// A field fills the room beside its label, up to a point.
 fn field_width(ui: &Ui) -> f32 {
     ui.available_width().clamp(MIN_FIELD, WIDE_FIELD)
@@ -425,7 +428,12 @@ impl<'a> Form<'a> {
             }
             self.tracks(ui, a);
         }
-        if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
+        let read_file = self.cmd.name == "read" && self.cmd.arg("file").is_some();
+        // The sections that open out sit apart from the rows above them.
+        if read_file || !rest.is_empty() {
+            ui.add_space(SECTIONS_GAP);
+        }
+        if read_file {
             self.disks(ui);
             self.passes(ui);
         }

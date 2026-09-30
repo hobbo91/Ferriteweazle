@@ -1696,7 +1696,6 @@ impl App {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));
                     }
-                    ui.add_space(8.0);
                     action
                 })
                 .inner
