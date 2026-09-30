@@ -2928,8 +2928,10 @@ impl App {
                             .find(|(c, _)| c == command)
                             .map_or("", |(_, w)| *w);
                         ui.label(why);
-                        if disks > 1 {
-                            ui.label("Each disk will be asked for sequentially.");
+                        let first = self.session.as_ref().and_then(|s| s.runs.images.first());
+                        if let Some(image) = first.filter(|_| disks > 1) {
+                            let p = theme::palette(ui);
+                            ui.label(RichText::new(format!("First image: {image}")).color(p.dim));
                         }
                     }
                     ui.add_space(10.0);
@@ -5368,6 +5370,20 @@ mod tests {
             assert_eq!(files, [image.to_string_lossy(), made.to_string_lossy()]);
             assert!(args.contains(&"--format=ibm.1440".to_owned()));
         }
+    }
+
+    #[test]
+    fn a_batch_writes_confirmation_names_its_first_image() {
+        let mut app = offline();
+        let runs = Runs {
+            args: vec![vec!["write".into(), "a.adf".into()]; 2],
+            images: vec!["a.adf".into(), "b.adf".into()],
+            ..Runs::default()
+        };
+        app.begin(&egui::Context::default(), "write", runs);
+        let w = window(app);
+        w.get_by_label("First image: a.adf");
+        assert!(w.query_by_label_contains("sequentially").is_none());
     }
 
     #[test]
