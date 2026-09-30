@@ -499,7 +499,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn stopping_a_standalone_gw_ends_it_at_once() {
-        let (gw, dir) = standalone("stops", "sleep 30\n");
+        // One process, as a real gw is: a forked sleep would hold its output open.
+        let (gw, dir) = standalone("stops", "exec sleep 30\n");
         let args = vec!["read".into(), "disk.scp".into()];
         let mut job = Job::start(&gw, "Greaseweazle", "read", args, &[], Box::new(|| {})).unwrap();
         job.stop();
