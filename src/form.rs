@@ -959,7 +959,10 @@ impl<'a> Form<'a> {
                         .changed();
                     if changed {
                         let default = (first, last) == whole && !short;
-                        spec.c = (!default).then(|| format!("{first}-{last}"));
+                        spec.c = match spec.half() {
+                            true => Some(format!("{first}-{last}/2")),
+                            false => (!default).then(|| format!("{first}-{last}")),
+                        };
                     }
                     // The sides and their buttons wrap together.
                     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1003,17 +1006,42 @@ impl<'a> Form<'a> {
                     let tip = "Head steps per cylinder. 2 reads a 40-track disk in an \
                                80-track drive.";
                     ui.label("Step").own_tip(tip);
-                    for (n, text) in (1..).zip(STEPS) {
-                        let r = ui.add(egui::Button::selectable(step == n, text));
-                        if r.own_tip(tip).clicked() && n != step {
-                            spec.step = (n > 1).then(|| text.to_owned());
-                            // A list kept to the old step's reach takes the new one's.
-                            let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
-                            if !output && format.is_none() && spec.c == reached(step) {
+                    let now = spec.step.as_deref().unwrap_or("1");
+                    let now = STEPS.iter().position(|&s| s == now);
+                    for (i, value) in STEPS.into_iter().enumerate() {
+                        let (text, tip) = match value {
+                            HALF => ("½", HALF_TIP),
+                            _ => (value, tip),
+                        };
+                        let r = ui.add(egui::Button::selectable(now == Some(i), text));
+                        if !r.own_tip(tip).clicked() || now == Some(i) {
+                            continue;
+                        }
+                        // With no format, a list kept to the drive's reach takes the new step's.
+                        let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
+                        let free = !output && format.is_none();
+                        let kept = free && spec.c == reached(step);
+                        if value == HALF {
+                            let (a, b) = if kept {
+                                (0, USUAL_DISK.0 - 1)
+                            } else {
+                                (first, last)
+                            };
+                            spec.c = Some(format!("{a}-{b}/2"));
+                            spec.step = Some(HALF.into());
+                        } else {
+                            // Leaving a half step leaves its stride.
+                            if spec.half() {
+                                spec.c =
+                                    ((first, last) != whole).then(|| format!("{first}-{last}"));
+                            }
+                            let n: u32 = value.parse().expect("every step but HALF is a number");
+                            if kept || free && spec.c.is_none() {
                                 spec.c = reached(n);
                             }
-                            changed = true;
+                            spec.step = (n > 1).then(|| value.to_owned());
                         }
+                        changed = true;
                     }
                     ui.add_space(6.0);
                     changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
@@ -1658,8 +1686,14 @@ fn reach(step: u32) -> u32 {
     USUAL_DISK.0.div_ceil(step)
 }
 
-/// The track picker's head steps per cylinder, 1 to 4.
-const STEPS: [&str; 4] = ["1", "2", "3", "4"];
+/// The track picker's head steps per cylinder: 1 to 4, and a half step.
+const STEPS: [&str; 5] = ["1", "2", "3", "4", HALF];
+
+/// gw's half step: each two of the list's cylinders on one of the drive's.
+const HALF: &str = "1/2";
+
+const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, 2…, for an image numbered \
+     in half tracks.";
 
 /// The track picker's largest head offset, in cylinders: gw's h0.off=[+-][0-9].
 const MAX_OFFSET: i32 = 9;
@@ -3129,6 +3163,10 @@ pub fn fit_format(
             let mut spec = TrackSpec::parse(values.get("tracks"));
             let step = spec.steps().filter(|&s| s > 1);
             (spec.c, spec.h) = (None, None);
+            // A half step pairs with the old format's cylinders, so goes with them.
+            if spec.half() {
+                spec.step = None;
+            }
             // With no format, as the picker keeps it to what the drive reaches.
             if let Some(step) = step
                 && format.is_none()
@@ -3187,7 +3225,10 @@ pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
         Some(_) => spec.cylinders()?.1,
         None => cyls?.checked_sub(1)?,
     };
-    let last = i64::from(last.checked_mul(spec.steps()?)?);
+    let last = match spec.half() {
+        true => i64::from(last / 2),
+        false => i64::from(last.checked_mul(spec.steps()?)?),
+    };
     // An offset counts only for a side the list reads.
     let off = (0..2)
         .filter(|&h| spec.has_head(h, 2))
@@ -3233,7 +3274,13 @@ impl TrackSpec {
             && (self.c.is_none() || self.cylinders().is_some())
             && matches!(self.h.as_deref(), None | Some("0" | "1" | "0-1" | "0,1"))
             && self.step.as_deref().is_none_or(|s| STEPS.contains(&s))
+            && (!self.half() || self.c.as_deref().is_some_and(|c| c.ends_with("/2")))
             && self.off.iter().all(|o| o.abs() <= MAX_OFFSET)
+    }
+
+    /// A half step, which the picker pairs with every other cylinder: `c=0-81/2`.
+    fn half(&self) -> bool {
+        self.step.as_deref() == Some(HALF)
     }
 
     /// Head steps per cylinder, if a whole number.
@@ -3243,6 +3290,7 @@ impl TrackSpec {
 
     fn cylinders(&self) -> Option<(u32, u32)> {
         let c = self.c.as_deref()?;
+        let c = c.strip_suffix("/2").filter(|_| self.half()).unwrap_or(c);
         let (a, b) = c.split_once('-').unwrap_or((c, c));
         Some((a.parse().ok()?, b.parse().ok()?))
     }
@@ -3916,6 +3964,8 @@ mod tests {
         assert_eq!(last_cylinder("c=0-39:step=2", Some(40)), Some(78));
         assert_eq!(last_cylinder("h=0:step=2", Some(42)), Some(82));
         assert_eq!(last_cylinder("c=0-26:step=3", None), Some(78));
+        assert_eq!(last_cylinder("c=0-83/2:step=1/2", None), Some(41));
+        assert_eq!(last_cylinder("c=0-83/2:step=1/2:h0.off=+2", None), Some(43));
         assert_eq!(last_cylinder("c=5", None), Some(5));
         assert_eq!(last_cylinder("c=0-79:h0.off=+8", Some(80)), Some(87));
         assert_eq!(
@@ -4083,17 +4133,20 @@ mod tests {
     fn track_specs_keep_what_the_picker_does_not_show() {
         let spec = TrackSpec::parse("c=0-39:h=1:step=1/2:hswap:h1.off=+1");
         assert_eq!(spec.cylinders(), Some((0, 39)));
-        assert!(!spec.simple(), "a half step");
+        assert!(!spec.simple(), "a half step without its stride");
         assert_eq!(spec.to_string(), "c=0-39:h=1:step=1/2:hswap:h1.off=+1");
     }
 
     #[test]
-    fn the_picker_shows_signed_head_offsets_up_to_9_and_steps_up_to_4() {
+    fn the_picker_shows_head_offsets_steps_and_a_paired_half_step_as_gw_takes_them() {
         let spec = TrackSpec::parse("c=0-39:h1.off=-8:step=4:h0.off=+0");
         assert_eq!((spec.off, spec.steps()), ([0, -8], Some(4)));
         assert!(spec.simple());
         assert_eq!(spec.to_string(), "c=0-39:step=4:h1.off=-8");
-        for typed in ["h1.off=8", "h1.off=-12", "step=5"] {
+        let half = TrackSpec::parse("c=0-81/2:step=1/2");
+        assert!(half.simple() && half.half());
+        assert_eq!(half.cylinders(), Some((0, 81)));
+        for typed in ["h1.off=8", "h1.off=-12", "step=5", "step=1/2", "c=0-81/2"] {
             let spec = TrackSpec::parse(typed);
             assert!(!spec.simple(), "{typed}");
             assert_eq!(spec.to_string(), typed, "kept as typed");
@@ -4126,7 +4179,31 @@ mod tests {
         };
         assert_eq!(step("2"), ("c=0-40:step=2".into(), Some(40.0)));
         assert_eq!(step("3"), ("c=0-27:step=3".into(), Some(27.0)));
+        assert_eq!(step("½"), ("c=0-81/2:step=1/2".into(), Some(81.0)));
+        assert_eq!(step("2"), ("c=0-40:step=2".into(), Some(40.0)));
         assert_eq!(step("1"), (String::new(), Some(81.0)));
+    }
+
+    #[test]
+    fn a_half_step_takes_every_other_cylinder_of_the_range_shown() {
+        let mut h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("½").click();
+        h.run();
+        let last = h.get_all_by_role(Role::SpinButton).nth(1).unwrap();
+        last.click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("39".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().0.get("tracks"), "c=0-39/2:step=1/2");
+        h.get_all_by_label("1").last().unwrap().click();
+        h.run();
+        assert_eq!(
+            h.state().0.get("tracks"),
+            "c=0-39",
+            "the range, not its stride"
+        );
     }
 
     #[test]
@@ -4328,6 +4405,11 @@ mod tests {
         assert_eq!(refit("2", "c64.43"), "", "43 reach 84");
         assert_eq!(refit("3", "c64.28"), "step=3", "28 reach 81");
         assert_eq!(refit("3", "c64.42"), "", "42 reach 123");
+        assert_eq!(
+            refit("1/2", "c64.42"),
+            "",
+            "a half step goes with the format"
+        );
         assert_eq!(
             refit("2", ""),
             "c=0-40:step=2",
