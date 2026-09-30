@@ -288,9 +288,7 @@ fn screens() {
         let mut flippy = settings("read", theme);
         let read = flippy.values.entry("read".into()).or_default();
         read.set("tracks", "c=0-39:step=2:h1.off=-8");
-        render("flippy", theme, flippy, None, |w| {
-            w.get_by_label_contains("Track options (").click();
-        });
+        render("flippy", theme, flippy, None, |_| {});
         render("save-preset", theme, settings("read", theme), None, |w| {
             w.get_by_label("Presets").click();
             w.run();
@@ -385,7 +383,7 @@ fn screens() {
         let read = typed.values.entry("read".into()).or_default();
         read.set("tracks", "c=0-7,9-12:h=0-1");
         render("tracks-help", theme, typed, None, |w| {
-            w.get_by_label_contains("Track options (").hover();
+            w.get_by_label("Track settings").hover();
         });
         for ext in [".hfe", ".scp"] {
             let mut options = settings("read", theme);

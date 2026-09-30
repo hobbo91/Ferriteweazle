@@ -775,8 +775,9 @@ fn window(tools: &Tools, settings: Settings) -> Window {
         tools: Some(tools.python.clone()),
         ..settings
     };
+    // Tall enough for a page opened out below its track settings.
     let mut w = egui_kittest::Harness::builder()
-        .with_size(egui::vec2(1240.0, 780.0))
+        .with_size(egui::vec2(1240.0, 1100.0))
         .build_ui_state(
             move |ui, app: &mut Option<App>| {
                 let app = app.get_or_insert_with(|| {
@@ -1546,12 +1547,6 @@ fn side<'a>(w: &'a Window, name: &'a str) -> egui_kittest::Node<'a> {
         .expect("a side button")
 }
 
-/// Opens the page's Track options, shut as a page opens.
-fn open_tracks(w: &mut Window) {
-    w.get_by_label_contains("Track options (").click();
-    w.run_steps(2);
-}
-
 /// Whether each side's button is enabled, and lit.
 fn sides(w: &Window) -> [(bool, bool); 2] {
     ["0", "1"].map(|name| {
@@ -1570,7 +1565,6 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     until_shown(&mut w, "two sides", |w| {
         w.query_by_label_contains("2\u{a0}sides").is_some()
     });
-    open_tracks(&mut w);
     assert_eq!(sides(&w), [(true, true), (true, true)]);
     side(&w, "0").click();
     w.run_steps(2);
@@ -1598,7 +1592,6 @@ fn a_one_sided_format_greys_the_sides_unless_the_list_names_side_1() {
     until_shown(&mut w, "one side", |w| {
         w.query_by_label_contains("1\u{a0}side").is_some()
     });
-    open_tracks(&mut w);
     assert_eq!(sides(&w), [(true, false), (true, true)]);
     side(&w, "0").click();
     w.run_steps(2);
@@ -1623,7 +1616,6 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         w.query_by_label_contains("35\u{a0}cylinders").is_some()
     });
     w.get_by_label_contains("1\u{a0}side");
-    open_tracks(&mut w);
     let format = |w: &Window| {
         w.get_all_by_role(egui::accesskit::Role::ComboBox)
             .nth(1)

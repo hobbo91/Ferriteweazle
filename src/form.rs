@@ -410,16 +410,18 @@ impl<'a> Form<'a> {
             }
             action = action.or(self.arg(ui, a));
         }
+        // A track list is a group of its own, after the page's other rows.
+        if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
+            if first.len() > 1 {
+                ui.add_space(8.0);
+            }
+            self.tracks(ui, a);
+        }
         if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
             ui.add_space(4.0);
             self.disks(ui);
             ui.add_space(4.0);
             self.passes(ui);
-        }
-        // A track list is a section of its own, open where it is all the page has.
-        if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
-            ui.add_space(4.0);
-            self.track_section(ui, a, first.len() == 1);
         }
         if !rest.is_empty() {
             ui.add_space(4.0);
@@ -442,7 +444,7 @@ impl<'a> Form<'a> {
                     ui.add_space(6.0);
                     for a in &rest {
                         match a.is("TrackSet") {
-                            true => self.track_section(ui, a, false),
+                            true => self.tracks(ui, a),
                             false => action = action.or(self.arg(ui, a)),
                         }
                     }
@@ -940,35 +942,23 @@ impl<'a> Form<'a> {
         chosen
     }
 
-    /// A track list as a section of its own, its title summing the list up.
-    fn track_section(&mut self, ui: &mut Ui, a: &Arg, open: bool) {
+    /// A track list under a heading of its own: the picker's rows, or gw's
+    /// notation typed where they cannot show the list.
+    fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
         let name = match a.dest.as_str() {
-            "out_tracks" => "Output track options",
-            _ => "Track options",
+            "out_tracks" => "Output track settings",
+            _ => "Track settings",
         };
-        let view = self.track_view(a);
-        let title = format!("{name} ({})", view.summary());
-        let r = egui::CollapsingHeader::new(RichText::new(title).strong())
-            .id_salt(("tracks", &self.cmd.name, &a.dest))
-            .default_open(open)
-            .show_unindented(ui, |ui| {
-                ui.add_space(6.0);
-                self.tracks(ui, a, view);
-            });
         let tip = tip(&self.cmd.name, a);
         let grammar = grammar(self.schema, a);
-        r.header_response
-            .on_hover_ui(|ui| explain(ui, &tip, grammar));
-    }
-
-    /// A track list, and what the picker needs to show it.
-    fn track_view(&mut self, a: &Arg) -> TrackView {
+        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+        heading(ui, name).on_hover_ui(help);
         let format = self.effective_format();
         let (cyls, heads) = format
             .as_ref()
             .and_then(|f| self.format_info(f).ready().map(|i| (i.cyls, i.heads)))
             .unwrap_or(USUAL_DISK);
-        let spec = TrackSpec::parse(self.values.get(&a.dest));
+        let mut spec = TrackSpec::parse(self.values.get(&a.dest));
         // Unset, gw's output tracks are the cylinders and sides read.
         let output = a.dest == "out_tracks";
         let base = match output {
@@ -982,26 +972,6 @@ impl<'a> Form<'a> {
         let short = free && step > 1;
         let cyls = if short { reach(step) } else { cyls };
         let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
-        TrackView {
-            spec,
-            base,
-            heads,
-            whole,
-            short,
-            free,
-        }
-    }
-
-    /// The track picker's rows, or gw's notation typed where they cannot show the list.
-    fn tracks(&mut self, ui: &mut Ui, a: &Arg, view: TrackView) {
-        let TrackView {
-            mut spec,
-            base,
-            heads,
-            whole,
-            short,
-            free,
-        } = view;
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
         let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
         if as_text {
@@ -1013,9 +983,6 @@ impl<'a> Form<'a> {
                 })
                 .response
             });
-            let tip = tip(&self.cmd.name, a);
-            let grammar = grammar(self.schema, a);
-            let help = |ui: &mut Ui| explain(ui, &tip, grammar);
             name.on_hover_ui(help);
             // Laid over the field, as for any other argument.
             let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
@@ -3283,50 +3250,6 @@ pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
     u32::try_from(last + i64::from(off.max()?)).ok()
 }
 
-/// A track list as the picker shows it.
-struct TrackView {
-    spec: TrackSpec,
-    /// For output tracks, the input's list: unset, they are its cylinders and sides.
-    base: TrackSpec,
-    heads: u32,
-    /// The cylinders shown when the list names none.
-    whole: (u32, u32),
-    /// With no format and a step above 1, kept to the cylinders the drive reaches.
-    short: bool,
-    /// Neither a format nor an input's list limits the cylinders.
-    free: bool,
-}
-
-impl TrackView {
-    /// The list in a few words, "0–79, both sides, step 2", or gw's notation.
-    fn summary(&self) -> String {
-        let spec = &self.spec;
-        if !spec.simple() {
-            return spec.to_string();
-        }
-        let (first, last) = spec.cylinders().unwrap_or(self.whole);
-        let named = spec.sides(&self.base);
-        let sides = match (named.has_head(0, self.heads), named.has_head(1, self.heads)) {
-            (true, true) => "both sides",
-            (true, false) => "side 0",
-            _ => "side 1",
-        };
-        let mut parts = vec![format!("{first}–{last}"), sides.to_owned()];
-        match spec.step.as_deref() {
-            Some(HALF) => parts.push("half step".into()),
-            Some(s) if s != "1" => parts.push(format!("step {s}")),
-            _ => {}
-        }
-        if spec.hswap {
-            parts.push("sides swapped".into());
-        }
-        for (head, off) in spec.off.iter().enumerate().filter(|(_, o)| **o != 0) {
-            parts.push(format!("side {head} {off:+}"));
-        }
-        parts.join(", ")
-    }
-}
-
 /// Which tracks, in gw's notation: `c=0-79:h=0:step=2:hswap`.
 #[derive(Debug, Default, Clone, PartialEq)]
 struct TrackSpec {
@@ -3470,12 +3393,13 @@ fn offset(v: &str) -> Option<i32> {
 }
 
 /// A group's heading, with a rule to the fields' right edge.
-fn heading(ui: &mut Ui, text: &str) {
+fn heading(ui: &mut Ui, text: &str) -> egui::Response {
     let p = theme::palette(ui);
     let label = ui.label(RichText::new(text).small().strong().color(p.dim));
     let y = label.rect.center().y;
     let rule = label.rect.right() + 10.0..=ui.max_rect().right();
     ui.painter().hline(rule, y, egui::Stroke::new(1.0, p.line));
+    label
 }
 
 /// A checkbox as a row's field, centred on the row's label.
@@ -4568,14 +4492,6 @@ mod tests {
         let mut h = page("convert", v, BTreeMap::new());
         h.get_by_label_contains("Advanced options").click();
         h.run();
-        // Unset, the output tracks are the input's, and say so.
-        for section in [
-            "Track options (0–39, side 0)",
-            "Output track options (0–39, side 0)",
-        ] {
-            h.get_by_label(section).click();
-            h.run();
-        }
         // Each picker's cylinders, then its head offsets.
         let ends: Vec<_> = h
             .get_all_by_role(Role::SpinButton)
@@ -4592,39 +4508,18 @@ mod tests {
     }
 
     #[test]
-    fn a_track_list_is_a_section_titled_with_the_list_and_open_where_it_is_all_there_is() {
-        let title = |tracks: &str| {
-            let h = page("read", values(&[("tracks", tracks)]), BTreeMap::new());
-            assert!(h.query_by_label("Cylinders").is_none(), "shut");
-            let header = h.get_by_label_contains("Track options (");
-            header
-                .accesskit_node()
-                .label()
-                .unwrap_or_default()
-                .to_owned()
-        };
-        assert_eq!(title(""), "Track options (0–81, both sides)");
-        assert_eq!(
-            title("c=0-39:h=1:step=2:hswap:h1.off=-8"),
-            "Track options (0–39, side 1, step 2, sides swapped, side 1 -8)"
-        );
-        assert_eq!(
-            title("c=0-81/2:step=1/2"),
-            "Track options (0–81, both sides, half step)"
-        );
-        assert_eq!(
-            title("c=0-7,9-12"),
-            "Track options (c=0-7,9-12)",
-            "gw's notation"
-        );
-
-        let h = page("erase", Values::default(), BTreeMap::new());
-        h.get_by_label("Cylinders");
-
+    fn a_track_list_is_a_group_of_its_own_after_the_pages_other_rows() {
         let h = page("read", Values::default(), BTreeMap::new());
         let top = |label: &str| h.get_by_label_contains(label).rect().top();
-        assert!(top("Multiple disks") < top("Read passes"));
-        assert!(top("Read passes") < top("Track options ("));
+        assert!(top("Image settings") < top("Track settings"));
+        assert!(
+            top("Track settings") < top("Cylinders"),
+            "shown, not shut away"
+        );
+        assert!(top("Cylinders") < top("Multiple disks"));
+        let h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("Track settings");
+        h.get_by_label("Cylinders");
     }
 
     #[test]
@@ -4673,8 +4568,6 @@ mod tests {
     fn a_track_list_the_picker_cannot_show_says_so_on_its_link() {
         let v = values(&[("tracks", "c=0-7,9-12")]);
         let mut h = page("read", v, BTreeMap::new());
-        h.get_by_label("Track options (c=0-7,9-12)").click();
-        h.run();
         h.get_by_label("Use the track picker").hover();
         h.run();
         h.get_by_label("The track picker cannot show this track list.");
@@ -4995,12 +4888,10 @@ mod tests {
     fn a_value_gw_has_a_grammar_for_shows_it_on_hover() {
         let typed = "c=0-7,9-12";
         let mut h = page("read", values(&[("tracks", typed)]), BTreeMap::new());
-        let header = format!("Track options ({typed})");
-        h.get_by_label(&header).hover();
+        h.get_by_label("Track settings").hover();
         h.run();
         h.get_by_label("Which tracks to read.");
         h.get_by_label_contains("h[01].off");
-        h.get_by_label(&header).click();
         h.event(egui::Event::PointerGone);
         h.run();
         h.get_all_by_role(Role::TextInput)

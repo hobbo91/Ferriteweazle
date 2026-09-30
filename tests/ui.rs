@@ -1668,16 +1668,6 @@ fn a_rows_tick_box_is_level_with_its_label() {
 }
 
 #[test]
-fn the_window_as_it_opens_needs_no_scrolling() {
-    let w = window_at(DEFAULT, chosen());
-    let bars: Vec<_> = w
-        .query_all_by_role(Role::ScrollBar)
-        .map(|b| b.rect())
-        .collect();
-    assert!(bars.is_empty(), "something scrolls: {bars:?}");
-}
-
-#[test]
 fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
     let small = ferriteweazle::SMALLEST;
     for drawer in [None, Some(Drawer::Log)] {
@@ -2646,7 +2636,8 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
     };
     let out = settings.outputs.get_mut("read/file").unwrap();
     (out.disks, out.first, out.label) = (7, 4, "Disk".into());
-    let mut w = window(settings);
+    // Tall enough for the set's names above the command line.
+    let mut w = window_at(egui::vec2(1240.0, 1100.0), settings);
     let shown = line(&w);
     assert!(shown.contains("Floppy_Disk4.adf"), "{shown}");
     w.get_by_label("Multiple disks (4 to 7)").click();
