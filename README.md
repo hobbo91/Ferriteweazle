@@ -20,7 +20,7 @@
 
 ## Is this just vibe-coded AI slop?
 
-No. I'v spent a lot of time building this project in Rust, a language I know well, using Claude as a coding assistant, and I review every change. I also contribute to [Copperline](https://github.com/CopperlineHQ/Copperline).
+No. I built it in Rust, a language I know well, using Claude as a coding assistant, and I review every change. I also contribute to [Copperline](https://github.com/CopperlineHQ/Copperline).
 
 ## How it can auto-detect a disk format
 
