@@ -1572,7 +1572,7 @@ const REPLACES_INPUTS: &str =
     "An image would replace its input. Select another type, folder or label.";
 
 /// The most disks one session reads.
-const MAX_DISKS: u32 = 99;
+const MAX_DISKS: u32 = 256;
 
 /// The most passes a read makes.
 pub const MAX_PASSES: u32 = 5;
@@ -2876,7 +2876,10 @@ impl Output {
 
     /// The first disk a session reads, within the set.
     pub fn first_disk(&self) -> u32 {
-        self.first.clamp(1, self.disks.max(1))
+        match self.ask_names {
+            true => 1,
+            false => self.first.clamp(1, self.disks.max(1)),
+        }
     }
 
     /// Every file a session makes, in order.
@@ -4581,6 +4584,23 @@ mod tests {
     }
 
     #[test]
+    fn a_set_reads_up_to_256_disks() {
+        let out = Output {
+            name: "Game".into(),
+            disks: 300,
+            ..output(".adf")
+        };
+        let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+        let mut h = page("read", Values::default(), outputs);
+        h.get_by_label_contains("Multiple disks").click();
+        h.run();
+        let out = &h.state().1[&output_key("read", "file")];
+        assert_eq!(out.disks, 256);
+        let names = "Game_001.adf, Game_002.adf … Game_256.adf";
+        assert_eq!(out.preview_names(), names);
+    }
+
+    #[test]
     fn a_set_numbers_its_files_unless_it_asks_each_disks_name() {
         let mut out = Output {
             folder: "/f".into(),
@@ -4590,7 +4610,9 @@ mod tests {
             ..Output::default()
         };
         assert_eq!(out.preview_names(), "Game_1.adf, Game_2.adf, Game_3.adf");
+        out.first = 8;
         out.ask_names = true;
+        assert_eq!(out.first_disk(), 1, "First disk is for numbered sets");
         assert_eq!(out.path(2), PathBuf::from("/f/Game.adf"));
         assert_eq!(
             out.preview(),
@@ -4614,7 +4636,7 @@ mod tests {
         out.ask_names = true;
         let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
         let mut h = page("read", values(&[("format", "amiga.amigados")]), outputs);
-        h.get_by_label_contains("Multiple disks").click();
+        h.get_by_label("Multiple disks (3)").click();
         h.run();
         h.get_by_label("Asks for each disk's name before reading it.");
         h.get_all_by_role(Role::TextInput).last().unwrap().hover();
