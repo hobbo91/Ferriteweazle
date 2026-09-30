@@ -263,6 +263,8 @@ struct Shade {
     to: Color32,
     /// When it changed, in egui's seconds.
     at: f64,
+    /// The background it was set against, which a theme change changes.
+    bg: Color32,
 }
 
 impl Shade {
@@ -273,8 +275,9 @@ impl Shade {
 }
 
 /// A square's colour, fading over FILL_TIME to `to` from what it showed when that
-/// last changed, or from the background `bg` when first seen. Timed from that
-/// frame, not by frame gaps, so a square lit after an idle spell starts empty.
+/// last changed, or from the background `bg` when first seen; at once to a new
+/// theme's colour. Timed from that frame, not by frame gaps, so a square lit
+/// after an idle spell starts empty.
 fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
     let now = ui.input(|i| i.time);
     let shade = ui.data_mut(|d| {
@@ -282,12 +285,21 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
             from: bg,
             to,
             at: now,
+            bg,
         });
-        if shade.to != to {
+        if shade.bg != bg {
+            *shade = Shade {
+                from: to,
+                to,
+                at: f64::NEG_INFINITY,
+                bg,
+            };
+        } else if shade.to != to {
             *shade = Shade {
                 from: shade.colour(now),
                 to,
                 at: now,
+                bg,
             };
         }
         *shade

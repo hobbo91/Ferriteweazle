@@ -2333,6 +2333,33 @@ fn fading(w: &Window) -> Option<u8> {
 }
 
 #[test]
+fn the_maps_squares_take_a_new_themes_colours_without_fading() {
+    let settings = Settings {
+        page: Page::Command("read".into()),
+        theme: ThemePreference::Dark,
+        ..Settings::default()
+    };
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let mut w = build(builder, settings, None);
+    let fills = |w: &Window| squares(w).map(|s| s.fill).collect::<Vec<_>>();
+    let dark = fills(&w);
+    app_mut(&mut w).settings.page = Page::Settings;
+    w.run();
+    w.get_by_label("Light").click();
+    w.run();
+    app_mut(&mut w).settings.page = Page::Command("read".into());
+    w.step();
+    let first = fills(&w);
+    w.run();
+    let light = fills(&w);
+    assert_ne!(light, dark);
+    assert_eq!(first, light, "the squares faded to the new theme");
+}
+
+#[test]
 fn choosing_a_theme_fades_the_old_one_out_then_the_window_rests() {
     for (from, to, shows) in [
         (ThemePreference::Dark, "Light", egui::Theme::Light),
