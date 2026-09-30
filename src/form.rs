@@ -2839,6 +2839,28 @@ pub fn with_step(tracks: &str, step: u32) -> String {
     spec.to_string()
 }
 
+/// The cylinders and sides a page takes of a disk of `cyls` and `heads`, as gw
+/// works them out from its track lists: for Convert, those it writes.
+pub fn page_tracks(values: &Values, (cyls, heads): (u32, u32)) -> (Vec<u32>, Vec<u32>) {
+    let disk = ((0..cyls).collect(), (0..heads).collect());
+    take(values.get("out_tracks"), take(values.get("tracks"), disk))
+}
+
+/// The cylinders and sides a track list names, else those it is given.
+fn take(list: &str, (cyls, heads): (Vec<u32>, Vec<u32>)) -> (Vec<u32>, Vec<u32>) {
+    let spec = TrackSpec::parse(list);
+    let named = |part: Option<&str>, or: Vec<u32>| {
+        let mut set = part.and_then(crate::progress::numbers).unwrap_or(or);
+        set.sort_unstable();
+        set.dedup();
+        set
+    };
+    (
+        named(spec.c.as_deref(), cyls),
+        named(spec.h.as_deref(), heads),
+    )
+}
+
 /// The format a page's settings fit, once the page is seen, and whether its
 /// double step waits for gw to size that format.
 #[derive(Debug, Default)]
@@ -3799,6 +3821,24 @@ mod tests {
         h.get_by_label("Double step").click();
         h.run();
         assert_eq!(h.state().0.get("tracks"), "");
+    }
+
+    #[test]
+    fn a_page_takes_the_tracks_its_lists_name_of_the_disk() {
+        let tracks = |pairs: &[(&str, &str)]| page_tracks(&values(pairs), (80, 2));
+        let cyls = |n: u32| (0..n).collect::<Vec<_>>();
+        assert_eq!(tracks(&[]), (cyls(80), vec![0, 1]));
+        assert_eq!(
+            tracks(&[("tracks", "c=0-39:h=1:step=2")]),
+            (cyls(40), vec![1])
+        );
+        assert_eq!(
+            tracks(&[("tracks", "c=9,0-4/2,2")]),
+            (vec![0, 2, 4, 9], vec![0, 1])
+        );
+        let convert = [("tracks", "c=0-9"), ("out_tracks", "h=0")];
+        assert_eq!(tracks(&convert), (cyls(10), vec![0]));
+        assert_eq!(tracks(&[("tracks", "c=x")]), (cyls(80), vec![0, 1]));
     }
 
     #[test]

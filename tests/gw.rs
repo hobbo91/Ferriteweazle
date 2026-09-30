@@ -1627,7 +1627,9 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         .nth(1)
         .and_then(|c| c.accesskit_node().numeric_value());
     assert_eq!(last, Some(34.0), "cylinders 0 to 34");
-    assert_eq!(squares(&w).count(), 35, "the blank map is the disk's");
+    until_shown(&mut w, "the disk's 35 squares", |w| {
+        squares(w).count() == 35
+    });
 
     // The file is looked at again when it changes.
     std::fs::write(&nsi, vec![0u8; 179_200]).unwrap();

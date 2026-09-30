@@ -40,38 +40,43 @@ pub fn width_for(budget: f32) -> f32 {
     2.0 * (LABEL + ROW as f32 * cell + (ROW - 1) as f32 * GAP) + SIDE_GAP + 1.0
 }
 
-/// Draws the map with squares of CELL points: smaller if `room`, the pane's height
-/// below its top, lacks space; larger if a `budget`-point map (legend included) and
-/// the width allow. `job` keys the fade-in, so a square fills once per job; while
-/// it is `live`, a square that first shows lit fades in too.
+/// Draws the map: a grid of the disk's `(cylinders, sides)` and any tracks past
+/// them, with a square for each track `progress` takes, fading in and out as they
+/// come and go. Squares are CELL points: smaller if `room`, the pane's height below
+/// its top, lacks space for SIZED_ROWS rows; larger if a `budget`-point map (legend
+/// included) and the width allow. More rows run on, and the pane scrolls.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
-    job: impl std::hash::Hash + std::fmt::Debug,
-    live: bool,
+    disk: (u32, u32),
     verifying: bool,
     budget: f32,
     room: f32,
 ) {
     let (cyls, heads) = progress.layout();
-    let (Some(&first), Some(&last)) = (cyls.first(), cyls.last()) else {
+    let past = |set: &[u32]| set.last().map_or(0, |n| n + 1);
+    let (span, sides) = grid(
+        ui,
+        (disk.0.max(past(&cyls)), disk.1.max(past(&heads)).min(2)),
+    );
+    if span == 0 {
         return;
-    };
+    }
     let p = theme::palette(ui);
     // Whole pixels, so every square and every gap is the same size.
     let ppp = ui.ctx().pixels_per_point();
     let snap = |x: f32| (x * ppp).round() / ppp;
     let gap = snap(GAP);
-    let sides = heads.len().max(1) as f32;
-    let rows = last / ROW - first / ROW + 1;
+    let rows = span.div_ceil(ROW);
     let width = ui.available_width();
     // The legend wraps in a narrow pane: last frame's height keeps it in room.
     let legend_id = ui.id().with("legend");
     let legend_height = ui.data(|d| d.get_temp(legend_id)).unwrap_or(LEGEND);
     let room = room - legend_height;
     let wanted = (budget - legend_height.max(LEGEND)).min(room);
+    let n = sides as f32;
     let cell_in = |across: bool, height: f32, rows: u32| {
-        let (columns, stacked) = if across { (sides, 1.0) } else { (1.0, sides) };
+        let (columns, stacked) = if across { (n, 1.0) } else { (1.0, n) };
         let each_width = (width - SIDE_GAP * (columns - 1.0)) / columns;
         let by_width = (each_width - LABEL - (ROW - 1) as f32 * gap) / ROW as f32;
         let each = (height - STACK_GAP * (stacked - 1.0)) / stacked;
@@ -80,9 +85,9 @@ pub fn show(
     };
     // The usual size where it fits, larger where the budget allows.
     let cell_for = |across: bool| {
-        let fits = cell_in(across, room, rows);
+        let fits = cell_in(across, room, rows.min(SIZED_ROWS));
         let usual = CELL.min(fits);
-        cell_in(across, wanted, rows.max(SIZED_ROWS))
+        cell_in(across, wanted, SIZED_ROWS)
             .min(fits)
             .max(usual)
             .min(MAX_CELL)
@@ -96,24 +101,25 @@ pub fn show(
         TITLE + rows as f32 * step - gap,
     );
     let size = match across {
-        true => vec2(grid.x * sides + SIDE_GAP * (sides - 1.0), grid.y),
-        false => vec2(grid.x, grid.y * sides + STACK_GAP * (sides - 1.0)),
+        true => vec2(grid.x * n + SIDE_GAP * (n - 1.0), grid.y),
+        false => vec2(grid.x, grid.y * n + STACK_GAP * (n - 1.0)),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let radius = CornerRadius::same((cell / 5.0).round() as u8);
-    let square = |i: usize, cyl: u32| {
+    let square = |head: u32, cyl: u32| {
         let origin = match across {
-            true => rect.min + vec2(i as f32 * (grid.x + SIDE_GAP), 0.0),
-            false => rect.min + vec2(0.0, i as f32 * (grid.y + STACK_GAP)),
+            true => rect.min + vec2(head as f32 * (grid.x + SIDE_GAP), 0.0),
+            false => rect.min + vec2(0.0, head as f32 * (grid.y + STACK_GAP)),
         };
         let x = snap(origin.x + LABEL) + (cyl % ROW) as f32 * step;
-        let y = snap(origin.y + TITLE) + (cyl / ROW - first / ROW) as f32 * step;
+        let y = snap(origin.y + TITLE) + (cyl / ROW) as f32 * step;
         Rect::from_min_size(pos2(x, y), vec2(cell, cell))
     };
+    let taken = |(cyl, head): (u32, u32)| cyls.contains(&cyl) && heads.contains(&head);
     let mut shown = Vec::new();
-    for (i, &head) in heads.iter().enumerate() {
-        let corner = square(i, first - first % ROW);
+    for head in 0..sides {
+        let corner = square(head, 0);
         painter.text(
             pos2(corner.left(), corner.top() - TITLE + 2.0),
             Align2::LEFT_TOP,
@@ -122,8 +128,8 @@ pub fn show(
             p.dim,
         );
         let every = if step < ROW_NUMBER { 2 } else { 1 };
-        for row in (first / ROW..=last / ROW).filter(|r| r % every == 0) {
-            let at = square(i, row * ROW);
+        for row in (0..rows).filter(|r| r % every == 0) {
+            let at = square(head, row * ROW);
             painter.text(
                 pos2(at.left() - 7.0, at.center().y),
                 Align2::RIGHT_CENTER,
@@ -132,21 +138,28 @@ pub fn show(
                 p.dim,
             );
         }
-        for &cyl in &cyls {
+        for cyl in 0..span {
             let key = (cyl, head);
             let filled = fill(progress, key, p);
-            let id = egui::Id::new(("square", &job, key));
-            let colour = shade(ui, id, filled, p.pending, live);
-            let status = progress.tracks.get(&key).map(|t| t.status);
-            let edge = edge(status == Some(Status::Skipped), p);
-            painter.rect(square(i, cyl), radius, colour, edge, StrokeKind::Inside);
-            shown.extend(filled);
+            let to = match taken(key) {
+                true => filled.unwrap_or(p.pending),
+                false => p.bg,
+            };
+            let colour = shade(ui, egui::Id::new(("square", key)), to, p.bg);
+            if taken(key) || colour != p.bg {
+                let status = progress.tracks.get(&key).map(|t| t.status);
+                let edge = edge(status == Some(Status::Skipped), p);
+                painter.rect(square(head, cyl), radius, colour, edge, StrokeKind::Inside);
+            }
+            if taken(key) {
+                shown.extend(filled);
+            }
         }
     }
     let hovered = response.hover_pos().and_then(|pos| {
-        heads.iter().enumerate().find_map(|(i, &head)| {
+        heads.iter().find_map(|&head| {
             cyls.iter()
-                .find(|&&c| square(i, c).expand(gap / 2.0).contains(pos))
+                .find(|&&c| square(head, c).expand(gap / 2.0).contains(pos))
                 .map(|&c| (c, head))
         })
     });
@@ -184,58 +197,57 @@ pub fn show(
     }
 }
 
-/// A square's fade from the colour it showed when its fill last changed.
+/// The cylinders and sides the grid spans for `want`: at once where it grows, but
+/// where it shrinks only once the squares it loses have had FILL_TIME to fade out.
+fn grid(ui: &egui::Ui, want: (u32, u32)) -> (u32, u32) {
+    let now = ui.input(|i| i.time);
+    let id = egui::Id::new("disk grid");
+    let (drawn, wanted, since) = ui.data(|d| d.get_temp(id)).unwrap_or((want, want, now));
+    let since = if want == wanted { since } else { now };
+    let grows = want.0 >= drawn.0 && want.1 >= drawn.1;
+    let drawn = match grows || now - since >= f64::from(FILL_TIME) {
+        true => want,
+        false => (drawn.0.max(want.0), drawn.1.max(want.1)),
+    };
+    if drawn != want {
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|d| d.insert_temp(id, (drawn, want, since)));
+    drawn
+}
+
+/// A square's fade from the colour it showed when its target last changed.
 #[derive(Clone, Copy)]
 struct Shade {
     from: Color32,
-    /// Its colour, `None` until gw reports the track.
-    to: Option<Color32>,
+    to: Color32,
     /// When it changed, in egui's seconds.
     at: f64,
 }
 
 impl Shade {
-    fn colour(self, now: f64, pending: Color32) -> Color32 {
+    fn colour(self, now: f64) -> Color32 {
         let t = ((now - self.at) as f32 / FILL_TIME).clamp(0.0, 1.0);
-        let to = self.to.unwrap_or(pending);
-        theme::lerp(self.from, to, egui::emath::easing::cubic_in_out(t))
+        theme::lerp(self.from, self.to, egui::emath::easing::cubic_in_out(t))
     }
 }
 
-/// A square's colour, fading over FILL_TIME from what it showed when `filled` last
-/// changed. Timed from that frame, not by frame gaps, so a square lit after an idle
-/// spell starts empty. One lit when first seen fades in while `live`, else shows at once.
-fn shade(
-    ui: &egui::Ui,
-    id: egui::Id,
-    filled: Option<Color32>,
-    pending: Color32,
-    live: bool,
-) -> Color32 {
+/// A square's colour, fading over FILL_TIME to `to` from what it showed when that
+/// last changed, or from the background `bg` when first seen. Timed from that
+/// frame, not by frame gaps, so a square lit after an idle spell starts empty.
+fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
     let now = ui.input(|i| i.time);
-    let fade_in = live && filled.is_some();
     let shade = ui.data_mut(|d| {
         let shade = d.get_temp_mut_or_insert_with(id, || Shade {
-            from: if fade_in {
-                pending
-            } else {
-                filled.unwrap_or(pending)
-            },
-            to: filled,
-            at: if fade_in { now } else { f64::NEG_INFINITY },
+            from: bg,
+            to,
+            at: now,
         });
-        if shade.to != filled {
-            *shade = match filled {
-                Some(_) => Shade {
-                    from: shade.colour(now, pending),
-                    to: filled,
-                    at: now,
-                },
-                None => Shade {
-                    from: pending,
-                    to: None,
-                    at: f64::NEG_INFINITY,
-                },
+        if shade.to != to {
+            *shade = Shade {
+                from: shade.colour(now),
+                to,
+                at: now,
             };
         }
         *shade
@@ -243,7 +255,7 @@ fn shade(
     if now - shade.at < f64::from(FILL_TIME) {
         ui.ctx().request_repaint();
     }
-    shade.colour(now, pending)
+    shade.colour(now)
 }
 
 /// A track's colour, by its sectors once gw has mapped them; `None` until gw

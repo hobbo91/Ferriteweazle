@@ -978,6 +978,85 @@ fn the_82_cylinders_gw_erases_add_a_row_not_smaller_squares() {
 }
 
 #[test]
+fn the_maps_squares_fade_in_and_out_with_the_pages_tracks() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let settings = Settings {
+        page: Page::Settings,
+        ..chosen()
+    };
+    let mut w = start(builder, settings, None);
+    let fills = |w: &Window| squares(w).map(|s| s.fill).collect::<Vec<_>>();
+    let tracks = |w: &mut Window, list: &str| {
+        let values = app_mut(w).settings.values.get_mut("read").unwrap();
+        values.set("tracks", list);
+        // Half of FILL_TIME's 0.4 s.
+        w.run_steps(12);
+    };
+    app_mut(&mut w).settings.page = Page::Command("read".into());
+    w.run_steps(12);
+    let appearing = fills(&w);
+    w.run();
+    assert_eq!(fills(&w).len(), 164, "gw's 82 cylinders on two sides");
+    assert_ne!(appearing[0], fills(&w)[0], "the squares showed at once");
+
+    tracks(&mut w, "c=0-39:h=0");
+    assert_eq!(squares(&w).count(), 164, "the squares went at once");
+    w.run();
+    assert_eq!(squares(&w).count(), 40);
+
+    tracks(&mut w, "c=0-83:h=0");
+    let growing = fills(&w);
+    w.run();
+    assert_ne!(growing[83], fills(&w)[83], "cylinder 83 showed at once");
+
+    tracks(&mut w, "c=0-9:h=0");
+    assert_eq!(
+        squares(&w).count(),
+        84,
+        "the grid shrank before its squares went"
+    );
+    w.run();
+    assert_eq!(squares(&w).count(), 10);
+}
+
+#[test]
+fn a_track_list_past_90_cylinders_keeps_the_squares_size_and_scrolls() {
+    let map = |list: &str| {
+        let mut settings = chosen();
+        set(&mut settings, "read", "tracks", list);
+        let w = window_at(DEFAULT, settings);
+        let rects: Vec<_> = squares(&w).map(|s| s.rect).collect();
+        let bottom = rects.iter().map(|r| r.bottom()).fold(f32::MIN, f32::max);
+        (rects[0].width(), bottom)
+    };
+    let (usual, _) = map("");
+    let (long, bottom) = map("c=0-254");
+    assert_eq!(long, usual, "the squares shrank");
+    assert!(bottom > DEFAULT.y, "the map fits, so nothing scrolls");
+}
+
+#[test]
+fn a_finished_jobs_map_stands_until_its_page_takes_other_tracks() {
+    let mut job = Job::replay("read", "Reading c=0-81:h=0-1 revs=2");
+    job.planned = Some(((0..82).collect(), vec![0, 1]));
+    let mut w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    let preview = |w: &Window| w.query_by_label("No disk read yet").is_some();
+    let tracks = |w: &mut Window, list: &str| {
+        let values = app_mut(w).settings.values.get_mut("read").unwrap();
+        values.set("tracks", list);
+        w.run();
+    };
+    assert!(!preview(&w));
+    tracks(&mut w, "c=0-39");
+    assert!(preview(&w));
+    tracks(&mut w, "");
+    assert!(!preview(&w), "the same tracks again show the job's map");
+}
+
+#[test]
 fn the_map_of_a_write_says_what_gw_reported_of_each_track() {
     let writing =
         |c, h| format!("T{c}.{h}: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)");

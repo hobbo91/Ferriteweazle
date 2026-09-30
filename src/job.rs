@@ -44,6 +44,8 @@ pub struct Job {
     pub no_image: bool,
     /// The job's disk format, if known.
     pub format: Option<String>,
+    /// The cylinders and sides its page showed as it started: its map stands for them.
+    pub planned: Option<(Vec<u32>, Vec<u32>)>,
     /// Formats that read the disk in full, best first, from a detect job.
     pub detected: Vec<String>,
     /// The head step the detected disk needs: 2 for a 40-track disk in an
@@ -251,6 +253,7 @@ impl Job {
             output: None,
             no_image: false,
             format: None,
+            planned: None,
             detected: Vec::new(),
             step: 1,
             part: None,

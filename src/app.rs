@@ -2064,6 +2064,8 @@ impl App {
         ) {
             Ok(mut job) => {
                 job.output = output;
+                let (_, _, planned) = self.blank_map(command);
+                job.planned = Some((planned.cyls, planned.heads));
                 job.format = job
                     .args
                     .iter()
@@ -2106,10 +2108,19 @@ impl App {
 
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
-        let (format, blank) = self.blank_map(page);
-        // Detect's tracks stand for the format it chose: the page's own once another is chosen.
+        let (format, disk, blank) = self.blank_map(page);
+        // A finished job's map stands until its page takes other tracks, and
+        // Detect's until the page takes another format.
+        let preview = (&blank.cyls, &blank.heads);
         let shown = self.disk.as_ref().filter(|j| {
-            j.running() || j.command != DETECT || j.format.as_deref() == format.as_deref()
+            j.running()
+                || match j.command.as_str() {
+                    DETECT => j.format == format,
+                    command if command == page => {
+                        j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview)
+                    }
+                    _ => true,
+                }
         });
         let top = ui.cursor().top();
         // The map's height above a drawer at its least height and below a job's rows, even
@@ -2135,7 +2146,7 @@ impl App {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
-            diskmap::show(ui, &blank, "blank", false, false, budget, room);
+            diskmap::show(ui, &blank, disk, false, budget, room);
             return;
         };
         // These rows wrap, so the job shows in full.
@@ -2192,19 +2203,10 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, "blank", false, false, budget, room),
+            true => diskmap::show(ui, &blank, disk, false, budget, room),
             false => {
                 let verifying = job.running() && job.progress.verifies;
-                let live = job.running();
-                diskmap::show(
-                    ui,
-                    &job.progress,
-                    job.started,
-                    live,
-                    verifying,
-                    budget,
-                    room,
-                );
+                diskmap::show(ui, &job.progress, disk, verifying, budget, room);
             }
         }
         if install {
@@ -2250,8 +2252,9 @@ impl App {
         }
     }
 
-    /// The page's format, and an empty map of its size, else of a common disk's.
-    fn blank_map(&mut self, page: &str) -> (Option<String>, Progress) {
+    /// The page's format, its disk's cylinders and sides, else a common disk's, and
+    /// an empty map of the tracks the page takes.
+    fn blank_map(&mut self, page: &str) -> (Option<String>, (u32, u32), Progress) {
         let empty = Values::default();
         let values = self.settings.values.get(page).unwrap_or(&empty);
         let format = self
@@ -2262,8 +2265,9 @@ impl App {
             let diskdefs = form::diskdefs_for(&mut self.service, values, format);
             self.service.format_info(&diskdefs, format).ready()
         });
-        let (cyls, heads) = info.map_or(form::USUAL_DISK, |i| (i.cyls, i.heads));
-        (format, Progress::blank(cyls, heads))
+        let disk = info.map_or(form::USUAL_DISK, |i| (i.cyls, i.heads));
+        let (cyls, heads) = form::page_tracks(values, disk);
+        (format, disk, Progress::blank(cyls, heads))
     }
 
     /// The drawers under the page and the status pane: the command line and

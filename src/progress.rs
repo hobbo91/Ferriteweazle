@@ -84,11 +84,11 @@ const LISTS: [&str; 4] = [
 const FATAL: &str = "greaseweazle.error.Fatal: ";
 
 impl Progress {
-    /// Nothing done yet, on a disk of this size.
-    pub fn blank(cyls: u32, heads: u32) -> Progress {
+    /// Nothing done yet on these cylinders and sides.
+    pub fn blank(cyls: Vec<u32>, heads: Vec<u32>) -> Progress {
         Progress {
-            cyls: (0..cyls).collect(),
-            heads: (0..heads).collect(),
+            cyls,
+            heads,
             ..Progress::default()
         }
     }
@@ -393,16 +393,18 @@ fn track_set(s: &str) -> Option<(Vec<u32>, Vec<u32>)> {
     Some((cyls?, heads?))
 }
 
-/// `0-7,9,12-15`.
-fn numbers(s: &str) -> Option<Vec<u32>> {
+/// `0-7,9,12-15`, or `0-79/2` for every other one, as gw takes them.
+pub(crate) fn numbers(s: &str) -> Option<Vec<u32>> {
     let mut out = Vec::new();
     for range in s.split(',') {
+        let (range, every) = range.split_once('/').unwrap_or((range, "1"));
         let (a, b) = range.split_once('-').unwrap_or((range, range));
         let (a, b): (u32, u32) = (a.parse().ok()?, b.parse().ok()?);
+        let every: usize = every.parse().ok().filter(|&n| n > 0)?;
         if b.saturating_sub(a) > 1024 {
             return None;
         }
-        out.extend(a..=b);
+        out.extend((a..=b).step_by(every));
     }
     Some(out)
 }
