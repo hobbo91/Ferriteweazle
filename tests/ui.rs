@@ -52,7 +52,9 @@ fn start(
 }
 
 fn window_at(size: egui::Vec2, settings: Settings) -> Window {
-    build(Harness::builder().with_size(size), settings, None)
+    // Frames enough for the map's squares to fade and its sides then to slide.
+    let builder = Harness::builder().with_size(size).with_max_steps(8);
+    build(builder, settings, None)
 }
 
 fn window(settings: Settings) -> Window {
@@ -81,11 +83,21 @@ fn chosen() -> Settings {
     settings
 }
 
-/// The `n`th drop-down: 0 is the sidebar's port picker, 1 the page's format, 2 its image type.
+/// The `n`th drop-down: 0 is the sidebar's port picker, 1 the page's format.
 fn combo(w: &Window, n: usize) -> Node<'_> {
     w.get_all_by_role(Role::ComboBox)
         .nth(n)
         .expect("the drop-down")
+}
+
+/// The page's image type drop-down, wherever the page puts it.
+fn image_type(w: &Window) -> Node<'_> {
+    w.get_all_by_role(Role::ComboBox)
+        .find(|c| {
+            c.value()
+                .is_some_and(|v| v == "Select image type" || v.contains("(."))
+        })
+        .expect("the image type drop-down")
 }
 
 /// Types into the focused field; a field takes the focus as it opens.
@@ -274,14 +286,23 @@ fn a_preset_is_a_file_that_brings_back_the_settings_it_saved() {
     w.run();
     type_text(&w, "Five revs");
     w.run();
+    // The description, below the name, takes what is typed once clicked.
+    w.get_all_by_role(Role::TextInput).last().unwrap().click();
+    w.run();
+    type_text(&w, "For a worn disk.");
+    w.run();
     w.get_by_label("Save").click();
     w.run();
-    assert!(folder.join("Five revs.json").is_file());
+    let saved = presets::load(&folder.join("Five revs.json")).unwrap();
+    assert_eq!(saved.description, "For a worn disk.");
 
     set(&mut app_mut(&mut w).settings, "read", "revs", "2");
     w.run();
     w.get_by_label("Presets").click();
     w.run();
+    w.get_by_label("Five revs").hover();
+    w.run();
+    w.get_by_label("For a worn disk.");
     w.get_by_label("Five revs").click();
     w.run();
     assert_eq!(app(&w).settings.values["read"].get("revs"), "5");
@@ -391,11 +412,8 @@ fn the_status_pane_says_what_has_not_happened_to_a_disk_yet() {
 #[test]
 fn a_read_starts_with_no_format_or_image_type() {
     let w = window(Settings::default());
-    let shown: Vec<_> = w
-        .get_all_by_role(Role::ComboBox)
-        .map(|c| c.value().unwrap_or_default())
-        .collect();
-    assert_eq!(shown[1..3], ["Select disk format", "Select image type"]);
+    assert_eq!(combo(&w, 1).value().as_deref(), Some("Select disk format"));
+    assert_eq!(image_type(&w).value().as_deref(), Some("Select image type"));
     assert_eq!(app(&w).settings.values["read"].get("file"), "");
 }
 
@@ -444,12 +462,83 @@ const DEVICE_PAGES: [(&str, &str); 13] = [
     ("Drive speed", "Measure"),
     ("Device info", "Get info"),
     ("Update firmware", "Update"),
-    ("Delays", "Run"),
+    ("Delays", "Get delays"),
     ("Read pin", "Read pin"),
     ("Set pin", "Set pin"),
     ("Reset", "Reset"),
     ("USB bandwidth", "Measure"),
 ];
+
+#[test]
+fn delays_are_got_until_one_is_typed_then_set() {
+    let delays = || Settings {
+        page: Page::Command("delays".into()),
+        ..Settings::default()
+    };
+    run_button(&window(delays()), "Get delays");
+    let mut settings = delays();
+    set(&mut settings, "delays", "step", "3000");
+    run_button(&window(settings), "Set delays");
+}
+
+#[test]
+fn delays_the_drive_reports_grey_their_fields_and_only_a_failure_shows_a_result() {
+    let mut w = window(Settings {
+        page: Page::Command("delays".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
+    let ran = |log: &str| {
+        let mut job = Job::replay("delays", log);
+        job.args = vec![
+            "delays".into(),
+            format!("--device={}", greaseweazle().device),
+        ];
+        job
+    };
+    let end = |w: &mut Window, job: Job| {
+        let ctx = w.ctx.clone();
+        let app = app_mut(w);
+        app.tool = Some(job);
+        app.ended(&ctx, false);
+        w.run();
+    };
+    let greyed = |w: &Window| {
+        w.get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let running = || {
+        let mut job = ran("");
+        job.ended = None;
+        job
+    };
+    app_mut(&mut w).tool = Some(running());
+    w.step();
+    assert!(w.query_by_label("Result").is_none(), "a flash of output");
+    let report = ["10 µs", "5000 µs", "15 ms"];
+    end(
+        &mut w,
+        ran("Select Delay: 10us\nStep Delay:   5000us\nSettle Time:  15ms"),
+    );
+    assert_eq!(greyed(&w), report);
+    assert!(w.query_by_label("Result").is_none(), "the fields say it");
+    run_button(&w, "Get delays");
+
+    // Running again, it keeps the fields and shows no output.
+    app_mut(&mut w).tool = Some(running());
+    w.step();
+    assert_eq!(greyed(&w), report);
+    assert!(
+        w.query_by_label("Result").is_none(),
+        "a flash of output again"
+    );
+
+    end(&mut w, ran("Command Failed: Bad Command"));
+    w.get_by_label("Result");
+    assert_eq!(greyed(&w), report, "the drive still has them");
+}
 
 #[test]
 fn every_page_opens_without_a_device_but_cannot_run() {
@@ -517,7 +606,7 @@ fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
         dismiss.right() < status.left(),
         "Dismiss at {dismiss:?} runs into the status pane at {status:?}"
     );
-    let image_type = combo(&w, 2).rect();
+    let image_type = image_type(&w).rect();
     assert!(
         dismiss.right() <= image_type.right(),
         "the notice ends past the fields: {dismiss:?}, {image_type:?}"
@@ -551,7 +640,7 @@ fn a_notice_shows_only_on_its_page_and_stays_until_dismissed() {
 #[test]
 fn fields_share_one_height_and_end_at_one_right_edge() {
     let w = window(chosen());
-    let (format, image_type) = (combo(&w, 1).rect(), combo(&w, 2).rect());
+    let (format, image_type) = (combo(&w, 1).rect(), image_type(&w).rect());
     let inputs: Vec<_> = w
         .get_all_by_role(Role::TextInput)
         .map(|t| t.rect())
@@ -598,12 +687,13 @@ fn every_field_and_its_label_explain_themselves_on_hover() {
     let rows = [
         (
             "Revolutions",
-            combo(&w, 3).rect().center(),
+            // After the format, before the image type.
+            combo(&w, 2).rect().center(),
             "Revolutions to read per track.",
         ),
         (
             "Image type",
-            combo(&w, 2).rect().center(),
+            image_type(&w).rect().center(),
             "The type of image to create. Disk format picks one.",
         ),
         ("Folder", inputs[0], "Where the image is saved."),
@@ -642,7 +732,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 #[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
     let w = window_at(ferriteweazle::SMALLEST, chosen());
-    let image_type = combo(&w, 2).rect();
+    let image_type = image_type(&w).rect();
     let status = w.get_by_label("Disk status").rect();
     assert!(
         image_type.right() < status.left(),
@@ -780,7 +870,8 @@ fn a_drawer_slides_open_and_shut_and_the_map_stays_where_it_fits() {
         shutting.iter().all(|f| f[1] == legend),
         "the map moved: {shutting:?}"
     );
-    assert_eq!(w.run(), 1, "the window keeps drawing");
+    // The scroll bar fades out as the form fits again.
+    assert!(w.run() < 10, "the window keeps drawing");
 }
 
 #[test]
@@ -1031,6 +1122,107 @@ fn row_number(w: &Window, n: &str) -> Option<egui::Color32> {
         }
         _ => None,
     })
+}
+
+/// Where the map writes `text`, such as Side 0.
+fn painted(w: &Window, text: &str) -> egui::Pos2 {
+    let left = w.get_by_label("Disk status").rect().left();
+    let found = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Text(t) if t.pos.x > left && t.galley.text() == text => Some(t.pos),
+        _ => None,
+    });
+    found.unwrap_or_else(|| panic!("the map shows no {text}"))
+}
+
+#[test]
+fn side_0_stays_in_view_as_a_swapped_map_goes_to_one_side() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(60);
+    let mut settings = chosen();
+    set(&mut settings, "read", "tracks", "hswap");
+    let mut w = build(builder, settings, None);
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "h=0:hswap");
+    // Past FILL_TIME's fade and SLIDE_TIME's slide.
+    for _ in 0..20 {
+        w.step();
+        let left = w.get_by_label("Disk status").rect().left();
+        let side0 = w.output().shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.pos.x > left && t.galley.text() == "Side 0" => {
+                Some((c.clip_rect, t.pos))
+            }
+            _ => None,
+        });
+        let (clip, at) = side0.expect("the map shows side 0");
+        assert!(clip.contains(at), "side 0 at {at:?}, out of {clip:?}");
+    }
+}
+
+#[test]
+fn a_jobs_map_keeps_the_sides_as_the_job_took_them() {
+    let mut job = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    job.args = vec!["read".into(), "--tracks=hswap".into()];
+    // Write's own list does not swap them.
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    let w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert!(painted(&w, "Side 1").y < painted(&w, "Side 0").y);
+}
+
+#[test]
+fn swapping_sides_slides_each_side_into_the_others_place() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(40);
+    let mut w = build(builder, chosen(), None);
+    let (side0, side1) = (painted(&w, "Side 0"), painted(&w, "Side 1"));
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "hswap");
+    w.step();
+    w.step();
+    let moving = painted(&w, "Side 1");
+    assert!(moving != side1 && moving != side0, "a slide, not a jump");
+    w.run();
+    assert_eq!(
+        (painted(&w, "Side 0"), painted(&w, "Side 1")),
+        (side1, side0)
+    );
+}
+
+#[test]
+fn side_1_slides_down_and_back_up_as_the_map_gains_and_loses_rows() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(60);
+    let mut w = build(builder, chosen(), None);
+    let short = painted(&w, "Side 1").y;
+    let mut tracks = |list: &str| {
+        set(&mut app_mut(&mut w).settings, "read", "tracks", list);
+        // Past FILL_TIME's fade and SLIDE_TIME's slide.
+        (0..20)
+            .map(|_| {
+                w.step();
+                painted(&w, "Side 1").y
+            })
+            .collect::<Vec<_>>()
+    };
+    let down = tracks("c=0-99");
+    let long = *down.last().unwrap();
+    assert!(long > short, "side 1 stayed at {short}");
+    assert!(
+        down.iter().any(|&y| y > short && y < long),
+        "a jump down: {down:?}"
+    );
+    let up = tracks("");
+    assert_eq!(*up.last().unwrap(), short);
+    assert!(
+        up.iter().any(|&y| y > short && y < long),
+        "a jump up: {up:?}"
+    );
 }
 
 #[test]
@@ -1590,19 +1782,29 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
 }
 
 #[test]
-fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
+fn the_window_as_it_opens_needs_no_scrolling() {
     let w = window_at(DEFAULT, chosen());
     let bars: Vec<_> = w
         .query_all_by_role(Role::ScrollBar)
         .map(|b| b.rect())
         .collect();
     assert!(bars.is_empty(), "something scrolls: {bars:?}");
-    let cylinders = w.get_by_label("Cylinders").rect();
-    let side_1 = w.get_all_by_label("1").last().unwrap().rect();
-    assert!(
-        (side_1.center().y - cylinders.center().y).abs() < 2.0,
-        "the sides wrap under the cylinders: {side_1:?}, {cylinders:?}"
-    );
+}
+
+#[test]
+fn a_rows_tick_box_is_level_with_its_label() {
+    let mut settings = chosen();
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    (out.disks, out.passes) = (3, 2);
+    let mut w = window_at(egui::vec2(1240.0, 1400.0), settings);
+    for section in ["Multiple disks", "Read passes"] {
+        w.get_by_label_contains(section).click();
+        w.run();
+    }
+    for (label, tick) in [("Total", "Add the total"), ("Keep", "Each pass")] {
+        let rise = w.get_by_label(label).rect().center().y - w.get_by_label(tick).rect().center().y;
+        assert!(rise.abs() < 1.0, "{tick} sits {rise} above {label}");
+    }
 }
 
 #[test]
@@ -1634,13 +1836,6 @@ fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
         assert!(
             legend.bottom() < limit,
             "{drawer:?}: the legend at {legend:?}"
-        );
-        // The sides' buttons wrap with their label, not apart.
-        let sides = w.get_by_label("Sides").rect();
-        let side_1 = w.get_all_by_label("1").last().unwrap().rect();
-        assert!(
-            side_1.top() < sides.bottom() && sides.top() < side_1.bottom(),
-            "{drawer:?}: {sides:?}, {side_1:?}"
         );
     }
 }
@@ -2202,6 +2397,33 @@ fn fading(w: &Window) -> Option<u8> {
 }
 
 #[test]
+fn the_maps_squares_take_a_new_themes_colours_without_fading() {
+    let settings = Settings {
+        page: Page::Command("read".into()),
+        theme: ThemePreference::Dark,
+        ..Settings::default()
+    };
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let mut w = build(builder, settings, None);
+    let fills = |w: &Window| squares(w).map(|s| s.fill).collect::<Vec<_>>();
+    let dark = fills(&w);
+    app_mut(&mut w).settings.page = Page::Settings;
+    w.run();
+    w.get_by_label("Light").click();
+    w.run();
+    app_mut(&mut w).settings.page = Page::Command("read".into());
+    w.step();
+    let first = fills(&w);
+    w.run();
+    let light = fills(&w);
+    assert_ne!(light, dark);
+    assert_eq!(first, light, "the squares faded to the new theme");
+}
+
+#[test]
 fn choosing_a_theme_fades_the_old_one_out_then_the_window_rests() {
     for (from, to, shows) in [
         (ThemePreference::Dark, "Light", egui::Theme::Light),
@@ -2553,7 +2775,7 @@ fn image_options_end_within_the_field_in_the_smallest_window() {
     let mut settings = chosen();
     settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();
     let w = window_at(ferriteweazle::SMALLEST, settings);
-    let right = combo(&w, 2).rect().right();
+    let right = image_type(&w).rect().right();
     let lists: Vec<_> = w.get_all_by_role(Role::ComboBox).skip(3).collect();
     assert!(lists.len() >= 4, "bitrate, version, interface and encoding");
     for list in lists {
@@ -2581,7 +2803,8 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
     };
     let out = settings.outputs.get_mut("read/file").unwrap();
     (out.disks, out.first, out.label) = (7, 4, "Disk".into());
-    let mut w = window(settings);
+    // Tall enough for the set's names above the command line.
+    let mut w = window_at(egui::vec2(1240.0, 1100.0), settings);
     let shown = line(&w);
     assert!(shown.contains("Floppy_Disk4.adf"), "{shown}");
     w.get_by_label("Multiple disks (4 to 7)").click();

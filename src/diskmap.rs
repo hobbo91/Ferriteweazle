@@ -10,6 +10,10 @@ use eframe::egui::{
 /// Seconds a square takes to fade in.
 const FILL_TIME: f32 = 0.4;
 
+/// Seconds the sides take to slide: to change places as their heads swap, or
+/// to follow the rows as they come and go.
+const SLIDE_TIME: f32 = 0.25;
+
 /// Cylinders to a row, so rows start at 0, 10, 20.
 const ROW: u32 = 10;
 const GAP: f32 = 3.0;
@@ -45,10 +49,12 @@ pub fn width_for(budget: f32) -> f32 {
 /// come and go. Squares are CELL points: smaller if `room`, the pane's height below
 /// its top, lacks space for SIZED_ROWS rows; larger if a `budget`-point map (legend
 /// included) and the width allow. More rows run on, and the pane scrolls.
+/// `swapped`: the heads swap, and side 1 takes side 0's place.
 pub fn show(
     ui: &mut egui::Ui,
     progress: &Progress,
     disk: (u32, u32),
+    swapped: bool,
     verifying: bool,
     budget: f32,
     room: f32,
@@ -90,25 +96,44 @@ pub fn show(
             .max(usual)
             .min(MAX_CELL)
     };
-    // Sides across or stacked, whichever gives larger squares.
-    let across = cell_for(true) >= cell_for(false);
+    // Sides across or stacked, whichever gives larger squares. One side keeps
+    // the way two went, so it slides into place along it.
+    let across_id = ui.id().with("across");
+    let across = match sides {
+        2 => {
+            let across = cell_for(true) >= cell_for(false);
+            ui.data_mut(|d| d.insert_temp(across_id, across));
+            across
+        }
+        _ => ui.data(|d| d.get_temp(across_id)).unwrap_or(true),
+    };
     let cell = (cell_for(across).max(MIN_CELL) * ppp).floor() / ppp;
     let step = cell + gap;
+    // Side 1 and the legend slide as rows and sides come and go.
+    let tall = slide(ui, egui::Id::new("map rows"), rows as f32);
+    let shown = slide(ui, egui::Id::new("map sides"), n);
     let grid = vec2(
         LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
-        TITLE + rows as f32 * step - gap,
+        TITLE + tall * step - gap,
     );
     let size = match across {
-        true => vec2(grid.x * n + SIDE_GAP * (n - 1.0), grid.y),
-        false => vec2(grid.x, grid.y * n + STACK_GAP * (n - 1.0)),
+        true => vec2(grid.x * shown + SIDE_GAP * (shown - 1.0), grid.y),
+        false => vec2(grid.x, grid.y * shown + STACK_GAP * (shown - 1.0)),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let radius = CornerRadius::same((cell / 5.0).round() as u8);
+    let id = egui::Id::new("swap");
+    let easing = egui::emath::easing::cubic_in_out;
+    let t =
+        ui.ctx()
+            .animate_bool_with_time_and_easing(id, swapped && sides == 2, SLIDE_TIME, easing);
+    // Each side's place, 0 first, sliding to the other's as the heads swap.
+    let place = |head: u32| if head == 0 { t } else { 1.0 - t };
     let square = |head: u32, cyl: u32| {
         let origin = match across {
-            true => rect.min + vec2(head as f32 * (grid.x + SIDE_GAP), 0.0),
-            false => rect.min + vec2(0.0, head as f32 * (grid.y + STACK_GAP)),
+            true => rect.min + vec2(place(head) * (grid.x + SIDE_GAP), 0.0),
+            false => rect.min + vec2(0.0, place(head) * (grid.y + STACK_GAP)),
         };
         let x = snap(origin.x + LABEL) + (cyl % ROW) as f32 * step;
         let y = snap(origin.y + TITLE) + (cyl / ROW) as f32 * step;
@@ -220,6 +245,27 @@ fn grid(ui: &egui::Ui, want: (u32, u32)) -> (u32, u32) {
     drawn
 }
 
+/// A number's slide over SLIDE_TIME to `to` from where it was when `to` last
+/// changed; `to` at once when first seen.
+fn slide(ui: &egui::Ui, id: egui::Id, to: f32) -> f32 {
+    let now = ui.input(|i| i.time);
+    let at = |(from, to, since): (f32, f32, f64)| {
+        let t = ((now - since) as f32 / SLIDE_TIME).clamp(0.0, 1.0);
+        egui::lerp(from..=to, egui::emath::easing::cubic_in_out(t))
+    };
+    let slide = ui.data_mut(|d| {
+        let slide = d.get_temp_mut_or_insert_with(id, || (to, to, now));
+        if slide.1 != to {
+            *slide = (at(*slide), to, now);
+        }
+        *slide
+    });
+    if now - slide.2 < f64::from(SLIDE_TIME) {
+        ui.ctx().request_repaint();
+    }
+    at(slide)
+}
+
 /// A square's fade from the colour it showed when its target last changed.
 #[derive(Clone, Copy)]
 struct Shade {
@@ -227,6 +273,8 @@ struct Shade {
     to: Color32,
     /// When it changed, in egui's seconds.
     at: f64,
+    /// The background it was set against, which a theme change changes.
+    bg: Color32,
 }
 
 impl Shade {
@@ -237,8 +285,9 @@ impl Shade {
 }
 
 /// A square's colour, fading over FILL_TIME to `to` from what it showed when that
-/// last changed, or from the background `bg` when first seen. Timed from that
-/// frame, not by frame gaps, so a square lit after an idle spell starts empty.
+/// last changed, or from the background `bg` when first seen; at once to a new
+/// theme's colour. Timed from that frame, not by frame gaps, so a square lit
+/// after an idle spell starts empty.
 fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
     let now = ui.input(|i| i.time);
     let shade = ui.data_mut(|d| {
@@ -246,12 +295,21 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
             from: bg,
             to,
             at: now,
+            bg,
         });
-        if shade.to != to {
+        if shade.bg != bg {
+            *shade = Shade {
+                from: to,
+                to,
+                at: f64::NEG_INFINITY,
+                bg,
+            };
+        } else if shade.to != to {
             *shade = Shade {
                 from: shade.colour(now),
                 to,
                 at: now,
+                bg,
             };
         }
         *shade

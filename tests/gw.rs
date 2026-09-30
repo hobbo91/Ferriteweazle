@@ -775,8 +775,9 @@ fn window(tools: &Tools, settings: Settings) -> Window {
         tools: Some(tools.python.clone()),
         ..settings
     };
+    // Tall enough for a page opened out below its track settings.
     let mut w = egui_kittest::Harness::builder()
-        .with_size(egui::vec2(1240.0, 780.0))
+        .with_size(egui::vec2(1240.0, 1100.0))
         .build_ui_state(
             move |ui, app: &mut Option<App>| {
                 let app = app.get_or_insert_with(|| {
@@ -2307,7 +2308,7 @@ fn a_read_in_passes_takes_every_sector_any_pass_found() {
         serde_json::json!({"FERRITEWEAZLE_PASSES": "2"}),
         "twice.img",
     );
-    assert!(log.contains("Pass 2 of 2: 1 track\n"), "{log}");
+    assert!(log.lines().any(|l| l == "Pass 2 of 2: 1 track"), "{log}");
     assert!(
         log.contains("T0.0: IBM MFM (18/18 sectors) from 2 passes"),
         "{log}"

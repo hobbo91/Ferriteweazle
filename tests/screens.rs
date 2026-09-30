@@ -215,6 +215,8 @@ fn screens() {
     std::fs::write(&nsi, vec![0u8; 89_600]).unwrap();
     let bad = dir.join("Bad.nsi");
     std::fs::write(&bad, vec![0u8; 1000]).unwrap();
+    // Tall enough for every section of Settings, or of a page opened out.
+    let tall = egui::vec2(1240.0, 1180.0);
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         for (name, file) in [("write-nsi", &nsi), ("write-nsi-bad", &bad)] {
             let mut write = settings("write", theme);
@@ -276,6 +278,23 @@ fn screens() {
         disks.outputs.get_mut("read/file").unwrap().disks = 3;
         render("disks", theme, disks, None, |w| {
             w.get_by_label_contains("Multiple disks").click();
+        });
+        let mut total = settings("read", theme);
+        let out = total.outputs.get_mut("read/file").unwrap();
+        (out.disks, out.label, out.total) = (12, "Disk".into(), true);
+        render_sized("disks-total", tall, theme, total, None, |w| {
+            w.get_by_label_contains("Multiple disks").click();
+        });
+        let mut flippy = settings("read", theme);
+        let read = flippy.values.entry("read".into()).or_default();
+        read.set("tracks", "c=0-39:step=2:h1.off=-8");
+        render("flippy", theme, flippy, None, |_| {});
+        render("save-preset", theme, settings("read", theme), None, |w| {
+            w.get_by_label("Presets").click();
+            w.run();
+            w.get_all_by_label("Save…").last().unwrap().click();
+            w.run();
+            w.event(egui::Event::Text("Amiga DD".into()));
         });
         for (name, open) in [("disks-named", true), ("disk-name", false)] {
             let mut named = settings("read", theme);
@@ -362,9 +381,9 @@ fn screens() {
         render("delays", theme, settings("delays", theme), None, |_| {});
         let mut typed = settings("read", theme);
         let read = typed.values.entry("read".into()).or_default();
-        read.set("tracks", "c=0-79:h=0-1:h1.off=-8");
+        read.set("tracks", "c=0-7,9-12:h=0-1");
         render("tracks-help", theme, typed, None, |w| {
-            w.get_by_label("Tracks").hover();
+            w.get_by_label("Track settings").hover();
         });
         for ext in [".hfe", ".scp"] {
             let mut options = settings("read", theme);
@@ -392,8 +411,6 @@ fn screens() {
             page: Page::Settings,
             ..settings("read", theme)
         };
-        // Tall enough for every section.
-        let tall = egui::vec2(1240.0, 1180.0);
         render_sized("settings", tall, theme, page, None, |_| {});
     }
 }

@@ -18,15 +18,32 @@ pub const GLOBAL: [&str; 2] = ["device", "drive"];
 
 /// Arguments a command shows first, in order; the rest go under Advanced options.
 const FIRST: &[(&str, &[&str])] = &[
-    ("read", &["format", "file", "tracks", "revs"]),
+    ("read", &["format", "revs", "file", "tracks"]),
     ("write", &["file", "format", "tracks", "no_verify"]),
     ("convert", &["in_file", "format", "out_file", "tracks"]),
     ("erase", &["tracks"]),
     ("align", &["tracks", "format", "reads"]),
 ];
 
+/// Headings over a page's first rows: each groups the argument it names and those after it.
+const HEADINGS: &[(&str, &str, &str)] = &[
+    ("read", "format", "Disk settings"),
+    ("read", "file", "Image settings"),
+    ("write", "file", "Image settings"),
+    ("write", "format", "Disk settings"),
+    ("convert", "in_file", "Input settings"),
+    // gw opens the input and the output with the format, so it is neither's.
+    ("convert", "format", "Disk settings"),
+    ("convert", "out_file", "Output settings"),
+];
+
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
+
+/// Whether a track list swaps the sides' heads.
+pub fn swapped(tracks: &str) -> bool {
+    TrackSpec::parse(tracks).hswap
+}
 
 /// Whether `command` makes an image the page names.
 pub fn has_output(command: &str) -> bool {
@@ -255,7 +272,13 @@ const NUMBER_BOX: f32 = 32.0;
 const DETECT_BUTTON: f32 = 68.0;
 /// The browse button, beside a path.
 const BROWSE_BUTTON: f32 = 34.0;
-const ROW_GAP: f32 = 12.0;
+const ROW_GAP: f32 = 10.0;
+
+/// Space above a heading, beside the rows' own gap.
+const GROUP_GAP: f32 = 6.0;
+
+/// Space above the sections that open out, beside the rows' own gap.
+const SECTIONS_GAP: f32 = 12.0;
 
 /// A field fills the room beside its label, up to a point.
 fn field_width(ui: &Ui) -> f32 {
@@ -368,6 +391,9 @@ pub struct Form<'a> {
     pub adafruit: bool,
     /// gw runs as a standalone program, which cannot read in passes.
     pub standalone: bool,
+    /// What the Greaseweazle last reported for the page's settings, greyed in
+    /// their empty fields: gw delays's values.
+    pub reported: Option<&'a BTreeMap<&'static str, String>>,
 }
 
 /// Something the form asks of the app.
@@ -385,17 +411,33 @@ impl<'a> Form<'a> {
         if self.cmd.name == "update" {
             self.firmware(ui);
         }
-        for a in &first {
+        for (i, a) in first.iter().filter(|a| !a.is("TrackSet")).enumerate() {
+            let name = self.cmd.name.as_str();
+            if let Some((.., text)) = HEADINGS.iter().find(|(c, d, _)| *c == name && *d == a.dest) {
+                if i > 0 {
+                    ui.add_space(GROUP_GAP);
+                }
+                heading(ui, text, |_| {});
+            }
             action = action.or(self.arg(ui, a));
         }
-        if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
-            ui.add_space(4.0);
+        // A track list is a group of its own, after the page's other rows.
+        for a in first.iter().filter(|a| a.is("TrackSet")) {
+            if first.len() > 1 {
+                ui.add_space(GROUP_GAP);
+            }
+            self.tracks(ui, a);
+        }
+        let read_file = self.cmd.name == "read" && self.cmd.arg("file").is_some();
+        // The sections that open out sit apart from the rows above them.
+        if read_file || !rest.is_empty() {
+            ui.add_space(SECTIONS_GAP);
+        }
+        if read_file {
             self.disks(ui);
-            ui.add_space(4.0);
             self.passes(ui);
         }
         if !rest.is_empty() {
-            ui.add_space(4.0);
             // Set values go to gw while the header is shut; the Adafruit
             // RP2040's greyed ones do not.
             let impossible =
@@ -414,7 +456,10 @@ impl<'a> Form<'a> {
                 .show_unindented(ui, |ui| {
                     ui.add_space(6.0);
                     for a in &rest {
-                        action = action.or(self.arg(ui, a));
+                        match a.is("TrackSet") {
+                            true => self.tracks(ui, a),
+                            false => action = action.or(self.arg(ui, a)),
+                        }
                     }
                 });
         }
@@ -456,14 +501,8 @@ impl<'a> Form<'a> {
         let tip = tip(&self.cmd.name, a);
         // gw's own help for values such as track lists, its columns kept.
         let grammar = grammar(self.schema, a);
-        let explain = |ui: &mut Ui| {
-            ui.label(&tip);
-            if let Some(g) = grammar {
-                let text = RichText::new(g.trim_end()).monospace();
-                ui.add(egui::Label::new(text).extend());
-            }
-        };
-        name.on_hover_ui(explain);
+        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+        name.on_hover_ui(help);
         // Laid over the field, so it is hovered along with whatever is under
         // it, unless that has a tooltip of its own.
         let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
@@ -473,7 +512,7 @@ impl<'a> Form<'a> {
         } else if let Some(b) = blocker {
             over.on_hover_text(format!("Cannot be used with {}.", label(b)));
         } else if quiet.is_none() {
-            over.on_hover_ui(explain);
+            over.on_hover_ui(help);
         }
         action
     }
@@ -491,7 +530,6 @@ impl<'a> Form<'a> {
     fn field(&mut self, ui: &mut Ui, a: &Arg) -> Option<Action> {
         match a.dest.as_str() {
             "format" => return self.format(ui, a),
-            _ if a.is("TrackSet") => self.tracks(ui, a),
             "file" | "in_file" if a.positional() => self.input(ui, a),
             "diskdefs" => self.diskdefs(ui, a),
             // Shown once File is chosen, so it is needed.
@@ -535,7 +573,7 @@ impl<'a> Form<'a> {
                 self.values.set(&a.dest, value);
             }
             if other {
-                self.typed(ui, a, hint(a, self.schema), SHORT_FIELD);
+                self.typed(ui, a, hint(a, self.schema), false, SHORT_FIELD);
             }
         });
     }
@@ -590,17 +628,34 @@ impl<'a> Form<'a> {
 
     fn text(&mut self, ui: &mut Ui, a: &Arg) {
         let number = matches!(a.ty.as_deref(), Some("min_int" | "int" | "uint"));
+        let reported = self.reported.and_then(|r| r.get(a.dest.as_str()));
+        // gw takes its default for an empty field, so it shows as the value.
+        let (shown, default) = match (reported, &a.default) {
+            (Some(value), _) => (value.clone(), false),
+            (None, Some(default)) => (default.clone(), true),
+            (None, None) => (hint(a, self.schema), false),
+        };
         ui.horizontal(|ui| {
             let width = if number { SHORT_FIELD } else { field_width(ui) };
-            self.typed(ui, a, hint(a, self.schema), width);
+            self.typed(ui, a, shown, default, width);
         });
     }
 
-    /// A box to type the value in, and gw's objection to what is typed.
-    fn typed(&mut self, ui: &mut Ui, a: &Arg, hint: String, width: f32) {
+    /// A box to type the value in, and gw's objection to what is typed. Empty,
+    /// it shows `hint` greyed, or as if typed where that is gw's `default`.
+    fn typed(&mut self, ui: &mut Ui, a: &Arg, hint: String, default: bool, width: f32) {
         let mut value = self.values.get(&a.dest).to_owned();
         let edit = edit(&mut value).hint_text(hint).desired_width(width);
-        if ui.add(edit).changed() {
+        let changed = ui
+            .scope(|ui| {
+                // egui draws a hint in the weak colour, whatever colour it is given.
+                if default {
+                    ui.visuals_mut().weak_text_color = Some(ui.visuals().text_color());
+                }
+                ui.add(edit).changed()
+            })
+            .inner;
+        if changed {
             self.values.set(&a.dest, value.as_str());
         }
         self.complaint(ui, a, &value);
@@ -913,42 +968,74 @@ impl<'a> Form<'a> {
         chosen
     }
 
+    /// A track list under a heading of its own: the picker's rows, or gw's
+    /// notation typed where they cannot show the list.
     fn tracks(&mut self, ui: &mut Ui, a: &Arg) {
+        // Unset, gw's output tracks are the cylinders and sides read.
+        let output = a.dest == "out_tracks";
+        let title = match output {
+            true => "Output track settings",
+            false => "Track settings",
+        };
         let format = self.effective_format();
         let (cyls, heads) = format
             .as_ref()
             .and_then(|f| self.format_info(f).ready().map(|i| (i.cyls, i.heads)))
             .unwrap_or(USUAL_DISK);
         let mut spec = TrackSpec::parse(self.values.get(&a.dest));
-        // Unset, gw's output tracks are the cylinders and sides read.
-        let output = a.dest == "out_tracks";
         let base = match output {
             true => TrackSpec::parse(self.values.get("tracks")),
             false => TrackSpec::default(),
         };
-        // With no format gw takes 0-81 at any step; double stepped, the
+        // With no format gw takes 0-81 at any step; stepped further, the
         // picker keeps to those the drive reaches and names them.
-        let short = !output && format.is_none() && spec.step.as_deref() == Some("2");
-        let cyls = if short { DOUBLE_REACH } else { cyls };
+        let free = !output && format.is_none();
+        let step = spec.steps().unwrap_or(1);
+        let short = free && step > 1;
+        let cyls = if short { reach(step) } else { cyls };
+        let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
         let text_id = ui.make_persistent_id(("tracks-text", &self.cmd.name, &a.dest));
-        let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !spec.simple();
-        ui.vertical(|ui| {
-            if as_text {
+        let simple = spec.simple();
+        let as_text = ui.data(|d| d.get_temp(text_id)).unwrap_or(false) || !simple;
+        let tip = tip(&self.cmd.name, a);
+        let grammar = grammar(self.schema, a);
+        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+        heading(ui, title, |ui| {
+            let flip = if as_text {
+                "Use the track picker"
+            } else {
+                "Type a track list"
+            };
+            if ui
+                .add_enabled(simple, egui::Link::new(RichText::new(flip).small()))
+                .on_disabled_hover_text("The track picker cannot show this track list.")
+                .clicked()
+            {
+                ui.data_mut(|d| d.insert_temp(text_id, !as_text));
+            }
+        })
+        .on_hover_ui(help);
+        if as_text {
+            let (name, field) = row(ui, "Track list", |ui| {
                 ui.horizontal(|ui| {
                     let hint = example(self.schema, "TSPEC").unwrap_or_default();
                     let width = field_width(ui);
-                    self.typed(ui, a, hint, width);
-                });
-            } else {
-                let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
-                let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
-                let mut changed = false;
-                // Wraps rather than run past the field's edge in a narrow window.
-                ui.horizontal_wrapped(|ui| {
+                    self.typed(ui, a, hint, false, width);
+                })
+                .response
+            });
+            name.on_hover_ui(help);
+            // Laid over the field, as for any other argument.
+            let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
+            over.on_hover_ui(help);
+        } else {
+            let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
+            let mut changed = false;
+            let (name, _) = row(ui, "Cylinders", |ui| {
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     // Cylinder numbers have three digits at most.
                     ui.spacing_mut().interact_size.x = NUMBER_BOX;
-                    ui.label("Cylinders");
                     changed |= ui
                         .add(egui::DragValue::new(&mut first).range(0..=last))
                         .changed();
@@ -956,85 +1043,91 @@ impl<'a> Form<'a> {
                     changed |= ui
                         .add(egui::DragValue::new(&mut last).range(first..=254))
                         .changed();
-                    if changed {
-                        let default = (first, last) == whole && !short;
-                        spec.c = (!default).then(|| format!("{first}-{last}"));
-                    }
-                    // The sides and their buttons wrap together.
-                    let font = egui::TextStyle::Body.resolve(ui.style());
-                    let text = |t: &str| {
-                        let galley = ui.painter().layout_no_wrap(
-                            t.into(),
-                            font.clone(),
-                            Color32::PLACEHOLDER,
-                        );
-                        galley.size().x
-                    };
-                    let button = text("0") + 2.0 * ui.spacing().button_padding.x;
-                    let spacing = ui.spacing().item_spacing.x;
-                    if ui.available_size_before_wrap().x < text("Sides") + 2.0 * (button + spacing)
-                    {
-                        ui.end_row();
-                    }
-                    ui.label("Sides");
-                    let mut sides = TrackSpec {
-                        h: spec.h.clone().or_else(|| base.h.clone()),
-                        ..TrackSpec::default()
-                    };
+                })
+            });
+            name.on_hover_text("The first and last cylinder.");
+            if changed {
+                let default = (first, last) == whole && !short;
+                spec.c = match spec.half() {
+                    true => Some(format!("{first}-{last}/2")),
+                    false => (!default).then(|| format!("{first}-{last}")),
+                };
+            }
+            let (name, _) = row(ui, "Sides", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut sides = spec.sides(&base);
                     let fixed = !sides.sides_can_change(heads);
                     for head in 0..2u32 {
                         let on = sides.has_head(head, heads);
                         let r = ui
                             .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
                             .on_disabled_hover_text("This format is single sided.");
-                        if fixed && r.contains_pointer() {
-                            ui.data_mut(|d| d.insert_temp(own_tip_id(), true));
-                        }
                         if r.clicked() {
                             sides.toggle_head(head, heads);
                             spec.h = sides.h.clone();
                             changed = true;
                         }
                     }
-                });
-                ui.horizontal(|ui| {
-                    let mut double = spec.step.as_deref() == Some("2");
-                    if checkbox(ui, &mut double, "Double step")
-                        .own_tip("For a 40-track disk in an 80-track drive.")
-                        .changed()
-                    {
-                        spec.step = double.then(|| "2".to_owned());
-                        if !output && format.is_none() {
-                            let reach = format!("0-{}", DOUBLE_REACH - 1);
-                            match double {
-                                true if spec.c.is_none() => spec.c = Some(reach),
-                                false if spec.c.as_deref() == Some(&reach) => spec.c = None,
-                                _ => {}
-                            }
-                        }
-                        changed = true;
-                    }
+                    ui.add_space(12.0);
                     changed |= checkbox(ui, &mut spec.hswap, "Swap sides")
-                        .own_tip("Use head 1 for side 0 and head 0 for side 1.")
+                        .on_hover_text("Use head 1 for side 0 and head 0 for side 1.")
                         .changed();
-                });
-                if changed {
-                    self.values.set(&a.dest, spec.to_string());
-                }
+                })
+            });
+            name.on_hover_text("The sides to use.");
+            let (name, _) = row(ui, "Step", |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for value in STEPS {
+                        let (text, tip) = match value {
+                            HALF => ("½", HALF_TIP),
+                            _ => (value, STEP_TIP),
+                        };
+                        let on = spec.step.as_deref().unwrap_or("1") == value;
+                        let r = ui.add(egui::Button::selectable(on, text));
+                        if r.on_hover_text(tip).clicked() && !on {
+                            spec.pick_step(value, (first, last), whole, free);
+                            changed = true;
+                        }
+                    }
+                })
+            });
+            name.on_hover_text(STEP_TIP);
+            let (name, _) = row(ui, "Head offset", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().interact_size.x = NUMBER_BOX;
+                    let named = spec.sides(&base);
+                    let sides = [
+                        ("Side 0", "Side 0's offset, in cylinders.", "Needs side 0."),
+                        ("Side 1", "Side 1's offset, in cylinders.", "Needs side 1."),
+                    ];
+                    for (head, (text, tip, why)) in sides.into_iter().enumerate() {
+                        if head == 1 {
+                            ui.add_space(6.0);
+                        }
+                        ui.label(text);
+                        let value = egui::DragValue::new(&mut spec.off[head])
+                            .range(-MAX_OFFSET..=MAX_OFFSET)
+                            .custom_formatter(|n, _| match n as i32 {
+                                0 => "0".to_owned(),
+                                n => format!("{n:+}"),
+                            })
+                            .custom_parser(|t| t.trim().parse::<i32>().ok().map(f64::from));
+                        changed |= ui
+                            .add_enabled(named.has_head(head as u32, heads), value)
+                            .on_hover_text(tip)
+                            .on_disabled_hover_text(why)
+                            .changed();
+                    }
+                })
+            });
+            name.on_hover_text("Cylinders to move each side's head by, for a flippy-modded drive.");
+            if changed {
+                self.values.set(&a.dest, spec.to_string());
             }
-            let flip = if as_text {
-                "Use the track picker"
-            } else {
-                "Type a track list"
-            };
-            if ui
-                .add_enabled(spec.simple(), egui::Link::new(RichText::new(flip).small()))
-                .on_disabled_hover_text("The track picker cannot show this track list.")
-                .clicked()
-            {
-                ui.data_mut(|d| d.insert_temp(text_id, !as_text));
-            }
-        });
+        }
     }
 
     /// The image to read, with its type and options; Write and Convert also take a folder.
@@ -1277,8 +1370,6 @@ impl<'a> Form<'a> {
             }
         }
 
-        ui.add_space(2.0);
-        ui.label(RichText::new("Save to").small().strong().color(p.dim));
         if has_input {
             // Beside the input, an image of the input's own type would replace it.
             let clash =
@@ -1295,7 +1386,7 @@ impl<'a> Form<'a> {
                 ),
             };
             row(ui, "Save", |ui| {
-                ui.add_enabled_ui(!clash, |ui| checkbox(ui, &mut out.beside_input, text))
+                ui.add_enabled_ui(!clash, |ui| row_checkbox(ui, &mut out.beside_input, text))
                     .response
                     .on_disabled_hover_text(
                         "Conflicting file names between the input and output image.",
@@ -1414,8 +1505,8 @@ impl<'a> Form<'a> {
             .show_unindented(ui, |ui| {
                 ui.add_space(6.0);
                 let tip = "Maximum number of times to read a disk with missing or damaged sectors. \
-                           Retries re-read a track before moving on. A pass comes back to it after \
-                           the rest of the disk.";
+                           Retries read a track again before moving on. A pass comes back to it \
+                           after the rest of the disk.";
                 let (name, _) = row(ui, "Passes", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
                     let passes = egui::DragValue::new(&mut out.passes).range(1..=MAX_PASSES);
@@ -1445,7 +1536,7 @@ impl<'a> Form<'a> {
                 );
                 let tip = "Save each pass's flux to the Read passes folder.";
                 let (name, _) = row(ui, "Keep", |ui| {
-                    ui.add_enabled_ui(on, |ui| checkbox(ui, &mut out.keep_passes, "Each pass"))
+                    ui.add_enabled_ui(on, |ui| row_checkbox(ui, &mut out.keep_passes, "Each pass"))
                         .inner
                         .on_hover_text(tip)
                         .on_disabled_hover_text(more);
@@ -1555,6 +1646,16 @@ impl<'a> Form<'a> {
                     .on_disabled_hover_text(why);
                 });
                 name.on_hover_text("Where each file's disk number goes.");
+                let tip = "Adds the set's size: Game_Disk01_of_12.";
+                let (name, _) = row(ui, "Total", |ui| {
+                    ui.add_enabled_ui(numbered, |ui| {
+                        row_checkbox(ui, &mut out.total, "Add the total")
+                    })
+                    .inner
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(why);
+                });
+                name.on_hover_text(tip);
                 if out.disks > 1 {
                     row(ui, "", |ui| {
                         let text = match out.ask_names {
@@ -1610,8 +1711,24 @@ pub fn pass_prefix(image: &Path) -> PathBuf {
 /// gw's tracks when no format gives them: c=0-81:h=0-1.
 pub const USUAL_DISK: (u32, u32) = (82, 2);
 
-/// Cylinders of gw's 0-81 still within reach when double stepped: 0-40.
-const DOUBLE_REACH: u32 = USUAL_DISK.0.div_ceil(2);
+/// Cylinders of gw's 0-81 still within reach at `step` head steps each: 0-40 at 2.
+fn reach(step: u32) -> u32 {
+    USUAL_DISK.0.div_ceil(step)
+}
+
+/// The track picker's head steps per cylinder: 1 to 4, and a half step.
+const STEPS: [&str; 5] = ["1", "2", "3", "4", HALF];
+
+/// gw's half step: each two of the list's cylinders on one of the drive's.
+const HALF: &str = "1/2";
+
+const STEP_TIP: &str = "Head steps per cylinder. 2 reads a 40-track disk in an 80-track drive.";
+
+const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, \
+                        2…, for an image numbered in half tracks.";
+
+/// The track picker's largest head offset, in cylinders: gw's h0.off=[+-][0-9].
+const MAX_OFFSET: i32 = 9;
 
 /// The last cylinder gw seeks to without asking: it calls any further one extreme.
 pub const LAST_USUAL_CYLINDER: u32 = 83;
@@ -2320,7 +2437,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     (
         "read",
         "retries",
-        "Re-reads of a track with missing sectors, before each seek retry.",
+        "Extra reads of a track with missing sectors, before each seek retry.",
     ),
     (
         "write",
@@ -2366,6 +2483,15 @@ const TIPS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// An argument's tip, then gw's grammar for its value, as a hover.
+fn explain(ui: &mut Ui, tip: &str, grammar: Option<&str>) {
+    ui.label(tip);
+    if let Some(g) = grammar {
+        let text = RichText::new(g.trim_end()).monospace();
+        ui.add(egui::Label::new(text).extend());
+    }
+}
+
 /// gw's help for the kind of value an argument takes, such as TSPEC's.
 fn grammar<'s>(schema: &'s Schema, a: &Arg) -> Option<&'s str> {
     let name = match a.ty.as_deref() {
@@ -2386,6 +2512,7 @@ fn example(schema: &Schema, metavar: &str) -> Option<String> {
     Some(format!("e.g. {quoted}"))
 }
 
+/// An example of a value to type, or Required.
 fn hint(a: &Arg, schema: &Schema) -> String {
     match a.ty.as_deref() {
         Some("period") => "e.g. 300rpm".into(),
@@ -2393,6 +2520,8 @@ fn hint(a: &Arg, schema: &Schema) -> String {
         Some("PrecompSpec") => example(schema, "PRECOMP").unwrap_or_default(),
         _ => match &a.default {
             Some(d) => format!("e.g. {d}"),
+            // Density select's pin.
+            None if a.dest == "pin" => "e.g. 2".into(),
             None if a.required => "Required".into(),
             // As the firmware's releases are tagged.
             None if a.dest == "tag" => "e.g. v1.6".into(),
@@ -2807,6 +2936,8 @@ pub struct Output {
     pub label: String,
     /// The disk number goes before the name, not after it.
     pub number_first: bool,
+    /// Each disk number is followed by the set's size: `Disk01_of_12`.
+    pub total: bool,
     /// Each disk's name is asked for with the disk, not numbered.
     pub ask_names: bool,
     pub ext: String,
@@ -2837,6 +2968,7 @@ impl Default for Output {
             first_digits: 1,
             label: String::new(),
             number_first: false,
+            total: false,
             ask_names: false,
             ext: String::new(),
             opts: BTreeMap::new(),
@@ -2886,7 +3018,10 @@ impl Output {
             return typed_name(name, ext);
         }
         let width = self.first_digits as usize;
-        let number = format!("{}{disk:0width$}", self.label.trim());
+        let mut number = format!("{}{disk:0width$}", self.label.trim());
+        if self.total {
+            number += &format!("_of_{:0width$}", self.disks);
+        }
         let stem = match self.number_first {
             true => format!("{number}_{name}"),
             false => format!("{name}_{number}"),
@@ -2985,18 +3120,21 @@ impl Output {
     }
 }
 
-/// A track list with the head step Detect found: added unless the list
-/// names one, or double step taken away for a disk that needs none.
-pub fn with_step(tracks: &str, step: u32) -> String {
+/// A track list with the head step Detect measured in place of its own, or
+/// None if it has that step already.
+pub fn with_step(tracks: &str, step: u32) -> Option<String> {
     let mut spec = TrackSpec::parse(tracks);
-    match step {
-        1 if spec.step.as_deref() == Some("2") => spec.step = None,
-        1 => {}
-        n => {
-            spec.step.get_or_insert_with(|| n.to_string());
-        }
+    if !spec.half() && spec.steps() == Some(step) {
+        return None;
     }
-    spec.to_string()
+    // A half step's stride goes with it.
+    if spec.half() {
+        spec.c = spec
+            .c
+            .map(|c| c.strip_suffix("/2").unwrap_or(&c).to_owned());
+    }
+    spec.step = (step > 1).then(|| step.to_string());
+    Some(spec.to_string())
 }
 
 /// The cylinders and sides a page takes of a disk of `cyls` and `heads`, as gw
@@ -3022,7 +3160,7 @@ fn take(list: &str, (cyls, heads): (Vec<u32>, Vec<u32>)) -> (Vec<u32>, Vec<u32>)
 }
 
 /// The format a page's settings fit, once the page is seen, and whether its
-/// double step waits for gw to size that format.
+/// head step waits for gw to size that format.
 #[derive(Debug, Default)]
 pub struct FormatFit {
     format: Option<Option<String>>,
@@ -3031,8 +3169,8 @@ pub struct FormatFit {
 
 /// Fits a page's settings to its format whenever that changes, by any route:
 /// the cylinders and sides, and an HFE's bitrate, become the new format's,
-/// as gw takes them unset. Double step belongs to the drive and stays, unless
-/// the format double stepped would pass LAST_USUAL_CYLINDER. A page not yet
+/// as gw takes them unset. A head step belongs to the drive and stays, unless
+/// the format so stepped would pass LAST_USUAL_CYLINDER. A page not yet
 /// seen is taken as it is. True if the page changed.
 pub fn fit_format(
     service: &mut Service,
@@ -3068,16 +3206,18 @@ pub fn fit_format(
         Some(was) if *was == format => {}
         Some(_) => {
             let mut spec = TrackSpec::parse(values.get("tracks"));
-            let double = spec.step.as_deref() == Some("2");
-            (spec.c, spec.h) = (None, None);
+            let step = spec.steps().filter(|&s| s > 1);
+            spec.refit();
             // With no format, as the picker keeps it to what the drive reaches.
-            if double && format.is_none() {
-                spec.c = Some(format!("0-{}", DOUBLE_REACH - 1));
+            if let Some(step) = step
+                && format.is_none()
+            {
+                spec.c = Some(format!("0-{}", reach(step) - 1));
             }
             changed |= put(values, "tracks", &spec);
             if cmd.arg("out_tracks").is_some() {
                 let mut out = TrackSpec::parse(values.get("out_tracks"));
-                (out.c, out.h) = (None, None);
+                out.refit();
                 changed |= put(values, "out_tracks", &out);
             }
             // Flux as read has no bitrate of its own to give.
@@ -3089,7 +3229,7 @@ pub fn fit_format(
                     }
                 }
             }
-            fit.sizing = double && format.is_some();
+            fit.sizing = step.is_some() && format.is_some();
             fit.format = Some(format);
         }
     }
@@ -3102,8 +3242,9 @@ pub fn fit_format(
             Load::Failed(_) => fit.sizing = false,
             Load::Ready(info) => {
                 fit.sizing = false;
-                if info.cyls.saturating_sub(1) * 2 > LAST_USUAL_CYLINDER {
-                    let mut spec = TrackSpec::parse(values.get("tracks"));
+                let mut spec = TrackSpec::parse(values.get("tracks"));
+                let step = spec.steps().unwrap_or(1);
+                if info.cyls.saturating_sub(1).saturating_mul(step) > LAST_USUAL_CYLINDER {
                     spec.step = None;
                     changed |= put(values, "tracks", &spec);
                 }
@@ -3114,8 +3255,8 @@ pub fn fit_format(
 }
 
 /// The furthest physical cylinder of a track list over a format of `cyls`
-/// cylinders, as gw steps to it: None for a list the picker cannot read, such
-/// as one with head offsets.
+/// cylinders, as gw steps and offsets to it: None for a list the picker cannot
+/// read, or one that stays below cylinder 0.
 pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
     let spec = TrackSpec::parse(tracks);
     if !spec.other.is_empty() {
@@ -3125,11 +3266,15 @@ pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
         Some(_) => spec.cylinders()?.1,
         None => cyls?.checked_sub(1)?,
     };
-    let step = spec
-        .step
-        .as_deref()
-        .map_or(Some(1), |s| s.parse::<u32>().ok())?;
-    last.checked_mul(step)
+    let last = match spec.half() {
+        true => i64::from(last / 2),
+        false => i64::from(last.checked_mul(spec.steps()?)?),
+    };
+    // An offset counts only for a side the list reads.
+    let off = (0..2)
+        .filter(|&h| spec.has_head(h, 2))
+        .map(|h| spec.off[h as usize]);
+    u32::try_from(last + i64::from(off.max()?)).ok()
 }
 
 /// Which tracks, in gw's notation: `c=0-79:h=0:step=2:hswap`.
@@ -3139,7 +3284,9 @@ struct TrackSpec {
     h: Option<String>,
     step: Option<String>,
     hswap: bool,
-    /// Parts the picker does not show, such as head offsets.
+    /// Cylinders each side's head moves by: gw's h0.off and h1.off.
+    off: [i32; 2],
+    /// Parts the picker does not show, such as several cylinder ranges.
     other: Vec<String>,
 }
 
@@ -3151,6 +3298,10 @@ impl TrackSpec {
                 Some(("c", v)) => spec.c = Some(v.to_owned()),
                 Some(("h", v)) => spec.h = Some(v.to_owned()),
                 Some(("step", v)) => spec.step = Some(v.to_owned()),
+                Some((k @ ("h0.off" | "h1.off"), v)) => match offset(v) {
+                    Some(n) => spec.off[usize::from(k == "h1.off")] = n,
+                    None => spec.other.push(part.to_owned()),
+                },
                 None if part == "hswap" => spec.hswap = true,
                 _ => spec.other.push(part.to_owned()),
             }
@@ -3163,11 +3314,64 @@ impl TrackSpec {
         self.other.is_empty()
             && (self.c.is_none() || self.cylinders().is_some())
             && matches!(self.h.as_deref(), None | Some("0" | "1" | "0-1" | "0,1"))
-            && matches!(self.step.as_deref(), None | Some("1" | "2"))
+            && self.step.as_deref().is_none_or(|s| STEPS.contains(&s))
+            && (!self.half() || self.c.as_deref().is_some_and(|c| c.ends_with("/2")))
+            && self.off.iter().all(|o| o.abs() <= MAX_OFFSET)
+    }
+
+    /// Leaves the cylinders and sides to a new format, as gw takes them unset. A
+    /// half step pairs with the old format's cylinders, so goes with them.
+    fn refit(&mut self) {
+        (self.c, self.h) = (None, None);
+        if self.half() {
+            self.step = None;
+        }
+    }
+
+    /// A half step, which the picker pairs with every other cylinder: `c=0-81/2`.
+    fn half(&self) -> bool {
+        self.step.as_deref() == Some(HALF)
+    }
+
+    /// Head steps per cylinder, if a whole number.
+    fn steps(&self) -> Option<u32> {
+        self.step.as_deref().map_or(Some(1), |s| s.parse().ok())
+    }
+
+    /// The sides alone: this list's, else `base`'s, as gw takes unset output tracks.
+    fn sides(&self, base: &TrackSpec) -> TrackSpec {
+        TrackSpec {
+            h: self.h.clone().or_else(|| base.h.clone()),
+            ..TrackSpec::default()
+        }
+    }
+
+    /// Takes one of STEPS from the picker, which shows cylinders `shown` of
+    /// `whole`. A half step takes every other one of them, and another step
+    /// drops that stride. With no format (`free`), a list kept to the drive's
+    /// reach at the old step takes the new step's.
+    fn pick_step(&mut self, value: &str, shown: (u32, u32), whole: (u32, u32), free: bool) {
+        let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
+        let kept = free && self.c == reached(self.steps().unwrap_or(1));
+        if value == HALF {
+            let (a, b) = if kept { (0, USUAL_DISK.0 - 1) } else { shown };
+            self.c = Some(format!("{a}-{b}/2"));
+            self.step = Some(HALF.into());
+            return;
+        }
+        if self.half() {
+            self.c = (shown != whole).then(|| format!("{}-{}", shown.0, shown.1));
+        }
+        let n: u32 = value.parse().expect("every step but HALF is a number");
+        if kept || free && self.c.is_none() {
+            self.c = reached(n);
+        }
+        self.step = (n > 1).then(|| value.to_owned());
     }
 
     fn cylinders(&self) -> Option<(u32, u32)> {
         let c = self.c.as_deref()?;
+        let c = c.strip_suffix("/2").filter(|_| self.half()).unwrap_or(c);
         let (a, b) = c.split_once('-').unwrap_or((c, c));
         Some((a.parse().ok()?, b.parse().ok()?))
     }
@@ -3207,9 +3411,51 @@ impl std::fmt::Display for TrackSpec {
         if self.hswap {
             parts.push("hswap".into());
         }
+        for (head, off) in self.off.iter().enumerate().filter(|(_, o)| **o != 0) {
+            parts.push(format!("h{head}.off={off:+}"));
+        }
         parts.extend(self.other.iter().cloned());
         f.write_str(&parts.join(":"))
     }
+}
+
+/// A head offset as gw takes it, signed: `+8` or `-8`.
+fn offset(v: &str) -> Option<i32> {
+    let digits = v.strip_prefix(['+', '-'])?;
+    match !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        true => v.parse().ok(),
+        false => None,
+    }
+}
+
+/// A group's heading, with a rule to the fields' right edge, or to what `end`
+/// lays out there.
+fn heading(ui: &mut Ui, text: &str, end: impl FnOnce(&mut Ui)) -> egui::Response {
+    let p = theme::palette(ui);
+    ui.scope(|ui| {
+        // As tall as its words, not a row of fields.
+        ui.spacing_mut().interact_size.y = 0.0;
+        ui.horizontal(|ui| {
+            let label = ui.label(RichText::new(text).small().strong().color(p.dim));
+            let right = egui::Layout::right_to_left(egui::Align::Center);
+            let end = ui.with_layout(right, end).response.rect;
+            let stop = match end.width() > 0.0 {
+                true => end.left() - 10.0,
+                false => end.right(),
+            };
+            let y = label.rect.center().y;
+            let rule = label.rect.right() + 10.0..=stop;
+            ui.painter().hline(rule, y, egui::Stroke::new(1.0, p.line));
+            label
+        })
+        .inner
+    })
+    .inner
+}
+
+/// A checkbox as a row's field, centred on the row's label.
+fn row_checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
+    ui.horizontal(|ui| checkbox(ui, on, text)).inner
 }
 
 /// A checkbox with a clean tick, drawn here: egui's own is lopsided.
@@ -3360,6 +3606,7 @@ mod tests {
                         cannot_detect: None,
                         adafruit: false,
                         standalone,
+                        reported: None,
                     };
                     form.show(ui);
                 },
@@ -3702,6 +3949,7 @@ mod tests {
                 cannot_detect: None,
                 adafruit: false,
                 standalone: false,
+                reported: None,
             };
             form.blocker(read.arg(dest).unwrap())
                 .map(|b| b.dest.clone())
@@ -3750,6 +3998,45 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_field_shows_gws_default_as_its_value() {
+        let h = page("clean", Values::default(), BTreeMap::new());
+        let shown: Vec<_> = h
+            .get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .collect();
+        assert_eq!(shown, ["80", "3", "100"], "cylinders, passes, linger");
+    }
+
+    #[test]
+    fn other_shows_gws_default_as_an_example() {
+        let mut h = page("read", Values::default(), BTreeMap::new());
+        h.get_by_label_contains("Advanced options").click();
+        h.run();
+        let retries = h
+            .get_all_by_role(Role::ComboBox)
+            .find(|c| c.value().as_deref() == Some("Default (3)"))
+            .expect("Retries' list");
+        retries.click();
+        h.run();
+        h.get_by_label(OTHER).click();
+        h.run();
+        let shown: Vec<_> = h
+            .get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .collect();
+        assert!(shown.iter().any(|s| s == "e.g. 3"), "{shown:?}");
+    }
+
+    #[test]
+    fn the_pin_field_shows_pin_2_as_its_example() {
+        let s = schema();
+        for cmd in ["pin get", "pin set"] {
+            let pin = s.command(cmd).unwrap().arg("pin").unwrap();
+            assert_eq!(hint(pin, &s), "e.g. 2", "gw {cmd}");
+        }
+    }
+
+    #[test]
     fn a_switch_is_named_by_its_row() {
         let h = page("write", Values::default(), BTreeMap::new());
         h.get_by_role_and_label(Role::CheckBox, "Skip verify");
@@ -3768,6 +4055,7 @@ mod tests {
         let h = page("erase", Values::default(), BTreeMap::new());
         let cylinders: Vec<_> = h
             .get_all_by_role(Role::SpinButton)
+            .take(2)
             .map(|c| c.accesskit_node().numeric_value())
             .collect();
         assert_eq!(cylinders, [Some(0.0), Some(81.0)]);
@@ -3813,10 +4101,25 @@ mod tests {
         );
         assert_eq!(last_cylinder("c=0-39:step=2", Some(40)), Some(78));
         assert_eq!(last_cylinder("h=0:step=2", Some(42)), Some(82));
+        assert_eq!(last_cylinder("c=0-26:step=3", None), Some(78));
+        assert_eq!(last_cylinder("c=0-83/2:step=1/2", None), Some(41));
+        assert_eq!(last_cylinder("c=0-83/2:step=1/2:h0.off=+2", None), Some(43));
         assert_eq!(last_cylinder("c=5", None), Some(5));
+        assert_eq!(last_cylinder("c=0-79:h0.off=+8", Some(80)), Some(87));
+        assert_eq!(
+            last_cylinder("c=0-79:h1.off=-8", Some(80)),
+            Some(79),
+            "side 0 goes furthest"
+        );
+        assert_eq!(
+            last_cylinder("c=0-79:h=0:h1.off=+8", Some(80)),
+            Some(79),
+            "side 1 is not read"
+        );
         // Only gw reads these: the bridge checks each seek instead.
         assert_eq!(last_cylinder("c=0-9,20-29", Some(80)), None);
-        assert_eq!(last_cylinder("c=0-79:h1.off=8", Some(80)), None);
+        assert_eq!(last_cylinder("c=0-79:h1.off=8", Some(80)), None, "unsigned");
+        assert_eq!(last_cylinder("c=0-4:h=1:h1.off=-8", None), None, "below 0");
         assert_eq!(last_cylinder("", None), None, "no format known");
     }
 
@@ -3966,36 +4269,112 @@ mod tests {
 
     #[test]
     fn track_specs_keep_what_the_picker_does_not_show() {
-        let spec = TrackSpec::parse("c=0-39:h=1:step=2:hswap:h1.off=+1");
+        let spec = TrackSpec::parse("c=0-39:h=1:step=1/2:hswap:h1.off=+1");
         assert_eq!(spec.cylinders(), Some((0, 39)));
-        assert!(!spec.simple());
-        assert_eq!(spec.to_string(), "c=0-39:h=1:step=2:hswap:h1.off=+1");
+        assert!(!spec.simple(), "a half step without its stride");
+        assert_eq!(spec.to_string(), "c=0-39:h=1:step=1/2:hswap:h1.off=+1");
     }
 
     #[test]
-    fn detects_step_joins_a_track_list_but_keeps_a_step_already_there() {
-        assert_eq!(with_step("", 2), "step=2");
-        assert_eq!(with_step("c=0-39:h=0", 2), "c=0-39:h=0:step=2");
-        assert_eq!(with_step("step=1", 2), "step=1");
+    fn the_picker_shows_head_offsets_steps_and_a_paired_half_step_as_gw_takes_them() {
+        let spec = TrackSpec::parse("c=0-39:h1.off=-8:step=4:h0.off=+0");
+        assert_eq!((spec.off, spec.steps()), ([0, -8], Some(4)));
+        assert!(spec.simple());
+        assert_eq!(spec.to_string(), "c=0-39:step=4:h1.off=-8");
+        let half = TrackSpec::parse("c=0-81/2:step=1/2");
+        assert!(half.simple() && half.half());
+        assert_eq!(half.cylinders(), Some((0, 81)));
+        for typed in ["h1.off=8", "h1.off=-12", "step=5", "step=1/2", "c=0-81/2"] {
+            let spec = TrackSpec::parse(typed);
+            assert!(!spec.simple(), "{typed}");
+            assert_eq!(spec.to_string(), typed, "kept as typed");
+        }
+    }
+
+    #[test]
+    fn detects_step_takes_the_place_of_the_track_lists() {
+        let with = |tracks: &str, step| with_step(tracks, step);
+        assert_eq!(with("", 2).as_deref(), Some("step=2"));
+        assert_eq!(with("c=0-39:h=0", 2).as_deref(), Some("c=0-39:h=0:step=2"));
+        assert_eq!(with("step=1", 2).as_deref(), Some("step=2"), "measured");
+        assert_eq!(with("c=0-26:step=3", 2).as_deref(), Some("c=0-26:step=2"));
         assert_eq!(
-            with_step("c=0-39:step=2", 1),
-            "c=0-39",
-            "the disk needs none"
+            with("c=0-81/2:step=1/2", 2).as_deref(),
+            Some("c=0-81:step=2"),
+            "a half step's stride goes with it"
         );
-        assert_eq!(with_step("h1.off=-8", 1), "h1.off=-8");
+        assert_eq!(with("c=0-39:step=2", 1).as_deref(), Some("c=0-39"));
+        assert_eq!(with("c=0-27:step=3", 1).as_deref(), Some("c=0-27"));
+        assert_eq!(with("h=0:c=0-39", 1), None, "kept as typed");
+        assert_eq!(with("h1.off=-8:step=2", 2), None);
     }
 
     #[test]
-    fn double_step_with_no_format_keeps_to_the_cylinders_the_drive_reaches() {
+    fn a_step_with_no_format_keeps_to_the_cylinders_the_drive_reaches() {
         let mut h = page("erase", Values::default(), BTreeMap::new());
-        h.get_by_label("Double step").click();
+        let mut step = |n: &str| {
+            h.get_all_by_label(n).last().unwrap().click();
+            h.run();
+            let last = h.get_all_by_role(Role::SpinButton).nth(1).unwrap();
+            let last = last.accesskit_node().numeric_value();
+            (h.state().0.get("tracks").to_owned(), last)
+        };
+        assert_eq!(step("2"), ("c=0-40:step=2".into(), Some(40.0)));
+        assert_eq!(step("3"), ("c=0-27:step=3".into(), Some(27.0)));
+        assert_eq!(step("½"), ("c=0-81/2:step=1/2".into(), Some(81.0)));
+        assert_eq!(step("2"), ("c=0-40:step=2".into(), Some(40.0)));
+        assert_eq!(step("1"), (String::new(), Some(81.0)));
+    }
+
+    #[test]
+    fn a_half_step_takes_every_other_cylinder_of_the_range_shown() {
+        let mut h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("½").click();
         h.run();
-        assert_eq!(h.state().0.get("tracks"), "c=0-40:step=2");
         let last = h.get_all_by_role(Role::SpinButton).nth(1).unwrap();
-        assert_eq!(last.accesskit_node().numeric_value(), Some(40.0));
-        h.get_by_label("Double step").click();
+        last.click();
         h.run();
-        assert_eq!(h.state().0.get("tracks"), "");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("39".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().0.get("tracks"), "c=0-39/2:step=1/2");
+        h.get_all_by_label("1").last().unwrap().click();
+        h.run();
+        assert_eq!(
+            h.state().0.get("tracks"),
+            "c=0-39",
+            "the range, not its stride"
+        );
+    }
+
+    #[test]
+    fn head_offsets_are_set_per_side_and_greyed_for_a_side_not_read() {
+        let v = values(&[("tracks", "c=0-39:h1.off=-8")]);
+        let mut h = page("erase", v, BTreeMap::new());
+        let offsets = |h: &Harness<'_, Page>| {
+            let spins: Vec<_> = h.get_all_by_role(Role::SpinButton).collect();
+            let n = spins.len();
+            spins[n - 2..]
+                .iter()
+                .map(|s| s.accesskit_node().numeric_value())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(offsets(&h), [Some(0.0), Some(-8.0)], "shown, not typed");
+        let side0 = h.get_all_by_role(Role::SpinButton).nth(2).unwrap();
+        side0.click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("+8".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().0.get("tracks"), "c=0-39:h0.off=+8:h1.off=-8");
+
+        let v = values(&[("tracks", "c=0-39:h=0:h1.off=-8")]);
+        let mut h = page("erase", v, BTreeMap::new());
+        h.get_all_by_role(Role::SpinButton).last().unwrap().hover();
+        h.run();
+        h.get_by_label("Needs side 1.");
     }
 
     #[test]
@@ -4145,30 +4524,41 @@ mod tests {
     }
 
     #[test]
-    fn double_step_stays_with_the_drive_unless_the_new_format_would_pass_cylinder_83() {
+    fn a_step_stays_with_the_drive_unless_the_new_format_would_pass_cylinder_83() {
         let s = schema();
         let read = s.command("read").unwrap();
         let mut service = Service::offline(Ok(s.clone()));
         service.describe("ibm.1440", 80, 2);
+        service.describe("c64.28", 28, 1);
         service.describe("c64.42", 42, 1);
         service.describe("c64.43", 43, 1);
-        // Detect's double step for a 40-track disk, then another format.
-        let mut refit = |to: &str| {
-            let mut v = values(&[("format", "ibm.360"), ("tracks", "c=0-39:step=2")]);
+        // Detect's double step for a 40-track disk, or a step of 3, then another format.
+        let mut refit = |step: &str, to: &str| {
+            let tracks = format!("c=0-26:step={step}");
+            let mut v = values(&[("format", "ibm.360"), ("tracks", tracks.as_str())]);
             let (mut o, mut f) = (BTreeMap::new(), FormatFit::default());
             fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
             v.set("format", to);
             fit_format(&mut service, &s, read, &mut v, &mut o, &mut f);
             v.get("tracks").to_owned()
         };
-        assert_eq!(refit("ibm.1440"), "", "double stepped, 80 reach 158");
-        assert_eq!(refit("c64.42"), "step=2", "42 reach 82");
-        assert_eq!(refit("c64.43"), "", "43 reach 84");
+        assert_eq!(refit("2", "ibm.1440"), "", "double stepped, 80 reach 158");
+        assert_eq!(refit("2", "c64.42"), "step=2", "42 reach 82");
+        assert_eq!(refit("2", "c64.43"), "", "43 reach 84");
+        assert_eq!(refit("3", "c64.28"), "step=3", "28 reach 81");
+        assert_eq!(refit("3", "c64.42"), "", "42 reach 123");
         assert_eq!(
-            refit(""),
+            refit("1/2", "c64.42"),
+            "",
+            "a half step goes with the format"
+        );
+        assert_eq!(
+            refit("2", ""),
             "c=0-40:step=2",
             "no format: what the drive reaches"
         );
+        assert_eq!(refit("3", ""), "c=0-27:step=3");
+        assert_eq!(refit("60000000", "ibm.1440"), "", "no overflow");
 
         // A format gw has yet to size, as a standalone gw never does, keeps it.
         let mut v = values(&[("format", "ibm.360"), ("tracks", "step=2")]);
@@ -4183,27 +4573,105 @@ mod tests {
     }
 
     #[test]
+    fn a_new_format_takes_a_half_step_from_both_of_converts_track_lists() {
+        let s = schema();
+        let convert = s.command("convert").unwrap();
+        let mut service = Service::offline(Ok(s.clone()));
+        service.describe("ibm.720", 80, 2);
+        let half = "c=0-39/2:step=1/2";
+        let mut v = values(&[
+            ("format", "ibm.360"),
+            ("tracks", half),
+            ("out_tracks", half),
+        ]);
+        let (mut o, mut f) = (BTreeMap::new(), FormatFit::default());
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        v.set("format", "ibm.720");
+        fit_format(&mut service, &s, convert, &mut v, &mut o, &mut f);
+        assert_eq!((v.get("tracks"), v.get("out_tracks")), ("", ""));
+    }
+
+    #[test]
     fn output_tracks_unset_show_the_cylinders_and_sides_read() {
         let v = values(&[("in_file", "/f/a.scp"), ("tracks", "c=0-39:h=0")]);
         let mut h = page("convert", v, BTreeMap::new());
         h.get_by_label_contains("Advanced options").click();
         h.run();
+        // Each picker's cylinders, then its head offsets.
         let ends: Vec<_> = h
             .get_all_by_role(Role::SpinButton)
             .map(|c| c.accesskit_node().numeric_value())
             .collect();
-        assert_eq!(ends, [0.0, 39.0, 0.0, 39.0].map(Some));
+        assert_eq!(ends, [0.0, 39.0, 0.0, 0.0, 0.0, 39.0, 0.0, 0.0].map(Some));
+        // The output picker's, after the input picker's side 1 and step 1.
         let side1 = h
             .get_all_by_role_and_label(Role::Button, "1")
-            .nth(1)
+            .nth(2)
             .unwrap();
         let lit = side1.accesskit_node().toggled();
         assert_eq!(lit, Some(egui::accesskit::Toggled::False));
     }
 
     #[test]
+    fn a_track_list_is_a_group_of_its_own_after_the_pages_other_rows() {
+        let h = page("read", Values::default(), BTreeMap::new());
+        let top = |label: &str| h.get_by_label_contains(label).rect().top();
+        assert!(top("Image settings") < top("Track settings"));
+        assert!(
+            top("Track settings") < top("Cylinders"),
+            "shown, not shut away"
+        );
+        assert!(top("Cylinders") < top("Multiple disks"));
+        let h = page("erase", Values::default(), BTreeMap::new());
+        h.get_by_label("Track settings");
+        h.get_by_label("Cylinders");
+    }
+
+    #[test]
+    fn headings_group_the_first_rows_by_what_gw_does_with_them() {
+        let groups: [(&str, &[&str]); 3] = [
+            (
+                "read",
+                &[
+                    "Disk settings",
+                    "Disk format",
+                    "Revolutions",
+                    "Image settings",
+                    "Image type",
+                ],
+            ),
+            (
+                "write",
+                &[
+                    "Image settings",
+                    "Image",
+                    "Disk settings",
+                    "Disk format",
+                    "Skip verify",
+                ],
+            ),
+            (
+                "convert",
+                &[
+                    "Input settings",
+                    "Input",
+                    "Disk settings",
+                    "Output settings",
+                    "Image type",
+                ],
+            ),
+        ];
+        for (name, rows) in groups {
+            let h = page(name, Values::default(), BTreeMap::new());
+            let top = |r: &&str| h.get_by_role_and_label(Role::Label, r).rect().top();
+            let tops: Vec<f32> = rows.iter().map(top).collect();
+            assert!(tops.is_sorted(), "gw {name}: {rows:?} at {tops:?}");
+        }
+    }
+
+    #[test]
     fn a_track_list_the_picker_cannot_show_says_so_on_its_link() {
-        let v = values(&[("tracks", "c=0-39:h1.off=-8")]);
+        let v = values(&[("tracks", "c=0-7,9-12")]);
         let mut h = page("read", v, BTreeMap::new());
         h.get_by_label("Use the track picker").hover();
         h.run();
@@ -4359,7 +4827,9 @@ mod tests {
         let pick = |ext: &str, shown: &str, name: &str| {
             let outputs = BTreeMap::from([(key.clone(), output(ext))]);
             let mut h = page("read", v.clone(), outputs);
+            // The option's list, below Revolutions.
             h.get_all_by_role(Role::ComboBox)
+                .rev()
                 .find(|c| c.value().as_deref() == Some(shown))
                 .expect("the option's list")
                 .click();
@@ -4521,9 +4991,9 @@ mod tests {
 
     #[test]
     fn a_value_gw_has_a_grammar_for_shows_it_on_hover() {
-        let typed = "c=0-39:h1.off=-8";
+        let typed = "c=0-7,9-12";
         let mut h = page("read", values(&[("tracks", typed)]), BTreeMap::new());
-        h.get_by_label("Tracks").hover();
+        h.get_by_label("Track settings").hover();
         h.run();
         h.get_by_label("Which tracks to read.");
         h.get_by_label_contains("h[01].off");
@@ -4644,6 +5114,35 @@ mod tests {
             h.run();
             h.get_by_label(&format!("Names each disk sequentially: {names}"));
         }
+    }
+
+    #[test]
+    fn a_numbered_set_can_add_its_total_to_each_name() {
+        let mut out = Output {
+            name: "Game".into(),
+            label: "Disk".into(),
+            disks: 12,
+            first_digits: 2,
+            total: true,
+            ..output(".adf")
+        };
+        assert_eq!(out.file_name(1), "Game_Disk01_of_12.adf");
+        (out.first_digits, out.number_first) = (1, true);
+        assert_eq!(out.file_name(3), "Disk3_of_12_Game.adf");
+        out.ask_names = true;
+        assert_eq!(
+            out.file_name(3),
+            "Game.adf",
+            "a name asked for has no number"
+        );
+
+        let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+        let mut h = page("read", Values::default(), outputs);
+        h.get_by_label("Multiple disks (12)").click();
+        h.run();
+        h.get_by_label("Add the total").hover();
+        h.run();
+        h.get_by_label("Needs numbered names.");
     }
 
     #[test]

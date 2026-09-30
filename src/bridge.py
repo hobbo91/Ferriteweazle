@@ -382,7 +382,7 @@ def detect(argv):
         fit = f', {m.misfit:.1%} from its layout' if m.full else ', not all'
         print(f'{m.name}: {m.found} of {m.expected} sectors{fit}')
     if step > 1:
-        print('This is a 40-track disk in an 80-track drive: it needs double step.')
+        print('This is a 40-track disk in an 80-track drive: it needs Step 2.')
     print(RESULT + json.dumps({'formats': whole, 'step': step}), flush=True)
     if not whole:
         print('** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full. Choose one by hand.')

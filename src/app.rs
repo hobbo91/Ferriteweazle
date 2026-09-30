@@ -58,7 +58,7 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("align", "Align heads", "Start"),
     ("info", "Device info", "Get info"),
     ("update", "Update firmware", "Update"),
-    ("delays", "Delays", "Run"),
+    ("delays", "Delays", "Get delays"),
     ("pin get", "Read pin", "Read pin"),
     ("pin set", "Set pin", "Set pin"),
     ("reset", "Reset", "Reset"),
@@ -164,7 +164,7 @@ impl Default for Page {
     }
 }
 
-/// The choices made in the window; only the drive and device are kept between runs.
+/// The choices made in the window; the drive, device, gw and theme are kept between runs.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
@@ -239,6 +239,7 @@ enum Dialog {
     SavePreset {
         command: String,
         name: String,
+        description: String,
     },
     DeletePreset {
         /// The page that shows why the file could not be deleted.
@@ -307,11 +308,14 @@ impl Runs {
     }
 }
 
+/// The longest preset description, in characters.
+const DESCRIPTION_LIMIT: usize = 120;
+
 /// A page's Presets menu while it is open, so the folder is read once, not every frame.
 struct PresetsMenu {
     page: String,
-    /// The page's presets, by name.
-    saved: Vec<(String, PathBuf)>,
+    /// The page's presets, by name: each one's name, file and description.
+    saved: Vec<(String, PathBuf, String)>,
     /// Whether the page differs from gw's defaults.
     changed: bool,
 }
@@ -357,7 +361,7 @@ pub struct App {
     probe_failed: Option<String>,
     /// The port the card last asked about, and whether Linux denied it then.
     probed: Option<(String, bool)>,
-    /// The real app, not a test window: it keeps the drive and device in their files,
+    /// The real app, not a test window: it keeps the drive, device, gw and theme in their files,
     /// runs gw info on each Greaseweazle that appears, and checks GitHub for updates.
     live: bool,
     /// The drive as last kept in drive_file().
@@ -366,6 +370,11 @@ pub struct App {
     kept_device: (Kind, String),
     /// The gw chosen in Settings as last kept in tools_file().
     kept_tools: Option<PathBuf>,
+    /// The theme as last kept in theme_file().
+    kept_theme: ThemePreference,
+    /// The delays gw delays last reported, and the port of the Greaseweazle
+    /// they are of: kept while another run of it goes on.
+    delays: Option<(String, BTreeMap<&'static str, String>)>,
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
@@ -405,11 +414,13 @@ impl App {
         let drive = kept_drive(&drive_file());
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
+        let theme = kept_theme(&theme_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
             tools: tools.clone(),
+            theme,
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
@@ -417,6 +428,7 @@ impl App {
         app.kept_drive = drive;
         app.kept_device = (kind, port);
         app.kept_tools = tools;
+        app.kept_theme = theme;
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -462,6 +474,8 @@ impl App {
             kept_drive: String::new(),
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
+            kept_theme: ThemePreference::System,
+            delays: None,
             found_note: None,
             format_fits: BTreeMap::new(),
             size_file: None,
@@ -574,6 +588,10 @@ impl App {
         if self.live && self.settings.tools != self.kept_tools {
             self.kept_tools.clone_from(&self.settings.tools);
             keep_tools(&tools_file(), self.kept_tools.as_deref());
+        }
+        if self.live && self.settings.theme != self.kept_theme {
+            self.kept_theme = self.settings.theme;
+            keep_theme(&theme_file(), self.kept_theme);
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -877,6 +895,16 @@ impl App {
         } else if self.live && !self.quitting && port != self.probed {
             self.ask_device(ctx);
         }
+        // Unplugged, a Greaseweazle loses the delays it was given.
+        if let Some((device, _)) = &self.delays
+            && !self
+                .service
+                .known_ports()
+                .iter()
+                .any(|p| p.device == *device)
+        {
+            self.delays = None;
+        }
     }
 
     /// The Greaseweazle the sidebar shows.
@@ -906,6 +934,14 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// The delays the last Get or Set delays reported, if that was of the
+    /// card's Greaseweazle: each delay's argument and value.
+    fn reported_delays(&self) -> Option<BTreeMap<&'static str, String>> {
+        let (device, found) = self.delays.as_ref()?;
+        let port = self.settings.port(self.service.known_ports())?;
+        (port.device == *device).then(|| found.clone())
     }
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
@@ -968,7 +1004,7 @@ impl App {
     }
 
     /// A job has just ended: save the log, and do whatever was waiting on it.
-    fn ended(&mut self, ctx: &egui::Context, disk: bool) {
+    pub fn ended(&mut self, ctx: &egui::Context, disk: bool) {
         let port = self.settings.port(self.service.known_ports()).cloned();
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
@@ -1015,8 +1051,21 @@ impl App {
                     self.follow(&port, kind);
                 }
             }
-            // New firmware changes what the device says about itself.
-            "update" => self.probed = None,
+            // New firmware changes what the device says about itself, and
+            // restarts it with its default delays.
+            "update" => (self.probed, self.delays) = (None, None),
+            "reset" if job.args.iter().any(|a| a == "--delays") => self.delays = None,
+            // The drive has the delays typed now, and their fields show them greyed.
+            "delays" => {
+                if let Some(found) = device::delays(&job.log) {
+                    let values = self.settings.values.entry(command.clone()).or_default();
+                    for dest in found.keys() {
+                        values.set(dest, "");
+                    }
+                    let device = job.args.iter().find_map(|a| a.strip_prefix("--device="));
+                    self.delays = device.map(|d| (d.to_owned(), found));
+                }
+            }
             _ => {}
         }
         if let Some(session) = self.session.as_mut().filter(|s| s.command == command) {
@@ -1080,10 +1129,14 @@ impl App {
         }
         let values = self.settings.values.entry(page.clone()).or_default();
         form::choose_format(&schema, cmd, values, &mut self.settings.outputs, best);
-        let tracks = form::with_step(values.get("tracks"), step);
-        let undone = step == 1 && tracks != values.get("tracks");
-        values.set("tracks", tracks);
-        let note = found_note(&formats, step, undone);
+        // On Write, Detect reads the image, whose step is not the drive's.
+        let step = (page != "write").then_some(step);
+        let tracks = step.and_then(|step| form::with_step(values.get("tracks"), step));
+        let changed = tracks.is_some();
+        if let Some(tracks) = tracks {
+            values.set("tracks", tracks);
+        }
+        let note = found_note(&formats, step.unwrap_or(1), changed);
         self.found_note = Some((page.clone(), best.clone(), note.clone()));
         self.notices.insert(page, note);
     }
@@ -1640,7 +1693,8 @@ impl App {
                     }
                     ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
-                    ui.add_space(14.0);
+                    ui.add_space(10.0);
+                    let reported = (name == "delays").then(|| self.reported_delays()).flatten();
                     let values = self.settings.values.entry(name.to_owned()).or_default();
                     let action = Form {
                         schema: &schema,
@@ -1651,17 +1705,26 @@ impl App {
                         cannot_detect: cannot_detect.as_deref(),
                         adafruit: self.settings.kind == Kind::Adafruit,
                         standalone: self.tools.as_ref().is_some_and(|t| t.standalone),
+                        reported: reported.as_ref(),
                     }
                     .show(ui);
                     // After the form, which names the page's images.
                     if self.fit_format(&schema, cmd) {
                         ui.ctx().request_repaint();
                     }
-                    if let Some(job) = self.tool.as_ref().filter(|j| j.command == name) {
+                    // Delays the drive reports show in their fields, so only
+                    // a failure needs a Result.
+                    let quiet = |j: &Job| {
+                        j.command == "delays" && (j.running() || device::delays(&j.log).is_some())
+                    };
+                    if let Some(job) = self
+                        .tool
+                        .as_ref()
+                        .filter(|j| j.command == name && !quiet(j))
+                    {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));
                     }
-                    ui.add_space(12.0);
                     action
                 })
                 .inner
@@ -1770,10 +1833,17 @@ impl App {
                         .values
                         .get(&cmd.name)
                         .is_some_and(|v| form::batch_input(cmd, v).is_some());
+                    // gw delays shows the drive's delays, after setting any typed.
+                    let sets = cmd.name == "delays"
+                        && self.settings.values.get(&cmd.name).is_some_and(|v| {
+                            let own = |dest: &str| !form::GLOBAL.contains(&dest);
+                            cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
+                        });
                     let label = match (several, batch, cmd.name.as_str()) {
                         (true, _, _) => "Read disks",
                         (_, true, "write") => "Write disks",
                         (_, true, _) => "Convert images",
+                        _ if sets => "Set delays",
                         _ => run_label(&cmd.name),
                     };
                     let run = ui.add_enabled(why.is_none(), big_button(label, p.accent, p));
@@ -2167,6 +2237,8 @@ impl App {
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
         let (format, disk, blank) = self.blank_map(page);
+        let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
+        let swapped = tracks.is_some_and(form::swapped);
         // A finished job's map stands until its page takes other tracks, and
         // Detect's until the page takes another format.
         let preview = (&blank.cyls, &blank.heads);
@@ -2204,9 +2276,12 @@ impl App {
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
-            diskmap::show(ui, &blank, disk, false, budget, room);
+            diskmap::show(ui, &blank, disk, swapped, false, budget, room);
             return;
         };
+        // The sides as the job took them, whatever its page says now.
+        let tracks = job.args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        let swapped = tracks.is_some_and(form::swapped);
         // These rows wrap, so the job shows in full.
         let mut name = match job.part {
             Some((disk, total)) => format!("{} {disk} of {total}", title(&job.command)),
@@ -2264,10 +2339,10 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            true => diskmap::show(ui, &blank, disk, false, budget, room),
+            true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
                 let verifying = job.running() && job.progress.verifies;
-                diskmap::show(ui, &job.progress, disk, verifying, budget, room);
+                diskmap::show(ui, &job.progress, disk, swapped, verifying, budget, room);
             }
         }
         if install {
@@ -2515,12 +2590,12 @@ impl App {
             if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
-            for (name, path) in &menu.saved {
-                if ui
-                    .button(name.as_str())
-                    .on_hover_text("Use these settings.")
-                    .clicked()
-                {
+            for (name, path, description) in &menu.saved {
+                let tip = match description.as_str() {
+                    "" => "Use these settings.",
+                    description => description,
+                };
+                if ui.button(name.as_str()).on_hover_text(tip).clicked() {
                     load = Some(path.clone());
                     ui.close();
                 }
@@ -2536,7 +2611,7 @@ impl App {
                 .clicked();
             if !menu.saved.is_empty() {
                 ui.menu_button("Delete", |ui| {
-                    for (name, path) in &menu.saved {
+                    for (name, path, _) in &menu.saved {
                         if ui
                             .button(name.as_str())
                             .on_hover_text("Delete this preset.")
@@ -2575,6 +2650,7 @@ impl App {
             self.dialog = Some(Dialog::SavePreset {
                 command: command.to_owned(),
                 name: String::new(),
+                description: String::new(),
             });
         }
         if pick {
@@ -2871,8 +2947,10 @@ impl App {
                             .find(|(c, _)| c == command)
                             .map_or("", |(_, w)| *w);
                         ui.label(why);
-                        if disks > 1 {
-                            ui.label("Each disk will be asked for sequentially.");
+                        let first = self.session.as_ref().and_then(|s| s.runs.images.first());
+                        if let Some(image) = first.filter(|_| disks > 1) {
+                            let p = theme::palette(ui);
+                            ui.label(RichText::new(format!("First image: {image}")).color(p.dim));
                         }
                     }
                     ui.add_space(10.0);
@@ -3045,24 +3123,45 @@ impl App {
                         }
                     });
                 }
-                Dialog::SavePreset { command, name } => {
+                Dialog::SavePreset {
+                    command,
+                    name,
+                    description,
+                } => {
                     dialog_heading(ui, "Save a preset");
-                    ui.add(
+                    let named = ui.add(
                         form::edit(name)
                             .char_limit(form::NAME_LIMIT)
                             .hint_text("e.g. Amiga DD")
                             .desired_width(f32::INFINITY),
-                    )
-                    .request_focus();
+                    );
+                    // The name keeps the focus unless the description has it.
+                    let about = ui.make_persistent_id("preset-description");
+                    if !ui.memory(|m| m.has_focus(about)) {
+                        named.request_focus();
+                    }
                     let exists = presets::path(&self.presets_folder(), name).exists();
                     if exists {
                         let p = theme::palette(ui);
                         let text = "A preset of this name exists. Saving replaces it.";
                         ui.label(RichText::new(text).small().color(p.partial));
                     }
+                    ui.add_space(6.0);
+                    ui.add(
+                        form::edit(description)
+                            .id(about)
+                            .char_limit(DESCRIPTION_LIMIT)
+                            .hint_text(match exists {
+                                true => "Description, empty keeps the old one",
+                                false => "Description, optional",
+                            })
+                            .desired_width(f32::INFINITY),
+                    )
+                    .on_hover_text("Shown when you hover over the preset.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let name = name.trim().to_owned();
+                        let description = description.trim().to_owned();
                         let p = theme::palette(ui);
                         let text = if exists { "Replace" } else { "Save" };
                         if ui
@@ -3072,7 +3171,7 @@ impl App {
                         {
                             let command = command.clone();
                             action = Some(Box::new(move |app: &mut App| {
-                                app.save_preset(&command, &name)
+                                app.save_preset(&command, &name, &description)
                             }));
                             close = true;
                         }
@@ -3301,7 +3400,7 @@ impl App {
         }
     }
 
-    fn save_preset(&mut self, command: &str, name: &str) {
+    fn save_preset(&mut self, command: &str, name: &str, description: &str) {
         let values = self
             .settings
             .values
@@ -3316,12 +3415,21 @@ impl App {
             .filter(|(k, _)| k.starts_with(&prefix))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        let folder = self.presets_folder();
+        // Replaced with no description, a preset keeps its own.
+        let description = match description {
+            "" => presets::load(&presets::path(&folder, name))
+                .map(|p| p.description)
+                .unwrap_or_default(),
+            typed => typed.to_owned(),
+        };
         let preset = Preset {
             command: command.to_owned(),
             values,
             outputs,
+            description,
         };
-        if let Err(e) = presets::save(&self.presets_folder(), name, &preset) {
+        if let Err(e) = presets::save(&folder, name, &preset) {
             let text = format!("Could not save the preset: {e}");
             self.notices.insert(command.to_owned(), text);
         }
@@ -4241,6 +4349,28 @@ fn keep_tools(file: &Path, tools: Option<&Path>) {
     keep(file, tools.map(|p| p.to_string_lossy().into_owned()));
 }
 
+/// Where the theme chosen in Settings is kept between runs; System keeps no file.
+fn theme_file() -> PathBuf {
+    crate::data_folder().join("theme.txt")
+}
+
+fn kept_theme(file: &Path) -> ThemePreference {
+    match std::fs::read_to_string(file).unwrap_or_default().trim() {
+        "dark" => ThemePreference::Dark,
+        "light" => ThemePreference::Light,
+        _ => ThemePreference::System,
+    }
+}
+
+fn keep_theme(file: &Path, theme: ThemePreference) {
+    let text = match theme {
+        ThemePreference::Dark => Some("dark".to_owned()),
+        ThemePreference::Light => Some("light".to_owned()),
+        ThemePreference::System => None,
+    };
+    keep(file, text);
+}
+
 /// Where the drive identifier is kept between runs.
 fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
@@ -4436,13 +4566,14 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-/// `undone`: Detect turned off the double step an earlier disk needed.
-fn found_note(formats: &[String], step: u32, undone: bool) -> String {
+/// `changed`: Detect's step replaced the track list's.
+fn found_note(formats: &[String], step: u32, changed: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
-    if step > 1 {
-        note += " 40-track disk in an 80-track drive, enabling Double step.";
-    } else if undone {
-        note += " Disabling Double step, the disk does not require this.";
+    match (step > 1, changed) {
+        (true, true) => note += " 40-track disk in an 80-track drive, setting Step to 2.",
+        (true, false) => note += " 40-track disk in an 80-track drive.",
+        (false, true) => note += " The disk's tracks match the drive's, setting Step to 1.",
+        (false, false) => {}
     }
     match &formats[1..] {
         [] => {}
@@ -4820,6 +4951,22 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_is_kept_and_system_keeps_no_file() {
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-theme-{}", std::process::id()));
+        let file = dir.join("theme.txt");
+        assert_eq!(kept_theme(&file), ThemePreference::System);
+        for theme in [ThemePreference::Light, ThemePreference::Dark] {
+            keep_theme(&file, theme);
+            assert_eq!(kept_theme(&file), theme);
+        }
+        keep_theme(&file, ThemePreference::System);
+        assert!(!file.exists(), "System is the default");
+        std::fs::write(&file, "purple").unwrap();
+        assert_eq!(kept_theme(&file), ThemePreference::System);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn the_adafruit_rp2040_runs_without_the_options_it_greys_and_they_come_back_after() {
         let schema = schema();
         let mut app = adafruit();
@@ -4945,6 +5092,84 @@ mod tests {
             "Host Tools: 1.23\nDevice:\n  Port:     {port}\n  Model:    {model}\n  Firmware: 1.6"
         );
         Job::replay("info", &log)
+    }
+
+    #[test]
+    fn replacing_a_preset_keeps_its_description_unless_another_is_typed() {
+        let folder =
+            std::env::temp_dir().join(format!("ferriteweazle-replace-{}", std::process::id()));
+        let settings = Settings {
+            presets_folder: Some(folder.clone()),
+            ..Settings::default()
+        };
+        let mut app = App::offline(&egui::Context::default(), settings, Err(String::new()));
+        let mut saved = |typed: &str| {
+            app.save_preset("read", "Mine", typed);
+            presets::load(&presets::path(&folder, "Mine"))
+                .unwrap()
+                .description
+        };
+        assert_eq!(saved("Both sides"), "Both sides");
+        assert_eq!(saved(""), "Both sides", "kept");
+        assert_eq!(saved("Side 0"), "Side 0");
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[test]
+    fn the_drives_delays_go_once_it_resets_them_takes_new_firmware_or_is_unplugged() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        let job = |args: &[&str], log: &str| {
+            let mut job = Job::replay(args[0], log);
+            job.args = args.iter().map(|a| a.to_string()).collect();
+            job
+        };
+        let report = || job(&["delays", "--device=COM3"], "Select Delay: 10us");
+        let run = |app: &mut App, job: Job| {
+            app.tool = Some(job);
+            app.ended(&ctx, false);
+            app.reported_delays().is_some()
+        };
+        assert!(run(&mut app, report()));
+        let reset = job(&["reset", "--device=COM3"], "");
+        assert!(run(&mut app, reset), "a reset without --delays keeps them");
+        assert!(!run(
+            &mut app,
+            job(&["reset", "--device=COM3", "--delays"], "")
+        ));
+        assert!(run(&mut app, report()));
+        assert!(!run(&mut app, job(&["update", "--device=COM3"], "")));
+        assert!(run(&mut app, report()));
+        app.pin_ports(Vec::new());
+        app.poll_probe(&ctx);
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
+        assert!(app.reported_delays().is_none(), "unplugged");
+    }
+
+    #[test]
+    fn delays_typed_clear_once_the_drive_reports_them() {
+        let ctx = egui::Context::default();
+        let mut app = offline();
+        let mut typed = Values::default();
+        typed.set("step", "3000");
+        app.settings.values.insert("delays".into(), typed);
+        // gw prints a refusal and ends as if it worked.
+        app.tool = Some(Job::replay("delays", "Command Failed: Bad Command"));
+        app.ended(&ctx, false);
+        assert_eq!(
+            app.settings.values["delays"].get("step"),
+            "3000",
+            "kept to try again"
+        );
+        let report = "Select Delay: 10us\nStep Delay:   3000us";
+        app.tool = Some(Job::replay("delays", report));
+        app.ended(&ctx, false);
+        assert_eq!(
+            app.settings.values["delays"].get("step"),
+            "",
+            "the drive has it"
+        );
     }
 
     #[test]
@@ -5142,6 +5367,16 @@ mod tests {
     fn a_detected_format_names_the_others_the_disk_also_matches() {
         let formats = ["akai.800", "eagle.dsqd.800", "epson.qx10.400"].map(String::from);
         assert_eq!(found_note(&formats[..1], 1, false), "Found akai.800.");
+        let forty = "Found akai.800. 40-track disk in an 80-track drive";
+        assert_eq!(
+            found_note(&formats[..1], 2, true),
+            format!("{forty}, setting Step to 2.")
+        );
+        assert_eq!(
+            found_note(&formats[..1], 2, false),
+            format!("{forty}."),
+            "a list that keeps its own step"
+        );
         assert_eq!(
             found_note(&formats[..2], 1, false),
             "Found akai.800. Disk also matches eagle.dsqd.800."
@@ -5218,6 +5453,20 @@ mod tests {
             assert_eq!(files, [image.to_string_lossy(), made.to_string_lossy()]);
             assert!(args.contains(&"--format=ibm.1440".to_owned()));
         }
+    }
+
+    #[test]
+    fn a_batch_writes_confirmation_names_its_first_image() {
+        let mut app = offline();
+        let runs = Runs {
+            args: vec![vec!["write".into(), "a.adf".into()]; 2],
+            images: vec!["a.adf".into(), "b.adf".into()],
+            ..Runs::default()
+        };
+        app.begin(&egui::Context::default(), "write", runs);
+        let w = window(app);
+        w.get_by_label("First image: a.adf");
+        assert!(w.query_by_label_contains("sequentially").is_none());
     }
 
     #[test]
@@ -5371,7 +5620,7 @@ mod tests {
         app.run(&ctx, "erase", Vec::new());
         app.detect_for = Some("convert".into());
         app.run(&ctx, DETECT, Vec::new());
-        app.save_preset("seek", "Mine");
+        app.save_preset("seek", "Mine", "");
         app.load_preset("write", Path::new("/no/such/Mine.json"));
         let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
         assert_eq!(pages, ["convert", "erase", "seek", "write"]);
@@ -6205,7 +6454,19 @@ mod tests {
         app.found(vec!["ibm.1440".into()], 1);
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
-        assert!(note.contains("Disabling Double step"), "{note}");
+        assert!(note.contains("setting Step to 1"), "{note}");
+    }
+
+    #[test]
+    fn detect_on_write_leaves_the_drives_step_alone() {
+        let mut app = offline();
+        let values = app.settings.values.entry("write".into()).or_default();
+        values.set("tracks", "step=2");
+        app.detect_for = Some("write".into());
+        // Its step is the image's.
+        app.found(vec!["ibm.360".into()], 1);
+        assert_eq!(app.settings.values["write"].get("tracks"), "step=2");
+        assert_eq!(app.notices["write"], "Found ibm.360.");
     }
 
     #[test]
