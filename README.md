@@ -1,6 +1,6 @@
 # Ferriteweazle
 
-**Ferriteweazle is a cross-platform, GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
+**Cross-platform, GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
 
 ![Ferriteweazle](docs/images/intro_demo.gif)
 
@@ -19,7 +19,7 @@
 - Releases bundle the latest [Greaseweazle Tools](https://github.com/keirf/greaseweazle) unmodified, with its dependencies. This is optional: you can point the app at your own `gw` or `gw.exe`
 
 
-## How does it auto-detect disk formats
+## How does it auto-detect disk formats?
 
 Greaseweazle Tools can't detect formats itself, so the bridge does it using `gw`'s codecs. It decodes both sides of cylinder 0 with every format gw knows and keeps the formats that find every sector. Many formats pass that test, so it ranks them by how closely each sector's position matches that format's layout. If the best still disagree about the track count or an unformatted track, it reads that track to settle it. Cylinder 2 shows whether a 40-track disk needs double step. Apple II disks are told apart by filesystem: ProDOS or DOS 3.3.
 
