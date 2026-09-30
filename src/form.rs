@@ -388,14 +388,18 @@ impl<'a> Form<'a> {
         for a in first.iter().filter(|a| !a.is("TrackSet")) {
             action = action.or(self.arg(ui, a));
         }
+        // The disks named after the output, then what reading them takes.
+        let read = self.cmd.name == "read" && self.cmd.arg("file").is_some();
+        if read {
+            ui.add_space(4.0);
+            self.disks(ui);
+        }
         // A track list is a section of its own, open where it is all the page has.
         if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
             ui.add_space(4.0);
             self.track_section(ui, a, first.len() == 1);
         }
-        if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
-            ui.add_space(4.0);
-            self.disks(ui);
+        if read {
             ui.add_space(4.0);
             self.passes(ui);
         }
@@ -916,7 +920,11 @@ impl<'a> Form<'a> {
 
     /// A track list as a section of its own, its title summing the list up.
     fn track_section(&mut self, ui: &mut Ui, a: &Arg, open: bool) {
-        let title = format!("{} ({})", label(a), self.track_view(a).summary());
+        let name = match a.dest.as_str() {
+            "out_tracks" => "Output track options",
+            _ => "Track options",
+        };
+        let title = format!("{name} ({})", self.track_view(a).summary());
         let r = egui::CollapsingHeader::new(RichText::new(title).strong())
             .id_salt(("tracks", &self.cmd.name, &a.dest))
             .default_open(open)
@@ -4534,7 +4542,10 @@ mod tests {
         h.get_by_label_contains("Advanced options").click();
         h.run();
         // Unset, the output tracks are the input's, and say so.
-        for section in ["Tracks (0–39, side 0)", "Output tracks (0–39, side 0)"] {
+        for section in [
+            "Track options (0–39, side 0)",
+            "Output track options (0–39, side 0)",
+        ] {
             h.get_by_label(section).click();
             h.run();
         }
@@ -4558,33 +4569,43 @@ mod tests {
         let title = |tracks: &str| {
             let h = page("read", values(&[("tracks", tracks)]), BTreeMap::new());
             assert!(h.query_by_label("Cylinders").is_none(), "shut");
-            let header = h.get_by_label_contains("Tracks (");
+            let header = h.get_by_label_contains("Track options (");
             header
                 .accesskit_node()
                 .label()
                 .unwrap_or_default()
                 .to_owned()
         };
-        assert_eq!(title(""), "Tracks (0–81, both sides)");
+        assert_eq!(title(""), "Track options (0–81, both sides)");
         assert_eq!(
             title("c=0-39:h=1:step=2:hswap:h1.off=-8"),
-            "Tracks (0–39, side 1, step 2, sides swapped, side 1 -8)"
+            "Track options (0–39, side 1, step 2, sides swapped, side 1 -8)"
         );
         assert_eq!(
             title("c=0-81/2:step=1/2"),
-            "Tracks (0–81, both sides, half step)"
+            "Track options (0–81, both sides, half step)"
         );
-        assert_eq!(title("c=0-7,9-12"), "Tracks (c=0-7,9-12)", "gw's notation");
+        assert_eq!(
+            title("c=0-7,9-12"),
+            "Track options (c=0-7,9-12)",
+            "gw's notation"
+        );
 
         let h = page("erase", Values::default(), BTreeMap::new());
         h.get_by_label("Cylinders");
+
+        // The disks named, then what reading them takes.
+        let h = page("read", Values::default(), BTreeMap::new());
+        let top = |label: &str| h.get_by_label_contains(label).rect().top();
+        assert!(top("Multiple disks") < top("Track options ("));
+        assert!(top("Track options (") < top("Read passes"));
     }
 
     #[test]
     fn a_track_list_the_picker_cannot_show_says_so_on_its_link() {
         let v = values(&[("tracks", "c=0-7,9-12")]);
         let mut h = page("read", v, BTreeMap::new());
-        h.get_by_label("Tracks (c=0-7,9-12)").click();
+        h.get_by_label("Track options (c=0-7,9-12)").click();
         h.run();
         h.get_by_label("Use the track picker").hover();
         h.run();
@@ -4904,7 +4925,7 @@ mod tests {
     fn a_value_gw_has_a_grammar_for_shows_it_on_hover() {
         let typed = "c=0-7,9-12";
         let mut h = page("read", values(&[("tracks", typed)]), BTreeMap::new());
-        let header = format!("Tracks ({typed})");
+        let header = format!("Track options ({typed})");
         h.get_by_label(&header).hover();
         h.run();
         h.get_by_label("Which tracks to read.");
