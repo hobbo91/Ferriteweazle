@@ -411,8 +411,9 @@ fn a_linux_engine_compiles_gws_c_code_with_zig_for_glibc_2_17() {
 
 /// packaging/release.sh and a stub Mac build committed in `dir`, a clone tagged v1.22
 /// and v1.23, and the PATH to an ssh stub that logs each command and a "--" line to
-/// ssh.log; a remote build prints to stdout as the real ones do, or fails on the
-/// host in FAIL, and its dist folder holds one file.
+/// ssh-HOST.log; a remote build prints to stdout as the real ones do, or fails on the
+/// host in FAIL, and its dist folder holds one file. The Mac build finishes only
+/// once both remote builds have started.
 fn stub_release(dir: &Path) -> String {
     let packaging = dir.join("packaging");
     std::fs::create_dir_all(packaging.join("macos")).unwrap();
@@ -423,6 +424,8 @@ fn stub_release(dir: &Path) -> String {
     std::fs::write(packaging.join("release.env"), machines).unwrap();
     std::fs::write(dir.join("Cargo.toml"), "[package]\nversion = \"0.9.0\"\n").unwrap();
     let mac = "#!/bin/sh\nmkdir -p dist target\n\
+        for i in $(seq 100); do [ -e started-linux ] && [ -e started-windows ] && break; sleep 0.05; done\n\
+        [ -e started-linux ] && [ -e started-windows ] || exit 1\n\
         echo \"$GREASEWEAZLE\" >dist/Ferriteweazle-0.9.0-macos-universal.dmg\n";
     executable(&packaging.join("macos/bundle.sh"), mac);
     std::fs::create_dir_all(packaging.join("linux")).unwrap();
@@ -438,9 +441,10 @@ fn stub_release(dir: &Path) -> String {
     let ssh = r#"#!/bin/sh
 host=$1
 shift
-printf '%s\n--\n' "$*" >>ssh.log
+printf '%s\n--\n' "$*" >>"ssh-$host.log"
 case "$*" in
     *bundle.sh*)
+        touch "started-$host"
         [ "${FAIL:-}" != "$host" ] || exit 1
         echo "building on $host"
         exit 0 ;;
@@ -457,17 +461,19 @@ rm -rf "$out"
     format!("{}:{}", path(&stubs), std::env::var("PATH").unwrap())
 }
 
-/// The build commands release.sh sent, in order.
+/// The build commands release.sh sent to Linux, then to Windows.
 fn remote_builds(dir: &Path) -> Vec<String> {
-    let log = std::fs::read_to_string(dir.join("ssh.log")).unwrap_or_default();
-    log.split("\n--\n")
+    let log = |host: &str| std::fs::read_to_string(dir.join(format!("ssh-{host}.log")));
+    let logs = [log("linux"), log("windows")].map(Result::unwrap_or_default);
+    logs.iter()
+        .flat_map(|log| log.split("\n--\n"))
         .filter(|command| command.contains("bundle.sh"))
         .map(str::to_owned)
         .collect()
 }
 
 #[test]
-fn a_release_builds_every_package_from_one_gw_release() {
+fn a_release_builds_every_package_at_once_from_one_gw_release() {
     let dir = repo("release", "");
     let stubbed = stub_release(&dir);
     let source = dir.join("greaseweazle");
@@ -517,8 +523,11 @@ fn a_failed_build_on_another_machine_stops_the_release() {
         assert!(!out.status.success(), "{machine}");
         let sums = dir.join("dist/SHA256SUMS-0.9.0.txt");
         assert!(!sums.exists(), "no sums without {machine}'s packages");
-        let last = remote_builds(&dir).pop().unwrap();
-        assert!(last.contains(&format!("{machine}/bundle.sh")), "{last}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains(&format!("release: {machine} failed")),
+            "{said}"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }
