@@ -111,7 +111,10 @@ mod tests {
             ..preset
         };
         let text = serde_json::to_string(&plain).unwrap();
-        assert!(!text.contains("description"), "none is left out: {text}");
+        assert!(
+            !text.contains("description"),
+            "an empty one is left out: {text}"
+        );
         std::fs::remove_dir_all(folder).ok();
     }
 

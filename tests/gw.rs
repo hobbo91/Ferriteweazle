@@ -1546,7 +1546,7 @@ fn side<'a>(w: &'a Window, name: &'a str) -> egui_kittest::Node<'a> {
         .expect("a side button")
 }
 
-/// Opens the page's Tracks section, shut as a page opens.
+/// Opens the page's Track options, shut as a page opens.
 fn open_tracks(w: &mut Window) {
     w.get_by_label_contains("Track options (").click();
     w.run_steps(2);

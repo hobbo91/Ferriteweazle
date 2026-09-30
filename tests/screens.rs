@@ -215,6 +215,8 @@ fn screens() {
     std::fs::write(&nsi, vec![0u8; 89_600]).unwrap();
     let bad = dir.join("Bad.nsi");
     std::fs::write(&bad, vec![0u8; 1000]).unwrap();
+    // Tall enough for every section of Settings, or of a page opened out.
+    let tall = egui::vec2(1240.0, 1180.0);
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         for (name, file) in [("write-nsi", &nsi), ("write-nsi-bad", &bad)] {
             let mut write = settings("write", theme);
@@ -280,7 +282,6 @@ fn screens() {
         let mut total = settings("read", theme);
         let out = total.outputs.get_mut("read/file").unwrap();
         (out.disks, out.label, out.total) = (12, "Disk".into(), true);
-        let tall = egui::vec2(1240.0, 1180.0);
         render_sized("disks-total", tall, theme, total, None, |w| {
             w.get_by_label_contains("Multiple disks").click();
         });
@@ -412,8 +413,6 @@ fn screens() {
             page: Page::Settings,
             ..settings("read", theme)
         };
-        // Tall enough for every section.
-        let tall = egui::vec2(1240.0, 1180.0);
         render_sized("settings", tall, theme, page, None, |_| {});
     }
 }

@@ -25,6 +25,18 @@ const FIRST: &[(&str, &[&str])] = &[
     ("align", &["tracks", "format", "reads"]),
 ];
 
+/// Headings over a page's first rows: each groups the argument it names and those after it.
+const HEADINGS: &[(&str, &str, &str)] = &[
+    ("read", "format", "Disk settings"),
+    ("read", "file", "Image settings"),
+    ("write", "file", "Image settings"),
+    ("write", "format", "Disk settings"),
+    ("convert", "in_file", "Input settings"),
+    // gw opens the input and the output with the format, so it is neither's.
+    ("convert", "format", "Disk settings"),
+    ("convert", "out_file", "Output settings"),
+];
+
 /// Arguments whose file is written: a folder, a name and a type.
 pub const OUTPUTS: &[(&str, &str)] = &[("read", "file"), ("convert", "out_file")];
 
@@ -385,7 +397,14 @@ impl<'a> Form<'a> {
         if self.cmd.name == "update" {
             self.firmware(ui);
         }
-        for a in first.iter().filter(|a| !a.is("TrackSet")) {
+        for (i, a) in first.iter().filter(|a| !a.is("TrackSet")).enumerate() {
+            let name = self.cmd.name.as_str();
+            if let Some((.., text)) = HEADINGS.iter().find(|(c, d, _)| *c == name && *d == a.dest) {
+                if i > 0 {
+                    ui.add_space(8.0);
+                }
+                heading(ui, text);
+            }
             action = action.or(self.arg(ui, a));
         }
         if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
@@ -464,8 +483,8 @@ impl<'a> Form<'a> {
         let tip = tip(&self.cmd.name, a);
         // gw's own help for values such as track lists, its columns kept.
         let grammar = grammar(self.schema, a);
-        let explain = |ui: &mut Ui| explain(ui, &tip, grammar);
-        name.on_hover_ui(explain);
+        let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+        name.on_hover_ui(help);
         // Laid over the field, so it is hovered along with whatever is under
         // it, unless that has a tooltip of its own.
         let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
@@ -475,7 +494,7 @@ impl<'a> Form<'a> {
         } else if let Some(b) = blocker {
             over.on_hover_text(format!("Cannot be used with {}.", label(b)));
         } else if quiet.is_none() {
-            over.on_hover_ui(explain);
+            over.on_hover_ui(help);
         }
         action
     }
@@ -951,11 +970,9 @@ impl<'a> Form<'a> {
         // With no format gw takes 0-81 at any step; stepped further, the
         // picker keeps to those the drive reaches and names them.
         let free = !output && format.is_none();
-        let short = free && spec.steps().unwrap_or(1) > 1;
-        let cyls = match short {
-            true => reach(spec.steps().unwrap_or(1)),
-            false => cyls,
-        };
+        let step = spec.steps().unwrap_or(1);
+        let short = free && step > 1;
+        let cyls = if short { reach(step) } else { cyls };
         let whole = base.cylinders().unwrap_or((0, cyls.saturating_sub(1)));
         TrackView {
             spec,
@@ -990,13 +1007,12 @@ impl<'a> Form<'a> {
             });
             let tip = tip(&self.cmd.name, a);
             let grammar = grammar(self.schema, a);
-            let explain = |ui: &mut Ui| explain(ui, &tip, grammar);
-            name.on_hover_ui(explain);
+            let help = |ui: &mut Ui| explain(ui, &tip, grammar);
+            name.on_hover_ui(help);
             // Laid over the field, as for any other argument.
             let over = ui.interact(field.rect, field.id.with("tip"), Sense::hover());
-            over.on_hover_ui(explain);
+            over.on_hover_ui(help);
         } else {
-            let step = spec.steps().unwrap_or(1);
             let (mut first, mut last) = spec.cylinders().unwrap_or(whole);
             let mut changed = false;
             let (name, _) = row(ui, "Cylinders", |ui| {
@@ -1024,10 +1040,7 @@ impl<'a> Form<'a> {
             let (name, _) = row(ui, "Sides", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let mut sides = TrackSpec {
-                        h: spec.h.clone().or_else(|| base.h.clone()),
-                        ..TrackSpec::default()
-                    };
+                    let mut sides = spec.sides(&base);
                     let fixed = !sides.sides_can_change(heads);
                     for head in 0..2u32 {
                         let on = sides.has_head(head, heads);
@@ -1050,41 +1063,17 @@ impl<'a> Form<'a> {
             let (name, _) = row(ui, "Step", |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let now = spec.step.as_deref().unwrap_or("1");
-                    let now = STEPS.iter().position(|&s| s == now);
-                    for (i, value) in STEPS.into_iter().enumerate() {
+                    for value in STEPS {
                         let (text, tip) = match value {
                             HALF => ("½", HALF_TIP),
                             _ => (value, STEP_TIP),
                         };
-                        let r = ui.add(egui::Button::selectable(now == Some(i), text));
-                        if !r.on_hover_text(tip).clicked() || now == Some(i) {
-                            continue;
+                        let on = spec.step.as_deref().unwrap_or("1") == value;
+                        let r = ui.add(egui::Button::selectable(on, text));
+                        if r.on_hover_text(tip).clicked() && !on {
+                            spec.pick_step(value, (first, last), whole, free);
+                            changed = true;
                         }
-                        // With no format, a list kept to the drive's reach takes the new step's.
-                        let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
-                        let kept = free && spec.c == reached(step);
-                        if value == HALF {
-                            let (a, b) = if kept {
-                                (0, USUAL_DISK.0 - 1)
-                            } else {
-                                (first, last)
-                            };
-                            spec.c = Some(format!("{a}-{b}/2"));
-                            spec.step = Some(HALF.into());
-                        } else {
-                            // Leaving a half step leaves its stride.
-                            if spec.half() {
-                                spec.c =
-                                    ((first, last) != whole).then(|| format!("{first}-{last}"));
-                            }
-                            let n: u32 = value.parse().expect("every step but HALF is a number");
-                            if kept || free && spec.c.is_none() {
-                                spec.c = reached(n);
-                            }
-                            spec.step = (n > 1).then(|| value.to_owned());
-                        }
-                        changed = true;
                     }
                 })
             });
@@ -1093,10 +1082,7 @@ impl<'a> Form<'a> {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.spacing_mut().interact_size.x = NUMBER_BOX;
-                    let named = TrackSpec {
-                        h: spec.h.clone().or_else(|| base.h.clone()),
-                        ..TrackSpec::default()
-                    };
+                    let named = spec.sides(&base);
                     let sides = [
                         ("Side 0", "Side 0's offset, in cylinders.", "Needs side 0."),
                         ("Side 1", "Side 1's offset, in cylinders.", "Needs side 1."),
@@ -1382,8 +1368,6 @@ impl<'a> Form<'a> {
             }
         }
 
-        ui.add_space(2.0);
-        ui.label(RichText::new("Save to").small().strong().color(p.dim));
         if has_input {
             // Beside the input, an image of the input's own type would replace it.
             let clash =
@@ -1738,8 +1722,8 @@ const HALF: &str = "1/2";
 
 const STEP_TIP: &str = "Head steps per cylinder. 2 reads a 40-track disk in an 80-track drive.";
 
-const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, 2…, for an image numbered \
-     in half tracks.";
+const HALF_TIP: &str = "Half step: the list's cylinders 0, 2, 4… on the drive's 0, 1, 2…, for an image \
+     numbered in half tracks.";
 
 /// The track picker's largest head offset, in cylinders: gw's h0.off=[+-][0-9].
 const MAX_OFFSET: i32 = 9;
@@ -3313,10 +3297,7 @@ impl TrackView {
             return spec.to_string();
         }
         let (first, last) = spec.cylinders().unwrap_or(self.whole);
-        let named = TrackSpec {
-            h: spec.h.clone().or_else(|| self.base.h.clone()),
-            ..TrackSpec::default()
-        };
+        let named = spec.sides(&self.base);
         let sides = match (named.has_head(0, self.heads), named.has_head(1, self.heads)) {
             (true, true) => "both sides",
             (true, false) => "side 0",
@@ -3390,6 +3371,37 @@ impl TrackSpec {
         self.step.as_deref().map_or(Some(1), |s| s.parse().ok())
     }
 
+    /// The sides alone: this list's, else `base`'s, as gw takes unset output tracks.
+    fn sides(&self, base: &TrackSpec) -> TrackSpec {
+        TrackSpec {
+            h: self.h.clone().or_else(|| base.h.clone()),
+            ..TrackSpec::default()
+        }
+    }
+
+    /// Takes one of STEPS from the picker, which shows cylinders `shown` of
+    /// `whole`. A half step takes every other one of them, and another step
+    /// drops that stride. With no format (`free`), a list kept to the drive's
+    /// reach at the old step takes the new step's.
+    fn pick_step(&mut self, value: &str, shown: (u32, u32), whole: (u32, u32), free: bool) {
+        let reached = |s: u32| (s > 1).then(|| format!("0-{}", reach(s) - 1));
+        let kept = free && self.c == reached(self.steps().unwrap_or(1));
+        if value == HALF {
+            let (a, b) = if kept { (0, USUAL_DISK.0 - 1) } else { shown };
+            self.c = Some(format!("{a}-{b}/2"));
+            self.step = Some(HALF.into());
+            return;
+        }
+        if self.half() {
+            self.c = (shown != whole).then(|| format!("{}-{}", shown.0, shown.1));
+        }
+        let n: u32 = value.parse().expect("every step but HALF is a number");
+        if kept || free && self.c.is_none() {
+            self.c = reached(n);
+        }
+        self.step = (n > 1).then(|| value.to_owned());
+    }
+
     fn cylinders(&self) -> Option<(u32, u32)> {
         let c = self.c.as_deref()?;
         let c = c.strip_suffix("/2").filter(|_| self.half()).unwrap_or(c);
@@ -3447,6 +3459,15 @@ fn offset(v: &str) -> Option<i32> {
         true => v.parse().ok(),
         false => None,
     }
+}
+
+/// A group's heading, with a rule to the fields' right edge.
+fn heading(ui: &mut Ui, text: &str) {
+    let p = theme::palette(ui);
+    let label = ui.label(RichText::new(text).small().strong().color(p.dim));
+    let y = label.rect.center().y;
+    let rule = label.rect.right() + 10.0..=ui.max_rect().right();
+    ui.painter().hline(rule, y, egui::Stroke::new(1.0, p.line));
 }
 
 /// A checkbox as a row's field, centred on the row's label.
@@ -4594,6 +4615,48 @@ mod tests {
         let top = |label: &str| h.get_by_label_contains(label).rect().top();
         assert!(top("Multiple disks") < top("Read passes"));
         assert!(top("Read passes") < top("Track options ("));
+    }
+
+    #[test]
+    fn headings_group_the_first_rows_by_what_gw_does_with_them() {
+        let groups: [(&str, &[&str]); 3] = [
+            (
+                "read",
+                &[
+                    "Disk settings",
+                    "Disk format",
+                    "Revolutions",
+                    "Image settings",
+                    "Image type",
+                ],
+            ),
+            (
+                "write",
+                &[
+                    "Image settings",
+                    "Image",
+                    "Disk settings",
+                    "Disk format",
+                    "Skip verify",
+                ],
+            ),
+            (
+                "convert",
+                &[
+                    "Input settings",
+                    "Input",
+                    "Disk settings",
+                    "Output settings",
+                    "Image type",
+                ],
+            ),
+        ];
+        for (name, rows) in groups {
+            let h = page(name, Values::default(), BTreeMap::new());
+            let top = |r: &&str| h.get_by_role_and_label(Role::Label, r).rect().top();
+            let tops: Vec<f32> = rows.iter().map(top).collect();
+            assert!(tops.is_sorted(), "gw {name}: {rows:?} at {tops:?}");
+        }
     }
 
     #[test]
