@@ -2393,6 +2393,8 @@ fn hint(a: &Arg, schema: &Schema) -> String {
         Some("PrecompSpec") => example(schema, "PRECOMP").unwrap_or_default(),
         _ => match &a.default {
             Some(d) => format!("e.g. {d}"),
+            // Density select's pin.
+            None if a.dest == "pin" => "e.g. 2".into(),
             None if a.required => "Required".into(),
             // As the firmware's releases are tagged.
             None if a.dest == "tag" => "e.g. v1.6".into(),
@@ -3747,6 +3749,15 @@ mod tests {
         h.run();
         h.get_by_label("40");
         assert!(h.query_by_label_contains("Default").is_none());
+    }
+
+    #[test]
+    fn the_pin_field_shows_pin_2_as_its_example() {
+        let s = schema();
+        for cmd in ["pin get", "pin set"] {
+            let pin = s.command(cmd).unwrap().arg("pin").unwrap();
+            assert_eq!(hint(pin, &s), "e.g. 2", "gw {cmd}");
+        }
     }
 
     #[test]
