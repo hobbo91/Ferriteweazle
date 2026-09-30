@@ -639,10 +639,22 @@ impl<'a> Form<'a> {
     }
 
     /// A box to type the value in, and gw's objection to what is typed.
+    /// A field for `a`'s value. Empty, it shows `hint` greyed, or gw's default
+    /// as if typed: gw takes that for an empty field.
     fn typed(&mut self, ui: &mut Ui, a: &Arg, hint: String, width: f32) {
         let mut value = self.values.get(&a.dest).to_owned();
+        let default = a.default.as_ref() == Some(&hint);
         let edit = edit(&mut value).hint_text(hint).desired_width(width);
-        if ui.add(edit).changed() {
+        let changed = ui
+            .scope(|ui| {
+                // egui draws a hint in the weak colour, whatever colour it is given.
+                if default {
+                    ui.visuals_mut().weak_text_color = Some(ui.visuals().text_color());
+                }
+                ui.add(edit).changed()
+            })
+            .inner;
+        if changed {
             self.values.set(&a.dest, value.as_str());
         }
         self.complaint(ui, a, &value);
@@ -2499,13 +2511,14 @@ fn example(schema: &Schema, metavar: &str) -> Option<String> {
     Some(format!("e.g. {quoted}"))
 }
 
+/// What an empty field shows: gw's default, else an example or Required.
 fn hint(a: &Arg, schema: &Schema) -> String {
     match a.ty.as_deref() {
         Some("period") => "e.g. 300rpm".into(),
         Some("PLL") => "e.g. period=5:phase=60".into(),
         Some("PrecompSpec") => example(schema, "PRECOMP").unwrap_or_default(),
         _ => match &a.default {
-            Some(d) => format!("e.g. {d}"),
+            Some(d) => d.clone(),
             // Density select's pin.
             None if a.dest == "pin" => "e.g. 2".into(),
             None if a.required => "Required".into(),
@@ -3973,6 +3986,16 @@ mod tests {
         h.run();
         h.get_by_label("40");
         assert!(h.query_by_label_contains("Default").is_none());
+    }
+
+    #[test]
+    fn an_empty_field_shows_gws_default_as_its_value() {
+        let h = page("clean", Values::default(), BTreeMap::new());
+        let shown: Vec<_> = h
+            .get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .collect();
+        assert_eq!(shown, ["80", "3", "100"], "cylinders, passes, linger");
     }
 
     #[test]
