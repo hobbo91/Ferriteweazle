@@ -2801,7 +2801,7 @@ impl App {
             ui.separator();
             ui.label(
                 "Ferriteweazle is made with \u{2661} by Lee Hobson (@hobbo91), under the MIT \
-                 license.",
+                 license. It is free of charge and provided as is, without warranty.",
             );
             ui.hyperlink_to("Source code and issues", REPO)
                 .on_hover_text(REPO);
