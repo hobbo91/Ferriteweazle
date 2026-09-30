@@ -1544,7 +1544,7 @@ impl<'a> Form<'a> {
                 if out.disks > 1 {
                     row(ui, "", |ui| {
                         let text = match out.ask_names {
-                            true => "Asks for each disk and its name.".to_owned(),
+                            true => "Asks for each disk's name before reading it.".to_owned(),
                             false => {
                                 format!("Asks for each disk sequentially: {}", out.preview_names())
                             }
@@ -4616,7 +4616,7 @@ mod tests {
         let mut h = page("read", values(&[("format", "amiga.amigados")]), outputs);
         h.get_by_label_contains("Multiple disks").click();
         h.run();
-        h.get_by_label("Asks for each disk and its name.");
+        h.get_by_label("Asks for each disk's name before reading it.");
         h.get_all_by_role(Role::TextInput).last().unwrap().hover();
         h.run();
         h.get_by_label("Needs numbered names.");
