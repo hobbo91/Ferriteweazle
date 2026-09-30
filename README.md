@@ -1,6 +1,6 @@
 # Ferriteweazle
 
-**Ferriteweazle is a cross-platform, graphical front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
+**Ferriteweazle is a cross-platform, GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
 
 ![Ferriteweazle](docs/images/intro_demo.gif)
 
@@ -18,11 +18,8 @@
 - Various safety features, such as confirmations before destructive actions and waiting for an action to finish. 
 - Releases bundle the latest [Greaseweazle Tools](https://github.com/keirf/greaseweazle) unmodified, with its dependencies. This is optional: you can point the app at your own `gw` or `gw.exe`
 
-## Is this just vibe-coded AI slop?
 
-No. I built it in Rust, a language I know well, using Claude as a coding assistant, and I review every change. I also contribute to [Copperline](https://github.com/CopperlineHQ/Copperline), [Coppersynth](https://github.com/CopperlineHQ/Coppersynth) and [FluxBridge](https://github.com/CopperlineHQ/FluxBridge).
-
-## How it can auto-detect a disk format
+## How does it auto-detect disk formats
 
 Greaseweazle Tools can't detect formats itself, so the bridge does it using `gw`'s codecs. It decodes both sides of cylinder 0 with every format gw knows and keeps the formats that find every sector. Many formats pass that test, so it ranks them by how closely each sector's position matches that format's layout. If the best still disagree about the track count or an unformatted track, it reads that track to settle it. Cylinder 2 shows whether a 40-track disk needs double step. Apple II disks are told apart by filesystem: ProDOS or DOS 3.3.
 
@@ -91,6 +88,10 @@ cargo run --release
 Without the bundle, the app uses an installed `gw`. `bundle/build.sh` needs curl, git and a C/C++ compiler: Xcode's command line tools on macOS, zig on Linux, and on Windows Visual Studio's C++ build tools and LLVM, in Git Bash.
 
 Tests and packages: [BUILDING.md](BUILDING.md).
+
+## Is this just vibe-coded AI slop?
+
+No. I built it in Rust, a language I know well, using Claude as a coding assistant, and I review every change. I also contribute to [Copperline](https://github.com/CopperlineHQ/Copperline), [Coppersynth](https://github.com/CopperlineHQ/Coppersynth) and [FluxBridge](https://github.com/CopperlineHQ/FluxBridge).
 
 ## Licence
 
