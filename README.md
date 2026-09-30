@@ -39,7 +39,7 @@ Download the package for your system from the [latest release](https://github.co
 
 macOS 10.15 or newer, Apple Silicon or Intel.
 
-1. Open [`Ferriteweazle-1.0.0-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-macos-universal.dmg).
+1. Open [`Ferriteweazle-1.0.1-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-macos-universal.dmg).
 2. Drag **Ferriteweazle** to **Applications**.
 3. Open Ferriteweazle. The app isn't notarised, so macOS blocks it the first time.
 4. Open **System Settings > Privacy & Security** and click **Open Anyway**.
@@ -48,27 +48,27 @@ macOS 10.15 or newer, Apple Silicon or Intel.
 
 Windows 10 or newer, x64 or ARM64.
 
-1. Run [`Ferriteweazle-1.0.0-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-x64.msi), or [`Ferriteweazle-1.0.0-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-arm64.msi) on an ARM PC.
+1. Run [`Ferriteweazle-1.0.1-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-win-x64.msi), or [`Ferriteweazle-1.0.1-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-win-arm64.msi) on an ARM PC.
 2. If SmartScreen warns you, click **More info**, then **Run anyway**.
 3. Follow the installer.
 
-To run without installing, unzip [`Ferriteweazle-1.0.0-win-x64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-x64.zip) or [`Ferriteweazle-1.0.0-win-arm64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-win-arm64.zip) and run `Ferriteweazle.exe`.
+To run without installing, unzip [`Ferriteweazle-1.0.1-win-x64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-win-x64.zip) or [`Ferriteweazle-1.0.1-win-arm64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-win-arm64.zip) and run `Ferriteweazle.exe`.
 
 ### Linux
 
 x86-64 or ARM64, glibc 2.17 or newer.
 
-AppImage: [`Ferriteweazle-1.0.0-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-x86_64.AppImage) or [`Ferriteweazle-1.0.0-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-aarch64.AppImage)
+AppImage: [`Ferriteweazle-1.0.1-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-x86_64.AppImage) or [`Ferriteweazle-1.0.1-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-aarch64.AppImage)
 
 ```sh
-chmod +x Ferriteweazle-1.0.0-x86_64.AppImage
-./Ferriteweazle-1.0.0-x86_64.AppImage
+chmod +x Ferriteweazle-1.0.1-x86_64.AppImage
+./Ferriteweazle-1.0.1-x86_64.AppImage
 ```
 
-Or the tarball: [`Ferriteweazle-1.0.0-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-linux-x86_64.tar.gz) or [`Ferriteweazle-1.0.0-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.0/Ferriteweazle-1.0.0-linux-aarch64.tar.gz)
+Or the tarball: [`Ferriteweazle-1.0.1-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-linux-x86_64.tar.gz) or [`Ferriteweazle-1.0.1-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.0.1/Ferriteweazle-1.0.1-linux-aarch64.tar.gz)
 
 ```sh
-tar -xzf Ferriteweazle-1.0.0-linux-x86_64.tar.gz
+tar -xzf Ferriteweazle-1.0.1-linux-x86_64.tar.gz
 ./Ferriteweazle/ferriteweazle
 ```
 
