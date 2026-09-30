@@ -18,6 +18,10 @@
 - Various safety features, such as confirmations before destructive actions and waiting for an action to finish. 
 - Releases bundle the latest [Greaseweazle Tools](https://github.com/keirf/greaseweazle) unmodified, with its dependencies. This is optional: you can point the app at your own `gw` or `gw.exe`
 
+## Is this just vibe-coded AI slop?
+
+No. I'v spent a lot of time building this project in Rust, a language I know well, using Claude as a coding assistant, and I review every change. I also contribute to [Copperline](https://github.com/CopperlineHQ/Copperline).
+
 ## How it can auto-detect a disk format
 
 Greaseweazle Tools can't detect formats itself, so the bridge does it using `gw`'s codecs. It decodes both sides of cylinder 0 with every format gw knows and keeps the formats that find every sector. Many formats pass that test, so it ranks them by how closely each sector's position matches that format's layout. If the best still disagree about the track count or an unformatted track, it reads that track to settle it. Cylinder 2 shows whether a 40-track disk needs double step. Apple II disks are told apart by filesystem: ProDOS or DOS 3.3.
