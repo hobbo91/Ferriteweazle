@@ -55,10 +55,8 @@ pub fn show(
 ) {
     let (cyls, heads) = progress.layout();
     let past = |set: &[u32]| set.last().map_or(0, |n| n + 1);
-    let (span, sides) = grid(
-        ui,
-        (disk.0.max(past(&cyls)), disk.1.max(past(&heads)).min(2)),
-    );
+    let want = (disk.0.max(past(&cyls)), disk.1.max(past(&heads)).min(2));
+    let (span, sides) = grid(ui, want);
     if span == 0 {
         return;
     }
@@ -118,6 +116,8 @@ pub fn show(
     };
     let taken = |(cyl, head): (u32, u32)| cyls.contains(&cyl) && heads.contains(&head);
     let mut shown = Vec::new();
+    // A side's name and row numbers fade as squares do.
+    let label = |id: egui::Id, on: bool| shade(ui, id, if on { p.dim } else { p.bg }, p.bg);
     for head in 0..sides {
         let corner = square(head, 0);
         painter.text(
@@ -125,18 +125,22 @@ pub fn show(
             Align2::LEFT_TOP,
             side_name(head),
             FontId::proportional(12.0),
-            p.dim,
+            label(egui::Id::new(("side", head)), head < want.1),
         );
         let every = if step < ROW_NUMBER { 2 } else { 1 };
-        for row in (0..rows).filter(|r| r % every == 0) {
-            let at = square(head, row * ROW);
-            painter.text(
-                pos2(at.left() - 7.0, at.center().y),
-                Align2::RIGHT_CENTER,
-                row * ROW,
-                FontId::proportional(ROW_NUMBER),
-                p.dim,
-            );
+        for row in 0..rows {
+            let on = row % every == 0 && row * ROW < want.0 && head < want.1;
+            let colour = label(egui::Id::new(("row", head, row)), on);
+            if colour != p.bg {
+                let at = square(head, row * ROW);
+                painter.text(
+                    pos2(at.left() - 7.0, at.center().y),
+                    Align2::RIGHT_CENTER,
+                    row * ROW,
+                    FontId::proportional(ROW_NUMBER),
+                    colour,
+                );
+            }
         }
         for cyl in 0..span {
             let key = (cyl, head);

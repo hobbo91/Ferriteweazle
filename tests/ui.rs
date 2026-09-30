@@ -1022,6 +1022,45 @@ fn the_maps_squares_fade_in_and_out_with_the_pages_tracks() {
     assert_eq!(squares(&w).count(), 10);
 }
 
+/// The colour of the map's first row number `n`, if drawn.
+fn row_number(w: &Window, n: &str) -> Option<egui::Color32> {
+    let left = w.get_by_label("Disk status").rect().left();
+    w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Text(t) if t.pos.x > left && t.galley.text() == n => {
+            Some(t.galley.job.sections[0].format.color)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn the_maps_row_numbers_fade_in_and_out_with_its_rows() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = start(builder, chosen(), None);
+    w.run();
+    let tracks = |w: &mut Window, list: &str| {
+        let values = app_mut(w).settings.values.get_mut("read").unwrap();
+        values.set("tracks", list);
+        // Half of FILL_TIME's 0.4 s.
+        w.run_steps(12);
+    };
+    let dim = row_number(&w, "0");
+    tracks(&mut w, "c=0-39");
+    let going = row_number(&w, "80");
+    w.run();
+    assert!(going.is_some() && going != dim, "80 went at once");
+    assert_eq!(row_number(&w, "80"), None);
+
+    tracks(&mut w, "c=0-83");
+    let coming = row_number(&w, "80");
+    w.run();
+    assert!(coming.is_some() && coming != dim, "80 showed at once");
+    assert_eq!(row_number(&w, "80"), dim);
+}
+
 #[test]
 fn a_track_list_past_90_cylinders_keeps_the_squares_size_and_scrolls() {
     let map = |list: &str| {
