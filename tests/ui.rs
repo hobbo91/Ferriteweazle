@@ -2580,7 +2580,7 @@ fn a_set_carried_on_names_its_first_disk_and_keeps_it_through_the_command_line()
         ..chosen()
     };
     let out = settings.outputs.get_mut("read/file").unwrap();
-    (out.disks, out.first) = (7, 4);
+    (out.disks, out.first, out.label) = (7, 4, "Disk".into());
     let mut w = window(settings);
     let shown = line(&w);
     assert!(shown.contains("Floppy_Disk4.adf"), "{shown}");

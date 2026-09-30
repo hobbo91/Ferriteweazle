@@ -2054,6 +2054,7 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
     let out = Output {
         folder: path(&dir),
         name: "Game".into(),
+        label: "Disk".into(),
         ext: ".img".into(),
         disks: 2,
         ..Output::default()

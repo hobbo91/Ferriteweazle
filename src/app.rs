@@ -231,6 +231,10 @@ enum Dialog {
         failed: Option<usize>,
         /// The image the next disk gets, when writing.
         image: Option<String>,
+        /// The name typed for the next disk, when the set asks for names.
+        name: Option<String>,
+        /// The next disk's name if none is typed: the page's, for the first.
+        default: String,
     },
     SavePreset {
         command: String,
@@ -292,6 +296,8 @@ struct Runs {
     makes: Vec<PathBuf>,
     /// Disks of the set read before these, when a read carries a set on.
     before: usize,
+    /// Each disk's name is asked for with it; `images` gathers them.
+    ask_names: bool,
 }
 
 impl Runs {
@@ -1036,6 +1042,8 @@ impl App {
                     failed: again.map(|_| number(session.next - 1).0),
                     image: session.runs.images.get(session.next).cloned(),
                     command: command.clone(),
+                    name: (next.is_some() && session.runs.ask_names).then(String::new),
+                    default: String::new(),
                 });
             }
         }
@@ -1958,6 +1966,8 @@ impl App {
         let disks = runs.args.len();
         if disks > 1 {
             let first = runs.args[0].clone();
+            let (disk, total) = runs.number(0);
+            let ask = runs.ask_names;
             self.session = Some(Session {
                 command: command.to_owned(),
                 runs,
@@ -1970,6 +1980,21 @@ impl App {
                         command: command.to_owned(),
                         args: first,
                         disks,
+                    });
+                }
+                false if ask => {
+                    let out = self
+                        .settings
+                        .outputs
+                        .get(&form::output_key(command, "file"));
+                    self.dialog = Some(Dialog::NextDisk {
+                        command: command.to_owned(),
+                        disk: Some(disk),
+                        total,
+                        failed: None,
+                        image: None,
+                        name: Some(String::new()),
+                        default: out.map(|o| o.name.trim().to_owned()).unwrap_or_default(),
                     });
                 }
                 false => self.next_disk(ctx),
@@ -1995,6 +2020,26 @@ impl App {
             self.session = None;
         } else if let Some(job) = &mut self.disk {
             job.part = Some(part);
+        }
+    }
+
+    /// Reads the session's next disk into `name`, as its prompt asked.
+    fn name_next(&mut self, name: &str) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        let key = form::output_key(&session.command, "file");
+        let Some(out) = self.settings.outputs.get(&key) else {
+            return;
+        };
+        if let Some(file) = session
+            .runs
+            .args
+            .get_mut(session.next)
+            .and_then(|a| a.last_mut())
+        {
+            *file = out.named(name).value(1);
+            session.runs.images.push(name.to_owned());
         }
     }
 
@@ -2895,6 +2940,8 @@ impl App {
                     total,
                     failed,
                     image,
+                    name,
+                    default,
                 } => {
                     let (disk, failed) = (*disk, *failed);
                     let (verb, p) = (run_label(command), theme::palette(ui));
@@ -2908,18 +2955,63 @@ impl App {
                         ui.label(RichText::new(text).color(p.bad));
                     }
                     if disk.is_some() {
-                        ui.label("Eject, then insert the next disk in the drive.");
+                        let first = self.session.as_ref().is_some_and(|s| s.next == 0);
+                        ui.label(match first {
+                            true => "Insert the first disk in the drive.",
+                            false => "Eject, then insert the next disk in the drive.",
+                        });
                     }
                     if let Some(image) = image {
                         ui.label(RichText::new(format!("Next image: {image}")).color(p.dim));
+                    }
+                    // The name the next disk is read under, when the set asks.
+                    let mut named = None;
+                    if let Some(typed) = name {
+                        ui.add_space(6.0);
+                        let hint = match default.is_empty() {
+                            true => "Required",
+                            false => default.as_str(),
+                        };
+                        let edit = form::edit(typed)
+                            .char_limit(form::NAME_LIMIT)
+                            .hint_text(hint)
+                            .desired_width(f32::INFINITY);
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            ui.add(edit).request_focus();
+                        });
+                        let chosen = Some(typed.trim()).filter(|t| !t.is_empty());
+                        let chosen = chosen.unwrap_or(default.as_str()).to_owned();
+                        let out = self
+                            .settings
+                            .outputs
+                            .get(&form::output_key(command, "file"));
+                        let path = out.map(|o| o.named(&chosen).path(1));
+                        if let Some(path) = path.filter(|p| !chosen.is_empty() && p.exists()) {
+                            let file = path.file_name().unwrap_or_default().to_string_lossy();
+                            let text = format!("{file} exists. Reading replaces it.");
+                            ui.label(RichText::new(text).small().color(p.partial));
+                        }
+                        named = Some(chosen);
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         if let Some(disk) = disk {
                             let next = format!("{verb} {disk}");
-                            if ui.add(dialog_button(&next, p.accent, p)).clicked() {
+                            let ready = named.as_ref().is_none_or(|n| !n.is_empty());
+                            let enter = ready && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let button = ui
+                                .add_enabled(ready, dialog_button(&next, p.accent, p))
+                                .on_disabled_hover_text("Type a name.");
+                            if button.clicked() || (enter && named.is_some()) {
                                 let ctx = ctx.clone();
-                                action = Some(Box::new(move |app: &mut App| app.next_disk(&ctx)));
+                                let named = named.clone();
+                                action = Some(Box::new(move |app: &mut App| {
+                                    if let Some(name) = named {
+                                        app.name_next(&name);
+                                    }
+                                    app.next_disk(&ctx)
+                                }));
                                 close = true;
                             }
                         }
@@ -3483,7 +3575,12 @@ fn runs(
                     argv(&values)
                 })
                 .collect();
-            (args, out.paths().collect())
+            // Names asked for later are checked as they are typed.
+            let makes = match out.asks_names() {
+                true => Vec::new(),
+                false => out.paths().collect(),
+            };
+            (args, makes)
         }
         Some((_, out)) => (vec![argv(&values)], vec![out.path(1)]),
         None => (vec![argv(&values)], Vec::new()),
@@ -3492,6 +3589,7 @@ fn runs(
         args,
         makes,
         before: out.map_or(0, |(_, o)| o.first_disk() as usize - 1),
+        ask_names: out.is_some_and(|(_, o)| cmd.name == "read" && o.asks_names()),
         ..Runs::default()
     }
 }
@@ -5221,6 +5319,7 @@ mod tests {
         let out = Output {
             folder: "/f".into(),
             name: "Game".into(),
+            label: "Disk".into(),
             ext: ".adf".into(),
             disks: 3,
             ..Output::default()
@@ -5647,6 +5746,69 @@ mod tests {
             args: args.collect(),
             ..Runs::default()
         }
+    }
+
+    #[test]
+    fn a_set_that_asks_names_takes_each_disks_name_as_it_asks_for_the_disk() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        let dir = std::env::temp_dir().join(format!("ferriteweazle-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Lemmings 2.adf"), b"").unwrap();
+        let mut app = offline();
+        let out = Output {
+            folder: dir.to_string_lossy().into(),
+            name: "Lemmings 1".into(),
+            ext: ".adf".into(),
+            disks: 3,
+            ask_names: true,
+            ..Output::default()
+        };
+        app.settings.outputs.insert("read/file".into(), out);
+        let runs = Runs {
+            ask_names: true,
+            ..reads(&["", "", ""])
+        };
+        app.begin(&ctx, "read", runs);
+        let first = match &app.dialog {
+            Some(Dialog::NextDisk { disk, default, .. }) => (*disk, default.as_str()),
+            _ => panic!("no first disk"),
+        };
+        assert_eq!(
+            first,
+            (Some(1), "Lemmings 1"),
+            "the page's name, if none is typed"
+        );
+        let mut w = window(app);
+        w.get_by_label("Insert the first disk in the drive.");
+        let app = w.state_mut();
+        app.name_next("Lemmings 1");
+        let session = app.session.as_ref().unwrap();
+        let file = dir.join("Lemmings 1.adf").to_string_lossy().into_owned();
+        assert_eq!(session.runs.args[0].last(), Some(&file));
+
+        app.dialog = None;
+        app.session.as_mut().unwrap().next = 1;
+        app.disk = Some(Job::replay(
+            "read",
+            "Command Failed: GetFluxStatus: No Index",
+        ));
+        app.ended(&ctx, true);
+        w.run_steps(2);
+        let read = |w: &Harness<App>| {
+            let button = w.get_by_role_and_label(Role::Button, "Read disk 2");
+            button.accesskit_node().is_disabled()
+        };
+        assert!(read(&w), "a name first");
+        w.event(egui::Event::Text("Lemmings 2".into()));
+        w.run_steps(2);
+        assert!(!read(&w));
+        w.get_by_label("Lemmings 2.adf exists. Reading replaces it.");
+
+        w.state_mut().end_session();
+        let note = "Read 0 of 3 disks. Failed: Lemmings 1. The Log says why.";
+        assert_eq!(w.state().notices["read"], note);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -6250,6 +6412,7 @@ mod tests {
         let out = Output {
             folder: "/f".into(),
             name: "Game".into(),
+            label: "Disk".into(),
             ext: ".adf".into(),
             disks: 7,
             first: 4,

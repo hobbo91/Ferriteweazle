@@ -1485,31 +1485,50 @@ impl<'a> Form<'a> {
                     .on_hover_text(tip)
                 });
                 name.on_hover_text(tip);
+                let (name, _) = row(ui, "Names", |ui| {
+                    ui.add_enabled_ui(out.disks > 1, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.selectable_value(&mut out.ask_names, false, "Numbered")
+                                .on_hover_text("Name each disk's file with its number.");
+                            ui.selectable_value(&mut out.ask_names, true, "Ask for each")
+                                .on_hover_text("Type each disk's name when asked for the disk.");
+                        });
+                    })
+                    .response
+                    .on_disabled_hover_text("Needs more than one disk.");
+                });
+                name.on_hover_text("How each disk's file is named.");
+                let numbered = out.disks > 1 && !out.ask_names;
+                let why = match out.disks > 1 {
+                    true => "Needs numbered names.",
+                    false => "Needs more than one disk.",
+                };
                 let tip = "The number of the first disk to read, to carry on a set.";
                 let (name, _) = row(ui, "First disk", |ui| {
                     let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
                     let first = egui::DragValue::new(&mut out.first).range(1..=out.disks.max(1));
-                    ui.add_enabled_ui(out.disks > 1, |ui| ui.add_sized(size, first))
+                    ui.add_enabled_ui(numbered, |ui| ui.add_sized(size, first))
                         .inner
                         .on_hover_text(tip)
-                        .on_disabled_hover_text("Needs more than one disk.");
+                        .on_disabled_hover_text(why);
                 });
                 name.on_hover_text(tip);
                 let tip = "The text before each disk number, such as Disk in Samples_Disk1.";
                 let (name, _) = row(ui, "Label", |ui| {
                     ui.add_enabled(
-                        out.disks > 1,
+                        numbered,
                         edit(&mut out.label)
                             .char_limit(NAME_LIMIT)
                             .hint_text("e.g. Disk")
                             .desired_width(SHORT_FIELD),
                     )
                     .on_hover_text(tip)
-                    .on_disabled_hover_text("Needs more than one disk.");
+                    .on_disabled_hover_text(why);
                 });
                 name.on_hover_text(tip);
                 let (name, _) = row(ui, "Number", |ui| {
-                    ui.add_enabled_ui(out.disks > 1, |ui| {
+                    ui.add_enabled_ui(numbered, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             ui.selectable_value(&mut out.number_first, false, "After the name")
@@ -1519,13 +1538,17 @@ impl<'a> Form<'a> {
                         });
                     })
                     .response
-                    .on_disabled_hover_text("Needs more than one disk.");
+                    .on_disabled_hover_text(why);
                 });
                 name.on_hover_text("Where each file's disk number goes.");
                 if out.disks > 1 {
                     row(ui, "", |ui| {
-                        let text =
-                            format!("Asks for each disk sequentially: {}", out.preview_names());
+                        let text = match out.ask_names {
+                            true => "Asks for each disk and its name.".to_owned(),
+                            false => {
+                                format!("Asks for each disk sequentially: {}", out.preview_names())
+                            }
+                        };
                         ui.label(RichText::new(text).small().color(theme::palette(ui).dim));
                     });
                 }
@@ -1648,7 +1671,7 @@ pub fn blocked(
         if !foreign(&out.opts, &image.write_opts).is_empty() {
             return Some(FOREIGN);
         }
-        if batch.is_none() && out.name.trim().is_empty() {
+        if batch.is_none() && !out.asks_names() && out.name.trim().is_empty() {
             return Some("Name the image first.");
         }
         let beside = cmd.arg("in_file").is_some() && out.beside_input;
@@ -2761,6 +2784,8 @@ pub struct Output {
     pub label: String,
     /// The disk number goes before the name, not after it.
     pub number_first: bool,
+    /// Each disk's name is asked for with the disk, not numbered.
+    pub ask_names: bool,
     pub ext: String,
     pub opts: BTreeMap<String, String>,
     /// Take the folder and name from the input file, when there is one.
@@ -2786,8 +2811,9 @@ impl Default for Output {
             name: "Floppy".into(),
             disks: 1,
             first: 1,
-            label: "Disk".into(),
+            label: String::new(),
             number_first: false,
+            ask_names: false,
             ext: String::new(),
             opts: BTreeMap::new(),
             beside_input: false,
@@ -2802,6 +2828,20 @@ impl Default for Output {
 }
 
 impl Output {
+    /// A set whose disks are named as they are asked for.
+    pub fn asks_names(&self) -> bool {
+        self.disks > 1 && self.ask_names
+    }
+
+    /// This output for one disk named `name`.
+    pub fn named(&self, name: &str) -> Output {
+        Output {
+            name: name.to_owned(),
+            disks: 1,
+            ..self.clone()
+        }
+    }
+
     /// An output from a path as gw takes it, such as a pasted command's.
     pub fn from_value(value: &str) -> Output {
         let (path, opts) = split_opts(value);
@@ -2818,7 +2858,7 @@ impl Output {
     /// The file for one disk, counting from 1: `Game_Disk2.adf` of three.
     fn file_name(&self, disk: u32) -> String {
         let (name, ext) = (&self.name, &self.ext);
-        if self.disks <= 1 {
+        if self.disks <= 1 || self.ask_names {
             return typed_name(name, ext);
         }
         let width = self.disks.to_string().len();
@@ -2895,7 +2935,7 @@ impl Output {
     fn preview(&self) -> String {
         let (first, last) = (self.first_disk(), self.disks.max(1));
         let path = self.path(first).to_string_lossy().into_owned();
-        match first == last {
+        match first == last || self.ask_names {
             true => path,
             false => format!("{path} … {}", self.file_name(last)),
         }
@@ -4194,6 +4234,7 @@ mod tests {
         let mut out = Output {
             folder: "/f".into(),
             name: "Game".into(),
+            label: "Disk".into(),
             ext: ".adf".into(),
             ..Output::default()
         };
@@ -4223,8 +4264,7 @@ mod tests {
         assert_eq!(out.file_name(1), "Floppy00.0.raw");
         out.name = "Disk7".into();
         assert_eq!(out.file_name(1), "Disk7_00.0.raw", "not disk 700");
-        out.name = "Game".into();
-        out.disks = 2;
+        (out.name, out.label, out.disks) = ("Game".into(), "Disk".into(), 2);
         assert_eq!(out.file_name(2), "Game_Disk2_00.0.raw");
         let pasted = Output::from_value("/f/Game00.0.raw");
         assert_eq!(
@@ -4541,10 +4581,53 @@ mod tests {
     }
 
     #[test]
+    fn a_set_numbers_its_files_unless_it_asks_each_disks_name() {
+        let mut out = Output {
+            folder: "/f".into(),
+            name: "Game".into(),
+            ext: ".adf".into(),
+            disks: 3,
+            ..Output::default()
+        };
+        assert_eq!(out.preview_names(), "Game_1.adf, Game_2.adf, Game_3.adf");
+        out.ask_names = true;
+        assert_eq!(out.path(2), PathBuf::from("/f/Game.adf"));
+        assert_eq!(
+            out.preview(),
+            Path::new("/f").join("Game.adf").to_string_lossy()
+        );
+        let named = out.named("Lemmings 2").path(1);
+        assert_eq!(named, PathBuf::from("/f/Lemmings 2.adf"));
+
+        let s = schema();
+        let service = Service::offline(Ok(s.clone()));
+        let why = |out: &Output| {
+            let outputs = BTreeMap::from([(output_key("read", "file"), out.clone())]);
+            let v = values(&[("format", "amiga.amigados")]);
+            blocked(&s, s.command("read").unwrap(), &v, &outputs, &service)
+        };
+        out.name.clear();
+        assert_eq!(why(&out), None, "each disk's name is asked for");
+        out.ask_names = false;
+        assert_eq!(why(&out), Some("Name the image first."));
+
+        out.ask_names = true;
+        let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+        let mut h = page("read", values(&[("format", "amiga.amigados")]), outputs);
+        h.get_by_label_contains("Multiple disks").click();
+        h.run();
+        h.get_by_label("Asks for each disk and its name.");
+        h.get_all_by_role(Role::TextInput).last().unwrap().hover();
+        h.run();
+        h.get_by_label("Needs numbered names.");
+    }
+
+    #[test]
     fn a_set_can_start_at_any_disk_and_keeps_the_sets_numbering() {
         let mut out = Output {
             folder: "/f".into(),
             name: "Game".into(),
+            label: "Disk".into(),
             ext: ".adf".into(),
             disks: 12,
             first: 4,

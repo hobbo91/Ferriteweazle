@@ -277,6 +277,15 @@ fn screens() {
         render("disks", theme, disks, None, |w| {
             w.get_by_label_contains("Multiple disks").click();
         });
+        for (name, open) in [("disks-named", true), ("disk-name", false)] {
+            let mut named = settings("read", theme);
+            let out = named.outputs.get_mut("read/file").unwrap();
+            (out.disks, out.ask_names) = (100, true);
+            render(name, theme, named, None, |w| match open {
+                true => w.get_by_label_contains("Multiple disks").click(),
+                false => run_button(w, "Read disks").click(),
+            });
+        }
         let mut passes = settings("read", theme);
         let out = passes.outputs.get_mut("read/file").unwrap();
         (out.passes, out.keep_passes) = (3, true);
