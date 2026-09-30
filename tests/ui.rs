@@ -274,14 +274,23 @@ fn a_preset_is_a_file_that_brings_back_the_settings_it_saved() {
     w.run();
     type_text(&w, "Five revs");
     w.run();
+    // The description, below the name, takes what is typed once clicked.
+    w.get_all_by_role(Role::TextInput).last().unwrap().click();
+    w.run();
+    type_text(&w, "For a worn disk.");
+    w.run();
     w.get_by_label("Save").click();
     w.run();
-    assert!(folder.join("Five revs.json").is_file());
+    let saved = presets::load(&folder.join("Five revs.json")).unwrap();
+    assert_eq!(saved.description, "For a worn disk.");
 
     set(&mut app_mut(&mut w).settings, "read", "revs", "2");
     w.run();
     w.get_by_label("Presets").click();
     w.run();
+    w.get_by_label("Five revs").hover();
+    w.run();
+    w.get_by_label("For a worn disk.");
     w.get_by_label("Five revs").click();
     w.run();
     assert_eq!(app(&w).settings.values["read"].get("revs"), "5");
@@ -1590,6 +1599,22 @@ fn with_the_log_open_the_whole_map_still_fits_above_it() {
 }
 
 #[test]
+fn a_rows_tick_box_is_level_with_its_label() {
+    let mut settings = chosen();
+    let out = settings.outputs.get_mut("read/file").unwrap();
+    (out.disks, out.passes) = (3, 2);
+    let mut w = window_at(egui::vec2(1240.0, 1400.0), settings);
+    for section in ["Multiple disks", "Read passes"] {
+        w.get_by_label_contains(section).click();
+        w.run();
+    }
+    for (label, tick) in [("Total", "Add the total"), ("Keep", "Each pass")] {
+        let rise = w.get_by_label(label).rect().center().y - w.get_by_label(tick).rect().center().y;
+        assert!(rise.abs() < 1.0, "{tick} sits {rise} above {label}");
+    }
+}
+
+#[test]
 fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
     let w = window_at(DEFAULT, chosen());
     let bars: Vec<_> = w
@@ -1598,7 +1623,8 @@ fn the_window_as_it_opens_needs_no_scrolling_and_keeps_tracks_on_one_line() {
         .collect();
     assert!(bars.is_empty(), "something scrolls: {bars:?}");
     let cylinders = w.get_by_label("Cylinders").rect();
-    let side_1 = w.get_all_by_label("1").last().unwrap().rect();
+    // Side 1's button, before Step's 1.
+    let side_1 = w.get_all_by_label("1").rev().nth(1).unwrap().rect();
     assert!(
         (side_1.center().y - cylinders.center().y).abs() < 2.0,
         "the sides wrap under the cylinders: {side_1:?}, {cylinders:?}"
@@ -1637,7 +1663,7 @@ fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
         );
         // The sides' buttons wrap with their label, not apart.
         let sides = w.get_by_label("Sides").rect();
-        let side_1 = w.get_all_by_label("1").last().unwrap().rect();
+        let side_1 = w.get_all_by_label("1").rev().nth(1).unwrap().rect();
         assert!(
             side_1.top() < sides.bottom() && sides.top() < side_1.bottom(),
             "{drawer:?}: {sides:?}, {side_1:?}"

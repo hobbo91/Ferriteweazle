@@ -17,6 +17,9 @@ pub struct Preset {
     pub values: Values,
     /// Output folders, names and types, keyed as in the app's settings.
     pub outputs: BTreeMap<String, Output>,
+    /// Shown when the preset is hovered in the Presets menu.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// Documents/Ferriteweazle/Presets, made by the first save.
@@ -24,8 +27,8 @@ pub fn default_folder() -> PathBuf {
     crate::app_folder().join("Presets")
 }
 
-/// The presets for a command in a folder, by name.
-pub fn list(folder: &Path, command: &str) -> Vec<(String, PathBuf)> {
+/// The presets for a command in a folder, by name: each one's name, file and description.
+pub fn list(folder: &Path, command: &str) -> Vec<(String, PathBuf, String)> {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return Vec::new();
     };
@@ -33,10 +36,13 @@ pub fn list(folder: &Path, command: &str) -> Vec<(String, PathBuf)> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == EXTENSION))
-        .filter(|p| load(p).is_ok_and(|preset| preset.command == command))
-        .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+        .filter_map(|p| {
+            let preset = load(&p).ok().filter(|preset| preset.command == command)?;
+            let name = p.file_stem()?.to_string_lossy().into_owned();
+            Some((name, p, preset.description))
+        })
         .collect();
-    found.sort_by_cached_key(|(name, _)| name.to_lowercase());
+    found.sort_by_cached_key(|(name, ..)| name.to_lowercase());
     found
 }
 
@@ -78,11 +84,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_saved_preset_lists_under_its_command_and_loads_back() {
+    fn a_saved_preset_lists_under_its_command_with_its_description_and_loads_back() {
         let folder = std::env::temp_dir().join(format!("fw-presets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         let mut preset = Preset {
             command: "read".into(),
+            description: "Both sides, 80 cylinders.".into(),
             ..Preset::default()
         };
         preset.values.set("revs", "5");
@@ -90,13 +97,21 @@ mod tests {
         let saved = save(&folder, "Amiga: DD", &preset).unwrap();
         assert_eq!(saved, folder.join("Amiga- DD.json"));
         std::fs::write(folder.join("notes.json"), "{\"other\": 1}").unwrap();
-        assert_eq!(
-            list(&folder, "read"),
-            [("Amiga- DD".to_owned(), saved.clone())]
+        let listed = (
+            "Amiga- DD".to_owned(),
+            saved.clone(),
+            preset.description.clone(),
         );
+        assert_eq!(list(&folder, "read"), [listed]);
         assert!(list(&folder, "write").is_empty());
         assert_eq!(load(&saved).unwrap(), preset);
         assert!(load(&folder.join("notes.json")).is_err());
+        let plain = Preset {
+            description: String::new(),
+            ..preset
+        };
+        let text = serde_json::to_string(&plain).unwrap();
+        assert!(!text.contains("description"), "none is left out: {text}");
         std::fs::remove_dir_all(folder).ok();
     }
 
@@ -111,7 +126,7 @@ mod tests {
         for name in ["PC 1.44", "atari st", "Amiga DD"] {
             save(&folder, name, &preset).unwrap();
         }
-        let names: Vec<String> = list(&folder, "read").into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = list(&folder, "read").into_iter().map(|(n, ..)| n).collect();
         assert_eq!(names, ["Amiga DD", "atari st", "PC 1.44"]);
         std::fs::remove_dir_all(folder).ok();
     }

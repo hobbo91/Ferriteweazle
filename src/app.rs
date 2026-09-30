@@ -239,6 +239,7 @@ enum Dialog {
     SavePreset {
         command: String,
         name: String,
+        description: String,
     },
     DeletePreset {
         /// The page that shows why the file could not be deleted.
@@ -307,11 +308,14 @@ impl Runs {
     }
 }
 
+/// The longest preset description, in characters.
+const DESCRIPTION_LIMIT: usize = 120;
+
 /// A page's Presets menu while it is open, so the folder is read once, not every frame.
 struct PresetsMenu {
     page: String,
-    /// The page's presets, by name.
-    saved: Vec<(String, PathBuf)>,
+    /// The page's presets, by name: each one's name, file and description.
+    saved: Vec<(String, PathBuf, String)>,
     /// Whether the page differs from gw's defaults.
     changed: bool,
 }
@@ -2515,12 +2519,12 @@ impl App {
             if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
-            for (name, path) in &menu.saved {
-                if ui
-                    .button(name.as_str())
-                    .on_hover_text("Use these settings.")
-                    .clicked()
-                {
+            for (name, path, description) in &menu.saved {
+                let tip = match description.as_str() {
+                    "" => "Use these settings.",
+                    description => description,
+                };
+                if ui.button(name.as_str()).on_hover_text(tip).clicked() {
                     load = Some(path.clone());
                     ui.close();
                 }
@@ -2536,7 +2540,7 @@ impl App {
                 .clicked();
             if !menu.saved.is_empty() {
                 ui.menu_button("Delete", |ui| {
-                    for (name, path) in &menu.saved {
+                    for (name, path, _) in &menu.saved {
                         if ui
                             .button(name.as_str())
                             .on_hover_text("Delete this preset.")
@@ -2575,6 +2579,7 @@ impl App {
             self.dialog = Some(Dialog::SavePreset {
                 command: command.to_owned(),
                 name: String::new(),
+                description: String::new(),
             });
         }
         if pick {
@@ -3045,24 +3050,42 @@ impl App {
                         }
                     });
                 }
-                Dialog::SavePreset { command, name } => {
+                Dialog::SavePreset {
+                    command,
+                    name,
+                    description,
+                } => {
                     dialog_heading(ui, "Save a preset");
-                    ui.add(
+                    let named = ui.add(
                         form::edit(name)
                             .char_limit(form::NAME_LIMIT)
                             .hint_text("e.g. Amiga DD")
                             .desired_width(f32::INFINITY),
-                    )
-                    .request_focus();
+                    );
+                    // The name keeps the focus unless the description has it.
+                    let about = ui.make_persistent_id("preset-description");
+                    if !ui.memory(|m| m.has_focus(about)) {
+                        named.request_focus();
+                    }
                     let exists = presets::path(&self.presets_folder(), name).exists();
                     if exists {
                         let p = theme::palette(ui);
                         let text = "A preset of this name exists. Saving replaces it.";
                         ui.label(RichText::new(text).small().color(p.partial));
                     }
+                    ui.add_space(6.0);
+                    ui.add(
+                        form::edit(description)
+                            .id(about)
+                            .char_limit(DESCRIPTION_LIMIT)
+                            .hint_text("Description, optional")
+                            .desired_width(f32::INFINITY),
+                    )
+                    .on_hover_text("Shown when you hover over the preset.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
                         let name = name.trim().to_owned();
+                        let description = description.trim().to_owned();
                         let p = theme::palette(ui);
                         let text = if exists { "Replace" } else { "Save" };
                         if ui
@@ -3072,7 +3095,7 @@ impl App {
                         {
                             let command = command.clone();
                             action = Some(Box::new(move |app: &mut App| {
-                                app.save_preset(&command, &name)
+                                app.save_preset(&command, &name, &description)
                             }));
                             close = true;
                         }
@@ -3301,7 +3324,7 @@ impl App {
         }
     }
 
-    fn save_preset(&mut self, command: &str, name: &str) {
+    fn save_preset(&mut self, command: &str, name: &str, description: &str) {
         let values = self
             .settings
             .values
@@ -3320,6 +3343,7 @@ impl App {
             command: command.to_owned(),
             values,
             outputs,
+            description: description.to_owned(),
         };
         if let Err(e) = presets::save(&self.presets_folder(), name, &preset) {
             let text = format!("Could not save the preset: {e}");
@@ -4436,13 +4460,13 @@ fn short_port(device: &str) -> &str {
 }
 
 /// "Found akai.800. Disk also matches eagle.dsqd.800 and zx.quorum.ds80."
-/// `undone`: Detect turned off the double step an earlier disk needed.
+/// `undone`: Detect set Step back to 1 from the larger step an earlier disk needed.
 fn found_note(formats: &[String], step: u32, undone: bool) -> String {
     let mut note = format!("Found {}.", formats[0]);
     if step > 1 {
-        note += " 40-track disk in an 80-track drive, enabling Double step.";
+        note += " 40-track disk in an 80-track drive, setting Step to 2.";
     } else if undone {
-        note += " Disabling Double step, the disk does not require this.";
+        note += " Setting Step to 1, the disk does not require a larger step.";
     }
     match &formats[1..] {
         [] => {}
@@ -5371,7 +5395,7 @@ mod tests {
         app.run(&ctx, "erase", Vec::new());
         app.detect_for = Some("convert".into());
         app.run(&ctx, DETECT, Vec::new());
-        app.save_preset("seek", "Mine");
+        app.save_preset("seek", "Mine", "");
         app.load_preset("write", Path::new("/no/such/Mine.json"));
         let pages: Vec<&str> = app.notices.keys().map(String::as_str).collect();
         assert_eq!(pages, ["convert", "erase", "seek", "write"]);
@@ -6205,7 +6229,7 @@ mod tests {
         app.found(vec!["ibm.1440".into()], 1);
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
-        assert!(note.contains("Disabling Double step"), "{note}");
+        assert!(note.contains("Setting Step to 1"), "{note}");
     }
 
     #[test]
