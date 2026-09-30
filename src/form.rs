@@ -366,6 +366,8 @@ pub struct Form<'a> {
     /// The device is an Adafruit RP2040: options its firmware cannot carry
     /// out are greyed and shown as off.
     pub adafruit: bool,
+    /// gw runs as a standalone program, which cannot read in passes.
+    pub standalone: bool,
 }
 
 /// Something the form asks of the app.
@@ -389,6 +391,8 @@ impl<'a> Form<'a> {
         if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
             ui.add_space(4.0);
             self.disks(ui);
+            ui.add_space(4.0);
+            self.passes(ui);
         }
         if !rest.is_empty() {
             ui.add_space(4.0);
@@ -1388,6 +1392,74 @@ impl<'a> Form<'a> {
         }
     }
 
+    /// Reading the disk again while sectors are missing.
+    fn passes(&mut self, ui: &mut Ui) {
+        let cannot = match (self.standalone, self.effective_format()) {
+            (true, _) => Some("Standalone Greaseweazle Tools cannot read in passes."),
+            (false, None) => Some("Needs a disk format."),
+            (false, Some(_)) => None,
+        };
+        let out = self
+            .outputs
+            .entry(output_key(&self.cmd.name, "file"))
+            .or_default();
+        let on = cannot.is_none() && out.passes > 1;
+        let title = match on {
+            true => format!("Read passes ({})", out.passes),
+            false => "Read passes".to_owned(),
+        };
+        let more = "Needs more than one read pass.";
+        egui::CollapsingHeader::new(RichText::new(title).strong())
+            .id_salt(("passes", &self.cmd.name))
+            .show_unindented(ui, |ui| {
+                ui.add_space(6.0);
+                let tip = "Maximum number of times to read a disk with missing or damaged sectors.";
+                let (name, _) = row(ui, "Passes", |ui| {
+                    let size = vec2(NUMBER_FIELD, theme::FIELD_HEIGHT);
+                    let passes = egui::DragValue::new(&mut out.passes).range(1..=MAX_PASSES);
+                    ui.add_enabled_ui(cannot.is_none(), |ui| ui.add_sized(size, passes))
+                        .inner
+                        .on_hover_text(tip)
+                        .on_disabled_hover_text(cannot.unwrap_or_default());
+                });
+                name.on_hover_text(tip);
+                let (name, _) = row(ui, "Re-read", |ui| {
+                    ui.add_enabled_ui(on, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.selectable_value(&mut out.whole_disk, false, "Incomplete tracks")
+                                .on_hover_text(
+                                    "Attempt to re-read only the tracks still missing sectors.",
+                                );
+                            ui.selectable_value(&mut out.whole_disk, true, "Whole disk")
+                                .on_hover_text("Attempt to re-read the entire disk.");
+                        });
+                    })
+                    .response
+                    .on_disabled_hover_text(more);
+                });
+                name.on_hover_text(
+                    "Whether the next pass reads the whole disk again, or only the tracks that failed.",
+                );
+                let tip = "Save each pass's flux to the Read passes folder.";
+                let (name, _) = row(ui, "Keep", |ui| {
+                    ui.add_enabled_ui(on, |ui| checkbox(ui, &mut out.keep_passes, "Each pass"))
+                        .inner
+                        .on_hover_text(tip)
+                        .on_disabled_hover_text(more);
+                });
+                name.on_hover_text(tip);
+                if on && out.keep_passes {
+                    let stem = image_stem(&out.path(out.first_disk()));
+                    row(ui, "", |ui| {
+                        let text =
+                            format!("{PASSES_FOLDER}/{stem} pass 1.scp, {stem} pass 2.scp…");
+                        ui.label(RichText::new(text).small().color(theme::palette(ui).dim));
+                    });
+                }
+            });
+    }
+
     /// Several disks read one after another, each into a numbered file.
     fn disks(&mut self, ui: &mut Ui) {
         let out = self
@@ -1478,6 +1550,18 @@ const REPLACES_INPUTS: &str =
 
 /// The most disks one session reads.
 const MAX_DISKS: u32 = 99;
+
+/// The most passes a read makes.
+pub const MAX_PASSES: u32 = 5;
+
+/// Where a read keeps each pass's flux, beside its image.
+pub const PASSES_FOLDER: &str = "Read passes";
+
+/// The start of the name of each pass's flux file for `image`: `Read passes/Floppy pass`.
+pub fn pass_prefix(image: &Path) -> PathBuf {
+    let name = format!("{} pass", image_stem(image));
+    image.with_file_name(PASSES_FOLDER).join(name)
+}
 
 /// gw's tracks when no format gives them: c=0-81:h=0-1.
 pub const USUAL_DISK: (u32, u32) = (82, 2);
@@ -2192,7 +2276,7 @@ const TIPS: &[(&str, &str, &str)] = &[
     (
         "read",
         "retries",
-        "Rereads of a track with missing sectors, before each seek retry.",
+        "Re-reads of a track with missing sectors, before each seek retry.",
     ),
     (
         "write",
@@ -2687,6 +2771,12 @@ pub struct Output {
     pub label_first: bool,
     /// The input the name was taken from: a new input names the image again.
     pub named_for: String,
+    /// The most times to read a disk while sectors are missing: 1 to MAX_PASSES.
+    pub passes: u32,
+    /// Later passes read the whole disk, not only the tracks missing sectors.
+    pub whole_disk: bool,
+    /// Each pass's flux is saved in PASSES_FOLDER.
+    pub keep_passes: bool,
 }
 
 impl Default for Output {
@@ -2704,6 +2794,9 @@ impl Default for Output {
             batch_label: String::new(),
             label_first: false,
             named_for: String::new(),
+            passes: 1,
+            whole_disk: false,
+            keep_passes: false,
         }
     }
 }
@@ -3173,24 +3266,38 @@ mod tests {
         values: Values,
         outputs: BTreeMap<String, Output>,
     ) -> Harness<'static, Page> {
+        page_with(command, values, outputs, false)
+    }
+
+    /// As `page`, with gw standalone or not.
+    fn page_with(
+        command: &str,
+        values: Values,
+        outputs: BTreeMap<String, Output>,
+        standalone: bool,
+    ) -> Harness<'static, Page> {
         let schema = schema();
         let cmd = schema.command(command).unwrap().clone();
         let mut service = Service::offline(Ok(schema.clone()));
-        let mut h = Harness::new_ui_state(
-            move |ui, (values, outputs): &mut Page| {
-                let form = Form {
-                    schema: &schema,
-                    cmd: &cmd,
-                    values,
-                    outputs,
-                    service: &mut service,
-                    cannot_detect: None,
-                    adafruit: false,
-                };
-                form.show(ui);
-            },
-            (values, outputs),
-        );
+        // Tall enough for the read page with Advanced options open.
+        let mut h = Harness::builder()
+            .with_size(vec2(800.0, 900.0))
+            .build_ui_state(
+                move |ui, (values, outputs): &mut Page| {
+                    let form = Form {
+                        schema: &schema,
+                        cmd: &cmd,
+                        values,
+                        outputs,
+                        service: &mut service,
+                        cannot_detect: None,
+                        adafruit: false,
+                        standalone,
+                    };
+                    form.show(ui);
+                },
+                (values, outputs),
+            );
         h.run();
         h
     }
@@ -3527,6 +3634,7 @@ mod tests {
                 service: &mut service,
                 cannot_detect: None,
                 adafruit: false,
+                standalone: false,
             };
             form.blocker(read.arg(dest).unwrap())
                 .map(|b| b.dest.clone())
@@ -3821,6 +3929,40 @@ mod tests {
         h.get_by_label("Double step").click();
         h.run();
         assert_eq!(h.state().0.get("tracks"), "");
+    }
+
+    #[test]
+    fn read_passes_need_a_format_and_their_options_more_than_one_pass() {
+        let read = |format: &str, passes: u32, standalone: bool| {
+            let out = Output {
+                passes,
+                keep_passes: true,
+                ..output(".img")
+            };
+            let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+            let mut h = page_with("read", values(&[("format", format)]), outputs, standalone);
+            h.get_by_label_contains("Read passes").click();
+            h.run();
+            h
+        };
+        let hover_passes = |h: &mut Harness<Page>| {
+            h.get_all_by_role(Role::SpinButton).last().unwrap().hover();
+            h.run();
+        };
+        let mut h = read("", 3, false);
+        hover_passes(&mut h);
+        h.get_by_label("Needs a disk format.");
+        let mut h = read("ibm.1440", 3, true);
+        hover_passes(&mut h);
+        h.get_by_label("Standalone Greaseweazle Tools cannot read in passes.");
+        let mut h = read("ibm.1440", 1, false);
+        h.get_by_label("Each pass").hover();
+        h.run();
+        h.get_by_label("Needs more than one read pass.");
+
+        let h = read("ibm.1440", 3, false);
+        h.get_by_label("Read passes (3)");
+        h.get_by_label("Read passes/Floppy pass 1.scp, Floppy pass 2.scp…");
     }
 
     #[test]

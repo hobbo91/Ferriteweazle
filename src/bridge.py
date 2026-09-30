@@ -1,10 +1,10 @@
 """Ferriteweazle's link to gw, through gw's own modules, patched only by
-steady_handshake, bundled_caps and adafruit_seeks.
+steady_handshake, bundled_caps, adafruit_seeks and read_passes.
 
 Modes: serve (one JSON request per stdin line, one reply per stdout line),
 run ARGS (`gw ARGS`; stdin takes 'answer TEXT', anything else stops it),
 detect ARGS, latest [REPO], update TAG BUNDLED DIR and fetch TAG NAME DIR."""
-import argparse, builtins, contextlib, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
+import argparse, builtins, contextlib, copy, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
@@ -722,10 +722,95 @@ def adafruit_seeks():
     usb.Unit.seek = within
 
 
+def read_passes(passes, disk, keep):
+    """Makes `gw read` read up to `passes` times while sectors are missing, each
+    pass's flux decoded into the tracks before, as gw's own retries do. Later
+    passes read the tracks still missing sectors, or the whole `disk`. Pass N's
+    flux goes to `keep` + ' N.scp', if `keep`."""
+    from greaseweazle import track
+    from greaseweazle.image.scp import SCP
+    from greaseweazle.tools import read
+    if not all(hasattr(read, f) for f in ('read_to_image', 'read_with_retry', 'print_summary')):
+        sys.exit('** FATAL ERROR:\nThis Greaseweazle Tools cannot read in passes.')
+    first, retry = read.read_to_image, read.read_with_retry
+    got, reads, flux_of_pass = {}, {}, {}
+
+    def read_with_retry(usb, args, t):
+        capture = copy.copy(args)
+        capture.raw = True  # keeps every retry's flux
+        flux, dat = retry(usb, capture, t)
+        key = t.cyl, t.head
+        flux_of_pass[key] = flux
+        reads[key] = reads.get(key, 0) + 1
+        if key in got:
+            old_flux, old = got[key]
+            if old is not None:
+                for pll in track.plls:
+                    if old.nr_missing() == 0:
+                        break
+                    old.decode_flux(flux, pll)
+                print(f'T{t.cyl}.{t.head}: {old.summary_string()} from {reads[key]} passes')
+                dat = old
+            if args.raw:
+                old_flux.append(flux)
+            flux = old_flux
+        got[key] = flux, dat
+        return flux, dat
+
+    def missing(t):
+        dat = got.get((t.cyl, t.head), (None, None))[1]
+        return dat is not None and dat.nr_missing() > 0
+
+    def save(name):
+        if not flux_of_pass:
+            return
+        os.makedirs(os.path.dirname(name), exist_ok=True)
+        with SCP.to_file(name, None, False, {}) as image:
+            for (cyl, head), flux in sorted(flux_of_pass.items()):
+                image.emit_track(cyl, head, copy.copy(flux))  # cueing would clip ours
+
+    def read_to_image(usb, args, image):
+        if args.fmt_cls is None:
+            return first(usb, args, image)
+        if keep and isinstance(args.revs, float):
+            args.revs = 2  # whole revolutions, as gw reads raw flux
+        todo = None
+        for n in range(1, passes + 1):
+            flux_of_pass.clear()
+            try:
+                if todo is None:
+                    first(usb, args, image)
+                else:
+                    print(f'Pass {n} of {passes}: {len(todo)} track' + 's' * (len(todo) != 1))
+                    for t in todo:
+                        flux, dat = read_with_retry(usb, args, t)
+                        if args.raw:
+                            image.emit_track(t.cyl, t.head, flux)
+                        elif dat is not None:
+                            image.emit_track(t.cyl, t.head, dat)
+            finally:
+                if keep:
+                    save(f'{keep} {n}.scp')
+            # gw's track iterator hands back one object, moved along.
+            tracks = [copy.copy(t) for t in args.tracks]
+            short = [t for t in tracks if missing(t)]
+            if not short:
+                break
+            todo = tracks if disk else short
+        if n > 1:
+            read.print_summary(args, {k: d for k, (_, d) in got.items() if d is not None})
+
+    read.read_to_image, read.read_with_retry = read_to_image, read_with_retry
+
+
 def gw(args):
     from greaseweazle import cli
     steady_handshake()
     adafruit_seeks()
+    passes = int(os.environ.get('FERRITEWEAZLE_PASSES') or 1)  # these must match app.rs's pass_env
+    if passes > 1:
+        reread = os.environ.get('FERRITEWEAZLE_REREAD') == 'disk'
+        read_passes(passes, reread, os.environ.get('FERRITEWEAZLE_KEEP'))
     sys.argv = ['gw'] + args
     return cli.main()
 

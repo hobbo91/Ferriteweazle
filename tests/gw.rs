@@ -71,7 +71,8 @@ fn wait<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
 
 fn start(tools: &Tools, command: &str, args: &[&str]) -> Job {
     let args = args.iter().map(|a| a.to_string()).collect();
-    Job::start(tools, "Greaseweazle", command, args, Box::new(|| {})).expect("the bridge starts")
+    Job::start(tools, "Greaseweazle", command, args, &[], Box::new(|| {}))
+        .expect("the bridge starts")
 }
 
 fn finish(mut job: Job, what: &str) -> Job {
@@ -2210,5 +2211,171 @@ fn detection_reads_the_disk_or_image_as_its_page_would() {
         serde_json::json!([0]),
         "no index pulse waited for"
     );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Runs `gw` argv[4:] through the bridge (argv[1]) with the environment in JSON
+/// argv[3], on a made-up Greaseweazle whose drive holds image argv[2]'s disk.
+/// Odd reads of track 0.0 lose the second half of each revolution, even reads the
+/// first; read STOP_AT of it is stopped. Prints how often each track was read, and
+/// the revs and ticks asked for.
+const PASSES_DRIVE: &str = r#"
+import json, os, runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle.flux import Flux
+from greaseweazle.tools import util
+image = util.get_image_class(sys.argv[2]).from_file(sys.argv[2], None, {})
+
+def silence(flux, lost):
+    rev = sum(flux.index_list[1:]) / (len(flux.index_list) - 1)
+    out, t, gap = [], 0, 0
+    for x in flux.list:
+        t += x
+        if lost((t - flux.index_list[0]) % rev / rev):
+            gap += x
+        else:
+            out.append(gap + x)
+            gap = 0
+    return Flux(flux.index_list, out + [gap] * (gap > 0), flux.sample_freq, index_cued=False)
+
+class Unit:
+    sample_freq = image.get_track(0, 0).sample_freq
+    reads, asked, at = {}, set(), (0, 0)
+    def seek(self, c, h):
+        self.at = c, h
+    def read_track(self, revs, ticks=0):
+        Unit.asked.add((revs, ticks))
+        n = Unit.reads[self.at] = Unit.reads.get(self.at, 0) + 1
+        track = image.get_track(*self.at)
+        flux = Flux(track.index_list, track.list, track.sample_freq, index_cued=False)
+        if self.at == (0, 0):
+            if n == int(os.environ.get('STOP_AT') or 0):
+                raise KeyboardInterrupt
+            flux = silence(flux, (lambda p: p >= 0.55) if n % 2 else (lambda p: p < 0.45))
+        return flux
+    def __getattr__(self, name):  # selecting the drive, turning its motor
+        return lambda *args: None
+
+util.usb_open = lambda device: Unit()
+os.environ.update(json.loads(sys.argv[3]))
+try:
+    bridge['gw'](sys.argv[4:])
+except KeyboardInterrupt:
+    pass
+reads = {f'{c}.{h}': n for (c, h), n in Unit.reads.items()}
+print(json.dumps({'reads': reads, 'asked': sorted(Unit.asked)}), file=sys.__stdout__)
+"#;
+
+/// `gw read` of `disk`'s cylinders 0 and 1 into `image` on PASSES_DRIVE, with no
+/// retries: what the drive saw, and gw's output.
+fn read_in_passes(
+    tools: &Tools,
+    disk: &Path,
+    format: &str,
+    env: serde_json::Value,
+    image: &Path,
+    options: &[&str],
+) -> (serde_json::Value, String) {
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .args(["-c", PASSES_DRIVE])
+        .arg(&bridge)
+        .arg(disk)
+        .arg(env.to_string())
+        .args(["read", &format!("--format={format}"), "--retries=0"])
+        .args(options)
+        .args(["--tracks=c=0-1", &path(image)])
+        .output()
+        .expect("python runs");
+    let log = String::from_utf8_lossy(&out.stderr).into_owned();
+    let drive = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{log}"));
+    (drive, log)
+}
+
+#[test]
+fn a_read_in_passes_takes_every_sector_any_pass_found() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("passes");
+    let disk = flux_of(&tools, &dir, "ibm.1440", 1_474_560);
+    let read =
+        |env, name: &str| read_in_passes(&tools, &disk, "ibm.1440", env, &dir.join(name), &[]);
+    let (_, log) = read(serde_json::json!({}), "once.img");
+    assert!(log.contains("T0.0: Giving up"), "{log}");
+
+    let (drive, log) = read(
+        serde_json::json!({"FERRITEWEAZLE_PASSES": "2"}),
+        "twice.img",
+    );
+    assert!(log.contains("Pass 2 of 2: 1 track\n"), "{log}");
+    assert!(
+        log.contains("T0.0: IBM MFM (18/18 sectors) from 2 passes"),
+        "{log}"
+    );
+    assert!(log.contains("Found 72 sectors of 72"), "{log}");
+    let reads = serde_json::json!({"0.0": 2, "0.1": 1, "1.0": 1, "1.1": 1});
+    assert_eq!(drive["reads"], reads);
+    let whole = std::fs::read(dir.join("ibm.1440.img")).unwrap();
+    let twice = std::fs::read(dir.join("twice.img")).unwrap();
+    assert!(
+        twice[..4 * 18 * 512] == whole[..4 * 18 * 512],
+        "the image is the disk's"
+    );
+
+    let keep = dir.join("Read passes").join("Disk pass");
+    let env = serde_json::json!({
+        "FERRITEWEAZLE_PASSES": "3",
+        "FERRITEWEAZLE_REREAD": "disk",
+        "FERRITEWEAZLE_KEEP": path(&keep),
+    });
+    let (drive, _) = read(env, "whole.img");
+    let reads = serde_json::json!({"0.0": 2, "0.1": 2, "1.0": 2, "1.1": 2});
+    assert_eq!(
+        drive["reads"], reads,
+        "a disk read in full needs no third pass"
+    );
+    let kept = |n: u32| dir.join(format!("Read passes/Disk pass {n}.scp"));
+    assert!(kept(1).exists() && kept(2).exists() && !kept(3).exists());
+    std::fs::remove_dir_all(dir.join("Read passes")).unwrap();
+
+    // Stopped in pass 2: the image and pass 1 stay.
+    let env = serde_json::json!({
+        "FERRITEWEAZLE_PASSES": "3",
+        "FERRITEWEAZLE_KEEP": path(&keep),
+        "STOP_AT": "2",
+    });
+    read(env, "stopped.img");
+    let stopped = std::fs::read(dir.join("stopped.img")).unwrap();
+    let side1 = 18 * 512..2 * 18 * 512;
+    assert!(stopped[side1.clone()] == whole[side1], "track 0.1 kept");
+    assert!(kept(1).exists());
+
+    let env = serde_json::json!({"FERRITEWEAZLE_PASSES": "2"});
+    let image = dir.join("raw.scp");
+    let (_, log) = read_in_passes(&tools, &disk, "ibm.1440", env, &image, &["--raw"]);
+    assert!(
+        log.contains("T0.0: IBM MFM (18/18 sectors) from 2 passes"),
+        "{log}"
+    );
+    assert!(image.exists(), "{log}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_kept_pass_is_whole_revolutions_where_the_format_reads_less() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("passes-revs");
+    let disk = flux_of(&tools, &dir, "commodore.1541", 196_608);
+    let read = |env: serde_json::Value| {
+        let image = dir.join("disk.d64");
+        read_in_passes(&tools, &disk, "commodore.1541", env, &image, &[])
+    };
+    let (drive, log) = read(serde_json::json!({"FERRITEWEAZLE_PASSES": "2"}));
+    let timed = drive["asked"].as_array().unwrap().iter().any(|a| a[1] != 0);
+    assert!(timed, "gw's 1.1 revolutions: {log}");
+    let keep = dir.join("Read passes").join("Disk pass");
+    let env = serde_json::json!({"FERRITEWEAZLE_PASSES": "2", "FERRITEWEAZLE_KEEP": path(&keep)});
+    let (drive, log) = read(env);
+    assert_eq!(drive["asked"], serde_json::json!([[2, 0]]), "{log}");
+    assert!(dir.join("Read passes/Disk pass 1.scp").exists(), "{log}");
     std::fs::remove_dir_all(dir).ok();
 }

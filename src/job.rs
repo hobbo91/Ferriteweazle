@@ -77,6 +77,7 @@ impl Job {
         device: &str,
         command: &str,
         args: Vec<String>,
+        env: &[(&str, String)],
         repaint: Repaint,
     ) -> std::io::Result<Job> {
         let mode = if command == DETECT { "detect" } else { "run" };
@@ -93,6 +94,7 @@ impl Job {
             // The device the bridge's own messages name.
             .env("FERRITEWEAZLE_DEVICE", device)
             .env("PYTHONIOENCODING", "utf-8")
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -479,7 +481,7 @@ mod tests {
                     echo \"Seeking: $answer\" >&2\n";
         let (gw, dir) = standalone("asks", body);
         let args = vec!["seek".into(), "90".into()];
-        let mut job = Job::start(&gw, "Greaseweazle", "seek", args, Box::new(|| {})).unwrap();
+        let mut job = Job::start(&gw, "Greaseweazle", "seek", args, &[], Box::new(|| {})).unwrap();
         poll_until(&mut job, |j| j.question.is_some());
         let question = job.question.as_deref();
         assert_eq!(question, Some("Seek to extreme cylinder 90, Yes/No?"));
@@ -499,7 +501,7 @@ mod tests {
     fn stopping_a_standalone_gw_ends_it_at_once() {
         let (gw, dir) = standalone("stops", "sleep 30\n");
         let args = vec!["read".into(), "disk.scp".into()];
-        let mut job = Job::start(&gw, "Greaseweazle", "read", args, Box::new(|| {})).unwrap();
+        let mut job = Job::start(&gw, "Greaseweazle", "read", args, &[], Box::new(|| {})).unwrap();
         job.stop();
         poll_until(&mut job, |j| !j.running());
         assert_eq!(job.outcome(), Some(Outcome::Stopped));

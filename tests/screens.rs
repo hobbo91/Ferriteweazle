@@ -122,7 +122,26 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
 /// The damaged conversion told as a read for the read page, with one track
 /// retried as gw does by default: three times, over three revolutions.
 fn read_job() -> Job {
-    let log = damaged_read()
+    let mut job = Job::replay("read", &read_log());
+    job.format = Some("ibm.1440".into());
+    job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Floppy.img".into());
+    job
+}
+
+/// read_job still running, its short track found whole in a second pass.
+fn passes_job() -> Job {
+    let log = read_log()
+        + "\nPass 2 of 3: 1 track\n\
+           T21.1: IBM MFM (16/18 sectors) from Raw Flux (188466 flux in 400.79ms)\n\
+           T21.1: IBM MFM (18/18 sectors) from 2 passes";
+    let mut job = Job::replay("read", &log);
+    job.ended = None;
+    job.format = Some("ibm.1440".into());
+    job
+}
+
+fn read_log() -> String {
+    damaged_read()
         .replace(
             "Format ibm.1440\nConverting c=0-79:h=0-1 -> c=0-79:h=0-1",
             "Reading c=0-79:h=0-1 revs=2\nFormat ibm.1440",
@@ -134,11 +153,7 @@ fn read_job() -> Job {
              T21.1: IBM MFM (17/18 sectors) from Raw Flux (282691 flux in 601.19ms) (Retry #1.2)\n\
              T21.1: IBM MFM (17/18 sectors) from Raw Flux (282712 flux in 601.21ms) (Retry #1.3)\n\
              T21.1: Giving up: 1 sectors missing",
-        );
-    let mut job = Job::replay("read", &log);
-    job.format = Some("ibm.1440".into());
-    job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Floppy.img".into());
-    job
+        )
 }
 
 /// A flux image of 80 cylinders written over gw's default 82: gw passes
@@ -261,6 +276,12 @@ fn screens() {
         disks.outputs.get_mut("read/file").unwrap().disks = 3;
         render("disks", theme, disks, None, |w| {
             w.get_by_label_contains("Multiple disks").click();
+        });
+        let mut passes = settings("read", theme);
+        let out = passes.outputs.get_mut("read/file").unwrap();
+        (out.passes, out.keep_passes) = (3, true);
+        render("passes", theme, passes, Some(passes_job()), |w| {
+            w.get_by_label_contains("Read passes").click();
         });
         let mut replace = settings("read", theme);
         replace.outputs.get_mut("read/file").unwrap().folder = dir.to_string_lossy().into();

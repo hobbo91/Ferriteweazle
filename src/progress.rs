@@ -52,6 +52,8 @@ pub struct Progress {
     pub raw: bool,
     /// A write gw verifies: it goes on from a track only once that verified.
     pub verifies: bool,
+    /// The read pass under way after the first, and the most there may be.
+    pub pass: Option<(u32, u32)>,
     /// The cylinders of gw's sector map, those it read. A conversion's
     /// track lines name the tracks it writes.
     columns: Vec<u32>,
@@ -166,6 +168,8 @@ impl Progress {
             self.unverified = Some(line.to_owned());
         } else if let Some(rest) = line.strip_prefix("Found ") {
             self.total = found(rest);
+        } else if let Some(pass) = line.strip_prefix("Pass ").and_then(pass) {
+            self.pass = Some(pass);
         } else if let Some((key, text)) = track_line(line) {
             self.track(key, text);
         } else if let Some((head, sector, cells)) = map_row(line) {
@@ -243,6 +247,8 @@ impl Progress {
         }
         self.moved_to(key);
         self.current = Some(key);
+        // Newer than a sector map printed after an earlier pass.
+        self.sector_map.remove(&key);
         let t = self.tracks.entry(key).or_insert(Track {
             status: Status::Flux,
             retries: 0,
@@ -353,6 +359,13 @@ fn sectors(text: &str) -> Option<(u32, u32)> {
     Some((good.parse().ok()?, all.parse().ok()?))
 }
 
+/// `2 of 3: 4 tracks`, from the bridge's passes.
+fn pass(text: &str) -> Option<(u32, u32)> {
+    let (n, rest) = text.split_once(" of ")?;
+    let (of, _) = rest.split_once(':')?;
+    Some((n.parse().ok()?, of.parse().ok()?))
+}
+
 /// `2878 sectors of 2880 (99%)`.
 fn found(text: &str) -> Option<(u32, u32)> {
     let (good, rest) = text.split_once(" sectors of ")?;
@@ -417,6 +430,30 @@ mod tests {
         let mut p = Progress::default();
         log.lines().for_each(|l| p.feed(l));
         p
+    }
+
+    #[test]
+    fn a_later_pass_says_which_it_is_and_its_combined_tracks_count() {
+        let p = fed("Reading c=0-1:h=0-1 revs=2\n\
+             Pass 2 of 3: 1 track\n\
+             T0.0: IBM MFM (10/18 sectors) from Raw Flux (41657 flux in 200.00ms)\n\
+             T0.0: IBM MFM (18/18 sectors) from 2 passes");
+        assert_eq!(p.pass, Some((2, 3)));
+        assert_eq!(p.tracks[&(0, 0)].status, Status::Good);
+    }
+
+    #[test]
+    fn a_track_read_again_after_the_sector_map_is_shown_by_its_new_line() {
+        let p = fed("Reading c=0-1:h=0 revs=2\n\
+             T0.0: IBM MFM (17/18 sectors) from Raw Flux (41657 flux in 200.00ms)\n\
+             T1.0: IBM MFM (18/18 sectors) from Raw Flux (41657 flux in 200.00ms)\n\
+             Cyl-> 0\n\
+             H. S: 01\n\
+             0. 0: X.\n\
+             Pass 2 of 2: 1 track\n\
+             T0.0: IBM MFM (18/18 sectors) from 2 passes");
+        assert_eq!(p.sector_map.get(&(0, 0)), None);
+        assert_eq!(p.sector_map[&(1, 0)], [Some(true)]);
     }
 
     #[test]

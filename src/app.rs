@@ -944,7 +944,14 @@ impl App {
         // the device's mode every time.
         let args = self.argv(cmd, &self.device_only(cmd));
         let Some(tools) = &self.tools else { return };
-        match Job::start(tools, self.settings.kind.name(), "info", args, repaint(ctx)) {
+        match Job::start(
+            tools,
+            self.settings.kind.name(),
+            "info",
+            args,
+            &[],
+            repaint(ctx),
+        ) {
             Ok(mut job) => {
                 self.log.begin(heading(&job), &mut job);
                 self.probe = Some(job);
@@ -1635,6 +1642,7 @@ impl App {
                         service: &mut self.service,
                         cannot_detect: cannot_detect.as_deref(),
                         adafruit: self.settings.kind == Kind::Adafruit,
+                        standalone: self.tools.as_ref().is_some_and(|t| t.standalone),
                     }
                     .show(ui);
                     // After the form, which names the page's images.
@@ -2055,11 +2063,16 @@ impl App {
         if let Some(folder) = output.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(folder);
         }
+        let env = match command {
+            "read" => pass_env(self.settings.outputs.get("read/file"), output.as_deref()),
+            _ => Vec::new(),
+        };
         match Job::start(
             tools,
             self.settings.kind.name(),
             command,
             args,
+            &env,
             repaint(ctx),
         ) {
             Ok(mut job) => {
@@ -2150,10 +2163,13 @@ impl App {
             return;
         };
         // These rows wrap, so the job shows in full.
-        let name = match job.part {
+        let mut name = match job.part {
             Some((disk, total)) => format!("{} {disk} of {total}", title(&job.command)),
             None => title(&job.command),
         };
+        if let Some((pass, of)) = job.progress.pass {
+            name += &format!(", pass {pass} of {of}");
+        }
         ui.add(egui::Label::new(RichText::new(name).size(15.0).strong()).wrap());
         let file = job
             .output
@@ -3366,6 +3382,22 @@ fn progress_bar(ui: &mut Ui, job: &Job, p: &Palette) {
             ui.painter().rect_filled(done, round, colour);
         });
     });
+}
+
+/// What the bridge needs to read in passes, which must match bridge.py's gw.
+fn pass_env(out: Option<&Output>, image: Option<&Path>) -> Vec<(&'static str, String)> {
+    let Some(out) = out.filter(|o| o.passes > 1) else {
+        return Vec::new();
+    };
+    let mut env = vec![("FERRITEWEAZLE_PASSES", out.passes.to_string())];
+    if out.whole_disk {
+        env.push(("FERRITEWEAZLE_REREAD", "disk".into()));
+    }
+    if let Some(image) = image.filter(|_| out.keep_passes) {
+        let prefix = form::pass_prefix(image);
+        env.push(("FERRITEWEAZLE_KEEP", prefix.to_string_lossy().into_owned()));
+    }
+    env
 }
 
 /// The progress bar's thickness.
@@ -6012,6 +6044,46 @@ mod tests {
         assert_eq!(app.settings.values["read"].get("tracks"), "");
         let note = &app.notices["read"];
         assert!(note.contains("Disabling Double step"), "{note}");
+    }
+
+    #[test]
+    fn a_read_in_passes_tells_the_bridge_how_many_what_to_reread_and_where_to_keep_them() {
+        let out = |passes, whole_disk, keep_passes| Output {
+            passes,
+            whole_disk,
+            keep_passes,
+            ..Output::default()
+        };
+        let env = |out: Output, image: &str| pass_env(Some(&out), Some(Path::new(image)));
+        let kept = |name: &str| {
+            let prefix = Path::new("/f").join("Read passes").join(name);
+            prefix.to_string_lossy().into_owned()
+        };
+        assert!(env(out(1, true, true), "/f/Game.img").is_empty());
+        assert_eq!(
+            env(out(2, false, false), "/f/Game.img"),
+            [("FERRITEWEAZLE_PASSES", "2".to_owned())]
+        );
+        assert_eq!(
+            env(out(3, true, true), "/f/Game_Disk1.img"),
+            [
+                ("FERRITEWEAZLE_PASSES", "3".to_owned()),
+                ("FERRITEWEAZLE_REREAD", "disk".to_owned()),
+                ("FERRITEWEAZLE_KEEP", kept("Game_Disk1 pass")),
+            ]
+        );
+        let stream = env(out(2, false, true), "/f/Floppy00.0.raw");
+        assert_eq!(stream[1], ("FERRITEWEAZLE_KEEP", kept("Floppy pass")));
+    }
+
+    #[test]
+    fn a_read_in_passes_names_its_pass() {
+        let mut app = offline();
+        app.disk = Some(Job::replay(
+            "read",
+            "Reading c=0-1:h=0-1 revs=2\nPass 2 of 3: 1 track",
+        ));
+        window(app).get_by_label("Read disk, pass 2 of 3");
     }
 
     #[test]
