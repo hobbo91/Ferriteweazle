@@ -388,20 +388,16 @@ impl<'a> Form<'a> {
         for a in first.iter().filter(|a| !a.is("TrackSet")) {
             action = action.or(self.arg(ui, a));
         }
-        // The disks named after the output, then what reading them takes.
-        let read = self.cmd.name == "read" && self.cmd.arg("file").is_some();
-        if read {
+        if self.cmd.name == "read" && self.cmd.arg("file").is_some() {
             ui.add_space(4.0);
             self.disks(ui);
+            ui.add_space(4.0);
+            self.passes(ui);
         }
         // A track list is a section of its own, open where it is all the page has.
         if let Some(a) = first.iter().find(|a| a.is("TrackSet")) {
             ui.add_space(4.0);
             self.track_section(ui, a, first.len() == 1);
-        }
-        if read {
-            ui.add_space(4.0);
-            self.passes(ui);
         }
         if !rest.is_empty() {
             ui.add_space(4.0);
@@ -4594,11 +4590,10 @@ mod tests {
         let h = page("erase", Values::default(), BTreeMap::new());
         h.get_by_label("Cylinders");
 
-        // The disks named, then what reading them takes.
         let h = page("read", Values::default(), BTreeMap::new());
         let top = |label: &str| h.get_by_label_contains(label).rect().top();
-        assert!(top("Multiple disks") < top("Track options ("));
-        assert!(top("Track options (") < top("Read passes"));
+        assert!(top("Multiple disks") < top("Read passes"));
+        assert!(top("Read passes") < top("Track options ("));
     }
 
     #[test]
