@@ -58,7 +58,7 @@ const NAMES: &[(&str, &str, &str)] = &[
     ("align", "Align heads", "Start"),
     ("info", "Device info", "Get info"),
     ("update", "Update firmware", "Update"),
-    ("delays", "Delays", "Run"),
+    ("delays", "Delays", "Get delays"),
     ("pin get", "Read pin", "Read pin"),
     ("pin set", "Set pin", "Set pin"),
     ("reset", "Reset", "Reset"),
@@ -1774,10 +1774,17 @@ impl App {
                         .values
                         .get(&cmd.name)
                         .is_some_and(|v| form::batch_input(cmd, v).is_some());
+                    // gw delays shows the drive's delays, after setting any typed.
+                    let sets = cmd.name == "delays"
+                        && self.settings.values.get(&cmd.name).is_some_and(|v| {
+                            let own = |dest: &str| !form::GLOBAL.contains(&dest);
+                            cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
+                        });
                     let label = match (several, batch, cmd.name.as_str()) {
                         (true, _, _) => "Read disks",
                         (_, true, "write") => "Write disks",
                         (_, true, _) => "Convert images",
+                        _ if sets => "Set delays",
                         _ => run_label(&cmd.name),
                     };
                     let run = ui.add_enabled(why.is_none(), big_button(label, p.accent, p));

@@ -460,12 +460,24 @@ const DEVICE_PAGES: [(&str, &str); 13] = [
     ("Drive speed", "Measure"),
     ("Device info", "Get info"),
     ("Update firmware", "Update"),
-    ("Delays", "Run"),
+    ("Delays", "Get delays"),
     ("Read pin", "Read pin"),
     ("Set pin", "Set pin"),
     ("Reset", "Reset"),
     ("USB bandwidth", "Measure"),
 ];
+
+#[test]
+fn delays_are_got_until_one_is_typed_then_set() {
+    let delays = || Settings {
+        page: Page::Command("delays".into()),
+        ..Settings::default()
+    };
+    run_button(&window(delays()), "Get delays");
+    let mut settings = delays();
+    set(&mut settings, "delays", "step", "3000");
+    run_button(&window(settings), "Set delays");
+}
 
 #[test]
 fn every_page_opens_without_a_device_but_cannot_run() {
