@@ -372,6 +372,9 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: ThemePreference,
+    /// The delays gw delays last reported, and the port of the Greaseweazle
+    /// they are of: kept while another run of it goes on.
+    delays: Option<(String, BTreeMap<&'static str, String>)>,
     /// Detect's note on its page, and the format it chose: the note goes once
     /// the page takes another.
     found_note: Option<(String, String, String)>,
@@ -472,6 +475,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             kept_theme: ThemePreference::System,
+            delays: None,
             found_note: None,
             format_fits: BTreeMap::new(),
             size_file: None,
@@ -925,15 +929,9 @@ impl App {
     /// The delays the last Get or Set delays reported, if that was of the
     /// card's Greaseweazle: each delay's argument and value.
     fn reported_delays(&self) -> Option<BTreeMap<&'static str, String>> {
-        let job = self
-            .tool
-            .as_ref()
-            .filter(|j| j.command == "delays" && !j.running())?;
+        let (device, found) = self.delays.as_ref()?;
         let port = self.settings.port(self.service.known_ports())?;
-        if !job.args.contains(&format!("--device={}", port.device)) {
-            return None;
-        }
-        device::delays(&job.log)
+        (port.device == *device).then(|| found.clone())
     }
 
     /// Why Detect cannot run on `page` now. On Read it reads the disk in the drive.
@@ -996,7 +994,7 @@ impl App {
     }
 
     /// A job has just ended: save the log, and do whatever was waiting on it.
-    fn ended(&mut self, ctx: &egui::Context, disk: bool) {
+    pub fn ended(&mut self, ctx: &egui::Context, disk: bool) {
         let port = self.settings.port(self.service.known_ports()).cloned();
         let slot = if disk { &mut self.disk } else { &mut self.tool };
         let Some(job) = slot.as_mut() else { return };
@@ -1047,13 +1045,13 @@ impl App {
             "update" => self.probed = None,
             // The drive has the delays typed now, and their fields show them greyed.
             "delays" => {
-                let values = self.settings.values.entry(command.clone()).or_default();
-                for dest in device::delays(&job.log)
-                    .into_iter()
-                    .flatten()
-                    .map(|(d, _)| d)
-                {
-                    values.set(dest, "");
+                if let Some(found) = device::delays(&job.log) {
+                    let values = self.settings.values.entry(command.clone()).or_default();
+                    for dest in found.keys() {
+                        values.set(dest, "");
+                    }
+                    let device = job.args.iter().find_map(|a| a.strip_prefix("--device="));
+                    self.delays = device.map(|d| (d.to_owned(), found));
                 }
             }
             _ => {}
@@ -1698,10 +1696,15 @@ impl App {
                     if self.fit_format(&schema, cmd) {
                         ui.ctx().request_repaint();
                     }
-                    // Delays the drive reported show in their fields, so only
+                    // Delays the drive reports show in their fields, so only
                     // a failure needs a Result.
-                    if reported.is_none()
-                        && let Some(job) = self.tool.as_ref().filter(|j| j.command == name)
+                    let quiet = |j: &Job| {
+                        j.command == "delays" && (j.running() || device::delays(&j.log).is_some())
+                    };
+                    if let Some(job) = self
+                        .tool
+                        .as_ref()
+                        .filter(|j| j.command == name && !quiet(j))
                     {
                         ui.add_space(18.0);
                         (install, unsaved) = result(ui, job, self.refused(job));

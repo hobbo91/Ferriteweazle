@@ -496,22 +496,48 @@ fn delays_the_drive_reports_grey_their_fields_and_only_a_failure_shows_a_result(
         ];
         job
     };
-    app_mut(&mut w).tool = Some(ran(
-        "Select Delay: 10us\nStep Delay:   5000us\nSettle Time:  15ms",
-    ));
-    w.run();
-    let greyed: Vec<String> = w
-        .get_all_by_role(Role::TextInput)
-        .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
-        .filter(|p| !p.is_empty())
-        .collect();
-    assert_eq!(greyed, ["10 µs", "5000 µs", "15 ms"]);
+    let end = |w: &mut Window, job: Job| {
+        let ctx = w.ctx.clone();
+        let app = app_mut(w);
+        app.tool = Some(job);
+        app.ended(&ctx, false);
+        w.run();
+    };
+    let greyed = |w: &Window| {
+        w.get_all_by_role(Role::TextInput)
+            .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let running = || {
+        let mut job = ran("");
+        job.ended = None;
+        job
+    };
+    app_mut(&mut w).tool = Some(running());
+    w.step();
+    assert!(w.query_by_label("Result").is_none(), "a flash of output");
+    let report = ["10 µs", "5000 µs", "15 ms"];
+    end(
+        &mut w,
+        ran("Select Delay: 10us\nStep Delay:   5000us\nSettle Time:  15ms"),
+    );
+    assert_eq!(greyed(&w), report);
     assert!(w.query_by_label("Result").is_none(), "the fields say it");
     run_button(&w, "Get delays");
 
-    app_mut(&mut w).tool = Some(ran("Command Failed: Bad Command"));
-    w.run();
+    // Running again, it keeps the fields and shows no output.
+    app_mut(&mut w).tool = Some(running());
+    w.step();
+    assert_eq!(greyed(&w), report);
+    assert!(
+        w.query_by_label("Result").is_none(),
+        "a flash of output again"
+    );
+
+    end(&mut w, ran("Command Failed: Bad Command"));
     w.get_by_label("Result");
+    assert_eq!(greyed(&w), report, "the drive still has them");
 }
 
 #[test]
