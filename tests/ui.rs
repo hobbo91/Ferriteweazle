@@ -81,11 +81,21 @@ fn chosen() -> Settings {
     settings
 }
 
-/// The `n`th drop-down: 0 is the sidebar's port picker, 1 the page's format, 2 its image type.
+/// The `n`th drop-down: 0 is the sidebar's port picker, 1 the page's format.
 fn combo(w: &Window, n: usize) -> Node<'_> {
     w.get_all_by_role(Role::ComboBox)
         .nth(n)
         .expect("the drop-down")
+}
+
+/// The page's image type drop-down, wherever the page puts it.
+fn image_type(w: &Window) -> Node<'_> {
+    w.get_all_by_role(Role::ComboBox)
+        .find(|c| {
+            c.value()
+                .is_some_and(|v| v == "Select image type" || v.contains("(."))
+        })
+        .expect("the image type drop-down")
 }
 
 /// Types into the focused field; a field takes the focus as it opens.
@@ -400,11 +410,8 @@ fn the_status_pane_says_what_has_not_happened_to_a_disk_yet() {
 #[test]
 fn a_read_starts_with_no_format_or_image_type() {
     let w = window(Settings::default());
-    let shown: Vec<_> = w
-        .get_all_by_role(Role::ComboBox)
-        .map(|c| c.value().unwrap_or_default())
-        .collect();
-    assert_eq!(shown[1..3], ["Select disk format", "Select image type"]);
+    assert_eq!(combo(&w, 1).value().as_deref(), Some("Select disk format"));
+    assert_eq!(image_type(&w).value().as_deref(), Some("Select image type"));
     assert_eq!(app(&w).settings.values["read"].get("file"), "");
 }
 
@@ -526,7 +533,7 @@ fn a_long_notice_wraps_and_keeps_its_dismiss_button_in_view() {
         dismiss.right() < status.left(),
         "Dismiss at {dismiss:?} runs into the status pane at {status:?}"
     );
-    let image_type = combo(&w, 2).rect();
+    let image_type = image_type(&w).rect();
     assert!(
         dismiss.right() <= image_type.right(),
         "the notice ends past the fields: {dismiss:?}, {image_type:?}"
@@ -560,7 +567,7 @@ fn a_notice_shows_only_on_its_page_and_stays_until_dismissed() {
 #[test]
 fn fields_share_one_height_and_end_at_one_right_edge() {
     let w = window(chosen());
-    let (format, image_type) = (combo(&w, 1).rect(), combo(&w, 2).rect());
+    let (format, image_type) = (combo(&w, 1).rect(), image_type(&w).rect());
     let inputs: Vec<_> = w
         .get_all_by_role(Role::TextInput)
         .map(|t| t.rect())
@@ -607,12 +614,13 @@ fn every_field_and_its_label_explain_themselves_on_hover() {
     let rows = [
         (
             "Revolutions",
-            combo(&w, 3).rect().center(),
+            // After the format, before the image type.
+            combo(&w, 2).rect().center(),
             "Revolutions to read per track.",
         ),
         (
             "Image type",
-            combo(&w, 2).rect().center(),
+            image_type(&w).rect().center(),
             "The type of image to create. Disk format picks one.",
         ),
         ("Folder", inputs[0], "Where the image is saved."),
@@ -651,7 +659,7 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 #[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
     let w = window_at(ferriteweazle::SMALLEST, chosen());
-    let image_type = combo(&w, 2).rect();
+    let image_type = image_type(&w).rect();
     let status = w.get_by_label("Disk status").rect();
     assert!(
         image_type.right() < status.left(),
@@ -2565,7 +2573,7 @@ fn image_options_end_within_the_field_in_the_smallest_window() {
     let mut settings = chosen();
     settings.outputs.get_mut("read/file").unwrap().ext = ".hfe".into();
     let w = window_at(ferriteweazle::SMALLEST, settings);
-    let right = combo(&w, 2).rect().right();
+    let right = image_type(&w).rect().right();
     let lists: Vec<_> = w.get_all_by_role(Role::ComboBox).skip(3).collect();
     assert!(lists.len() >= 4, "bitrate, version, interface and encoding");
     for list in lists {

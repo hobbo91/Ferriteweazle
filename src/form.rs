@@ -18,7 +18,7 @@ pub const GLOBAL: [&str; 2] = ["device", "drive"];
 
 /// Arguments a command shows first, in order; the rest go under Advanced options.
 const FIRST: &[(&str, &[&str])] = &[
-    ("read", &["format", "file", "tracks", "revs"]),
+    ("read", &["format", "revs", "file", "tracks"]),
     ("write", &["file", "format", "tracks", "no_verify"]),
     ("convert", &["in_file", "format", "out_file", "tracks"]),
     ("erase", &["tracks"]),
@@ -4756,7 +4756,9 @@ mod tests {
         let pick = |ext: &str, shown: &str, name: &str| {
             let outputs = BTreeMap::from([(key.clone(), output(ext))]);
             let mut h = page("read", v.clone(), outputs);
+            // The option's list, below Revolutions.
             h.get_all_by_role(Role::ComboBox)
+                .rev()
                 .find(|c| c.value().as_deref() == Some(shown))
                 .expect("the option's list")
                 .click();
