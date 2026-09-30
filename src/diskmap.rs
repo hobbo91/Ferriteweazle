@@ -40,8 +40,8 @@ pub fn width_for(budget: f32) -> f32 {
     2.0 * (LABEL + ROW as f32 * cell + (ROW - 1) as f32 * GAP) + SIDE_GAP + 1.0
 }
 
-/// Draws the map: a grid of the disk's `(cylinders, sides)` and any tracks past
-/// them, with a square for each track `progress` takes, fading in and out as they
+/// Draws the map: a grid of the disk's `(cylinders, sides)`, if known, and any tracks
+/// past them, with a square for each track `progress` takes, fading in and out as they
 /// come and go. Squares are CELL points: smaller if `room`, the pane's height below
 /// its top, lacks space for SIZED_ROWS rows; larger if a `budget`-point map (legend
 /// included) and the width allow. More rows run on, and the pane scrolls.

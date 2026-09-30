@@ -2252,8 +2252,8 @@ impl App {
         }
     }
 
-    /// The page's format, its disk's cylinders and sides, else a common disk's, and
-    /// an empty map of the tracks the page takes.
+    /// The page's format, its disk's cylinders and sides, (0, 0) until gw describes
+    /// a format, and an empty map of the tracks the page takes.
     fn blank_map(&mut self, page: &str) -> (Option<String>, (u32, u32), Progress) {
         let empty = Values::default();
         let values = self.settings.values.get(page).unwrap_or(&empty);
@@ -2265,9 +2265,10 @@ impl App {
             let diskdefs = form::diskdefs_for(&mut self.service, values, format);
             self.service.format_info(&diskdefs, format).ready()
         });
-        let disk = info.map_or(form::USUAL_DISK, |i| (i.cyls, i.heads));
-        let (cyls, heads) = form::page_tracks(values, disk);
-        (format, disk, Progress::blank(cyls, heads))
+        let disk = info.map(|i| (i.cyls, i.heads));
+        let (cyls, heads) = form::page_tracks(values, disk.unwrap_or(form::USUAL_DISK));
+        let blank = Progress::blank(cyls, heads);
+        (format, disk.unwrap_or_default(), blank)
     }
 
     /// The drawers under the page and the status pane: the command line and
@@ -6046,6 +6047,19 @@ mod tests {
         app.found(vec!["ibm.360".into()], 2);
         w.run_steps(2);
         assert_eq!(tracks(&w), "step=2", "Detect's format, and its double step");
+    }
+
+    #[test]
+    fn the_maps_grid_is_the_formats_disk_and_with_no_format_the_tracks_read() {
+        let mut app = offline();
+        let read = app.settings.values.entry("read".into()).or_default();
+        read.set("tracks", "c=0-39");
+        let (_, disk, blank) = app.blank_map("read");
+        assert_eq!((disk, blank.cyls.len()), ((0, 0), 40));
+        app.service.describe("ibm.1440", 80, 2);
+        let read = app.settings.values.get_mut("read").unwrap();
+        read.set("format", "ibm.1440");
+        assert_eq!(app.blank_map("read").1, (80, 2));
     }
 
     #[test]
