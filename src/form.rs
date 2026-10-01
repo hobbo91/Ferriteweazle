@@ -2121,22 +2121,29 @@ pub fn output_key(command: &str, dest: &str) -> String {
     format!("{command}/{dest}")
 }
 
-/// `path` as shown: from `~` when in the home folder.
+/// The home folder as the system writes it in a path.
+const HOME: &str = if cfg!(windows) { "%USERPROFILE%" } else { "~" };
+
+/// `path` as shown: from HOME when in the home folder.
 pub fn short_path(path: &str) -> Cow<'_, str> {
     let home = crate::home();
     match home
         .as_deref()
         .and_then(|h| Path::new(path).strip_prefix(h).ok())
     {
-        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()).into(),
+        Some(rest) if rest.as_os_str().is_empty() => HOME.into(),
+        Some(rest) => format!("{HOME}{}{}", std::path::MAIN_SEPARATOR, rest.display()).into(),
         None => path.into(),
     }
 }
 
-/// A path as typed, made whole: `~` is the home folder.
+/// A path as typed, made whole: HOME, in any case as Windows takes it, or
+/// `~` is the home folder.
 pub fn full_path(text: &str) -> String {
-    match text.strip_prefix('~') {
+    let home = text
+        .get(..HOME.len())
+        .filter(|h| h.eq_ignore_ascii_case(HOME));
+    match home.map(|h| &text[h.len()..]).or(text.strip_prefix('~')) {
         Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => crate::home()
             .unwrap_or_default()
             .join(rest.trim_start_matches(['/', '\\']))
@@ -2147,7 +2154,7 @@ pub fn full_path(text: &str) -> String {
 }
 
 /// A box for a path, which `path` keeps whole. It shows the home folder as
-/// `~` except while typed in, and takes a typed `~` as the home folder.
+/// HOME except while typed in, and takes it, or `~`, typed.
 fn path_edit(ui: &mut Ui, path: &mut String, hint: &str, width: f32) -> egui::Response {
     let id = ui.next_auto_id();
     // What is typed, while it stands for the value, which a dropped file may change.
@@ -5167,12 +5174,19 @@ mod tests {
     }
 
     #[test]
-    fn a_path_in_the_home_folder_shows_from_tilde_and_a_typed_tilde_is_the_home_folder() {
+    fn a_path_in_the_home_folder_shows_from_the_systems_home_and_takes_it_typed() {
         let home = crate::home().unwrap();
         let disks = home.join("Disks").to_string_lossy().into_owned();
-        let sep = std::path::MAIN_SEPARATOR;
-        assert_eq!(short_path(&disks), format!("~{sep}Disks"));
-        assert_eq!(short_path(&home.to_string_lossy()), "~");
+        let shown = match cfg!(windows) {
+            true => r"%USERPROFILE%\Disks",
+            false => "~/Disks",
+        };
+        assert_eq!(short_path(&disks), shown);
+        assert_eq!(full_path(shown), disks);
+        if cfg!(windows) {
+            assert_eq!(full_path(r"%userprofile%\Disks"), disks, "any case");
+        }
+        assert_eq!(short_path(&home.to_string_lossy()), HOME);
         assert_eq!(short_path("/elsewhere/Disks"), "/elsewhere/Disks");
         assert_eq!(full_path("~/Disks"), disks);
         assert_eq!(full_path("/elsewhere/Disks"), "/elsewhere/Disks");
@@ -5189,12 +5203,12 @@ mod tests {
         };
         let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
         let mut h = page("read", Values::default(), outputs);
-        let shown = format!("~{}Images", std::path::MAIN_SEPARATOR);
+        let shown = format!("{HOME}{}Images", std::path::MAIN_SEPARATOR);
         let folder = |h: &Harness<'_, Page>, text: &str| {
             let boxes = h.get_all_by_role(Role::TextInput);
             boxes.filter(|n| n.value().as_deref() == Some(text)).count()
         };
-        assert_eq!(folder(&h, &shown), 1, "from ~");
+        assert_eq!(folder(&h, &shown), 1, "from home");
         h.get_all_by_role(Role::TextInput)
             .find(|n| n.value().as_deref() == Some(shown.as_str()))
             .unwrap()
