@@ -64,11 +64,7 @@ fn render_sized(
                     app
                 });
                 match job.take() {
-                    Some(job)
-                        if matches!(job.command.as_str(), "info" | "clean" | "seek" | "rpm") =>
-                    {
-                        app.tool = Some(job)
-                    }
+                    Some(job) if job.command == "info" => app.tool = Some(job),
                     Some(job) => app.disk = Some(job),
                     None => {}
                 }
@@ -416,56 +412,5 @@ fn screens() {
             ..settings("read", theme)
         };
         render_sized("settings", tall, theme, page, None, |_| {});
-        drive_scenes(theme);
     }
-}
-
-/// Clean heads part way, Seek done and Drive speed's reading.
-fn drive_scenes(theme: egui::Theme) {
-    let device = format!("--device={}", greaseweazle().device);
-    let job = |command: &str, log: &str, tail: &[&str]| {
-        let mut job = Job::replay(command, log);
-        let args = [command, device.as_str()]
-            .into_iter()
-            .chain(tail.iter().copied());
-        job.args = args.map(String::from).collect();
-        job
-    };
-    let mut clean = job(
-        "clean",
-        "Pass 0: 9 0 19 10 29 20 39 30 49 40 59 50 69 60 79 70",
-        &[],
-    );
-    clean.ended = None;
-    clean.partial = "Pass 1: 9 0 19 10 29 20 39 30 49 ".into();
-    render_sized(
-        "drive-clean",
-        DEFAULT,
-        theme,
-        settings("clean", theme),
-        Some(clean),
-        |_| {},
-    );
-    let mut seek = settings("seek", theme);
-    seek.values
-        .entry("seek".into())
-        .or_default()
-        .set("cylinder", "40");
-    render_sized(
-        "drive-seek",
-        DEFAULT,
-        theme,
-        seek,
-        Some(job("seek", "", &["40"])),
-        |_| {},
-    );
-    let rpm = job("rpm", "Rate: 300.123 rpm ; Period: 199.918 ms", &[]);
-    render_sized(
-        "drive-speed",
-        DEFAULT,
-        theme,
-        settings("rpm", theme),
-        Some(rpm),
-        |_| {},
-    );
 }

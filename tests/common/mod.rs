@@ -72,10 +72,7 @@ pub fn line(w: &Window) -> String {
 
 /// The disk map's squares, larger than the legend's 10-point swatches.
 pub fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
-    let pane = w
-        .query_by_label("Disk status")
-        .or_else(|| w.query_by_label("Drive status"));
-    let left = pane.expect("a status pane").rect().left();
+    let left = w.get_by_label("Disk status").rect().left();
     w.output()
         .shapes
         .iter()
