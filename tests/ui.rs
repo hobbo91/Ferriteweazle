@@ -1169,27 +1169,21 @@ fn a_jobs_map_keeps_the_sides_as_the_job_took_them() {
 }
 
 #[test]
-fn a_page_without_a_disk_map_shows_the_last_map_pages_pane() {
-    let settings = Settings {
-        page: Page::Command("write".into()),
-        ..chosen()
-    };
-    let mut w = window(settings);
-    for (page, shows) in [
-        ("write", "No disk written yet"),
-        ("clean", "No disk written yet"),
-        ("read", "No disk read yet"),
-        ("info", "No disk read yet"),
-        ("rpm", "No disk read yet"),
-    ] {
+fn a_page_without_a_disk_map_shows_only_a_running_disk_job() {
+    let mut w = window(chosen());
+    for page in ["clean", "seek", "rpm", "info", "delays", "reset"] {
         app_mut(&mut w).settings.page = Page::Command(page.into());
         w.run();
-        assert!(
-            w.query_by_label(shows).is_some(),
-            "{page} shows another pane"
-        );
-        assert!(squares(&w).count() > 0, "{page} shows no map");
+        w.get_by_label("No disk job running");
+        assert_eq!(squares(&w).count(), 0, "{page} shows a map");
     }
+    let mut job = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    job.ended = None;
+    app_mut(&mut w).disk = Some(job);
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(2);
+    assert!(w.query_by_label("No disk job running").is_none());
+    assert!(squares(&w).count() > 0, "the running read's map");
 }
 
 #[test]

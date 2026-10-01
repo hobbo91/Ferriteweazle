@@ -404,9 +404,6 @@ pub struct App {
     framed: Option<Theme>,
     /// The drawer open when the drawers were last drawn.
     drawn: Option<Drawer>,
-    /// The last page shown with a disk map of its own, whose status pane the
-    /// pages without one show.
-    map_page: String,
     /// gw's udev rule, where a Linux package ships it.
     pub udev_rule: Option<PathBuf>,
     install: RuleInstall,
@@ -494,7 +491,6 @@ impl App {
             desktop_theme: None,
             framed: None,
             drawn: None,
-            map_page: "read".into(),
             udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
         }
@@ -2238,14 +2234,8 @@ impl App {
             });
     }
 
-    fn status_rows(&mut self, ui: &mut Ui, shown_on: &str, tall: f32, full: f32) {
+    fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
         let p = theme::palette(ui);
-        if DISK_COMMANDS.contains(&shown_on) && self.map_page != shown_on {
-            self.map_page = shown_on.to_owned();
-        }
-        // A page with no disk map of its own shows the last page's that had one.
-        let page = self.map_page.clone();
-        let page = page.as_str();
         let (format, disk, blank) = self.blank_map(page);
         let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
         let swapped = tracks.is_some_and(form::swapped);
@@ -2281,6 +2271,11 @@ impl App {
         );
         ui.add_space(4.0);
         let Some(job) = shown else {
+            // Only the pages that work on a disk's tracks have a map of their own.
+            if !DISK_COMMANDS.contains(&page) {
+                ui.label(RichText::new("No disk job running").weak());
+                return;
+            }
             ui.label(RichText::new(idle_status(page)).weak());
             ui.add_space(10.0);
             let (budget, room) = room(ui);
@@ -2357,7 +2352,7 @@ impl App {
             self.install_rule(ui.ctx());
         }
         if show {
-            self.show_image(shown_on);
+            self.show_image(page);
         }
     }
 
