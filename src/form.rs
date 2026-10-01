@@ -9,6 +9,7 @@ use eframe::egui::{
     self, Color32, CornerRadius, PopupCloseBehavior, RichText, Sense, TextEdit, Ui, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -680,10 +681,8 @@ impl<'a> Form<'a> {
     fn path(&mut self, ui: &mut Ui, a: &Arg, hint: &str, only: Option<(&str, &[&str])>) {
         let mut value = self.values.get(&a.dest).to_owned();
         ui.horizontal(|ui| {
-            let edit = edit(&mut value)
-                .hint_text(hint)
-                .desired_width(beside_button(ui, BROWSE_BUTTON));
-            if ui.add(edit).changed() {
+            let width = beside_button(ui, BROWSE_BUTTON);
+            if path_edit(ui, &mut value, hint, width).changed() {
                 self.values.set(&a.dest, value.as_str());
             }
             if browse_button(ui).own_tip("Select a file.").clicked() {
@@ -1180,10 +1179,8 @@ impl<'a> Form<'a> {
     fn folder(&mut self, ui: &mut Ui, a: &Arg) {
         let mut folder = self.values.get(BATCH_FOLDER).to_owned();
         ui.horizontal(|ui| {
-            let edit = edit(&mut folder)
-                .hint_text("Image folder (Required)")
-                .desired_width(beside_button(ui, BROWSE_BUTTON));
-            ui.add(edit);
+            let width = beside_button(ui, BROWSE_BUTTON);
+            path_edit(ui, &mut folder, "Image folder (Required)", width);
             if browse_button(ui)
                 .own_tip("Select a folder containing multiple images.")
                 .clicked()
@@ -1244,10 +1241,8 @@ impl<'a> Form<'a> {
         let mut changed = false;
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let edit = edit(&mut path)
-                    .hint_text("Image file (Required)")
-                    .desired_width(beside_button(ui, BROWSE_BUTTON));
-                changed |= ui.add(edit).changed();
+                let width = beside_button(ui, BROWSE_BUTTON);
+                changed |= path_edit(ui, &mut path, "Image file (Required)", width).changed();
                 if browse_button(ui).own_tip("Select an image.").clicked()
                     && let Some(p) = image_dialog(self.schema, &path).pick_file()
                 {
@@ -1461,7 +1456,12 @@ impl<'a> Form<'a> {
                     true => out.batch_preview(&images),
                     false => out.preview(),
                 };
-                ui.label(RichText::new(preview).monospace().small().color(p.dim));
+                ui.label(
+                    RichText::new(short_path(&preview))
+                        .monospace()
+                        .small()
+                        .color(p.dim),
+                );
                 let replaces = match batch {
                     true => images.iter().any(|i| out.batch_path(i) == *i),
                     false => !input.is_empty() && Path::new(&input) == out.path(1),
@@ -1919,7 +1919,7 @@ fn folder_row(ui: &mut Ui, folder: &mut String, label: &str, enabled: bool) {
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal(|ui| {
                 let width = beside_button(ui, BROWSE_BUTTON);
-                ui.add(edit(folder).hint_text("Required").desired_width(width))
+                path_edit(ui, folder, "Required", width)
                     .on_hover_text("Where the image is saved.")
                     .on_disabled_hover_text(BESIDE);
                 if browse_button(ui)
@@ -2116,6 +2116,54 @@ pub fn output_key(command: &str, dest: &str) -> String {
     format!("{command}/{dest}")
 }
 
+/// `path` as shown: from `~` when in the home folder.
+pub fn short_path(path: &str) -> Cow<'_, str> {
+    let home = crate::home();
+    match home
+        .as_deref()
+        .and_then(|h| Path::new(path).strip_prefix(h).ok())
+    {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()).into(),
+        None => path.into(),
+    }
+}
+
+/// A path as typed, made whole: `~` is the home folder.
+pub fn full_path(text: &str) -> String {
+    match text.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => crate::home()
+            .unwrap_or_default()
+            .join(rest.trim_start_matches(['/', '\\']))
+            .to_string_lossy()
+            .into_owned(),
+        _ => text.to_owned(),
+    }
+}
+
+/// A box for a path, which `path` keeps whole. It shows the home folder as
+/// `~` except while typed in, and takes a typed `~` as the home folder.
+fn path_edit(ui: &mut Ui, path: &mut String, hint: &str, width: f32) -> egui::Response {
+    let id = ui.next_auto_id();
+    let typed = ui.data(|d| d.get_temp::<String>(id));
+    let typed = typed.filter(|_| ui.memory(|m| m.has_focus(id)));
+    let mut text = typed.unwrap_or_else(|| short_path(path).into_owned());
+    let response = ui.add(edit(&mut text).id(id).hint_text(hint).desired_width(width));
+    if response.changed() {
+        *path = full_path(&text);
+    }
+    // Typing is left as typed until the box is left.
+    let typing = response.has_focus();
+    ui.data_mut(|d| {
+        if typing {
+            d.insert_temp(id, text);
+        } else {
+            d.remove_temp::<String>(id);
+        }
+    });
+    response
+}
+
 /// Makes a pasted command's image paths whole, as a shell would: `~` is the
 /// home folder. A relative path is taken in `base`, since gw's working
 /// folder is whatever the app was started in.
@@ -2126,12 +2174,7 @@ pub fn anchor_images(command: &str, values: &mut Values, base: &Path) {
         if value.is_empty() {
             continue;
         }
-        let path = match value.strip_prefix('~') {
-            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => crate::home()
-                .unwrap_or_default()
-                .join(rest.trim_start_matches(['/', '\\'])),
-            _ => PathBuf::from(value),
-        };
+        let path = PathBuf::from(full_path(value));
         let path = match path.has_root() {
             true => path,
             false => base.join(path),
@@ -5114,6 +5157,48 @@ mod tests {
             h.run();
             h.get_by_label(&format!("Names each disk sequentially: {names}"));
         }
+    }
+
+    #[test]
+    fn a_path_in_the_home_folder_shows_from_tilde_and_a_typed_tilde_is_the_home_folder() {
+        let home = crate::home().unwrap();
+        let disks = home.join("Disks").to_string_lossy().into_owned();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(short_path(&disks), format!("~{sep}Disks"));
+        assert_eq!(short_path(&home.to_string_lossy()), "~");
+        assert_eq!(short_path("/elsewhere/Disks"), "/elsewhere/Disks");
+        assert_eq!(full_path("~/Disks"), disks);
+        assert_eq!(full_path("/elsewhere/Disks"), "/elsewhere/Disks");
+        assert_eq!(full_path("~user/Disks"), "~user/Disks", "another account's");
+    }
+
+    #[test]
+    fn a_path_box_keeps_what_is_typed_and_its_value_whole() {
+        let home = crate::home().unwrap();
+        let out = Output {
+            folder: home.join("Images").to_string_lossy().into_owned(),
+            ext: ".adf".into(),
+            ..Output::default()
+        };
+        let outputs = BTreeMap::from([(output_key("read", "file"), out)]);
+        let mut h = page("read", Values::default(), outputs);
+        let shown = format!("~{}Images", std::path::MAIN_SEPARATOR);
+        let folder = |h: &Harness<'_, Page>, text: &str| {
+            let boxes = h.get_all_by_role(Role::TextInput);
+            boxes.filter(|n| n.value().as_deref() == Some(text)).count()
+        };
+        assert_eq!(folder(&h, &shown), 1, "from ~");
+        h.get_all_by_role(Role::TextInput)
+            .find(|n| n.value().as_deref() == Some(shown.as_str()))
+            .unwrap()
+            .click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("~/Disks".into()));
+        h.run();
+        let kept = &h.state().1[&output_key("read", "file")].folder;
+        assert_eq!(*kept, home.join("Disks").to_string_lossy());
+        assert_eq!(folder(&h, "~/Disks"), 1, "as typed");
     }
 
     #[test]

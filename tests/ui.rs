@@ -2137,7 +2137,7 @@ fn next_to_each_input_greys_the_output_folder_and_a_batch_is_named_by_one_label(
     let greyed = |w: &Window| {
         let field = w
             .get_all_by_role(Role::TextInput)
-            .find(|n| n.value() == Some(folder.clone()));
+            .find(|n| n.value().as_deref() == Some(&form::short_path(&folder)));
         field
             .expect("the output folder shows")
             .accesskit_node()

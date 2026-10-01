@@ -109,7 +109,7 @@ const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 /// The window as it opens, in points: wide enough for the Read page's Folder
 /// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and as tall
 /// as 21-point squares need, which fits a 1920x1080 screen at 125% on Windows 11.
-pub const WINDOW: egui::Vec2 = egui::vec2(1116.0, 773.0);
+pub const WINDOW: egui::Vec2 = egui::vec2(1050.0, 773.0);
 /// The smallest window, in points: fits a 1024 by 600 screen, or 1366 by 768 at 125%,
 /// beside a taskbar.
 pub const SMALLEST: egui::Vec2 = egui::vec2(880.0, 520.0);
@@ -4805,7 +4805,7 @@ fn path_row(
     ui.label(name);
     let shown = match path.as_os_str().is_empty() {
         true => RichText::new("Not found.").weak(),
-        false => RichText::new(path.to_string_lossy())
+        false => RichText::new(form::short_path(&path.to_string_lossy()))
             .monospace()
             .small()
             .weak(),
