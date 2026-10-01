@@ -128,6 +128,8 @@ const LOGO_CLEAR: f32 = 16.0 / 256.0;
 const CARD_DROP: f32 = 2.0;
 /// A sidebar entry's height.
 const NAV_ROW: f32 = 26.0;
+/// The Presets menu's width, in points: longer names are cut short.
+const PRESETS_MENU: f32 = 240.0;
 /// How long a theme chosen in Settings takes to fade in, in seconds.
 const FADE_TIME: f32 = 0.25;
 /// The most of a frame the fade counts, in seconds, so a stall cannot skip it.
@@ -380,7 +382,7 @@ pub struct App {
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
     /// Classic in the accent last chosen for it while the app runs: Classic
-    /// itself (blue) or Teal.
+    /// itself (teal) or Blue.
     classic: theme::Choice,
     /// The delays gw delays last reported, and the port of the Greaseweazle
     /// they are of: kept while another run of it goes on.
@@ -474,7 +476,7 @@ impl App {
         theme::apply(ctx, settings.theme);
         let known = schema.as_ref().ok().cloned().map(Arc::new);
         let classic = match settings.theme {
-            theme::Choice::Teal => theme::Choice::Teal,
+            theme::Choice::Blue => theme::Choice::Blue,
             _ => theme::Choice::Classic,
         };
         App {
@@ -2709,7 +2711,6 @@ impl App {
         let mut delete = None;
         let (mut save, mut pick) = (false, false);
         let menu = ui.menu_button("Presets", |ui| {
-            ui.set_min_width(220.0);
             if self.presets.as_ref().is_none_or(|m| m.page != command) {
                 self.presets = Some(PresetsMenu {
                     page: command.to_owned(),
@@ -2717,15 +2718,20 @@ impl App {
                 });
             }
             let Some(menu) = &self.presets else { return };
+            // Its rows take the menu's width, which is otherwise the window's;
+            // a name too long for it ends in an ellipsis.
+            ui.set_width(PRESETS_MENU);
             if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
+            let loaded = self.applied.get(command).map(|a| &a.path);
             for (name, path, description) in &menu.saved {
                 let tip = match description.as_str() {
                     "" => "Use these settings.",
                     description => description,
                 };
-                if ui.button(name.as_str()).on_hover_text(tip).clicked() {
+                let row = ticked(ui, loaded == Some(path), name);
+                if row.on_hover_text(tip).clicked() {
                     load = Some(path.clone());
                     ui.close();
                 }
@@ -2741,9 +2747,10 @@ impl App {
                 .clicked();
             if !menu.saved.is_empty() {
                 ui.menu_button("Delete", |ui| {
+                    ui.set_max_width(PRESETS_MENU);
                     for (name, path, _) in &menu.saved {
                         if ui
-                            .button(name.as_str())
+                            .add(egui::Button::new(name.as_str()).truncate())
                             .on_hover_text("Delete this preset.")
                             .clicked()
                         {
@@ -2801,8 +2808,8 @@ impl App {
         section(ui, "Theme", |ui| {
             ui.horizontal(|ui| {
                 for (choice, text, tip, _) in theme::CHOICES {
-                    // Teal is Classic's other accent, in Classic's right-click menu.
-                    if choice == theme::Choice::Teal {
+                    // Blue is Classic's other accent, in Classic's right-click menu.
+                    if choice == theme::Choice::Blue {
                         continue;
                     }
                     let classic = choice == theme::Choice::Classic;
@@ -2817,8 +2824,8 @@ impl App {
                         r.context_menu(|ui| {
                             ui.set_width(100.0);
                             for (accent, name) in [
-                                (theme::Choice::Classic, "Blue"),
-                                (theme::Choice::Teal, "Teal"),
+                                (theme::Choice::Classic, "Teal"),
+                                (theme::Choice::Blue, "Blue"),
                             ] {
                                 if ticked(ui, self.classic == accent, name).clicked() {
                                     self.classic = accent;
@@ -4674,15 +4681,12 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
             let line = vec![at(0.1, 0.55), at(0.4, 0.85), at(0.95, 0.2)];
             painter.add(egui::Shape::line(line, Stroke::new(2.0, p.accent)));
         }
-        let font = egui::TextStyle::Button.resolve(ui.style());
-        let at = pos2(rect.left() + 24.0, rect.center().y);
-        painter.text(
-            at,
-            Align2::LEFT_CENTER,
-            text,
-            font,
-            ui.visuals().text_color(),
-        );
+        let width = rect.width() - 24.0;
+        let truncate = Some(egui::TextWrapMode::Truncate);
+        let galley =
+            egui::WidgetText::from(text).into_galley(ui, truncate, width, TextStyle::Button);
+        let at = pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0);
+        painter.galley(at, galley, ui.visuals().text_color());
     }
     response
 }
@@ -5233,7 +5237,7 @@ mod tests {
             theme::Choice::Light,
             theme::Choice::Dark,
             theme::Choice::Classic,
-            theme::Choice::Teal,
+            theme::Choice::Blue,
             theme::Choice::Greaseweazle,
         ] {
             keep_theme(&file, theme);

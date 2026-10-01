@@ -13,13 +13,13 @@ pub enum Choice {
     Light,
     Dark,
     Classic,
-    /// Classic with a teal accent, from Classic's right-click menu.
-    Teal,
+    /// Classic with a blue accent, from Classic's right-click menu.
+    Blue,
     Greaseweazle,
 }
 
 /// Each choice in Settings' order: its name, its hover, and the word theme.txt
-/// keeps. Teal is Classic's other accent, with no button of its own.
+/// keeps. Blue is Classic's other accent, with no button of its own.
 pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),
@@ -30,7 +30,7 @@ pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
         "Always the '90s (light, right-click for accent).",
         "classic",
     ),
-    (Choice::Teal, "Teal", "", "teal"),
+    (Choice::Blue, "Blue", "", "blue"),
     (
         Choice::Greaseweazle,
         "Greaseweazle v4.1",
@@ -56,7 +56,7 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
         Choice::Light => (&DARK, &LIGHT, ThemePreference::Light),
         Choice::Dark => (&DARK, &LIGHT, ThemePreference::Dark),
         Choice::Classic => (&DARK, &CLASSIC, ThemePreference::Light),
-        Choice::Teal => (&DARK, &TEAL, ThemePreference::Light),
+        Choice::Blue => (&DARK, &BLUE, ThemePreference::Light),
         Choice::Greaseweazle => (&GREASEWEAZLE, &LIGHT, ThemePreference::Dark),
     };
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
@@ -159,8 +159,7 @@ pub const GREASEWEAZLE: Palette = Palette {
 };
 
 /// Windows 95 and 98's standard scheme, on rgb(195, 199, 203): silver-grey
-/// with lighter grey fields, and navy with enough green in it to grey to
-/// steel, not lilac.
+/// with lighter grey fields, and the teal of Windows 95's desktop.
 pub const CLASSIC: Palette = Palette {
     bg: Color32::from_rgb(195, 199, 203),
     sidebar: Color32::from_rgb(195, 199, 203),
@@ -171,21 +170,23 @@ pub const CLASSIC: Palette = Palette {
     text: Color32::BLACK,
     strong: Color32::BLACK,
     dim: Color32::from_rgb(64, 64, 64),
-    accent: Color32::from_rgb(0, 51, 153),
+    accent: Color32::from_rgb(0, 128, 128),
     on_accent: Color32::WHITE,
     good: Color32::from_rgb(0, 128, 0),
     partial: Color32::from_rgb(224, 160, 0),
     bad: Color32::from_rgb(200, 0, 0),
-    flux: Color32::from_rgb(0, 128, 128),
+    flux: Color32::from_rgb(0, 51, 153),
     written: Color32::from_rgb(128, 0, 128),
     erased: Color32::from_rgb(128, 128, 128),
     pending: Color32::from_rgb(225, 227, 229),
     win9x: true,
 };
 
-/// Classic with Windows 95's teal for its accent.
-pub const TEAL: Palette = Palette {
-    accent: Color32::from_rgb(0, 128, 128),
+/// Classic in blue, its accent and flux swapped: a navy with enough green in
+/// it to grey to steel, not lilac.
+pub const BLUE: Palette = Palette {
+    accent: CLASSIC.flux,
+    flux: CLASSIC.accent,
     ..CLASSIC
 };
 
@@ -208,7 +209,7 @@ pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 /// shows has an accent of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &TEAL];
+    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
     shown
         .into_iter()

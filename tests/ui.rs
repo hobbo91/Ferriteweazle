@@ -238,8 +238,8 @@ fn the_command_lines_menu_pastes_over_the_selection_as_a_text_box_does() {
         drawer: Some(Drawer::Cli),
         ..chosen()
     });
-    w.get_by_role(Role::MultilineTextInput).click();
-    w.run();
+    // Typed, so its end is the same on every system: Windows quotes paths.
+    type_line(&mut w, "gw read Floppy.adf");
     w.key_press(egui::Key::End);
     for _ in 0..4 {
         w.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
@@ -468,6 +468,33 @@ fn reset_goes_back_to_the_loaded_preset_once_its_right_click_menu_ticks_it() {
         reset(&w).accesskit_node().is_disabled(),
         "it has the preset"
     );
+    std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
+fn the_presets_menu_ticks_the_preset_the_page_loaded() {
+    let folder = std::env::temp_dir().join(format!("fw-tick-{}", std::process::id()));
+    for name in ["Mine", "Theirs"] {
+        let preset = Preset {
+            command: "read".into(),
+            ..Preset::default()
+        };
+        presets::save(&folder, name, &preset).unwrap();
+    }
+    let settings = Settings {
+        presets_folder: Some(folder.clone()),
+        ..chosen()
+    };
+    let mut w = window(settings);
+    w.get_by_label("Presets").click();
+    w.run();
+    w.get_by_label("Mine").click();
+    w.run();
+    w.get_by_label("Presets").click();
+    w.run();
+    let ticked = |name| w.get_by_label(name).accesskit_node().toggled();
+    assert_eq!(ticked("Mine"), Some(egui::accesskit::Toggled::True));
+    assert_eq!(ticked("Theirs"), Some(egui::accesskit::Toggled::False));
     std::fs::remove_dir_all(folder).ok();
 }
 
@@ -2577,10 +2604,10 @@ fn the_classic_theme_is_light_in_windows_9xs_grey_and_keeps_its_accent() {
     assert_eq!(app(&w).settings.theme, Choice::Classic);
     w.get_by_label("Classic").click_secondary();
     w.run();
-    w.get_by_label("Teal").click();
+    w.get_by_label("Blue").click();
     w.run();
-    assert_eq!(app(&w).settings.theme, Choice::Teal);
-    assert_eq!(visuals(&w).selection.bg_fill, theme::TEAL.accent);
+    assert_eq!(app(&w).settings.theme, Choice::Blue);
+    assert_eq!(visuals(&w).selection.bg_fill, theme::BLUE.accent);
     w.get_by_label("Light").click();
     w.run();
     assert_eq!(visuals(&w).panel_fill, theme::LIGHT.bg);
@@ -2588,28 +2615,28 @@ fn the_classic_theme_is_light_in_windows_9xs_grey_and_keeps_its_accent() {
     w.run();
     assert_eq!(
         app(&w).settings.theme,
-        Choice::Teal,
+        Choice::Blue,
         "Classic keeps its accent"
     );
     w.get_by_label("Classic").click_secondary();
     w.run();
-    w.get_by_label("Blue").click();
+    w.get_by_label("Teal").click();
     w.run();
     assert_eq!(app(&w).settings.theme, Choice::Classic);
     assert_eq!(visuals(&w).selection.bg_fill, theme::CLASSIC.accent);
 }
 
 #[test]
-fn a_window_that_opens_in_teal_shows_classic_chosen_in_teal() {
-    let w = settings_from(Choice::Teal, Harness::builder());
+fn a_window_that_opens_in_blue_shows_classic_chosen_in_blue() {
+    let w = settings_from(Choice::Blue, Harness::builder());
     let classic = w.get_by_label("Classic").accesskit_node().toggled();
     assert_eq!(classic, Some(egui::accesskit::Toggled::True));
     let shapes = &w.output().shapes;
-    let teal = |c: &&egui::epaint::ClippedShape| match &c.shape {
-        egui::Shape::Rect(r) => r.fill == theme::TEAL.accent && r.rect.width() > 150.0,
+    let blue = |c: &&egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == theme::BLUE.accent && r.rect.width() > 150.0,
         _ => false,
     };
-    assert!(shapes.iter().any(|c| teal(&c)), "the sidebar's chosen row");
+    assert!(shapes.iter().any(|c| blue(&c)), "the sidebar's chosen row");
 }
 
 /// The colour the last frame drew `text` in.
