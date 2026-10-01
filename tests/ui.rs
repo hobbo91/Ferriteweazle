@@ -1168,6 +1168,80 @@ fn a_jobs_map_keeps_the_sides_as_the_job_took_them() {
     assert!(painted(&w, "Side 1").y < painted(&w, "Side 0").y);
 }
 
+/// The window on `page`, with `job` as its last tool job.
+fn drive_page(page: &str, values: &[(&str, &str)], job: Option<Job>) -> Window {
+    let mut settings = Settings {
+        page: Page::Command(page.into()),
+        ..Settings::default()
+    };
+    for (dest, value) in values {
+        set(&mut settings, page, dest, value);
+    }
+    let mut w = window(settings);
+    app_mut(&mut w).tool = job;
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(2);
+    w
+}
+
+#[test]
+fn drive_pages_show_the_drive_and_device_pages_only_a_running_disk_job() {
+    for page in ["clean", "seek", "rpm"] {
+        let w = drive_page(page, &[], None);
+        w.get_by_label("Drive status");
+        assert_eq!(squares(&w).count(), 0, "{page} shows the disk map");
+    }
+    for page in ["info", "delays", "reset"] {
+        let w = drive_page(page, &[], None);
+        w.get_by_label("No disk job running");
+        assert_eq!(squares(&w).count(), 0, "{page} shows the disk map");
+    }
+    assert!(squares(&drive_page("read", &[], None)).count() > 0);
+}
+
+#[test]
+fn clean_shows_its_sweep_then_gws_pass_and_cylinder_as_it_goes() {
+    let w = drive_page("clean", &[], None);
+    w.get_by_label("3 passes");
+    w.get_by_label("Cylinders 0 to 79");
+    let mut job = Job::replay(
+        "clean",
+        "Pass 0: 9 0 19 10 29 20 39 30 49 40 59 50 69 60 79 70",
+    );
+    job.ended = None;
+    job.partial = "Pass 1: 9 0 19 ".into();
+    let w = drive_page("clean", &[("cyls", "80")], Some(job));
+    w.get_by_label("Pass 2 of 3");
+    w.get_by_label("Cylinders 0 to 79, at 19");
+}
+
+#[test]
+fn seek_shows_where_it_takes_the_heads_and_where_they_are() {
+    let w = drive_page("seek", &[("cylinder", "40")], None);
+    w.get_by_label("Cylinder 40");
+    w.get_by_label("Seek moves the heads here.");
+    let seek = || {
+        let mut job = Job::replay("seek", "");
+        job.args = vec!["seek".into(), "40".into()];
+        job
+    };
+    let w = drive_page("seek", &[("cylinder", "40")], Some(seek()));
+    w.get_by_label("The heads are here.");
+    let w = drive_page("seek", &[("cylinder", "60")], Some(seek()));
+    w.get_by_label("Cylinder 60");
+    w.get_by_label("The heads are at cylinder 40.");
+}
+
+#[test]
+fn drive_speed_shows_gws_reading() {
+    let w = drive_page("rpm", &[], None);
+    w.get_by_label("Not measured yet");
+    let job = Job::replay("rpm", "Rate: 300.123 rpm ; Period: 199.918 ms");
+    let w = drive_page("rpm", &[], Some(job));
+    w.get_by_label("300.1 RPM");
+    w.get_by_label("Period 199.9 ms");
+}
+
 #[test]
 fn a_finished_job_shows_on_its_own_page_and_a_running_one_on_every_page() {
     let mut job = Job::replay(DETECT, "T0.0: Raw Flux (500 flux in 400.00ms)");

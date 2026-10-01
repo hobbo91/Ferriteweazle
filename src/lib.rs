@@ -8,6 +8,7 @@ mod app;
 pub mod command;
 pub mod device;
 mod diskmap;
+mod drivemap;
 pub mod form;
 pub mod job;
 #[cfg(target_os = "linux")]

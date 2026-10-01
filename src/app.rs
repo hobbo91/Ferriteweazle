@@ -3,6 +3,7 @@
 use crate::command::{self, Values};
 use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
+use crate::drivemap;
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
 use crate::presets::{self, Preset};
@@ -2250,6 +2251,9 @@ impl App {
                         _ => j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
                     }
         });
+        if shown.is_none() && pane(page) != Pane::Map {
+            return self.drive_rows(ui, page, tall, full);
+        }
         let top = ui.cursor().top();
         // The map's height above a drawer at its least height and below a job's rows, even
         // with no job, so its squares keep one size; and the room below those rows. Rows
@@ -2348,6 +2352,127 @@ impl App {
         }
         if show {
             self.show_image(page);
+        }
+    }
+
+    /// The status pane of a page with no disk map of its own: the drive, or a line.
+    fn drive_rows(&self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
+        let p = theme::palette(ui);
+        let top = ui.cursor().top();
+        let drive = pane(page) == Pane::Drive;
+        let job = self.tool.as_ref().filter(|j| drive && self.stands(j, page));
+        let heading = if drive { "Drive status" } else { "Disk status" };
+        egui::Sides::new().shrink_left().truncate().show(
+            ui,
+            |ui| ui.label(RichText::new(heading).size(16.0).strong()),
+            |ui| {
+                if let Some(job) = job {
+                    let (text, colour) = state(job, p);
+                    pill(ui, &format!("{text} · {}", clock(job.elapsed())), colour);
+                }
+            },
+        );
+        ui.add_space(4.0);
+        if !drive {
+            ui.label(RichText::new("No disk job running").weak());
+            return;
+        }
+        let used = ui.cursor().top() - top;
+        let view = self.drive_view(page);
+        drivemap::show(ui, &view, tall - DRAWER - JOB_ROWS, full - used);
+    }
+
+    /// Whether `job` is `page`'s and stands for it: it runs, or the page would
+    /// run it again as it is.
+    fn stands(&self, job: &Job, page: &str) -> bool {
+        let cmd = self.schema.as_deref().and_then(|s| s.command(page));
+        job.command == page && cmd.is_some_and(|cmd| job.running() || job.args == self.args(cmd))
+    }
+
+    /// The drive as `page` shows it: from its own last job, else its settings.
+    fn drive_view(&self, page: &str) -> drivemap::Drive {
+        let cmd = self.schema.as_deref().and_then(|s| s.command(page));
+        let default = |dest: &str| cmd?.arg(dest)?.default.as_deref()?.parse::<u32>().ok();
+        let values = self.settings.values.get(page);
+        let value = |dest: &str| match values.map_or("", |v| v.get(dest)).trim() {
+            "" => default(dest),
+            typed => typed.parse().ok(),
+        };
+        let job = self.tool.as_ref().filter(|j| j.command == page);
+        // gw seeks with the motor off unless asked.
+        let spinning = job.is_some_and(|j| {
+            j.running() && (page != "seek" || j.args.iter().any(|a| a == "--motor-on"))
+        });
+        let (mut band, mut ring, mut head) = (None, None, (0, false));
+        let (title, detail) = match page {
+            "seek" => {
+                ring = value("cylinder");
+                // The heads stay where the last seek took them.
+                let at = job
+                    .filter(|j| j.outcome() == Some(Outcome::Succeeded))
+                    .and_then(|j| j.args.last()?.parse::<u32>().ok());
+                head = at.map_or((ring.unwrap_or(0), false), |at| (at, true));
+                let title = ring.map_or("No cylinder chosen".into(), |c| format!("Cylinder {c}"));
+                let detail = match at {
+                    Some(at) if Some(at) == ring => "The heads are here.".into(),
+                    Some(at) => format!("The heads are at cylinder {at}."),
+                    None => "Seek moves the heads here.".into(),
+                };
+                (title, detail)
+            }
+            "clean" => {
+                let job = job.filter(|j| self.stands(j, page));
+                // As the job took them, else as the page has them.
+                let setting = |dest: &str| match job {
+                    Some(j) => (j.args.iter())
+                        .find_map(|a| a.strip_prefix(&format!("--{dest}=")))
+                        .map_or_else(|| default(dest), |v| v.parse().ok()),
+                    None => value(dest),
+                };
+                let (cyls, passes) = (setting("cyls").unwrap_or(1).max(1), setting("passes"));
+                band = Some((0, cyls - 1));
+                let progress = job.and_then(|j| drivemap::clean_progress(printed(j)));
+                if let Some(at) = progress.and_then(|(_, at)| at) {
+                    head = (at, true);
+                }
+                let sweep = format!("Cylinders 0 to {}", cyls - 1);
+                match (job.is_some_and(Job::running), progress, passes) {
+                    (true, Some((pass, _)), Some(of)) => {
+                        let at = progress.and_then(|(_, at)| at).map(|c| format!(", at {c}"));
+                        (
+                            format!("Pass {} of {of}", pass + 1),
+                            sweep + &at.unwrap_or_default(),
+                        )
+                    }
+                    (_, _, Some(1)) => ("1 pass".into(), sweep),
+                    (_, _, n) => (format!("{} passes", n.unwrap_or(0)), sweep),
+                }
+            }
+            _ => match (job.and_then(|j| drivemap::reading(printed(j))), job) {
+                (Some(r), _) => {
+                    let detail = match r.of {
+                        1 => format!("Period {:.1} ms", r.period),
+                        n => format!("Mean of {n}, period {:.1} ms", r.period),
+                    };
+                    (format!("{:.1} RPM", r.rpm), detail)
+                }
+                (None, Some(j)) if j.running() => {
+                    ("Measuring".into(), "Timing a revolution".into())
+                }
+                (None, Some(_)) => ("No reading".into(), "The Result says why.".into()),
+                (None, None) => (
+                    "Not measured yet".into(),
+                    "Most drives turn at 300 RPM, 5.25in HD at 360.".into(),
+                ),
+            },
+        };
+        drivemap::Drive {
+            band,
+            ring,
+            head,
+            spinning,
+            title,
+            detail,
         }
     }
 
@@ -3725,6 +3850,31 @@ fn installing(update: &Update) -> bool {
 }
 
 /// What the status pane says before any disk job, for this page.
+/// A job's output so far: its lines, then the one gw is still printing.
+fn printed(job: &Job) -> impl Iterator<Item = &str> {
+    let partial = Some(job.partial.as_str()).filter(|p| !p.is_empty());
+    job.log.iter().map(String::as_str).chain(partial)
+}
+
+/// What a page's status pane shows of its own.
+#[derive(PartialEq)]
+enum Pane {
+    /// The tracks it works on, on the disk map.
+    Map,
+    /// The drive, for the pages that move the heads or time the spindle.
+    Drive,
+    /// Nothing: it works on neither a disk nor the drive.
+    Plain,
+}
+
+fn pane(page: &str) -> Pane {
+    match page {
+        "clean" | "seek" | "rpm" => Pane::Drive,
+        page if DISK_COMMANDS.contains(&page) => Pane::Map,
+        _ => Pane::Plain,
+    }
+}
+
 fn idle_status(page: &str) -> &'static str {
     match page {
         "write" => "No disk written yet",
