@@ -2611,42 +2611,49 @@ impl App {
                     cli.error = None;
                     ui.memory_mut(|m| m.surrender_focus(id));
                 }
+                if let Some(e) = &cli.error {
+                    let e = RichText::new(e).small().color(p.bad);
+                    ui.add(egui::Label::new(e).truncate());
+                }
             });
         });
-        ui.add_space(4.0);
-        // Two rows, then it scrolls inside its frame.
-        let rows = 2.0 * ui.text_style_height(&TextStyle::Monospace);
+        // egui puts the cursor where any button presses; a right-click keeps
+        // the selection, as a system text box does, for its menu's Paste.
+        let ctx = ui.ctx().clone();
+        let selection = || {
+            egui::text_edit::TextEditState::load(&ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .filter(|r| !r.is_empty())
+        };
+        let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
+        // The Log's box, as tall as the drawer leaves; the command scrolls in it.
         let edit = ui
             .scope(|ui| {
                 let p = theme::terminal(ui);
-                let visuals = ui.visuals();
-                let stroke = match ui.memory(|m| m.has_focus(id)) {
-                    true => visuals.selection.stroke,
-                    false => visuals.widgets.inactive.bg_stroke,
+                let edge = match ui.memory(|m| m.has_focus(id)) {
+                    true => ui.visuals().selection.stroke.color,
+                    false => p.line,
                 };
-                Frame::new()
-                    .fill(visuals.text_edit_bg_color())
-                    .stroke(stroke)
-                    .corner_radius(visuals.widgets.inactive.corner_radius)
-                    .inner_margin(Margin::symmetric(6, 4))
+                let frame = console_frame(p, edge);
+                let height = ui.available_height() - frame.total_margin().sum().y;
+                frame
                     .show(ui, |ui| {
-                        ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                            bar_width: 4.0,
-                            ..egui::style::ScrollStyle::solid()
-                        };
+                        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                         ui.visuals_mut().widgets.inactive.bg_fill = p.line;
                         egui::ScrollArea::vertical()
                             .id_salt("cli")
-                            .max_height(rows)
-                            .min_scrolled_height(rows)
+                            .max_height(height)
+                            .min_scrolled_height(height)
                             .show(ui, |ui| {
                                 ui.add(
                                     TextEdit::multiline(&mut cli.text)
                                         .id(id)
                                         .font(TextStyle::Monospace)
                                         .frame(Frame::NONE)
-                                        .desired_rows(2)
-                                        .desired_width(f32::INFINITY),
+                                        .margin(Margin::ZERO)
+                                        .desired_rows(1)
+                                        .desired_width(f32::INFINITY)
+                                        .min_size(vec2(0.0, height)),
                                 )
                             })
                             .inner
@@ -2655,6 +2662,30 @@ impl App {
             })
             .inner
             .on_hover_text("Type or paste a gw command line. The page follows it.");
+        if let Some(range) = kept
+            && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
+        {
+            state.cursor.set_char_range(Some(range));
+            state.store(&ctx, id);
+        }
+        // Its own menu, as a system text box has: a paste goes in at the
+        // cursor or over the selection.
+        edit.context_menu(|ui| {
+            let selected = selection().is_some();
+            for (name, can, command) in [
+                ("Cut", selected, ViewportCommand::RequestCut),
+                ("Copy", selected, ViewportCommand::RequestCopy),
+                ("Paste", true, ViewportCommand::RequestPaste),
+            ] {
+                let item = ui.add_enabled(can, egui::Button::new(name));
+                if item.on_disabled_hover_text("Nothing selected.").clicked() {
+                    // Back in the box for the cut or paste the next frame brings.
+                    ui.memory_mut(|m| m.request_focus(id));
+                    ui.ctx().send_viewport_cmd(command);
+                    ui.close();
+                }
+            }
+        });
         let mut apply = None;
         if edit.changed() {
             match command::parse(&schema, &cli.text) {
@@ -2664,9 +2695,8 @@ impl App {
                 }
                 Err(e) => cli.error = Some(e),
             }
-        }
-        if let Some(e) = &cli.error {
-            ui.label(RichText::new(e).small().color(p.bad));
+            // The heading, drawn already, shows what is wrong next frame.
+            ui.ctx().request_repaint();
         }
         if let Some((name, values, backtrace)) = apply {
             // As with --device: given, it sets the setting; left out, it leaves it.
@@ -4463,11 +4493,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
     });
     ui.scope(|ui| {
         let p = theme::terminal(ui);
-        let frame = Frame::new()
-            .fill(p.card)
-            .stroke(Stroke::new(1.0, p.line))
-            .corner_radius(8)
-            .inner_margin(8);
+        let frame = console_frame(p, p.line);
         // Exactly the room left: a drawer a little taller than its contents
         // would shrink to them, frame by frame.
         let room = || ui.available_height() - frame.total_margin().sum().y;
@@ -4519,6 +4545,15 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
         });
     });
     (clear, unsaved)
+}
+
+/// The box of gw's command line or output, edged in `edge`.
+fn console_frame(p: &Palette, edge: Color32) -> Frame {
+    Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0, edge))
+        .corner_radius(8)
+        .inner_margin(8)
 }
 
 /// Writes `log` to `path`, and says why if it cannot.

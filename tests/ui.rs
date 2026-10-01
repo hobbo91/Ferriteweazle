@@ -204,21 +204,66 @@ fn a_command_line_gw_cannot_take_stays_until_reset() {
 }
 
 #[test]
-fn a_command_line_longer_than_two_rows_scrolls_in_its_drawer() {
+fn the_command_line_has_the_logs_box_and_a_long_command_scrolls_in_it() {
     let mut settings = Settings {
+        theme: Choice::Classic,
         drawer: Some(Drawer::Cli),
         ..chosen()
     };
     settings.outputs.get_mut("read/file").unwrap().name = "akai_s950_backup_".repeat(20);
-    let w = window(settings);
-    let heading = w.get_by_label("Command line").rect();
-    let bar = w
-        .get_all_by_role(Role::ScrollBar)
-        .map(|b| b.rect())
-        .find(|r| r.top() > heading.bottom() && r.height() > r.width())
-        .expect("a scroll bar beside the command");
-    let rows = 2.0 * 14.0;
-    assert!(bar.height() < rows + 20.0, "{bar:?}");
+    let mut w = window(settings);
+    // Classic draws both boxes black, as the console.
+    let black = |w: &Window| {
+        let shapes = &w.output().shapes;
+        let found = shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.fill == egui::Color32::BLACK => Some(r.rect),
+            _ => None,
+        });
+        found.expect("the box")
+    };
+    let cli = black(&w);
+    let bars = w.get_all_by_role(Role::ScrollBar).map(|b| b.rect());
+    assert!(
+        bars.filter(|b| cli.contains_rect(*b)).count() == 1,
+        "it scrolls"
+    );
+    w.get_by_label("Log").click();
+    w.run();
+    assert_eq!(black(&w), cli);
+}
+
+#[test]
+fn the_command_lines_menu_pastes_over_the_selection_as_a_text_box_does() {
+    let mut w = window(Settings {
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    });
+    w.get_by_role(Role::MultilineTextInput).click();
+    w.run();
+    w.key_press(egui::Key::End);
+    for _ in 0..4 {
+        w.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+    }
+    w.run();
+    w.get_by_role(Role::MultilineTextInput).click_secondary();
+    w.run();
+    assert!(!w.get_by_label("Cut").accesskit_node().is_disabled());
+    w.get_by_label("Paste").click();
+    w.step();
+    let commands = w
+        .output()
+        .viewport_output
+        .values()
+        .flat_map(|v| &v.commands);
+    let paste = egui::ViewportCommand::RequestPaste;
+    assert!(
+        commands.into_iter().any(|c| *c == paste),
+        "the system pastes"
+    );
+    // What the system then gives the box goes over the selection.
+    w.event(egui::Event::Paste(".scp".into()));
+    w.run();
+    assert!(line(&w).ends_with("Floppy.scp"), "{}", line(&w));
 }
 
 #[test]
