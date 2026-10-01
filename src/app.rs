@@ -128,7 +128,7 @@ const LOGO_CLEAR: f32 = 16.0 / 256.0;
 const CARD_DROP: f32 = 2.0;
 /// A sidebar entry's height.
 const NAV_ROW: f32 = 26.0;
-/// The Presets menu's width, in points: longer names are cut short.
+/// The Presets menu's width, in points: longer names are cut in the middle.
 const PRESETS_MENU: f32 = 240.0;
 /// How long a theme chosen in Settings takes to fade in, in seconds.
 const FADE_TIME: f32 = 0.25;
@@ -2719,7 +2719,7 @@ impl App {
             }
             let Some(menu) = &self.presets else { return };
             // Its rows take the menu's width, which is otherwise the window's;
-            // a name too long for it ends in an ellipsis.
+            // a name too long for it is cut in the middle.
             ui.set_width(PRESETS_MENU);
             if menu.saved.is_empty() {
                 ui.label(RichText::new("No presets saved yet.").weak());
@@ -2747,13 +2747,10 @@ impl App {
                 .clicked();
             if !menu.saved.is_empty() {
                 ui.menu_button("Delete", |ui| {
-                    ui.set_max_width(PRESETS_MENU);
+                    ui.set_width(PRESETS_MENU);
                     for (name, path, _) in &menu.saved {
-                        if ui
-                            .add(egui::Button::new(name.as_str()).truncate())
-                            .on_hover_text("Delete this preset.")
-                            .clicked()
-                        {
+                        let row = ticked(ui, false, name);
+                        if row.on_hover_text("Delete this preset.").clicked() {
                             delete = Some((name.clone(), path.clone()));
                             ui.close();
                         }
@@ -4681,19 +4678,44 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
             let line = vec![at(0.1, 0.55), at(0.4, 0.85), at(0.95, 0.2)];
             painter.add(egui::Shape::line(line, Stroke::new(2.0, p.accent)));
         }
-        let width = rect.width() - 24.0;
-        let truncate = Some(egui::TextWrapMode::Truncate);
-        let galley =
-            egui::WidgetText::from(text).into_galley(ui, truncate, width, TextStyle::Button);
+        let (galley, cut) = fit_middle(ui, text, rect.width() - 24.0);
         let at = pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0);
-        // Cut short, the whole text shows on hover, above any of the caller's.
-        let cut = galley.elided;
         painter.galley(at, galley, ui.visuals().text_color());
+        // Cut, the whole text shows on hover, above any of the caller's.
         if cut {
             response = response.on_hover_text(text);
         }
     }
     response
+}
+
+/// `text` laid out at most `width` wide, cut in the middle if it must be so
+/// that texts differing at either end stay apart; and whether it was cut.
+fn fit_middle(ui: &Ui, text: &str, width: f32) -> (Arc<egui::Galley>, bool) {
+    let font = TextStyle::Button.resolve(ui.style());
+    let layout = |t: String| {
+        ui.painter()
+            .layout_no_wrap(t, font.clone(), Color32::PLACEHOLDER)
+    };
+    let whole = layout(text.to_owned());
+    if whole.size().x <= width {
+        return (whole, false);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // From a guess in proportion to the width, a character fewer at a time.
+    let mut keep = (chars.len() as f32 * width / whole.size().x) as usize;
+    loop {
+        let (head, tail) = (keep - keep / 2, keep / 2);
+        let cut = chars[..head]
+            .iter()
+            .chain(&['…'])
+            .chain(&chars[chars.len() - tail..]);
+        let galley = layout(cut.collect());
+        if galley.size().x <= width || keep == 0 {
+            return (galley, true);
+        }
+        keep -= 1;
+    }
 }
 
 /// Where the window's size is kept between runs.

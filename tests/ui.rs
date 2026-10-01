@@ -499,7 +499,7 @@ fn the_presets_menu_ticks_the_preset_the_page_loaded() {
 }
 
 #[test]
-fn a_preset_name_cut_short_in_the_menu_shows_whole_on_hover() {
+fn a_preset_name_too_long_for_the_menu_is_cut_in_the_middle_and_whole_on_hover() {
     let folder = std::env::temp_dir().join(format!("fw-cut-{}", std::process::id()));
     let name = "Read 5.25in 360 KB as flux in an 80-track drive, 42 cylinders";
     let preset = Preset {
@@ -514,6 +514,14 @@ fn a_preset_name_cut_short_in_the_menu_shows_whole_on_hover() {
     let mut w = window(settings);
     w.get_by_label("Presets").click();
     w.run();
+    let cut = |c: &egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Text(t) => {
+            let text = t.galley.text();
+            text.starts_with("Read 5.25in") && text.contains('…') && text.ends_with("cylinders")
+        }
+        _ => false,
+    };
+    assert!(w.output().shapes.iter().any(cut), "both ends kept");
     w.get_by_label(name).hover();
     w.run();
     assert_eq!(
