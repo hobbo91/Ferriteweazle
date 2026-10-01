@@ -261,8 +261,9 @@ const MIN_FIELD: f32 = 160.0;
 const MAX_FIELD: f32 = 400.0;
 /// The widest a field grows, in a page wider than `full_width`.
 const WIDE_FIELD: f32 = 800.0;
-/// Short lists and values.
-const SHORT_FIELD: f32 = 150.0;
+/// Short lists and values: half of Disk format's list at the window's
+/// default size, so Revolutions ends at its middle.
+const SHORT_FIELD: f32 = 119.0;
 /// A number of two or three digits.
 const NUMBER_FIELD: f32 = 56.0;
 /// An image option, wide enough for gw's names: Default (other-320k).

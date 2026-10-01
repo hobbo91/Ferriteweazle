@@ -2996,3 +2996,21 @@ fn up_to_90_cylinders_keep_one_square_size_with_the_log_shut_or_open() {
         }
     }
 }
+
+#[test]
+fn revolutions_ends_halfway_along_disk_format_at_the_default_size() {
+    let w = window_at(DEFAULT, chosen());
+    let combo = |value: &str| {
+        let mut combos = w.get_all_by_role(Role::ComboBox);
+        combos
+            .find(|c| c.value().as_deref() == Some(value))
+            .unwrap()
+            .rect()
+    };
+    let (format, revs) = (combo("Amiga · amiga.amigados"), combo("Default"));
+    assert_eq!(revs.left(), format.left());
+    assert!(
+        (revs.right() - format.center().x).abs() < 0.5,
+        "{revs:?} under {format:?}"
+    );
+}
