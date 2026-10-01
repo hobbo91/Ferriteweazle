@@ -143,7 +143,7 @@ impl Update {
 }
 
 /// A release tag as a version: `v1.23` as `1.23`.
-fn bare(tag: &str) -> &str {
+pub fn bare(tag: &str) -> &str {
     tag.trim_start_matches('v')
 }
 
@@ -180,17 +180,23 @@ impl Install {
             .then(|| Install::Folder(dir.to_path_buf()))
     }
 
-    /// Why this copy cannot replace itself, if it cannot.
+    /// Why this copy cannot replace itself, if it cannot. Probes its folder.
     pub fn stuck(&self) -> Option<&'static str> {
-        let Install::MacApp(app) = self else {
-            return None;
-        };
-        let path = app.to_string_lossy();
-        // bundle.sh names the image's volume "Ferriteweazle VERSION".
-        let image = path.starts_with("/Volumes/Ferriteweazle ");
-        (path.contains("/AppTranslocation/") || image).then_some(
-            "macOS runs Ferriteweazle read-only from the disk image: drag it to Applications first.",
-        )
+        match self {
+            Install::MacApp(app) => {
+                let path = app.to_string_lossy();
+                // bundle.sh names the image's volume "Ferriteweazle VERSION".
+                let image = path.starts_with("/Volumes/Ferriteweazle ");
+                (path.contains("/AppTranslocation/") || image).then_some(
+                    "macOS runs Ferriteweazle read-only from the disk image: drag it to Applications first.",
+                )
+            }
+            // Windows has no administrator prompt to move a folder's files.
+            Install::Folder(dir) if cfg!(windows) && !writable(dir) => {
+                Some("This account cannot change this folder: move Ferriteweazle to one it can.")
+            }
+            _ => None,
+        }
     }
 
     /// The release asset that replaces this copy.

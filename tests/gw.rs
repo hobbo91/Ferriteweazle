@@ -1651,11 +1651,15 @@ fn the_write_page_takes_a_north_star_images_format_from_gw() {
         w.query_by_label("NSI: Disk.nsi: unrecognised file size.")
             .is_some()
     });
-    // Why the page cannot run comes before that it needs a device.
+    // A device comes before the page's own settings.
     w.get_all_by_role_and_label(egui::accesskit::Role::Button, "Write disk")
         .last()
         .expect("the run button")
         .hover();
+    until_shown(&mut w, "the device it needs", |w| {
+        w.query_by_label("Connect a Greaseweazle.").is_some()
+    });
+    app_mut(&mut w).pin_ports(vec![greaseweazle()]);
     until_shown(&mut w, "why it cannot run", |w| {
         w.query_by_label("Greaseweazle Tools cannot read this image. See Disk format.")
             .is_some()

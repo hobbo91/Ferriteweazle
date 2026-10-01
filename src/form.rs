@@ -1583,7 +1583,7 @@ impl<'a> Form<'a> {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             ui.selectable_value(&mut out.ask_names, false, "Numbered")
-                                .on_hover_text("Name each disk's file with its number.");
+                                .on_hover_text("Name each image file with a numbered label.");
                             ui.selectable_value(&mut out.ask_names, true, "Ask for each")
                                 .on_hover_text("Type each disk's name when asked for the disk.");
                         });

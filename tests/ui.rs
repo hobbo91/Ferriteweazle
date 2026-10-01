@@ -352,7 +352,7 @@ fn a_preset_is_deleted_from_its_menu_after_asking() {
 }
 
 #[test]
-fn restore_defaults_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_choices() {
+fn reset_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_choices() {
     let mut settings = Settings {
         images_folder: Some("/disks".into()),
         drive: "B".into(),
@@ -365,12 +365,7 @@ fn restore_defaults_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_ch
     let mut w = window(settings);
     app_mut(&mut w).notices.insert("read".into(), FOUND.into());
     w.run();
-    fn restore(w: &Window) -> Node<'_> {
-        w.get_by_role_and_label(Role::Button, "Restore defaults")
-    }
-    w.get_by_label("Presets").click();
-    w.run();
-    restore(&w).click();
+    reset(&w).click();
     w.run();
     let app = app(&w);
     assert_eq!(app.settings.values["read"], Values::default());
@@ -384,12 +379,57 @@ fn restore_defaults_puts_the_page_back_to_gws_defaults_and_keeps_the_sidebars_ch
         "the detected format's notice stayed"
     );
     assert_eq!(app.settings.drive, "B");
+    assert!(reset(&w).accesskit_node().is_disabled());
+    reset(&w).hover();
+    w.run();
+    w.get_by_label("No changes. Right-click to choose default or preset.");
+    // Greyed, it still offers its choices, but no preset is loaded.
+    reset(&w).click_secondary();
+    w.run();
+    let preset = w.get_by_role_and_label(Role::RadioButton, "Current preset");
+    assert!(preset.accesskit_node().is_disabled());
+}
+
+#[test]
+fn reset_goes_back_to_the_loaded_preset_once_its_right_click_menu_ticks_it() {
+    let folder = std::env::temp_dir().join(format!("fw-reset-{}", std::process::id()));
+    let mut preset = Preset {
+        command: "read".into(),
+        ..Preset::default()
+    };
+    preset.values.set("revs", "5");
+    presets::save(&folder, "Mine", &preset).unwrap();
+    let settings = Settings {
+        presets_folder: Some(folder.clone()),
+        ..chosen()
+    };
+    let mut w = window(settings);
     w.get_by_label("Presets").click();
     w.run();
-    assert!(restore(&w).accesskit_node().is_disabled());
-    restore(&w).hover();
+    w.get_by_label("Mine").click();
     w.run();
-    w.get_by_label("No changes.");
+    set(&mut app_mut(&mut w).settings, "read", "revs", "7");
+    w.run();
+    reset(&w).click_secondary();
+    w.run();
+    w.get_by_role_and_label(Role::RadioButton, "Current preset")
+        .click();
+    w.run();
+    reset(&w).click();
+    w.run();
+    assert_eq!(app(&w).settings.values["read"].get("revs"), "5");
+    assert!(
+        reset(&w).accesskit_node().is_disabled(),
+        "it has the preset"
+    );
+    std::fs::remove_dir_all(folder).ok();
+}
+
+/// The page's Reset, right of the sidebar's Reset page.
+fn reset(w: &Window) -> Node<'_> {
+    w.get_all_by_role_and_label(Role::Button, "Reset")
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .expect("the page's Reset")
 }
 
 #[test]

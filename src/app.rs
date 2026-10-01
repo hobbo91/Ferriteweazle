@@ -316,8 +316,14 @@ struct PresetsMenu {
     page: String,
     /// The page's presets, by name: each one's name, file and description.
     saved: Vec<(String, PathBuf, String)>,
-    /// Whether the page differs from gw's defaults.
-    changed: bool,
+}
+
+/// A preset as its page last loaded or saved it, and whether Reset goes back to it.
+struct Applied {
+    path: PathBuf,
+    preset: Preset,
+    /// Reset puts the page back to this preset, not to gw's defaults.
+    reset_to: bool,
 }
 
 /// The command line drawer's text, and why it does not parse.
@@ -391,8 +397,15 @@ pub struct App {
     fitted: bool,
     gw_update: Update,
     app_update: Update,
+    /// How this copy was installed, and why it cannot update itself if it cannot.
+    copy: Option<Install>,
+    stuck: Option<&'static str>,
+    /// The release whose banner was dismissed, as kept in dismissed_file().
+    dismissed: Option<String>,
     /// The Presets menu, while it is open.
     presets: Option<PresetsMenu>,
+    /// By page, the preset it last loaded or saved.
+    applied: BTreeMap<String, Applied>,
     /// gw's bridge is stopped while a Windows folder copy replaces its data
     /// folder: the ports it had listed.
     gw_paused: Option<Vec<Port>>,
@@ -429,6 +442,9 @@ impl App {
         app.kept_device = (kind, port);
         app.kept_tools = tools;
         app.kept_theme = theme;
+        app.copy = Install::this();
+        app.stuck = app.copy.as_ref().and_then(Install::stuck);
+        app.dismissed = kept_dismissed(&dismissed_file());
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         update::tidy();
@@ -484,7 +500,11 @@ impl App {
             fitted: false,
             gw_update: Update::default(),
             app_update: Update::default(),
+            copy: None,
+            stuck: None,
+            dismissed: None,
             presets: None,
+            applied: BTreeMap::new(),
             gw_paused: None,
             logo: None,
             fade: Fade::default(),
@@ -523,7 +543,7 @@ impl App {
             self.gw_update = Update::check(tools, None, repaint(ctx));
         }
         // A standalone gw has no Python to ask GitHub with; the built-in one may.
-        if let Some(python) = tools.with_python().filter(|_| Install::this().is_some())
+        if let Some(python) = tools.with_python().filter(|_| self.copy.is_some())
             && !installing(&self.app_update)
         {
             self.app_update = Update::check(&python, Some(update::APP_REPO), repaint(ctx));
@@ -539,8 +559,9 @@ impl App {
         {
             self.connect(ctx);
         }
+        let installing = matches!(self.app_update, Update::Installing(..));
         if self.app_update.poll(Some(env!("CARGO_PKG_VERSION")))
-            && let (Update::Latest(tag), Some(install)) = (&self.app_update, Install::this())
+            && let (Update::Latest(tag), Some(install)) = (&self.app_update, &self.copy)
         {
             install.relaunch(tag.trim_start_matches('v'));
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -552,6 +573,74 @@ impl App {
             // would drop the reason the update failed.
             self.service = Service::start(tools, repaint(ctx));
             self.service.seed_ports(ports);
+        }
+        // The page its banner was on says why an install failed.
+        if installing
+            && let (Update::Failed(why), Page::Command(page)) =
+                (&self.app_update, &self.settings.page)
+        {
+            let text = format!("Unable to install the update: {why}");
+            self.notices.insert(page.clone(), text);
+        }
+    }
+
+    /// Starts installing the newer Ferriteweazle that GitHub has.
+    fn install_app(&mut self, ctx: &egui::Context) {
+        let (Update::Newer(tag), Some(tools), Some(install)) = (
+            &self.app_update,
+            self.tools.as_ref().and_then(Tools::with_python),
+            self.copy.clone(),
+        ) else {
+            return;
+        };
+        let tag = tag.clone();
+        if cfg!(windows) && matches!(install, Install::Folder(_)) {
+            // Windows will not move the data folder while gw runs from it.
+            self.gw_paused = Some(self.service.known_ports().to_vec());
+            self.service = Service::offline(Err(UPDATING.into()));
+        }
+        self.app_update = Update::app(&tools, install, &tag, repaint(ctx));
+    }
+
+    /// Offers the newer Ferriteweazle GitHub has, on every page, where this
+    /// copy can update itself: Update installs it, Dismiss hides it until a
+    /// newer one.
+    fn update_banner(&mut self, ui: &mut Ui) {
+        let (text, offered) = match &self.app_update {
+            Update::Newer(tag) if self.stuck.is_none() && self.dismissed.as_ref() != Some(tag) => {
+                let text = format!("Ferriteweazle {} is available.", update::bare(tag));
+                (text, Some(tag.clone()))
+            }
+            Update::Installing(_, tag) => {
+                let text = format!("Installing Ferriteweazle {}\u{2026}", update::bare(tag));
+                (text, None)
+            }
+            _ => return,
+        };
+        let (can, tip) = self.update_button(&self.app_update, "Ferriteweazle");
+        let (mut install, mut dismiss) = (false, false);
+        let room = if offered.is_some() { 150.0 } else { 0.0 };
+        banner(ui, &text, room, |ui| {
+            if offered.is_some() {
+                dismiss = ui
+                    .small_button("Dismiss")
+                    .on_hover_text("Hide this until a newer release.")
+                    .clicked();
+                install = ui
+                    .add_enabled(can, egui::Button::new("Update").small())
+                    .on_hover_text(&tip)
+                    .on_disabled_hover_text(&tip)
+                    .clicked();
+            }
+        });
+        if install {
+            self.install_app(ui.ctx());
+        }
+        if dismiss && let Some(tag) = offered {
+            if self.live {
+                keep(&dismissed_file(), Some(tag.clone()));
+            }
+            self.dismissed = Some(tag);
         }
     }
 
@@ -1681,7 +1770,10 @@ impl App {
                     ui.set_max_width(width);
                     ui.horizontal(|ui| {
                         ui.heading(title(name));
-                        right(ui, |ui| self.presets_menu(ui, name));
+                        right(ui, |ui| {
+                            self.presets_menu(ui, name);
+                            self.reset_button(ui, name);
+                        });
                     });
                     let mut about = match ABOUTS.iter().find(|(c, _)| *c == name) {
                         Some((_, about)) => (*about).to_owned(),
@@ -1693,6 +1785,7 @@ impl App {
                     }
                     ui.label(RichText::new(about).weak());
                     self.notice_bar(ui, name);
+                    self.update_banner(ui);
                     ui.add_space(10.0);
                     let reported = (name == "delays").then(|| self.reported_delays()).flatten();
                     let values = self.settings.values.entry(name.to_owned()).or_default();
@@ -1746,28 +1839,16 @@ impl App {
     }
 
     fn notice_bar(&mut self, ui: &mut Ui, page: &str) {
-        let Some(notice) = self.notices.get(page).cloned() else {
+        let Some(notice) = self.notices.get(page) else {
             return;
         };
-        ui.add_space(8.0);
-        let p = theme::palette(ui);
-        Frame::new()
-            .fill(p.accent.gamma_multiply(0.12))
-            .corner_radius(8)
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui(vec2(ui.available_width() - 70.0, 0.0), |ui| {
-                        ui.add(egui::Label::new(notice).wrap());
-                    });
-                    right(ui, |ui| {
-                        if ui.small_button("Dismiss").clicked() {
-                            self.notices.remove(page);
-                        }
-                    });
-                });
-            });
+        let mut dismiss = false;
+        banner(ui, notice, 70.0, |ui| {
+            dismiss = ui.small_button("Dismiss").clicked();
+        });
+        if dismiss {
+            self.notices.remove(page);
+        }
     }
 
     fn not_ready(&mut self, ui: &mut Ui) {
@@ -1860,8 +1941,8 @@ impl App {
                 (
                     Drawer::Cli,
                     "CLI",
-                    "Show this page as a gw command line.",
-                    "Hide the command line.",
+                    "Show command line.",
+                    "Hide command line.",
                 ),
                 (
                     Drawer::Log,
@@ -1910,22 +1991,18 @@ impl App {
         {
             // The page holds the last line that parsed, not the one shown.
             Some(CLI_FAULT.to_owned())
+        } else if device && !self.connected() {
+            Some(self.no_device().into_owned())
         } else if let Some(why) = device.then(|| self.adafruit_fault(cmd, values)).flatten() {
             Some(why.to_owned())
         } else if !missing.is_empty() {
             Some(format!("Select the {} first.", missing.join(" and ")))
         } else {
-            // The page's own settings first: they can be made ready with no device.
-            let no_device = device && !self.connected();
             let outputs = &self.settings.outputs;
-            match self
-                .diskdefs_fault(values)
+            self.diskdefs_fault(values)
                 .or_else(|| form::missing_image(cmd, values))
                 .or_else(|| form::blocked(schema, cmd, values, outputs, &self.service))
-            {
-                Some(why) => Some(why.to_owned()),
-                None => no_device.then(|| self.no_device().into_owned()),
-            }
+                .map(str::to_owned)
         }
     }
 
@@ -2579,14 +2656,13 @@ impl App {
         let folder = self.presets_folder();
         let mut load = None;
         let mut delete = None;
-        let (mut save, mut pick, mut defaults) = (false, false, false);
+        let (mut save, mut pick) = (false, false);
         let menu = ui.menu_button("Presets", |ui| {
             ui.set_min_width(220.0);
             if self.presets.as_ref().is_none_or(|m| m.page != command) {
                 self.presets = Some(PresetsMenu {
                     page: command.to_owned(),
                     saved: presets::list(&folder, command),
-                    changed: self.changed(command),
                 });
             }
             let Some(menu) = &self.presets else { return };
@@ -2626,21 +2702,12 @@ impl App {
                     }
                 });
             }
-            ui.separator();
-            defaults = ui
-                .add_enabled(menu.changed, egui::Button::new("Restore defaults"))
-                .on_hover_text("Put this page's options back to Greaseweazle Tools' defaults.")
-                .on_disabled_hover_text("No changes.")
-                .clicked();
-            if save || pick || defaults {
+            if save || pick {
                 ui.close();
             }
         });
         if menu.inner.is_none() {
             self.presets = None;
-        }
-        if defaults {
-            self.restore_defaults(command);
         }
         if let Some((name, path)) = delete {
             self.dialog = Some(Dialog::DeletePreset {
@@ -3314,14 +3381,13 @@ impl App {
 
     /// What GitHub has for this copy, with Update at the right.
     fn app_update(&mut self, ui: &mut Ui) {
-        let install = Install::this();
-        let (line, why) = match install {
+        let (line, why) = match self.copy {
             Some(_) => self.app_update.summary(env!("CARGO_PKG_VERSION")),
             None => ("This copy was built from source.".into(), None),
         };
-        let stuck = match &install {
+        let stuck = match self.copy {
             None => Some("Needs a copy installed from a release."),
-            Some(install) => install.stuck(),
+            Some(_) => self.stuck,
         };
         let (can, tip) = match stuck {
             Some(why) => (false, why.to_owned()),
@@ -3345,18 +3411,8 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked()
-                    && let (Update::Newer(tag), Some(tools), Some(install)) = (
-                        &self.app_update,
-                        self.tools.as_ref().and_then(Tools::with_python),
-                        install.clone(),
-                    )
                 {
-                    if cfg!(windows) && matches!(install, Install::Folder(_)) {
-                        // Windows will not move the data folder while gw runs from it.
-                        self.gw_paused = Some(self.service.known_ports().to_vec());
-                        self.service = Service::offline(Err(UPDATING.into()));
-                    }
-                    self.app_update = Update::app(&tools, install, tag, repaint(ui.ctx()));
+                    self.install_app(ui.ctx());
                 }
             });
         });
@@ -3432,17 +3488,104 @@ impl App {
             outputs,
             description,
         };
-        if let Err(e) = presets::save(&folder, name, &preset) {
-            let text = format!("Could not save the preset: {e}");
-            self.notices.insert(command.to_owned(), text);
+        match presets::save(&folder, name, &preset) {
+            Ok(path) => self.applied_now(path, preset),
+            Err(e) => {
+                let text = format!("Could not save the preset: {e}");
+                self.notices.insert(command.to_owned(), text);
+            }
         }
+    }
+
+    /// Records `preset`, saved to or loaded from `path`, as its page's, keeping
+    /// what the page's Reset goes back to.
+    fn applied_now(&mut self, path: PathBuf, preset: Preset) {
+        let reset_to = self
+            .applied
+            .get(&preset.command)
+            .is_some_and(|a| a.reset_to);
+        let page = preset.command.clone();
+        let applied = Applied {
+            path,
+            preset,
+            reset_to,
+        };
+        self.applied.insert(page, applied);
+    }
+
+    /// Reset, beside Presets: puts the page back to gw's defaults, or to the
+    /// preset it last loaded or saved where its right-click menu ticks that.
+    fn reset_button(&mut self, ui: &mut Ui, page: &str) {
+        let applied = self.applied.get(page);
+        let (preset, to_preset) = (applied.is_some(), applied.is_some_and(|a| a.reset_to));
+        let can = match applied.filter(|a| a.reset_to) {
+            Some(a) => !self.holds(page, &a.preset),
+            None => self.changed(page),
+        };
+        let button = ui.add_enabled(can, egui::Button::new("Reset"));
+        // Greyed, it still takes the right-click that chooses what it does.
+        let (menu, tip) = match can {
+            true => (
+                button,
+                "Reset this page. Right-click to choose default or preset.",
+            ),
+            false => (
+                ui.interact(button.rect, button.id.with("menu"), Sense::click()),
+                "No changes. Right-click to choose default or preset.",
+            ),
+        };
+        let reset = can && menu.clicked();
+        let mut choice = None;
+        menu.on_hover_text(tip).context_menu(|ui| {
+            // Its rows take the menu's width, which is otherwise the window's.
+            ui.set_width(160.0);
+            if ticked(ui, !to_preset, "Page to default").clicked() {
+                choice = Some(false);
+            }
+            let current = ui.add_enabled_ui(preset, |ui| ticked(ui, to_preset, "Current preset"));
+            if current
+                .inner
+                .on_disabled_hover_text("No preset loaded.")
+                .clicked()
+            {
+                choice = Some(true);
+            }
+            if choice.is_some() {
+                ui.close();
+            }
+        });
+        if let (Some(choice), Some(applied)) = (choice, self.applied.get_mut(page)) {
+            applied.reset_to = choice;
+        }
+        if reset {
+            match self.applied.get(page).filter(|a| a.reset_to) {
+                Some(applied) => self.apply(applied.preset.clone()),
+                None => self.restore_defaults(page),
+            }
+        }
+    }
+
+    /// Whether `page` has `preset`'s settings. An output's file comes from its
+    /// output settings, so they stand for it.
+    fn holds(&self, page: &str, preset: &Preset) -> bool {
+        let empty = Values::default();
+        let option = |(dest, _): &(&str, &str)| !form::OUTPUTS.contains(&(page, *dest));
+        let values = self.settings.values.get(page).unwrap_or(&empty);
+        values
+            .iter()
+            .filter(option)
+            .eq(preset.values.iter().filter(option))
+            && (preset.outputs.iter()).all(|(k, o)| self.settings.outputs.get(k) == Some(o))
     }
 
     /// Deletes a preset's file. A fault shows on `page`.
     fn delete_preset(&mut self, page: &str, path: &Path) {
-        if let Err(e) = std::fs::remove_file(path) {
-            let text = format!("Could not delete the preset: {e}");
-            self.notices.insert(page.to_owned(), text);
+        match std::fs::remove_file(path) {
+            Ok(()) => self.applied.retain(|_, a| a.path != path),
+            Err(e) => {
+                let text = format!("Could not delete the preset: {e}");
+                self.notices.insert(page.to_owned(), text);
+            }
         }
     }
 
@@ -3454,7 +3597,7 @@ impl App {
         }
     }
 
-    /// Whether a page differs from what Restore defaults leaves.
+    /// Whether a page differs from gw's defaults, as Reset leaves it.
     fn changed(&self, command: &str) -> bool {
         let fresh = self.fresh_output();
         let mut keys = form::OUTPUTS
@@ -3464,6 +3607,15 @@ impl App {
         let options = self.settings.values.get(command);
         options.is_some_and(|v| *v != Values::default())
             || keys.any(|k| self.settings.outputs.get(&k).is_some_and(|o| *o != fresh))
+    }
+
+    /// Puts a preset's settings on its page.
+    fn apply(&mut self, preset: Preset) {
+        // Its settings suit its own format, which a notice may not name.
+        self.format_fits.remove(&preset.command);
+        self.notices.remove(&preset.command);
+        self.settings.outputs.extend(preset.outputs);
+        self.settings.values.insert(preset.command, preset.values);
     }
 
     /// Puts a page's options and output settings back to gw's defaults. The
@@ -3484,13 +3636,9 @@ impl App {
     fn load_preset(&mut self, page: &str, path: &Path) {
         match presets::load(path) {
             Ok(preset) => {
-                self.settings
-                    .values
-                    .insert(preset.command.clone(), preset.values);
-                self.settings.outputs.extend(preset.outputs);
-                // Its settings suit its own format.
-                self.format_fits.remove(&preset.command);
-                self.settings.page = Page::Command(preset.command);
+                self.settings.page = Page::Command(preset.command.clone());
+                self.apply(preset.clone());
+                self.applied_now(path.to_owned(), preset);
             }
             Err(e) => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -4352,6 +4500,36 @@ fn keep_tools(file: &Path, tools: Option<&Path>) {
     keep(file, tools.map(|p| p.to_string_lossy().into_owned()));
 }
 
+/// Where the release whose update banner was dismissed is kept, such as v1.2.1.
+fn dismissed_file() -> PathBuf {
+    crate::data_folder().join("dismissed.txt")
+}
+
+fn kept_dismissed(file: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    Some(text.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
+/// A banner at the top of a page: `text`, wrapped clear of `room` points at its
+/// right, where `actions` adds its buttons.
+fn banner(ui: &mut Ui, text: &str, room: f32, actions: impl FnOnce(&mut Ui)) {
+    ui.add_space(8.0);
+    let p = theme::palette(ui);
+    Frame::new()
+        .fill(p.accent.gamma_multiply(0.12))
+        .corner_radius(8)
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui(vec2(ui.available_width() - room, 0.0), |ui| {
+                    ui.add(egui::Label::new(text).wrap());
+                });
+                right(ui, actions);
+            });
+        });
+}
+
 /// Where the theme chosen in Settings is kept between runs; System keeps no file.
 fn theme_file() -> PathBuf {
     crate::data_folder().join("theme.txt")
@@ -4951,6 +5129,38 @@ mod tests {
         std::fs::write(&file, "something else\nCOM3").unwrap();
         assert_eq!(kept_device(&file), (Kind::Greaseweazle, String::new()));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_newer_release_is_offered_until_dismissed_and_a_later_one_again() {
+        let mut app = offline();
+        app.copy = Some(Install::Folder(PathBuf::from("/opt/Ferriteweazle")));
+        app.app_update = Update::Newer("v9.9.0".into());
+        let mut w = window(app);
+        w.get_by_label("Ferriteweazle 9.9.0 is available.");
+        w.get_by_label("Update");
+        w.get_by_label("Dismiss").click();
+        w.run_steps(2);
+        assert!(w.query_by_label_contains("is available").is_none());
+        assert_eq!(w.state().dismissed.as_deref(), Some("v9.9.0"));
+        w.state_mut().app_update = Update::Newer("v9.9.1".into());
+        w.run_steps(2);
+        w.get_by_label("Ferriteweazle 9.9.1 is available.");
+        // A copy that cannot replace itself is offered nothing.
+        w.state_mut().stuck = Some("Read-only.");
+        w.run_steps(2);
+        assert!(w.query_by_label_contains("is available").is_none());
+    }
+
+    #[test]
+    fn a_failed_install_says_why_on_the_page() {
+        let mut app = offline();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.app_update = Update::Installing(rx, "v9.9.0".into());
+        tx.send(Err("No space left on device".into())).unwrap();
+        app.poll_updates(&egui::Context::default());
+        let why = "Unable to install the update: No space left on device";
+        assert_eq!(app.notices["read"], why);
     }
 
     #[test]
@@ -6441,10 +6651,22 @@ mod tests {
         let write = schema.command("write").unwrap();
         let mut app = offline();
         app.tools = Some(no_gw());
+        app.pin_ports(vec![greaseweazle("COM3", false)]);
         let values = app.settings.values.entry("write".into()).or_default();
         values.set("file", "/no/such/Game.adf");
         let why = app.why_not(&schema, write);
         assert_eq!(why.as_deref(), Some("The image file does not exist."));
+    }
+
+    #[test]
+    fn a_page_that_needs_a_device_asks_for_one_before_its_own_settings() {
+        let schema = schema();
+        let mut app = offline();
+        app.tools = Some(no_gw());
+        for name in ["read", "write", "seek", "pin set"] {
+            let why = app.why_not(&schema, schema.command(name).unwrap());
+            assert_eq!(why.as_deref(), Some(NO_DEVICE), "{name}");
+        }
     }
 
     #[test]

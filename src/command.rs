@@ -28,6 +28,10 @@ impl Values {
     pub fn on(&self, dest: &str) -> bool {
         !self.get(dest).is_empty()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
 }
 
 /// The arguments after `gw` for `cmd` with `values`.
