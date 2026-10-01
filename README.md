@@ -28,9 +28,9 @@ Detection isn't always right, so the app also groups formats and image types to 
 
 ## Why bundle Greaseweazle Tools in the releases?
 
-Greaseweazle still amazes me: a cheap interface and almost any floppy drive can read almost any 3.5" or 5.25" disk format. Greaseweazle Tools, though, run from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical interface and ships with Greaseweazle Tools included, so you can download it, run it and get straight to work without following [a bunch of pre-requisite steps first](https://github.com/keirf/greaseweazle/wiki/Software-Installation). 
+Greaseweazle still amazes me: a cheap interface and almost any floppy drive can read almost any floppy disk format. Greaseweazle Tools, though, runs from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical interface and ships with Greaseweazle Tools included, so you can download it, run it, and get straight to work without following [a bunch of pre-requisite steps first](https://github.com/keirf/greaseweazle/wiki/Software-Installation) if you don't want to. 
 
-**You don't have to use the bundled version.** Like other Greaseweazle front ends, Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): just set the path in **Settings > Paths** when you first start the app to point to the `gw`/`gw.exe` binary.
+**You don't have to use the bundled version.** Like other Greaseweazle front ends, Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): just set the path in **Settings > Paths** when you first start the app to point to your `gw`/`gw.exe`.
 
 ## Installing
 
@@ -47,7 +47,7 @@ macOS 10.15 or newer, Apple Silicon or Intel.
 
 ### Windows
 
-Windows 10 or newer, x64 or ARM64.
+Windows 10 or newer, x64 or ARM64 (Could add older Windows compatibility if there's interest).
 
 1. Run [`Ferriteweazle-1.3.0-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-win-x64.msi), or [`Ferriteweazle-1.3.0-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-win-arm64.msi) on an ARM PC.
 2. If SmartScreen warns you, click **More info**, then **Run anyway**.
