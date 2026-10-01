@@ -379,7 +379,8 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
-    /// Classic in the accent last chosen for it: Classic itself (blue) or Teal.
+    /// Classic in the accent last chosen for it while the app runs: Classic
+    /// itself (blue) or Teal.
     classic: theme::Choice,
     /// The delays gw delays last reported, and the port of the Greaseweazle
     /// they are of: kept while another run of it goes on.
@@ -2627,41 +2628,38 @@ impl App {
         };
         let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
         // The Log's box, as tall as the drawer leaves; the command scrolls in it.
-        let edit = ui
-            .scope(|ui| {
-                let p = theme::terminal(ui);
-                let edge = match ui.memory(|m| m.has_focus(id)) {
-                    true => ui.visuals().selection.stroke.color,
-                    false => p.line,
-                };
-                let frame = console_frame(p, edge);
-                let height = ui.available_height() - frame.total_margin().sum().y;
-                frame
-                    .show(ui, |ui| {
-                        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-                        ui.visuals_mut().widgets.inactive.bg_fill = p.line;
-                        egui::ScrollArea::vertical()
-                            .id_salt("cli")
-                            .max_height(height)
-                            .min_scrolled_height(height)
-                            .show(ui, |ui| {
-                                ui.add(
-                                    TextEdit::multiline(&mut cli.text)
-                                        .id(id)
-                                        .font(TextStyle::Monospace)
-                                        .frame(Frame::NONE)
-                                        .margin(Margin::ZERO)
-                                        .desired_rows(1)
-                                        .desired_width(f32::INFINITY)
-                                        .min_size(vec2(0.0, height)),
-                                )
-                            })
-                            .inner
-                    })
-                    .inner
-            })
-            .inner
-            .on_hover_text("Type or paste a gw command line. The page follows it.");
+        let edit = theme::terminal(ui, |ui, p| {
+            let edge = match ui.memory(|m| m.has_focus(id)) {
+                true => p.accent,
+                false => p.line,
+            };
+            let frame = console_frame(p, edge);
+            let height = ui.available_height() - frame.total_margin().sum().y;
+            frame
+                .show(ui, |ui| {
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+                    egui::ScrollArea::vertical()
+                        .id_salt("cli")
+                        .max_height(height)
+                        .min_scrolled_height(height)
+                        .show(ui, |ui| {
+                            ui.add(
+                                TextEdit::multiline(&mut cli.text)
+                                    .id(id)
+                                    .font(TextStyle::Monospace)
+                                    .frame(Frame::NONE)
+                                    .margin(Margin::ZERO)
+                                    .desired_rows(1)
+                                    .desired_width(f32::INFINITY)
+                                    .min_size(vec2(0.0, height)),
+                            )
+                        })
+                        .inner
+                })
+                .inner
+        })
+        .on_hover_text("Type or paste a gw command line. The page follows it.");
         if let Some(range) = kept
             && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
         {
@@ -4390,30 +4388,24 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
     });
     // A command to a line, never broken: the box scrolls sideways instead,
     // with a bar that shows there is more.
-    ui.scope(|ui| {
-        let p = theme::terminal(ui);
-        Frame::new()
-            .fill(p.card)
-            .stroke(Stroke::new(1.0, p.line))
-            .corner_radius(6)
-            .inner_margin(8)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                    foreground_color: true,
-                    dormant_handle_opacity: 0.35,
-                    ..egui::style::ScrollStyle::thin()
-                };
-                egui::ScrollArea::horizontal()
-                    .id_salt("udev-commands")
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        for command in &commands {
-                            let text = RichText::new(command).monospace();
-                            ui.add(egui::Label::new(text).extend().selectable(true));
-                        }
-                    });
-            });
+    theme::terminal(ui, |ui, p| {
+        console_frame(p, p.line).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                foreground_color: true,
+                dormant_handle_opacity: 0.35,
+                ..egui::style::ScrollStyle::thin()
+            };
+            egui::ScrollArea::horizontal()
+                .id_salt("udev-commands")
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for command in &commands {
+                        let text = RichText::new(command).monospace();
+                        ui.add(egui::Label::new(text).extend().selectable(true));
+                    }
+                });
+        });
     });
     ui.hyperlink_to("Greaseweazle Tools' Linux instructions", udev::WIKI)
         .on_hover_text(udev::WIKI);
@@ -4491,8 +4483,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             }
         });
     });
-    ui.scope(|ui| {
-        let p = theme::terminal(ui);
+    theme::terminal(ui, |ui, p| {
         let frame = console_frame(p, p.line);
         // Exactly the room left: a drawer a little taller than its contents
         // would shrink to them, frame by frame.

@@ -2599,6 +2599,19 @@ fn the_classic_theme_is_light_in_windows_9xs_grey_and_keeps_its_accent() {
     assert_eq!(visuals(&w).selection.bg_fill, theme::CLASSIC.accent);
 }
 
+#[test]
+fn a_window_that_opens_in_teal_shows_classic_chosen_in_teal() {
+    let w = settings_from(Choice::Teal, Harness::builder());
+    let classic = w.get_by_label("Classic").accesskit_node().toggled();
+    assert_eq!(classic, Some(egui::accesskit::Toggled::True));
+    let shapes = &w.output().shapes;
+    let teal = |c: &&egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == theme::TEAL.accent && r.rect.width() > 150.0,
+        _ => false,
+    };
+    assert!(shapes.iter().any(|c| teal(&c)), "the sidebar's chosen row");
+}
+
 /// The colour the last frame drew `text` in.
 fn text_colour(w: &Window, text: &str) -> egui::Color32 {
     let shape = w.output().shapes.iter().find_map(|c| match &c.shape {

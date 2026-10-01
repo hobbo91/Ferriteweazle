@@ -1,7 +1,7 @@
 //! Colours, type and spacing: light, dark, the Greaseweazle's purple and Windows 9x's grey.
 
 use eframe::egui::{
-    self, Color32, CornerRadius, FontId, LayerId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
+    self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
     ThemePreference, Visuals, layers::ShapeIdx,
 };
 
@@ -18,7 +18,8 @@ pub enum Choice {
     Greaseweazle,
 }
 
-/// Each choice in Settings' order: its name, its hover, and the word theme.txt keeps.
+/// Each choice in Settings' order: its name, its hover, and the word theme.txt
+/// keeps. Teal is Classic's other accent, with no button of its own.
 pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),
@@ -84,9 +85,8 @@ pub struct Palette {
     pub written: Color32,
     pub erased: Color32,
     pub pending: Color32,
-    /// Windows 9x's look: selections solid in the accent under `on_accent`
-    /// text, where the others tint the accent, square corners (square()) and
-    /// the console's colours for gw's text (terminal()).
+    /// Windows 9x's look: solid selections, square corners (square()) and the
+    /// console for gw's text (terminal()).
     pub win9x: bool,
 }
 
@@ -204,17 +204,16 @@ pub const FIELD_HEIGHT: f32 = 28.0;
 /// background. Made by packaging/macos/icon.sh.
 pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 
-/// The colours the window has, told apart by its panels: apply() puts
-/// Greaseweazle's and Classic's in egui's dark and light themes.
+/// The colours the window has, known by its links': each palette apply()
+/// shows has an accent of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    match (v.dark_mode, v.panel_fill) {
-        (true, fill) if fill == GREASEWEAZLE.bg => &GREASEWEAZLE,
-        (true, _) => &DARK,
-        (false, _) if v.hyperlink_color == TEAL.accent => &TEAL,
-        (false, fill) if fill == CLASSIC.bg => &CLASSIC,
-        (false, _) => &LIGHT,
-    }
+    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &TEAL];
+    let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
+    shown
+        .into_iter()
+        .find(|p| p.accent == v.hyperlink_color)
+        .unwrap_or(unthemed)
 }
 
 /// The colour `t` of the way from `a` to `b`, `t` from 0 to 1.
@@ -223,22 +222,24 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
-/// Dresses `ui` for gw's command lines and output and gives their palette:
-/// the window's, or in Classic the console's.
-pub fn terminal(ui: &mut egui::Ui) -> &'static Palette {
-    let p = palette(ui);
-    if !p.win9x {
-        return p;
-    }
-    *ui.visuals_mut() = visuals(&CONSOLE, Visuals::dark());
-    &CONSOLE
+/// Draws gw's command lines and output with `add`, in the window's palette
+/// or, in Classic, the console's.
+pub fn terminal<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &Palette) -> R) -> R {
+    ui.scope(|ui| {
+        let mut p = palette(ui);
+        if p.win9x {
+            *ui.visuals_mut() = visuals(&CONSOLE, Visuals::dark());
+            p = &CONSOLE;
+        }
+        add(ui, p)
+    })
+    .inner
 }
 
 /// Squares every corner drawn so far this frame, as Windows 9x has them.
 /// Each shape sets its own rounding, in too many places to pass a palette.
 pub fn square(ctx: &egui::Context) {
-    let mut layers: Vec<LayerId> = ctx.memory(|m| m.layer_ids().collect());
-    layers.push(LayerId::background());
+    let layers: Vec<_> = ctx.memory(|m| m.layer_ids().collect());
     ctx.graphics_mut(|g| {
         for layer in layers {
             if let Some(list) = g.get_mut(layer) {
@@ -291,6 +292,7 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.weak_text_color = Some(p.dim);
     v.warn_fg_color = p.partial;
     v.error_fg_color = p.bad;
+    // egui also edges a focused text box in this text colour: white in Classic.
     let (fill, text) = match p.win9x {
         true => (p.accent, p.on_accent),
         false => (p.accent.gamma_multiply(0.35), p.accent),
