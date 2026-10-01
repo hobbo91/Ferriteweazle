@@ -274,7 +274,7 @@ const NUMBER_BOX: f32 = 32.0;
 const DETECT_BUTTON: f32 = 68.0;
 /// The browse button, beside a path.
 const BROWSE_BUTTON: f32 = 34.0;
-const ROW_GAP: f32 = 10.0;
+const ROW_GAP: f32 = 9.0;
 
 /// Space above a heading, beside the rows' own gap.
 const GROUP_GAP: f32 = 6.0;
@@ -934,7 +934,11 @@ impl<'a> Form<'a> {
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             for family in &families {
                                 let mut text = RichText::new(heading(family));
-                                if !current.is_empty() && current_family == *family {
+                                // Selected, it takes the selection's colour.
+                                if !current.is_empty()
+                                    && current_family == *family
+                                    && *family != open
+                                {
                                     text = text.strong();
                                 }
                                 if ui.selectable_label(*family == open, text).clicked() {
@@ -2146,8 +2150,9 @@ pub fn full_path(text: &str) -> String {
 /// `~` except while typed in, and takes a typed `~` as the home folder.
 fn path_edit(ui: &mut Ui, path: &mut String, hint: &str, width: f32) -> egui::Response {
     let id = ui.next_auto_id();
+    // What is typed, while it stands for the value, which a dropped file may change.
     let typed = ui.data(|d| d.get_temp::<String>(id));
-    let typed = typed.filter(|_| ui.memory(|m| m.has_focus(id)));
+    let typed = typed.filter(|t| ui.memory(|m| m.has_focus(id)) && full_path(t) == *path);
     let mut text = typed.unwrap_or_else(|| short_path(path).into_owned());
     let response = ui.add(edit(&mut text).id(id).hint_text(hint).desired_width(width));
     if response.changed() {
@@ -3583,8 +3588,9 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
         let fill = theme::lerp(p.line_strong, p.accent, t);
         ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
         let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
-        ui.painter()
-            .circle_filled(pos2(x, rect.center().y), 7.5, Color32::WHITE);
+        // Round by its corners, not a circle, so Classic squares it.
+        let knob = egui::Rect::from_center_size(pos2(x, rect.center().y), vec2(14.0, 14.0));
+        ui.painter().rect_filled(knob, 7, Color32::WHITE);
     }
     response
 }
@@ -5200,6 +5206,11 @@ mod tests {
         let kept = &h.state().1[&output_key("read", "file")].folder;
         assert_eq!(*kept, home.join("Disks").to_string_lossy());
         assert_eq!(folder(&h, "~/Disks"), 1, "as typed");
+        // Changed elsewhere, as by a dropped file, it shows the new value.
+        let key = output_key("read", "file");
+        h.state_mut().1.get_mut(&key).unwrap().folder = "/elsewhere".into();
+        h.run();
+        assert_eq!(folder(&h, "/elsewhere"), 1);
     }
 
     #[test]

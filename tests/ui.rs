@@ -6,7 +6,7 @@ use common::{
     DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
     run_button, squares,
 };
-use eframe::egui::{self, ThemePreference, accesskit::Role};
+use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, HarnessBuilder, Node, TestRenderer};
 use ferriteweazle::command::Values;
@@ -15,6 +15,7 @@ use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{DETECT, Job, LOG_LINES, Outcome};
 use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
+use ferriteweazle::theme::{self, Choice};
 use ferriteweazle::{App, Drawer, Page, Settings};
 
 /// Height in points of the firmware line a connected device adds to the device card.
@@ -2455,7 +2456,7 @@ fn a_typed_update_command_chooses_its_firmware_source() {
 }
 
 /// The Settings page in `theme`, a frame every 60th of a second.
-fn settings_from(theme: ThemePreference, builder: HarnessBuilder<Option<App>>) -> Window {
+fn settings_from(theme: Choice, builder: HarnessBuilder<Option<App>>) -> Window {
     let settings = Settings {
         page: Page::Settings,
         theme,
@@ -2485,7 +2486,7 @@ fn fading(w: &Window) -> Option<u8> {
 fn the_maps_squares_take_a_new_themes_colours_without_fading() {
     let settings = Settings {
         page: Page::Command("read".into()),
-        theme: ThemePreference::Dark,
+        theme: Choice::Dark,
         ..Settings::default()
     };
     let builder = Harness::builder()
@@ -2509,11 +2510,147 @@ fn the_maps_squares_take_a_new_themes_colours_without_fading() {
 }
 
 #[test]
+fn the_greaseweazle_theme_is_dark_in_the_boards_purple() {
+    let mut w = settings_from(Choice::Dark, Harness::builder());
+    let panel = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.panel_fill;
+    w.get_by_label("Greaseweazle v4.1").click();
+    w.run();
+    assert_eq!(panel(&w), theme::GREASEWEAZLE.bg);
+    assert_eq!(app(&w).settings.theme, Choice::Greaseweazle);
+    w.get_by_label("Dark").click();
+    w.run();
+    assert_eq!(panel(&w), theme::DARK.bg);
+}
+
+#[test]
+fn the_classic_theme_is_light_in_windows_9xs_grey_and_keeps_its_accent() {
+    let mut w = settings_from(Choice::Light, Harness::builder());
+    let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
+    w.get_by_label("Classic").click();
+    w.run();
+    assert_eq!(visuals(&w).panel_fill, theme::CLASSIC.bg);
+    assert_eq!(app(&w).settings.theme, Choice::Classic);
+    w.get_by_label("Classic").click_secondary();
+    w.run();
+    w.get_by_label("Teal").click();
+    w.run();
+    assert_eq!(app(&w).settings.theme, Choice::Teal);
+    assert_eq!(visuals(&w).selection.bg_fill, theme::TEAL.accent);
+    w.get_by_label("Light").click();
+    w.run();
+    assert_eq!(visuals(&w).panel_fill, theme::LIGHT.bg);
+    w.get_by_label("Classic").click();
+    w.run();
+    assert_eq!(
+        app(&w).settings.theme,
+        Choice::Teal,
+        "Classic keeps its accent"
+    );
+    w.get_by_label("Classic").click_secondary();
+    w.run();
+    w.get_by_label("Blue").click();
+    w.run();
+    assert_eq!(app(&w).settings.theme, Choice::Classic);
+    assert_eq!(visuals(&w).selection.bg_fill, theme::CLASSIC.accent);
+}
+
+/// The colour the last frame drew `text` in.
+fn text_colour(w: &Window, text: &str) -> egui::Color32 {
+    let shape = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Text(t) if t.galley.text() == text => Some(t.clone()),
+        _ => None,
+    });
+    let t = shape.expect("the text is drawn");
+    let own = t.galley.job.sections[0].format.color;
+    let own = Some(own).filter(|&c| c != egui::Color32::PLACEHOLDER);
+    t.override_text_color.or(own).unwrap_or(t.fallback_color)
+}
+
+#[test]
+fn classic_squares_every_corner_and_writes_on_a_selection_in_its_colour() {
+    let rounded = |w: &Window| {
+        let shapes = &w.output().shapes;
+        shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => r.corner_radius != egui::CornerRadius::ZERO,
+            _ => false,
+        })
+    };
+    let mut settings = Settings {
+        page: Page::Command("read".into()),
+        theme: Choice::Classic,
+        ..Settings::default()
+    };
+    let read = settings.values.entry("read".into()).or_default();
+    read.set("format", "acorn.adfs.640");
+    let builder = Harness::builder().with_size(DEFAULT).with_max_steps(60);
+    let mut w = build(builder.with_step_dt(1.0 / 60.0), settings, None);
+    w.run();
+    assert!(!rounded(&w));
+    let on = theme::CLASSIC.on_accent;
+    w.get_by_role_and_label(Role::Button, "CLI").click();
+    w.run();
+    assert_eq!(text_colour(&w, "CLI"), on);
+    // gw's command line is the console's: light grey on black.
+    let console = |c: &egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == theme::CONSOLE.card,
+        egui::Shape::Text(t) => {
+            t.galley.text().starts_with("gw read")
+                && t.galley.job.sections[0].format.color == theme::CONSOLE.text
+        }
+        _ => false,
+    };
+    assert_eq!(w.output().shapes.iter().filter(|c| console(c)).count(), 2);
+    // The list of formats opens on the format's family, selected.
+    combo(&w, 1).click();
+    w.run();
+    assert_eq!(text_colour(&w, "Acorn"), on);
+    assert!(!rounded(&w), "nor the list's");
+    app_mut(&mut w).settings.page = Page::Settings;
+    w.run();
+    assert_eq!(text_colour(&w, "gw 1.23"), on, "the chosen page's note");
+    let knob = |c: &egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Circle(circle) => circle.fill == egui::Color32::WHITE,
+        _ => false,
+    };
+    assert!(
+        !w.output().shapes.iter().any(knob),
+        "the switches' knobs are square"
+    );
+    // A knob sits whole points inside its track, so it centres on the pixels.
+    let rects = w.output().shapes.iter().filter_map(|c| match &c.shape {
+        egui::Shape::Rect(r) => Some((r.rect, r.fill)),
+        _ => None,
+    });
+    let rects: Vec<_> = rects.collect();
+    let square = |r: &egui::Rect| r.width() == r.height() && r.width() < 20.0;
+    let white = rects
+        .iter()
+        .find(|(r, fill)| *fill == egui::Color32::WHITE && square(r));
+    let knob = white.expect("a switch").0;
+    let around = rects
+        .iter()
+        .filter(|(r, _)| r.contains_rect(knob) && *r != knob);
+    let track = around.min_by(|a, b| a.0.area().total_cmp(&b.0.area()));
+    let track = track.expect("its track").0;
+    let (top, bottom) = (knob.top() - track.top(), track.bottom() - knob.bottom());
+    assert!(
+        (top - bottom).abs() < 0.01 && (top - top.round()).abs() < 0.01,
+        "{top} {bottom}"
+    );
+    w.get_by_label("Light").click();
+    w.run();
+    assert!(rounded(&w));
+}
+
+#[test]
 fn choosing_a_theme_fades_the_old_one_out_then_the_window_rests() {
     for (from, to, shows) in [
-        (ThemePreference::Dark, "Light", egui::Theme::Light),
+        (Choice::Dark, "Light", egui::Theme::Light),
         // The harness's system theme is dark.
-        (ThemePreference::Light, "System", egui::Theme::Dark),
+        (Choice::Light, "System", egui::Theme::Dark),
+        // Dark and light too, in other colours.
+        (Choice::Dark, "Greaseweazle v4.1", egui::Theme::Dark),
+        (Choice::Light, "Classic", egui::Theme::Light),
     ] {
         let mut w = settings_from(from, Harness::builder());
         w.get_by_label(to).click();
@@ -2535,7 +2672,7 @@ fn choosing_a_theme_fades_the_old_one_out_then_the_window_rests() {
 
 #[test]
 fn a_long_frame_as_the_fade_begins_does_not_skip_it() {
-    let mut w = settings_from(ThemePreference::Dark, Harness::builder());
+    let mut w = settings_from(Choice::Dark, Harness::builder());
     let mut time = w.ctx.input(|i| i.time);
     let mut frame = |w: &mut Window, dt: f64| {
         time += dt;
@@ -2576,7 +2713,7 @@ impl TestRenderer for Blind {
 
 #[test]
 fn with_no_screenshot_to_fade_the_theme_changes_at_once() {
-    let mut w = settings_from(ThemePreference::Dark, Harness::builder().renderer(Blind));
+    let mut w = settings_from(Choice::Dark, Harness::builder().renderer(Blind));
     w.get_by_label("Light").click();
     w.run();
     assert_eq!(w.ctx.theme(), egui::Theme::Light);
@@ -2587,7 +2724,7 @@ fn with_no_screenshot_to_fade_the_theme_changes_at_once() {
 fn a_window_too_big_for_one_texture_changes_theme_at_once() {
     // The harness's largest texture is 2048 pixels, the window 2080 wide.
     let builder = Harness::builder().with_pixels_per_point(2.0);
-    let mut w = settings_from(ThemePreference::Dark, builder);
+    let mut w = settings_from(Choice::Dark, builder);
     w.get_by_label("Light").click();
     w.run();
     assert_eq!(w.ctx.theme(), egui::Theme::Light);

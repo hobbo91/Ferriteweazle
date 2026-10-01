@@ -15,8 +15,7 @@ use crate::udev;
 use crate::update::{self, Install, Update};
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, RichText, Sense,
-    Stroke, TextEdit, TextStyle, Theme, ThemePreference, Ui, UserAttentionType, Vec2,
-    ViewportCommand, pos2, vec2,
+    Stroke, TextEdit, TextStyle, Theme, Ui, UserAttentionType, Vec2, ViewportCommand, pos2, vec2,
 };
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -77,6 +76,8 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
 
 /// Why a command that uses the device cannot run.
 const NO_DEVICE: &str = "Connect a Greaseweazle.";
+/// Why a copy built from source cannot update itself.
+const FROM_SOURCE: &str = "Needs a copy installed from a release.";
 /// Why Detect greys for a gw with no Python the bridge can run in.
 const STANDALONE_DETECT: &str = "Standalone Greaseweazle Tools cannot run Detect.";
 /// Why Restart and Update grey when no gw is found.
@@ -106,9 +107,9 @@ const GW_REPO: &str = "https://github.com/keirf/greaseweazle";
 const GW_GUIDE: &str = "https://github.com/keirf/greaseweazle/wiki/Getting-Started";
 const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 
-/// The window as it opens, in points: wide enough for the Read page's Folder
-/// field to show /Users/someone/Documents/Ferriteweazle/Images whole, and as tall
-/// as 21-point squares need, which fits a 1920x1080 screen at 125% on Windows 11.
+/// The window as it opens, in points: wide enough for Disk format to show
+/// "Sequential Circuits · sci.prophet" whole, and as tall as 21-point squares
+/// need, which fits a 1920x1080 screen at 125% on Windows 11.
 pub const WINDOW: egui::Vec2 = egui::vec2(1050.0, 773.0);
 /// The smallest window, in points: fits a 1024 by 600 screen, or 1366 by 768 at 125%,
 /// beside a taskbar.
@@ -168,7 +169,7 @@ impl Default for Page {
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
-    pub theme: ThemePreference,
+    pub theme: theme::Choice,
     /// A Python or `gw` to use instead of the one found automatically.
     pub tools: Option<PathBuf>,
     /// Empty for gw's own choice.
@@ -258,7 +259,7 @@ enum Dialog {
 #[derive(Default)]
 struct Fade {
     /// The theme to change to once the screenshot comes, and frames waited for it.
-    asked: Option<(ThemePreference, u32)>,
+    asked: Option<(theme::Choice, u32)>,
     /// The old theme's last frame, and how long it has faded, in seconds.
     shown: Option<(egui::TextureHandle, f32)>,
 }
@@ -377,7 +378,9 @@ pub struct App {
     /// The gw chosen in Settings as last kept in tools_file().
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
-    kept_theme: ThemePreference,
+    kept_theme: theme::Choice,
+    /// Classic in the accent last chosen for it: Classic itself (blue) or Teal.
+    classic: theme::Choice,
     /// The delays gw delays last reported, and the port of the Greaseweazle
     /// they are of: kept while another run of it goes on.
     delays: Option<(String, BTreeMap<&'static str, String>)>,
@@ -443,11 +446,13 @@ impl App {
         app.kept_tools = tools;
         app.kept_theme = theme;
         app.copy = Install::this();
-        app.stuck = app.copy.as_ref().and_then(Install::stuck);
+        app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
         app.dismissed = kept_dismissed(&dismissed_file());
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
-        update::tidy();
+        if let Some(copy) = &app.copy {
+            update::tidy(copy);
+        }
         app.look_for_updates(&cc.egui_ctx);
         #[cfg(target_os = "linux")]
         {
@@ -465,8 +470,12 @@ impl App {
     /// A window over a known schema, with no Greaseweazle Tools to run anything.
     pub fn offline(ctx: &egui::Context, settings: Settings, schema: Result<Schema, String>) -> App {
         theme::install(ctx);
-        ctx.set_theme(settings.theme);
+        theme::apply(ctx, settings.theme);
         let known = schema.as_ref().ok().cloned().map(Arc::new);
+        let classic = match settings.theme {
+            theme::Choice::Teal => theme::Choice::Teal,
+            _ => theme::Choice::Classic,
+        };
         App {
             settings,
             tools: None,
@@ -490,7 +499,8 @@ impl App {
             kept_drive: String::new(),
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
-            kept_theme: ThemePreference::System,
+            kept_theme: theme::Choice::System,
+            classic,
             delays: None,
             found_note: None,
             format_fits: BTreeMap::new(),
@@ -501,7 +511,7 @@ impl App {
             gw_update: Update::default(),
             app_update: Update::default(),
             copy: None,
-            stuck: None,
+            stuck: Some(FROM_SOURCE),
             dismissed: None,
             presets: None,
             applied: BTreeMap::new(),
@@ -559,11 +569,11 @@ impl App {
         {
             self.connect(ctx);
         }
-        let installing = matches!(self.app_update, Update::Installing(..));
+        let was_installing = installing(&self.app_update);
         if self.app_update.poll(Some(env!("CARGO_PKG_VERSION")))
             && let (Update::Latest(tag), Some(install)) = (&self.app_update, &self.copy)
         {
-            install.relaunch(tag.trim_start_matches('v'));
+            install.relaunch(update::bare(tag));
             ctx.send_viewport_cmd(ViewportCommand::Close);
         } else if matches!(self.app_update, Update::Failed(_))
             && let Some(tools) = &self.tools
@@ -574,8 +584,8 @@ impl App {
             self.service = Service::start(tools, repaint(ctx));
             self.service.seed_ports(ports);
         }
-        // The page its banner was on says why an install failed.
-        if installing
+        // The page shown says why an install failed.
+        if was_installing
             && let (Update::Failed(why), Page::Command(page)) =
                 (&self.app_update, &self.settings.page)
         {
@@ -745,6 +755,9 @@ impl App {
         }
         self.dialogs(&ctx);
         size_corner(&ctx);
+        if p.win9x {
+            theme::square(&ctx);
+        }
     }
 
     /// Keeps the window's size for the next run once it settles, and fits a
@@ -793,22 +806,22 @@ impl App {
     }
 
     /// Changes the theme, cross-fading when the window will look different.
-    fn choose_theme(&mut self, ctx: &egui::Context, pref: ThemePreference) {
-        self.settings.theme = pref;
-        let next = match pref {
-            ThemePreference::Dark => Theme::Dark,
-            ThemePreference::Light => Theme::Light,
-            ThemePreference::System => ctx
-                .system_theme()
-                .unwrap_or_else(|| ctx.options(|o| o.fallback_theme)),
+    fn choose_theme(&mut self, ctx: &egui::Context, choice: theme::Choice) {
+        let looks = |choice| match choice {
+            theme::Choice::System => (ctx.system_theme())
+                .unwrap_or_else(|| ctx.options(|o| o.fallback_theme))
+                .into(),
+            choice => choice,
         };
-        if next == ctx.theme() {
-            ctx.set_theme(pref);
+        let same = looks(self.settings.theme) == looks(choice);
+        self.settings.theme = choice;
+        if same {
+            theme::apply(ctx, choice);
             self.fade.asked = None;
         } else {
             let shot = egui::UserData::new(FadeShot);
             ctx.send_viewport_cmd(ViewportCommand::Screenshot(shot));
-            self.fade.asked = Some((pref, 0));
+            self.fade.asked = Some((choice, 0));
         }
     }
 
@@ -840,7 +853,7 @@ impl App {
         if let Some((_, faded)) = &mut self.fade.shown {
             *faded += ctx.input(|i| i.stable_dt).min(FADE_STEP);
         }
-        if let Some((pref, waited)) = &mut self.fade.asked {
+        if let Some((choice, waited)) = &mut self.fade.asked {
             let (shot, side) = ctx.input(|i| {
                 let shot = i.events.iter().find_map(|e| match e {
                     egui::Event::Screenshot {
@@ -859,7 +872,7 @@ impl App {
                 self.fade.shown = Some((old, 0.0));
             }
             if got || *waited >= FADE_WAIT {
-                ctx.set_theme(*pref);
+                theme::apply(ctx, *choice);
                 self.fade.asked = None;
             } else {
                 *waited += 1;
@@ -1789,7 +1802,7 @@ impl App {
                     ui.add_space(10.0);
                     let reported = (name == "delays").then(|| self.reported_delays()).flatten();
                     let values = self.settings.values.entry(name.to_owned()).or_default();
-                    let action = Form {
+                    let form = Form {
                         schema: &schema,
                         cmd,
                         values,
@@ -1799,8 +1812,10 @@ impl App {
                         adafruit: self.settings.kind == Kind::Adafruit,
                         standalone: self.tools.as_ref().is_some_and(|t| t.standalone),
                         reported: reported.as_ref(),
-                    }
-                    .show(ui);
+                    };
+                    // Under ids of its own, so a banner coming above it leaves a box focused.
+                    let ids = egui::UiBuilder::new().id(Id::new(("form", name)));
+                    let action = ui.scope_builder(ids, |ui| form.show(ui)).inner;
                     // After the form, which names the page's images.
                     if self.fit_format(&schema, cmd) {
                         ui.ctx().request_repaint();
@@ -1953,7 +1968,7 @@ impl App {
             ] {
                 ui.add_space(6.0);
                 let open = self.settings.drawer == Some(drawer);
-                let button = egui::Button::new(RichText::new(text).strong())
+                let button = egui::Button::new(text)
                     .selected(open)
                     .min_size(vec2(70.0, 40.0))
                     .corner_radius(8);
@@ -1991,6 +2006,12 @@ impl App {
         {
             // The page holds the last line that parsed, not the one shown.
             Some(CLI_FAULT.to_owned())
+        } else if let Some(why) = (device && self.settings.kind == Kind::Adafruit)
+            .then(|| adafruit::command(&cmd.name))
+            .flatten()
+        {
+            // The board never runs these, connected or not.
+            Some(why.to_owned())
         } else if device && !self.connected() {
             Some(self.no_device().into_owned())
         } else if let Some(why) = device.then(|| self.adafruit_fault(cmd, values)).flatten() {
@@ -2010,9 +2031,6 @@ impl App {
     fn adafruit_fault(&self, cmd: &Command, values: &Values) -> Option<&'static str> {
         if self.settings.kind != Kind::Adafruit {
             return None;
-        }
-        if let Some(why) = adafruit::command(&cmd.name) {
-            return Some(why);
         }
         let drive = self.drive();
         if cmd.arg("drive").is_some() && !adafruit::DRIVES.contains(&drive.as_str()) {
@@ -2598,35 +2616,40 @@ impl App {
         ui.add_space(4.0);
         // Two rows, then it scrolls inside its frame.
         let rows = 2.0 * ui.text_style_height(&TextStyle::Monospace);
-        let visuals = ui.visuals();
-        let stroke = match ui.memory(|m| m.has_focus(id)) {
-            true => visuals.selection.stroke,
-            false => visuals.widgets.inactive.bg_stroke,
-        };
-        let edit = Frame::new()
-            .fill(visuals.text_edit_bg_color())
-            .stroke(stroke)
-            .corner_radius(visuals.widgets.inactive.corner_radius)
-            .inner_margin(Margin::symmetric(6, 4))
-            .show(ui, |ui| {
-                ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                    bar_width: 4.0,
-                    ..egui::style::ScrollStyle::solid()
+        let edit = ui
+            .scope(|ui| {
+                let p = theme::terminal(ui);
+                let visuals = ui.visuals();
+                let stroke = match ui.memory(|m| m.has_focus(id)) {
+                    true => visuals.selection.stroke,
+                    false => visuals.widgets.inactive.bg_stroke,
                 };
-                ui.visuals_mut().widgets.inactive.bg_fill = p.line;
-                egui::ScrollArea::vertical()
-                    .id_salt("cli")
-                    .max_height(rows)
-                    .min_scrolled_height(rows)
+                Frame::new()
+                    .fill(visuals.text_edit_bg_color())
+                    .stroke(stroke)
+                    .corner_radius(visuals.widgets.inactive.corner_radius)
+                    .inner_margin(Margin::symmetric(6, 4))
                     .show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut cli.text)
-                                .id(id)
-                                .font(TextStyle::Monospace)
-                                .frame(Frame::NONE)
-                                .desired_rows(2)
-                                .desired_width(f32::INFINITY),
-                        )
+                        ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                            bar_width: 4.0,
+                            ..egui::style::ScrollStyle::solid()
+                        };
+                        ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+                        egui::ScrollArea::vertical()
+                            .id_salt("cli")
+                            .max_height(rows)
+                            .min_scrolled_height(rows)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    TextEdit::multiline(&mut cli.text)
+                                        .id(id)
+                                        .font(TextStyle::Monospace)
+                                        .frame(Frame::NONE)
+                                        .desired_rows(2)
+                                        .desired_width(f32::INFINITY),
+                                )
+                            })
+                            .inner
                     })
                     .inner
             })
@@ -2749,14 +2772,33 @@ impl App {
         let p = theme::palette(ui);
         section(ui, "Theme", |ui| {
             ui.horizontal(|ui| {
-                for (pref, text, tip) in [
-                    (ThemePreference::System, "System", "Follow the system."),
-                    (ThemePreference::Light, "Light", "Always light."),
-                    (ThemePreference::Dark, "Dark", "Always dark."),
-                ] {
-                    let r = ui.selectable_label(self.settings.theme == pref, text);
-                    if r.on_hover_text(tip).clicked() {
-                        self.choose_theme(ui.ctx(), pref);
+                for (choice, text, tip, _) in theme::CHOICES {
+                    // Teal is Classic's other accent, in Classic's right-click menu.
+                    if choice == theme::Choice::Teal {
+                        continue;
+                    }
+                    let classic = choice == theme::Choice::Classic;
+                    let choice = if classic { self.classic } else { choice };
+                    let r = ui
+                        .selectable_label(self.settings.theme == choice, text)
+                        .on_hover_text(tip);
+                    if r.clicked() {
+                        self.choose_theme(ui.ctx(), choice);
+                    }
+                    if classic {
+                        r.context_menu(|ui| {
+                            ui.set_width(100.0);
+                            for (accent, name) in [
+                                (theme::Choice::Classic, "Blue"),
+                                (theme::Choice::Teal, "Teal"),
+                            ] {
+                                if ticked(ui, self.classic == accent, name).clicked() {
+                                    self.classic = accent;
+                                    self.choose_theme(ui.ctx(), accent);
+                                    ui.close();
+                                }
+                            }
+                        });
                     }
                 }
             });
@@ -3385,11 +3427,7 @@ impl App {
             Some(_) => self.app_update.summary(env!("CARGO_PKG_VERSION")),
             None => ("This copy was built from source.".into(), None),
         };
-        let stuck = match self.copy {
-            None => Some("Needs a copy installed from a release."),
-            Some(_) => self.stuck,
-        };
-        let (can, tip) = match stuck {
+        let (can, tip) = match self.stuck {
             Some(why) => (false, why.to_owned()),
             None => self.update_button(&self.app_update, "Ferriteweazle"),
         };
@@ -3517,7 +3555,7 @@ impl App {
     /// preset it last loaded or saved where its right-click menu ticks that.
     fn reset_button(&mut self, ui: &mut Ui, page: &str) {
         let applied = self.applied.get(page);
-        let (preset, to_preset) = (applied.is_some(), applied.is_some_and(|a| a.reset_to));
+        let (loaded, to_preset) = (applied.is_some(), applied.is_some_and(|a| a.reset_to));
         let can = match applied.filter(|a| a.reset_to) {
             Some(a) => !self.holds(page, &a.preset),
             None => self.changed(page),
@@ -3530,7 +3568,7 @@ impl App {
                 "Reset this page. Right-click to choose default or preset.",
             ),
             false => (
-                ui.interact(button.rect, button.id.with("menu"), Sense::click()),
+                ui.interact(button.rect, button.id.with("menu"), Sense::CLICK),
                 "No changes. Right-click to choose default or preset.",
             ),
         };
@@ -3542,7 +3580,7 @@ impl App {
             if ticked(ui, !to_preset, "Page to default").clicked() {
                 choice = Some(false);
             }
-            let current = ui.add_enabled_ui(preset, |ui| ticked(ui, to_preset, "Current preset"));
+            let current = ui.add_enabled_ui(loaded, |ui| ticked(ui, to_preset, "Current preset"));
             if current
                 .inner
                 .on_disabled_hover_text("No preset loaded.")
@@ -4322,28 +4360,31 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
     });
     // A command to a line, never broken: the box scrolls sideways instead,
     // with a bar that shows there is more.
-    Frame::new()
-        .fill(p.card)
-        .stroke(Stroke::new(1.0, p.line))
-        .corner_radius(6)
-        .inner_margin(8)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                foreground_color: true,
-                dormant_handle_opacity: 0.35,
-                ..egui::style::ScrollStyle::thin()
-            };
-            egui::ScrollArea::horizontal()
-                .id_salt("udev-commands")
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    for command in &commands {
-                        let text = RichText::new(command).monospace();
-                        ui.add(egui::Label::new(text).extend().selectable(true));
-                    }
-                });
-        });
+    ui.scope(|ui| {
+        let p = theme::terminal(ui);
+        Frame::new()
+            .fill(p.card)
+            .stroke(Stroke::new(1.0, p.line))
+            .corner_radius(6)
+            .inner_margin(8)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                    foreground_color: true,
+                    dormant_handle_opacity: 0.35,
+                    ..egui::style::ScrollStyle::thin()
+                };
+                egui::ScrollArea::horizontal()
+                    .id_salt("udev-commands")
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for command in &commands {
+                            let text = RichText::new(command).monospace();
+                            ui.add(egui::Label::new(text).extend().selectable(true));
+                        }
+                    });
+            });
+    });
     ui.hyperlink_to("Greaseweazle Tools' Linux instructions", udev::WIKI)
         .on_hover_text(udev::WIKI);
     pressed
@@ -4377,7 +4418,6 @@ const OUTPUT_HEIGHT: f32 = 260.0;
 /// Clear, or a job's in a box of its own. Gives whether Clear was pressed,
 /// and why a save failed.
 fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
-    let p = theme::palette(ui);
     let (heading, log, tail) = match shown {
         Shown::Log(log, tail) => ("Log", log.lines(), tail),
         Shown::Job(job) => ("Output", job.log.as_slice(), job.partial.as_str()),
@@ -4421,59 +4461,62 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             }
         });
     });
-    let frame = Frame::new()
-        .fill(p.card)
-        .stroke(Stroke::new(1.0, p.line))
-        .corner_radius(8)
-        .inner_margin(8);
-    // Exactly the room left: a drawer a little taller than its contents
-    // would shrink to them, frame by frame.
-    let room = || ui.available_height() - frame.total_margin().sum().y;
-    let height = match drawer {
-        true => room(),
-        false => OUTPUT_HEIGHT,
-    }
-    .max(LOG_LINE);
-    frame.show(ui, |ui| {
-        if log.is_empty() && tail.is_empty() {
-            let least = if drawer { height } else { height.min(80.0) };
-            ui.set_min_size(vec2(ui.available_width(), least));
-            let empty = match shown {
-                Shown::Job(job) if !job.running() => "Greaseweazle Tools printed no output.",
-                _ => "Greaseweazle Tools' output appears here.",
-            };
-            ui.label(RichText::new(empty).weak());
-            return;
+    ui.scope(|ui| {
+        let p = theme::terminal(ui);
+        let frame = Frame::new()
+            .fill(p.card)
+            .stroke(Stroke::new(1.0, p.line))
+            .corner_radius(8)
+            .inner_margin(8);
+        // Exactly the room left: a drawer a little taller than its contents
+        // would shrink to them, frame by frame.
+        let room = || ui.available_height() - frame.total_margin().sum().y;
+        let height = match drawer {
+            true => room(),
+            false => OUTPUT_HEIGHT,
         }
-        let row = ui.text_style_height(&TextStyle::Monospace);
-        // A line gw has not ended yet comes last.
-        let lines = log.len() + usize::from(!tail.is_empty());
-        // Bars drawn whenever there is more to see, as a text view's: a
-        // floating one hides until hovered, and a wheel does not scroll
-        // sideways. The theme paints an idle handle in the card's colour.
-        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-        ui.visuals_mut().widgets.inactive.bg_fill = p.line;
-        egui::ScrollArea::both()
-            .id_salt("log")
-            .stick_to_bottom(true)
-            .auto_shrink([false, false])
-            .max_height(height)
-            .min_scrolled_height(height)
-            .show_rows(ui, row, lines, |ui, rows| {
-                for i in rows {
-                    let line = log.get(i).map_or(tail, String::as_str);
-                    let before = i.checked_sub(1).map(|b| log[b].as_str());
-                    let colour = match shown {
-                        Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
-                        _ => log_colour(line, before, p),
-                    };
-                    let mut text = RichText::new(line).monospace();
-                    if let Some(colour) = colour {
-                        text = text.color(colour);
+        .max(LOG_LINE);
+        frame.show(ui, |ui| {
+            if log.is_empty() && tail.is_empty() {
+                let least = if drawer { height } else { height.min(80.0) };
+                ui.set_min_size(vec2(ui.available_width(), least));
+                let empty = match shown {
+                    Shown::Job(job) if !job.running() => "Greaseweazle Tools printed no output.",
+                    _ => "Greaseweazle Tools' output appears here.",
+                };
+                ui.label(RichText::new(empty).weak());
+                return;
+            }
+            let row = ui.text_style_height(&TextStyle::Monospace);
+            // A line gw has not ended yet comes last.
+            let lines = log.len() + usize::from(!tail.is_empty());
+            // Bars drawn whenever there is more to see, as a text view's: a
+            // floating one hides until hovered, and a wheel does not scroll
+            // sideways. The theme paints an idle handle in the card's colour.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+            egui::ScrollArea::both()
+                .id_salt("log")
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .max_height(height)
+                .min_scrolled_height(height)
+                .show_rows(ui, row, lines, |ui, rows| {
+                    for i in rows {
+                        let line = log.get(i).map_or(tail, String::as_str);
+                        let before = i.checked_sub(1).map(|b| log[b].as_str());
+                        let colour = match shown {
+                            Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
+                            _ => log_colour(line, before, p),
+                        };
+                        let mut text = RichText::new(line).monospace();
+                        if let Some(colour) = colour {
+                            text = text.color(colour);
+                        }
+                        ui.add(egui::Label::new(text).extend().selectable(true));
                     }
-                    ui.add(egui::Label::new(text).extend().selectable(true));
-                }
-            });
+                });
+        });
     });
     (clear, unsaved)
 }
@@ -4535,21 +4578,15 @@ fn theme_file() -> PathBuf {
     crate::data_folder().join("theme.txt")
 }
 
-fn kept_theme(file: &Path) -> ThemePreference {
-    match std::fs::read_to_string(file).unwrap_or_default().trim() {
-        "dark" => ThemePreference::Dark,
-        "light" => ThemePreference::Light,
-        _ => ThemePreference::System,
-    }
+fn kept_theme(file: &Path) -> theme::Choice {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let kept = theme::CHOICES.iter().find(|c| c.3 == text.trim());
+    kept.map_or(theme::Choice::System, |c| c.0)
 }
 
-fn keep_theme(file: &Path, theme: ThemePreference) {
-    let text = match theme {
-        ThemePreference::Dark => Some("dark".to_owned()),
-        ThemePreference::Light => Some("light".to_owned()),
-        ThemePreference::System => None,
-    };
-    keep(file, text);
+fn keep_theme(file: &Path, choice: theme::Choice) {
+    let word = theme::CHOICES.iter().find(|c| c.0 == choice).map(|c| c.3);
+    keep(file, word.filter(|w| !w.is_empty()).map(String::from));
 }
 
 /// Where the drive identifier is kept between runs.
@@ -4853,15 +4890,13 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), NAV_ROW), Sense::click());
     let p = theme::palette(ui);
-    let fill = if selected {
-        p.accent.gamma_multiply(0.16)
-    } else if response.hovered() {
-        p.hover
-    } else {
-        Color32::TRANSPARENT
+    let (fill, colour) = match (selected, p.win9x) {
+        (true, true) => (p.accent, p.on_accent),
+        (true, false) => (p.accent.gamma_multiply(0.16), p.accent),
+        (false, _) if response.hovered() => (p.hover, p.text),
+        (false, _) => (Color32::TRANSPARENT, p.text),
     };
     ui.painter().rect_filled(rect, CornerRadius::same(7), fill);
-    let colour = if selected { p.accent } else { p.text };
     ui.painter().text(
         pos2(rect.left() + 10.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -4875,7 +4910,7 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
             Align2::RIGHT_CENTER,
             note,
             FontId::proportional(12.0),
-            p.dim,
+            if selected && p.win9x { colour } else { p.dim },
         );
     }
     let enabled = ui.is_enabled();
@@ -5134,7 +5169,7 @@ mod tests {
     #[test]
     fn a_newer_release_is_offered_until_dismissed_and_a_later_one_again() {
         let mut app = offline();
-        app.copy = Some(Install::Folder(PathBuf::from("/opt/Ferriteweazle")));
+        (app.copy, app.stuck) = (Some(Install::Folder(PathBuf::from("/opt/F"))), None);
         app.app_update = Update::Newer("v9.9.0".into());
         let mut w = window(app);
         w.get_by_label("Ferriteweazle 9.9.0 is available.");
@@ -5167,15 +5202,21 @@ mod tests {
     fn the_theme_is_kept_and_system_keeps_no_file() {
         let dir = std::env::temp_dir().join(format!("ferriteweazle-theme-{}", std::process::id()));
         let file = dir.join("theme.txt");
-        assert_eq!(kept_theme(&file), ThemePreference::System);
-        for theme in [ThemePreference::Light, ThemePreference::Dark] {
+        assert_eq!(kept_theme(&file), theme::Choice::System);
+        for theme in [
+            theme::Choice::Light,
+            theme::Choice::Dark,
+            theme::Choice::Classic,
+            theme::Choice::Teal,
+            theme::Choice::Greaseweazle,
+        ] {
             keep_theme(&file, theme);
             assert_eq!(kept_theme(&file), theme);
         }
-        keep_theme(&file, ThemePreference::System);
+        keep_theme(&file, theme::Choice::System);
         assert!(!file.exists(), "System is the default");
         std::fs::write(&file, "purple").unwrap();
-        assert_eq!(kept_theme(&file), ThemePreference::System);
+        assert_eq!(kept_theme(&file), theme::Choice::System);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5866,7 +5907,7 @@ mod tests {
             app.follow_desktop(&ctx);
             assert_eq!(ctx.theme(), theme);
         }
-        ctx.set_theme(ThemePreference::Dark);
+        ctx.set_theme(egui::ThemePreference::Dark);
         desktop.send(Theme::Light).unwrap();
         app.follow_desktop(&ctx);
         assert_eq!(ctx.theme(), Theme::Dark, "a theme chosen in Settings wins");
@@ -5894,9 +5935,9 @@ mod tests {
         desktop.send(Theme::Light).unwrap();
         assert_eq!(frames(&mut app), [light()]);
         assert_eq!(frames(&mut app), [], "only when the theme changes");
-        ctx.set_theme(ThemePreference::Dark);
+        ctx.set_theme(egui::ThemePreference::Dark);
         assert_eq!(frames(&mut app), [dark], "a theme chosen in Settings too");
-        ctx.set_theme(ThemePreference::System);
+        ctx.set_theme(egui::ThemePreference::System);
         assert_eq!(frames(&mut app), [light()]);
     }
 
@@ -6667,6 +6708,29 @@ mod tests {
             let why = app.why_not(&schema, schema.command(name).unwrap());
             assert_eq!(why.as_deref(), Some(NO_DEVICE), "{name}");
         }
+        // What the Adafruit RP2040 never runs says so first.
+        app.settings.kind = Kind::Adafruit;
+        let why = app.why_not(&schema, schema.command("erase").unwrap());
+        assert_eq!(why.as_deref(), adafruit::command("erase"));
+        assert!(why.is_some());
+    }
+
+    #[test]
+    fn a_banner_coming_above_the_form_leaves_its_box_focused() {
+        let mut app = offline();
+        app.stuck = None;
+        let mut w = window(app);
+        w.get_all_by_role(egui::accesskit::Role::TextInput)
+            .next()
+            .expect("a box")
+            .click();
+        w.run_steps(2);
+        let focused = w.ctx.memory(|m| m.focused());
+        assert!(focused.is_some());
+        w.state_mut().app_update = Update::Newer("v9.9.0".into());
+        w.run_steps(2);
+        w.get_by_label("Ferriteweazle 9.9.0 is available.");
+        assert_eq!(w.ctx.memory(|m| m.focused()), focused);
     }
 
     #[test]

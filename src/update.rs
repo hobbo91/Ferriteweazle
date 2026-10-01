@@ -180,7 +180,7 @@ impl Install {
             .then(|| Install::Folder(dir.to_path_buf()))
     }
 
-    /// Why this copy cannot replace itself, if it cannot. Probes its folder.
+    /// Why this copy cannot replace itself, if it cannot. Tries a file in a Windows folder.
     pub fn stuck(&self) -> Option<&'static str> {
         match self {
             Install::MacApp(app) => {
@@ -191,7 +191,7 @@ impl Install {
                     "macOS runs Ferriteweazle read-only from the disk image: drag it to Applications first.",
                 )
             }
-            // Windows has no administrator prompt to move a folder's files.
+            // Its files are renamed by this account: there is no elevated rename.
             Install::Folder(dir) if cfg!(windows) && !writable(dir) => {
                 Some("This account cannot change this folder: move Ferriteweazle to one it can.")
             }
@@ -276,11 +276,8 @@ impl Install {
 /// Deletes what the last update left: the old program and data beside a
 /// Windows folder, which could not go while they ran, and the download,
 /// which msiexec still reads after the window closes.
-pub fn tidy() {
-    let Some(install) = Install::this() else {
-        return;
-    };
-    if let Install::Folder(dir) = &install {
+pub fn tidy(install: &Install) {
+    if let Install::Folder(dir) = install {
         for name in [program(), tools::DATA.into()] {
             let old = dir.join(format!("{name}.old"));
             remove(&old);
@@ -386,7 +383,7 @@ fn swap_script(pairs: &[(PathBuf, PathBuf)]) -> String {
     )
 }
 
-/// Whether this account can make files in `dir`; if not, a swap there runs as root.
+/// Whether this account can make files in `dir`.
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".ferriteweazle-{}", std::process::id()));
     let made = std::fs::File::create(&probe).is_ok();
