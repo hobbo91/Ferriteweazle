@@ -7,5 +7,6 @@
     "read/file": {
       "ext": ".scp"
     }
-  }
+  },
+  "description": "A 40-track disk, read on every other track. Some high density drives also need Density select set to Low."
 }

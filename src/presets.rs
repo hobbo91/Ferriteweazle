@@ -160,7 +160,7 @@ mod tests {
         let schema: crate::schema::Schema =
             serde_json::from_str(include_str!("gw-1.23.json")).unwrap();
         let examples = examples();
-        assert_eq!(examples.len(), 39);
+        assert_eq!(examples.len(), 40);
         for (name, preset) in &examples {
             let cmd = schema.command(&preset.command).unwrap();
             let page = if preset.command == "read" {

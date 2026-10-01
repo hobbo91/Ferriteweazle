@@ -1,0 +1,8 @@
+{
+  "command": "write",
+  "values": {
+    "pre_erase": "on",
+    "tracks": "c=0-39:h=0,1:step=2"
+  },
+  "description": "A 40-track disk, written on every other track, each erased first. Some high density drives also need Density select set to Low. If a 40-track drive wrote the disk before, it may not read it after."
+}
