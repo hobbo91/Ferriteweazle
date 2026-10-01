@@ -8,5 +8,6 @@
     "read/file": {
       "ext": ".scp"
     }
-  }
+  },
+  "description": "Both sides of any 8in disk, single or double density."
 }

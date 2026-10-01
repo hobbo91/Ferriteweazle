@@ -6919,7 +6919,7 @@ mod tests {
         assert_eq!(tracks(&w), "c=0-9");
         let preset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("presets")
-            .join("Read Amiga 880 KB, 84 cylinders.json");
+            .join("Read Amiga 880 KB, 84 cyl.json");
         w.state_mut().load_preset("read", &preset);
         w.run_steps(2);
         assert_eq!(tracks(&w), "c=0-83");

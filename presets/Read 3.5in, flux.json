@@ -8,5 +8,6 @@
     "read/file": {
       "ext": ".scp"
     }
-  }
+  },
+  "description": "Both sides of any 3.5in disk, such as an Amiga HD or a 2.88 MB ED disk."
 }

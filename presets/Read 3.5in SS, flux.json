@@ -2,11 +2,12 @@
   "command": "read",
   "values": {
     "revs": "3",
-    "tracks": "c=0-76:h=0,1"
+    "tracks": "c=0-79:h=0"
   },
   "outputs": {
     "read/file": {
       "ext": ".scp"
     }
-  }
+  },
+  "description": "Any single-sided 3.5in disk, such as the Atari ST's 360 KB."
 }

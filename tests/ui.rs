@@ -501,7 +501,7 @@ fn the_presets_menu_ticks_the_preset_the_page_loaded() {
 #[test]
 fn a_preset_name_too_long_for_the_menu_is_cut_in_the_middle_and_whole_on_hover() {
     let folder = std::env::temp_dir().join(format!("fw-cut-{}", std::process::id()));
-    let name = "Read 5.25in 360 KB as flux in an 80-track drive, 42 cylinders";
+    let name = "Read 5.25in 40-track, 80-track drive, flux, 42 cyl";
     let preset = Preset {
         command: "read".into(),
         ..Preset::default()
@@ -517,7 +517,7 @@ fn a_preset_name_too_long_for_the_menu_is_cut_in_the_middle_and_whole_on_hover()
     let cut = |c: &egui::epaint::ClippedShape| match &c.shape {
         egui::Shape::Text(t) => {
             let text = t.galley.text();
-            text.starts_with("Read 5.25in") && text.contains('…') && text.ends_with("cylinders")
+            text.starts_with("Read 5.25in") && text.contains('…') && text.ends_with("42 cyl")
         }
         _ => false,
     };
