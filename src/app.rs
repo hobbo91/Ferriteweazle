@@ -4661,7 +4661,7 @@ fn keep_device(file: &Path, kind: Kind, port: &str) {
 /// A menu row with a tick when it is the one chosen of its group.
 fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
     let size = vec2(ui.available_width(), ui.spacing().interact_size.y);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::RadioButton, enabled, on, text)
@@ -4686,7 +4686,12 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
         let galley =
             egui::WidgetText::from(text).into_galley(ui, truncate, width, TextStyle::Button);
         let at = pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0);
+        // Cut short, the whole text shows on hover, above any of the caller's.
+        let cut = galley.elided;
         painter.galley(at, galley, ui.visuals().text_color());
+        if cut {
+            response = response.on_hover_text(text);
+        }
     }
     response
 }

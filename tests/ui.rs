@@ -498,6 +498,32 @@ fn the_presets_menu_ticks_the_preset_the_page_loaded() {
     std::fs::remove_dir_all(folder).ok();
 }
 
+#[test]
+fn a_preset_name_cut_short_in_the_menu_shows_whole_on_hover() {
+    let folder = std::env::temp_dir().join(format!("fw-cut-{}", std::process::id()));
+    let name = "Read 5.25in 360 KB as flux in an 80-track drive, 42 cylinders";
+    let preset = Preset {
+        command: "read".into(),
+        ..Preset::default()
+    };
+    presets::save(&folder, name, &preset).unwrap();
+    let settings = Settings {
+        presets_folder: Some(folder.clone()),
+        ..chosen()
+    };
+    let mut w = window(settings);
+    w.get_by_label("Presets").click();
+    w.run();
+    w.get_by_label(name).hover();
+    w.run();
+    assert_eq!(
+        w.query_all_by_label(name).count(),
+        2,
+        "the row and its hover"
+    );
+    std::fs::remove_dir_all(folder).ok();
+}
+
 /// The page's Reset, right of the sidebar's Reset page.
 fn reset(w: &Window) -> Node<'_> {
     w.get_all_by_role_and_label(Role::Button, "Reset")
