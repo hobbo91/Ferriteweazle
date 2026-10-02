@@ -3016,6 +3016,33 @@ fn a_window_that_opens_in_teal_shows_classic_chosen_in_teal() {
     assert!(shapes.iter().any(|c| teal(&c)), "the sidebar's chosen row");
 }
 
+#[test]
+fn the_vintage_theme_comes_after_classic_light_in_1980s_beige_with_a_green_console() {
+    let mut w = settings_from(Choice::Light, Harness::builder());
+    let button = |w: &Window, name: &str| w.get_by_label(name).rect();
+    let (classic, vintage) = (button(&w, "Classic"), button(&w, "Vintage"));
+    let greaseweazle = button(&w, "Greaseweazle v4.1");
+    assert!(classic.right() < vintage.left() && vintage.right() < greaseweazle.left());
+    w.get_by_label("Vintage").click();
+    w.run();
+    let visuals = w.ctx.style_of(w.ctx.theme()).visuals.clone();
+    assert_eq!(visuals.panel_fill, theme::VINTAGE.bg);
+    assert_eq!(app(&w).settings.theme, Choice::Vintage);
+    // Squared and solid, as Classic is.
+    assert_eq!(visuals.selection.bg_fill, theme::VINTAGE.accent);
+    let cli = window(Settings {
+        theme: Choice::Vintage,
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    });
+    let round = |c: &egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.corner_radius != egui::CornerRadius::ZERO,
+        _ => false,
+    };
+    assert!(!cli.output().shapes.iter().any(round), "a round corner");
+    assert!(on_black(&cli, theme::VINTAGE.console.unwrap()));
+}
+
 /// Whether gw's command line shows in `text` in a black box.
 fn on_black(w: &Window, text: egui::Color32) -> bool {
     let console = |c: &&egui::epaint::ClippedShape| match &c.shape {
@@ -3129,7 +3156,7 @@ fn classic_squares_every_corner_and_writes_on_a_selection_in_its_colour() {
     w.run();
     assert_eq!(text_colour(&w, "CLI"), on);
     assert!(
-        on_black(&w, theme::CONSOLE.text),
+        on_black(&w, theme::CLASSIC.console.unwrap()),
         "the console's light grey"
     );
     // The list of formats opens on the format's family, selected.

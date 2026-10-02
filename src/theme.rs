@@ -16,12 +16,13 @@ pub enum Choice {
     Classic,
     /// Classic in blue, the accent it starts in.
     Blue,
+    Vintage,
     Greaseweazle,
 }
 
 /// Each choice in Settings' order: its name, its hover, and the word theme.txt
 /// keeps. Blue is Classic in the accent it starts in, under Classic's button.
-pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
+pub const CHOICES: [(Choice, &str, &str, &str); 7] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),
     (Choice::Dark, "Dark", "Always dark.", "dark"),
@@ -32,6 +33,12 @@ pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
         "classic",
     ),
     (Choice::Blue, "Blue", "", "blue"),
+    (
+        Choice::Vintage,
+        "Vintage",
+        "Always the '80s (light).",
+        "vintage",
+    ),
     (
         Choice::Greaseweazle,
         "Greaseweazle v4.1",
@@ -49,8 +56,8 @@ impl From<Theme> for Choice {
     }
 }
 
-/// Shows `choice`: Greaseweazle and Classic are egui's dark and light themes
-/// with their own colours in them.
+/// Shows `choice`: Greaseweazle is egui's dark theme, and Classic and Vintage
+/// its light one, with their own colours in them.
 pub fn apply(ctx: &egui::Context, choice: Choice) {
     let (dark, light, shown) = match choice {
         Choice::System => (&DARK, &LIGHT, ThemePreference::System),
@@ -58,6 +65,7 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
         Choice::Dark => (&DARK, &LIGHT, ThemePreference::Dark),
         Choice::Classic => (&DARK, &CLASSIC, ThemePreference::Light),
         Choice::Blue => (&DARK, &BLUE, ThemePreference::Light),
+        Choice::Vintage => (&DARK, &VINTAGE, ThemePreference::Light),
         Choice::Greaseweazle => (&GREASEWEAZLE, &LIGHT, ThemePreference::Dark),
     };
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
@@ -111,8 +119,9 @@ pub struct Palette {
     pub pending: Color32,
     /// Classic GUI look: solid selections and square corners (square()).
     pub classic: bool,
-    /// gw's command lines and output on black, as a console (terminal()).
-    pub console: bool,
+    /// gw's command lines and output on black in this colour, as a console
+    /// (terminal()).
+    pub console: Option<Color32>,
     /// Scroll bars in the text's colour at full strength: white on the purple.
     pub bold_bars: bool,
 }
@@ -137,7 +146,7 @@ pub const DARK: Palette = Palette {
     erased: Color32::from_rgb(107, 114, 128),
     pending: Color32::from_rgb(42, 47, 56),
     classic: false,
-    console: false,
+    console: None,
     bold_bars: false,
 };
 
@@ -161,7 +170,7 @@ pub const LIGHT: Palette = Palette {
     erased: Color32::from_rgb(154, 161, 173),
     pending: Color32::from_rgb(228, 231, 236),
     classic: false,
-    console: false,
+    console: None,
     bold_bars: false,
 };
 
@@ -187,7 +196,7 @@ pub const GREASEWEAZLE: Palette = Palette {
     erased: Color32::from_rgb(130, 112, 150),
     pending: Color32::from_rgb(60, 25, 90),
     classic: false,
-    console: true,
+    console: Some(Color32::from_rgb(238, 230, 247)),
     bold_bars: true,
 };
 
@@ -213,7 +222,8 @@ pub const CLASSIC: Palette = Palette {
     erased: Color32::from_rgb(128, 128, 128),
     pending: Color32::from_rgb(225, 227, 229),
     classic: true,
-    console: true,
+    // The classic console's light grey.
+    console: Some(Color32::from_rgb(192, 192, 192)),
     bold_bars: false,
 };
 
@@ -225,11 +235,30 @@ pub const BLUE: Palette = Palette {
     ..CLASSIC
 };
 
-/// The classic console's light grey on black, for gw's text in Classic.
-pub const CONSOLE: Palette = Palette {
-    card: Color32::BLACK,
-    text: Color32::from_rgb(192, 192, 192),
-    ..DARK
+/// 1980s computers: the beige of their cases, slate for what is chosen, and
+/// a green phosphor screen for gw's text.
+pub const VINTAGE: Palette = Palette {
+    bg: Color32::from_rgb(201, 199, 175),
+    sidebar: Color32::from_rgb(192, 184, 155),
+    card: Color32::from_rgb(238, 241, 219),
+    hover: Color32::from_rgb(227, 225, 201),
+    line: Color32::from_rgb(124, 127, 130),
+    line_strong: Color32::from_rgb(49, 53, 63),
+    text: Color32::from_rgb(49, 53, 63),
+    strong: Color32::from_rgb(49, 53, 63),
+    dim: Color32::from_rgb(78, 84, 88),
+    accent: Color32::from_rgb(72, 91, 99),
+    on_accent: Color32::from_rgb(238, 241, 219),
+    good: Color32::from_rgb(74, 124, 58),
+    partial: Color32::from_rgb(198, 140, 36),
+    bad: Color32::from_rgb(176, 58, 46),
+    flux: Color32::from_rgb(64, 98, 150),
+    written: Color32::from_rgb(128, 76, 140),
+    erased: Color32::from_rgb(124, 127, 130),
+    pending: Color32::from_rgb(227, 225, 201),
+    classic: true,
+    console: Some(Color32::from_rgb(51, 255, 102)),
+    bold_bars: false,
 };
 
 pub const RADIUS: u8 = 6;
@@ -244,7 +273,7 @@ pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 /// shows has an accent of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE];
+    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE, &VINTAGE];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
     shown
         .into_iter()
@@ -259,18 +288,19 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 /// Draws gw's command lines and output with `add`, in the window's palette
-/// or, where that has a console, on black: a dark palette in its own colours,
-/// a light one in the classic console's.
+/// or, where that has a console, on black in the console's colour: a dark
+/// palette's other colours are its own, a light one's Dark's.
 pub fn terminal<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &Palette) -> R) -> R {
     ui.scope(|ui| {
         let p = palette(ui);
-        let console = match (p.console, ui.visuals().dark_mode) {
-            (false, _) => return add(ui, p),
-            (true, true) => Palette {
-                card: Color32::BLACK,
-                ..*p
-            },
-            (true, false) => CONSOLE,
+        let Some(text) = p.console else {
+            return add(ui, p);
+        };
+        let rest = if ui.visuals().dark_mode { p } else { &DARK };
+        let console = Palette {
+            card: Color32::BLACK,
+            text,
+            ..*rest
         };
         *ui.visuals_mut() = visuals(&console, Visuals::dark());
         add(ui, &console)

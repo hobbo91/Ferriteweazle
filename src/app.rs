@@ -5364,6 +5364,7 @@ mod tests {
             theme::Choice::Dark,
             theme::Choice::Classic,
             theme::Choice::Blue,
+            theme::Choice::Vintage,
             theme::Choice::Greaseweazle,
         ] {
             keep_theme(&file, theme);
