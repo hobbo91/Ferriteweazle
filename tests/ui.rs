@@ -2075,6 +2075,42 @@ const REVEAL: &str = if cfg!(target_os = "macos") {
 };
 
 #[test]
+fn a_write_names_the_image_it_takes_and_a_name_past_a_line_is_cut_in_the_middle() {
+    let writing = |image: &str| {
+        let mut job = Job::replay("write", "Writing c=0-79:h=0-1");
+        job.args = vec!["--format=akai.1600".into(), image.to_owned()];
+        job.format = Some("akai.1600".into());
+        job.ended = None;
+        let mut w = start(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        w
+    };
+    writing("/d/Disk07.img").get_by_label_contains("akai.1600  ·  Disk07.img");
+    let long = format!("{}_Disk01_of_12.img", "Samples".repeat(12));
+    let w = writing(&format!("/d/{long}"));
+    let row = w.get_by_label_contains("akai.1600  ·  Samples");
+    let shown = row
+        .accesskit_node()
+        .value()
+        .or(row.accesskit_node().label());
+    let shown = shown.unwrap_or_default();
+    assert!(
+        shown.contains('…') && shown.ends_with("_of_12.img"),
+        "{shown}"
+    );
+    assert!(
+        row.rect().height() < 36.0,
+        "past two lines: {:?}",
+        row.rect()
+    );
+    row.hover();
+    let mut w = w;
+    w.run_steps(8);
+    w.get_by_label(&long);
+}
+
+#[test]
 fn an_image_a_job_left_can_be_shown_in_its_folder() {
     let shown = |command: &str, outcome: Option<Outcome>, no_image: bool| {
         let mut job = Job::replay(command, &damaged_read());

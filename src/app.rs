@@ -2268,11 +2268,10 @@ impl App {
         let Some(tools) = &self.tools else {
             return false;
         };
-        // The image the job writes: gw's last argument, one per disk or image.
-        let output = args
-            .last()
+        // The image the job makes, one per disk or image.
+        let output = image_arg(&args)
             .filter(|_| form::has_output(command))
-            .map(|a| PathBuf::from(a.split("::").next().unwrap_or(a)));
+            .map(Path::to_path_buf);
         if let Some(folder) = output.as_ref().and_then(|p| p.parent()) {
             let _ = std::fs::create_dir_all(folder);
         }
@@ -2392,24 +2391,46 @@ impl App {
             name += &format!(", pass {pass} of {of}");
         }
         ui.add(egui::Label::new(RichText::new(name).size(15.0).strong()).wrap());
-        let file = job
-            .output
-            .as_ref()
-            .and_then(|o| o.file_name())
-            .map(|f| f.to_string_lossy().into_owned());
+        // The image a read or a conversion makes, or a write takes.
+        let image = match job.command.as_str() {
+            "write" => image_arg(&job.args),
+            _ => job.output.as_deref(),
+        };
+        let file = image
+            .and_then(|i| i.file_name())
+            .map(|f| f.to_string_lossy());
         let format = job
             .format
             .as_ref()
             .map(|f| format!("{} {f}", form::family_name(f).replace(' ', "\u{a0}")));
-        let about: Vec<String> = format.into_iter().chain(file).collect();
         let mut show = false;
-        if !about.is_empty() {
+        if format.is_some() || file.is_some() {
             // As tall as its text, and the link runs on after it.
             ui.scope(|ui| {
                 ui.spacing_mut().interact_size.y = 0.0;
                 ui.horizontal_wrapped(|ui| {
-                    let text = RichText::new(about.join("  ·  ")).small().color(p.dim);
-                    ui.add(egui::Label::new(text).wrap());
+                    let mut about = format.unwrap_or_default();
+                    if !about.is_empty() && file.is_some() {
+                        about += "  ·  ";
+                    }
+                    // The row wraps; a name too long for a line of its own is cut
+                    // in the middle, so the row keeps to two.
+                    let small = TextStyle::Small.resolve(ui.style());
+                    let wide = |text: &str| {
+                        let text = text.to_owned();
+                        let galley = ui.painter().layout_no_wrap(text, small.clone(), p.dim);
+                        galley.size().x + ui.spacing().item_spacing.x
+                    };
+                    let link = if image_kept(job) { wide(REVEAL) } else { 0.0 };
+                    let room = ui.available_width() - link;
+                    let name = file.as_deref().map(|f| cut_middle(ui, f, &small, room));
+                    let cut = matches!(name, Some(Cow::Owned(_)));
+                    about += name.as_deref().unwrap_or_default();
+                    let text = RichText::new(about).small().color(p.dim);
+                    let about = ui.add(egui::Label::new(text).wrap());
+                    if cut {
+                        about.on_hover_text(file.as_deref().unwrap_or_default());
+                    }
                     if image_kept(job) {
                         show = ui
                             .link(RichText::new(REVEAL).small())
@@ -4678,10 +4699,13 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
             let line = vec![at(0.1, 0.55), at(0.4, 0.85), at(0.95, 0.2)];
             painter.add(egui::Shape::line(line, Stroke::new(2.0, p.accent)));
         }
-        let (galley, cut) = fit_middle(ui, text, rect.width() - 24.0);
-        let at = pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0);
-        painter.galley(at, galley, ui.visuals().text_color());
+        let font = TextStyle::Button.resolve(ui.style());
+        let shown = cut_middle(ui, text, &font, rect.width() - 24.0);
         // Cut, the whole text shows on hover, above any of the caller's.
+        let cut = matches!(shown, Cow::Owned(_));
+        let at = pos2(rect.left() + 24.0, rect.center().y);
+        let colour = ui.visuals().text_color();
+        painter.text(at, Align2::LEFT_CENTER, shown, font, colour);
         if cut {
             response = response.on_hover_text(text);
         }
@@ -4689,33 +4713,40 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
     response
 }
 
-/// `text` laid out at most `width` wide, cut in the middle if it must be so
-/// that texts differing at either end stay apart; and whether it was cut.
-fn fit_middle(ui: &Ui, text: &str, width: f32) -> (Arc<egui::Galley>, bool) {
-    let font = TextStyle::Button.resolve(ui.style());
-    let layout = |t: String| {
-        ui.painter()
-            .layout_no_wrap(t, font.clone(), Color32::PLACEHOLDER)
+/// `text`, or where it is wider than `width` in `font`, its two ends about
+/// an ellipsis, so that texts differing at either end stay apart.
+fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
+    let wide = |t: &str| {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(t.to_owned(), font.clone(), Color32::PLACEHOLDER);
+        galley.size().x
     };
-    let whole = layout(text.to_owned());
-    if whole.size().x <= width {
-        return (whole, false);
+    let whole = wide(text);
+    if whole <= width {
+        return text.into();
     }
     let chars: Vec<char> = text.chars().collect();
     // From a guess in proportion to the width, a character fewer at a time.
-    let mut keep = (chars.len() as f32 * width / whole.size().x) as usize;
+    let mut keep = (chars.len() as f32 * width / whole) as usize;
     loop {
         let (head, tail) = (keep - keep / 2, keep / 2);
-        let cut = chars[..head]
+        let ends = chars[..head]
             .iter()
             .chain(&['…'])
             .chain(&chars[chars.len() - tail..]);
-        let galley = layout(cut.collect());
-        if galley.size().x <= width || keep == 0 {
-            return (galley, true);
+        let cut: String = ends.collect();
+        if keep == 0 || wide(&cut) <= width {
+            return cut.into();
         }
         keep -= 1;
     }
+}
+
+/// The image a gw command line ends with, without its `::` options.
+fn image_arg(args: &[String]) -> Option<&Path> {
+    args.last()
+        .map(|a| Path::new(a.split("::").next().unwrap_or(a)))
 }
 
 /// Where the window's size is kept between runs.
