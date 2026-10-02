@@ -79,13 +79,17 @@ pub fn show(
     let room = room - legend_height;
     let wanted = (budget - legend_height.max(LEGEND)).min(room);
     let n = sides as f32;
+    // The squares' size that fits `columns` sides side by side, a fraction of
+    // one while side 1 slides.
+    let by_width = |columns: f32| {
+        let each = (width - SIDE_GAP * (columns - 1.0)) / columns;
+        (each - LABEL - (ROW - 1) as f32 * gap) / ROW as f32
+    };
     let cell_in = |across: bool, height: f32, rows: u32| {
         let (columns, stacked) = if across { (n, 1.0) } else { (1.0, n) };
-        let each_width = (width - SIDE_GAP * (columns - 1.0)) / columns;
-        let by_width = (each_width - LABEL - (ROW - 1) as f32 * gap) / ROW as f32;
         let each = (height - STACK_GAP * (stacked - 1.0)) / stacked;
         let by_height = (each - TITLE + gap) / rows as f32 - gap;
-        by_width.min(by_height)
+        by_width(columns).min(by_height)
     };
     // The usual size where it fits, larger where the budget allows.
     let cell_for = |across: bool| {
@@ -96,34 +100,44 @@ pub fn show(
             .max(usual)
             .min(MAX_CELL)
     };
-    // Sides across or stacked, whichever gives larger squares. One side keeps
-    // the way two went, so it slides into place along it.
+    // Sides across or stacked, whichever gives larger squares, but stacked where
+    // the least squares do not fit across. One side keeps the way two went, so
+    // it slides into place along it.
     let across_id = ui.id().with("across");
     let across = match sides {
         2 => {
-            let across = cell_for(true) >= cell_for(false);
+            let across = by_width(2.0) >= MIN_CELL && cell_for(true) >= cell_for(false);
             ui.data_mut(|d| d.insert_temp(across_id, across));
             across
         }
         _ => ui.data(|d| d.get_temp(across_id)).unwrap_or(true),
     };
-    let cell = (cell_for(across).max(MIN_CELL) * ppp).floor() / ppp;
-    let step = cell + gap;
     // Side 1 and the legend slide as rows and sides come and go.
     let tall = slide(ui, egui::Id::new("map rows"), rows as f32);
-    let shown = slide(ui, egui::Id::new("map sides"), n);
-    let grid = vec2(
-        LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
-        TITLE + tall * step - gap,
-    );
+    let shown_id = egui::Id::new("map sides");
+    let mut shown = slide(ui, shown_id, n);
     // Side 1's place from side 0's: below it or beside it, sliding between as
     // the pane's shape changes. The squares are one size where the two meet.
     let (slid, to) = (egui::Id::new("map across"), f32::from(u8::from(across)));
     // A side not shown has no place to slide from: it comes back in its own.
     if shown <= 1.0 {
-        ui.data_mut(|d| d.insert_temp(slid, (to, to, f64::NEG_INFINITY)));
+        settle(ui, slid, to);
     }
-    let beside = slide(ui, slid, to);
+    let mut beside = slide(ui, slid, to);
+    // While side 1 slides, part of it beside side 0, the squares shrink to keep the
+    // map in the pane. With no room for the least of them, the sides take their
+    // places at once.
+    let mut columns = 1.0 + (shown - 1.0) * beside;
+    if by_width(columns) < MIN_CELL {
+        (shown, beside) = (settle(ui, shown_id, n), settle(ui, slid, to));
+        columns = 1.0 + (shown - 1.0) * beside;
+    }
+    let cell = (cell_for(across).min(by_width(columns)).max(MIN_CELL) * ppp).floor() / ppp;
+    let step = cell + gap;
+    let grid = vec2(
+        LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
+        TITLE + tall * step - gap,
+    );
     let apart = vec2(
         beside * (grid.x + SIDE_GAP),
         (1.0 - beside) * (grid.y + STACK_GAP),
@@ -269,6 +283,12 @@ fn slide(ui: &egui::Ui, id: egui::Id, to: f32) -> f32 {
         ui.ctx().request_repaint();
     }
     at(slide)
+}
+
+/// Ends a slide at `to` at once, and gives `to`.
+fn settle(ui: &egui::Ui, id: egui::Id, to: f32) -> f32 {
+    ui.data_mut(|d| d.insert_temp(id, (to, to, f64::NEG_INFINITY)));
+    to
 }
 
 /// A square's fade from the colour it showed when its target last changed.

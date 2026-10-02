@@ -2182,6 +2182,116 @@ fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
     }
 }
 
+/// How far the status pane's rows end from the window's right edge: its margin,
+/// the scroll bar's strip included.
+const STATUS_RIGHT: f32 = 18.0;
+
+/// Asserts the status pane keeps its place at the right of a `width`-point window,
+/// clear of the page, and that every square in it, the map's and the legend's,
+/// ends inside its rows.
+fn assert_status_pane_holds(w: &Window, width: f32, when: &str) {
+    let pane = egui::containers::panel::PanelState::load(&w.ctx, egui::Id::new("status"))
+        .expect("the status pane")
+        .outer_rect;
+    assert!(
+        (pane.right() - width).abs() < 0.5,
+        "{when}: the page runs over the status pane, pushed to {pane:?}"
+    );
+    let right = w
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Rect(r)
+                if r.rect.left() > pane.left()
+                    && r.rect.top() < pane.bottom()
+                    && (r.rect.width() - r.rect.height()).abs() < 0.5 =>
+            {
+                Some(r.rect.right())
+            }
+            _ => None,
+        })
+        .fold(f32::MIN, f32::max);
+    assert!(
+        right <= width - STATUS_RIGHT,
+        "{when}: the map runs to {right}, past the status pane's rows"
+    );
+}
+
+#[test]
+fn at_its_smallest_with_the_log_at_its_tallest_the_window_stacks_the_map_in_the_status_pane() {
+    let small = ferriteweazle::SMALLEST;
+    let mut w = smooth_at(
+        small,
+        Settings {
+            drawer: Some(Drawer::Log),
+            ..chosen()
+        },
+    );
+    w.run();
+    drag_log(&mut w, 300.0);
+    assert_status_pane_holds(&w, small.x, "the log at its tallest");
+    assert!(painted(&w, "Side 1").y > painted(&w, "Side 0").y);
+}
+
+#[test]
+fn the_status_pane_keeps_its_place_and_the_map_inside_it_as_the_window_changes_size() {
+    // Wide and short, the sides sit across; at the smallest, stacked.
+    let (wide, small) = (egui::vec2(1400.0, 600.0), ferriteweazle::SMALLEST);
+    let apart = |w: &Window| painted(w, "Side 1") - painted(w, "Side 0");
+    for drawer in [None, Some(Drawer::Log)] {
+        let mut w = smooth_at(wide, Settings { drawer, ..chosen() });
+        w.run();
+        assert_eq!(
+            apart(&w).y,
+            0.0,
+            "{drawer:?}: not across in the wide window"
+        );
+        // At once, as a window is restored, then a step a frame, as one is dragged.
+        for (steps, from, to) in [
+            (1, wide, small),
+            (1, small, wide),
+            (30, wide, small),
+            (30, small, wide),
+        ] {
+            for frame in 1..=steps + 30 {
+                let t = (frame as f32 / steps as f32).min(1.0);
+                let size = (from + (to - from) * t).round();
+                w.set_size(size);
+                w.step();
+                let when = format!("{drawer:?}, {size:?} on the way to {to:?}, frame {frame}");
+                assert_status_pane_holds(&w, size.x, &when);
+            }
+        }
+        w.set_size(small);
+        w.run();
+        assert_eq!(
+            apart(&w).x,
+            0.0,
+            "{drawer:?}: not stacked in the smallest window"
+        );
+    }
+}
+
+#[test]
+fn the_map_stays_in_the_status_pane_as_side_1_goes_from_beside_side_0_and_comes_back() {
+    // Wide and short, the sides sit across.
+    let size = egui::vec2(1400.0, 600.0);
+    let builder = Harness::builder()
+        .with_size(size)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let mut w = build(builder, chosen(), None);
+    // Past FILL_TIME's fade and SLIDE_TIME's slide.
+    for list in ["h=0", ""] {
+        set(&mut app_mut(&mut w).settings, "read", "tracks", list);
+        for frame in 1..=60 {
+            w.step();
+            assert_status_pane_holds(&w, size.x, &format!("tracks {list:?}, frame {frame}"));
+        }
+    }
+}
+
 #[test]
 fn a_square_lit_after_a_pause_still_fades_from_empty() {
     // Long frames, as when the window has sat idle waiting on gw.

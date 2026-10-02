@@ -2333,13 +2333,18 @@ impl App {
     /// page's idle status. `tall` is the pane's height with no drawer open.
     fn status(&mut self, ui: &mut Ui, page: &str, tall: f32) {
         let full = ui.available_height();
+        // The pane takes no more than its own width, whatever its rows ask, so
+        // the page never runs over it.
+        let pane = ui.available_rect_before_wrap();
+        let mut rows = ui.new_child(egui::UiBuilder::new().max_rect(pane));
         // The rows keep one width, clear of the strip the scroll bar floats in.
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show(&mut rows, |ui| {
                 ui.set_max_width(ui.available_width() - f32::from(STATUS_BAR));
                 self.status_rows(ui, page, tall, full)
             });
+        ui.advance_cursor_after_rect(pane);
     }
 
     fn status_rows(&mut self, ui: &mut Ui, page: &str, tall: f32, full: f32) {
