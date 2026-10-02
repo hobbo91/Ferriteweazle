@@ -1,4 +1,4 @@
-//! Colours, type and spacing: light, dark, the Greaseweazle's purple and Windows 9x's grey.
+//! Colours, type and spacing: light, dark, the Greaseweazle's purple and 90s GUI grey.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
@@ -86,7 +86,7 @@ pub struct Palette {
     pub written: Color32,
     pub erased: Color32,
     pub pending: Color32,
-    /// Windows 9x's look: solid selections and square corners (square()).
+    /// Classic GUI look: solid selections and square corners (square()).
     pub win9x: bool,
     /// gw's command lines and output on black, as a console (terminal()).
     pub console: bool,
@@ -163,8 +163,8 @@ pub const GREASEWEAZLE: Palette = Palette {
     console: true,
 };
 
-/// Windows 95 and 98's standard scheme, on rgb(195, 199, 203): silver-grey
-/// with lighter grey fields, and the teal of Windows 95's desktop.
+/// 90s GUIs standard scheme, on rgb(195, 199, 203): silver-grey
+/// with lighter grey fields, and the teal of the 1990s.
 pub const CLASSIC: Palette = Palette {
     bg: Color32::from_rgb(195, 199, 203),
     sidebar: Color32::from_rgb(195, 199, 203),
@@ -196,7 +196,7 @@ pub const BLUE: Palette = Palette {
     ..CLASSIC
 };
 
-/// The Windows console's light grey on black, for gw's text in Classic.
+/// The classic console's light grey on black, for gw's text in Classic.
 pub const CONSOLE: Palette = Palette {
     card: Color32::BLACK,
     text: Color32::from_rgb(192, 192, 192),
@@ -249,7 +249,7 @@ pub fn terminal<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &Palette) 
     .inner
 }
 
-/// Squares every corner drawn so far this frame, as Windows 9x has them.
+/// Squares every corner drawn so far this frame.
 /// Each shape sets its own rounding, in too many places to pass a palette.
 pub fn square(ctx: &egui::Context) {
     let layers: Vec<_> = ctx.memory(|m| m.layer_ids().collect());
