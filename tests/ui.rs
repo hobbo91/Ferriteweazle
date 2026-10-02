@@ -2770,6 +2770,54 @@ fn the_device_card_lines_up_with_the_pages_description() {
     );
 }
 
+/// The middle height of the topmost `label` whose left edge is from `left` to `right`.
+fn top_middle(w: &Window, label: &str, left: f32, right: f32) -> f32 {
+    w.get_all_by_label(label)
+        .map(|n| n.rect())
+        .filter(|r| (left..right).contains(&r.left()))
+        .min_by(|a, b| a.top().total_cmp(&b.top()))
+        .unwrap_or_else(|| panic!("no {label} from {left} to {right}"))
+        .center()
+        .y
+}
+
+#[test]
+fn the_page_and_the_status_pane_centre_their_top_rows_on_the_sidebars_title() {
+    let mut w = build(
+        Harness::builder().with_size(DEFAULT),
+        chosen(),
+        Some(Job::replay("read", &damaged_read())),
+    );
+    let title = top_middle(&w, "Ferriteweazle", 0.0, 240.0);
+    let status = w.get_by_label("Disk status").rect().left();
+    let page = |label| top_middle(&w, label, 240.0, status);
+    for (what, middle) in [
+        ("the page's title", page("Read disk")),
+        ("Reset", page("Reset")),
+        ("Presets", page("Presets")),
+        (
+            "Disk status",
+            top_middle(&w, "Disk status", status, f32::MAX),
+        ),
+        (
+            "the job's state",
+            w.get_by_label_contains("Done · ").rect().center().y,
+        ),
+    ] {
+        assert!(
+            (middle - title).abs() < 0.5,
+            "{what} centres at {middle}, the sidebar's title at {title}"
+        );
+    }
+    app_mut(&mut w).settings.page = Page::Settings;
+    w.run();
+    let settings = top_middle(&w, "Settings", 240.0, f32::MAX);
+    assert!(
+        (settings - title).abs() < 0.5,
+        "Settings' title centres at {settings}, the sidebar's at {title}"
+    );
+}
+
 /// The update page, with the command line open.
 fn update_page() -> Window {
     window(Settings {

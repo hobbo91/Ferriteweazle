@@ -110,7 +110,7 @@ const COFFEE: &str = "https://buymeacoffee.com/hobbo91";
 /// The window as it opens, in points: wide enough for Disk format to show
 /// "Sequential Circuits · sci.prophet" whole, and as tall as 21-point squares
 /// need, which fits a 1920x1080 screen at 125% on Windows 11.
-pub const WINDOW: egui::Vec2 = egui::vec2(1050.0, 773.0);
+pub const WINDOW: egui::Vec2 = egui::vec2(1050.0, 770.0);
 /// The smallest window, in points: fits a 1024 by 600 screen, or 1366 by 768 at 125%,
 /// beside a taskbar.
 pub const SMALLEST: egui::Vec2 = egui::vec2(880.0, 520.0);
@@ -124,8 +124,12 @@ const LOGO_TUCK: f32 = 6.0;
 /// The clear strip at the logo's left, as a share of its side: the drawing
 /// lines up with the device card's edge.
 const LOGO_CLEAR: f32 = 16.0 / 256.0;
-/// Space above the device card, so its top lines up with the page's description.
-const CARD_DROP: f32 = 2.0;
+/// The page's and the status pane's top margin: their top rows, a field tall,
+/// centre on the sidebar's title.
+const TOP: i8 = 19;
+/// How far the device card sits above its usual place, so its top lines up
+/// with the page's description.
+const CARD_LIFT: f32 = 1.0;
 /// A sidebar entry's height.
 const NAV_ROW: f32 = 26.0;
 /// The window's bottom margin: Settings in the sidebar, the run bar's buttons
@@ -145,7 +149,7 @@ const LOG_LINE: f32 = 18.0;
 const DRAWER: f32 = 124.0;
 /// A job's rows above the map, each on one line. The map's budget counts
 /// them with no job too, so its squares keep their size as a job starts.
-const JOB_ROWS: f32 = 101.0;
+const JOB_ROWS: f32 = 97.0;
 /// Height the log leaves the page above it, however far it is dragged.
 const LOG_ROOM: f32 = 260.0;
 /// How long a drawer takes to slide open or shut, in seconds.
@@ -735,7 +739,7 @@ impl App {
         let page = Frame::new().fill(p.bg).inner_margin(Margin {
             left: 28,
             right: 28 - PAGE_BAR,
-            top: 22,
+            top: TOP,
             bottom: FOOT,
         });
         match self.settings.page.clone() {
@@ -746,6 +750,7 @@ impl App {
             }
             Page::Command(name) => {
                 let status_frame = Frame::new().fill(p.bg).inner_margin(Margin {
+                    top: TOP,
                     right: 18 - STATUS_BAR,
                     ..Margin::same(18)
                 });
@@ -1375,7 +1380,7 @@ impl App {
             logo(ui, &mut self.logo);
             ui.label(RichText::new("Ferriteweazle").size(17.0).strong());
         });
-        ui.add_space(CARD_DROP);
+        ui.add_space(-CARD_LIFT);
         self.device_card(ui);
         ui.add_space(12.0);
         let list = egui::ScrollArea::vertical()
@@ -2382,7 +2387,6 @@ impl App {
                 }
             },
         );
-        ui.add_space(4.0);
         let Some(job) = shown else {
             // Only the pages that work on a disk's tracks have a map of their own.
             if !DISK_COMMANDS.contains(&page) {
@@ -2833,8 +2837,12 @@ impl App {
     }
 
     fn settings_inner(&mut self, ui: &mut Ui) {
-        ui.heading("Settings");
-        ui.add_space(18.0);
+        // As tall as a command page's top row, so the title stays put from page to page.
+        ui.horizontal(|ui| {
+            ui.set_min_height(theme::FIELD_HEIGHT);
+            ui.heading("Settings");
+        });
+        ui.add_space(15.0);
         let p = theme::palette(ui);
         section(ui, "Theme", |ui| {
             ui.horizontal(|ui| {
