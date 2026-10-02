@@ -147,6 +147,9 @@ const JOB_ROWS: f32 = 101.0;
 const LOG_ROOM: f32 = 260.0;
 /// How long a drawer takes to slide open or shut, in seconds.
 const DRAWER_TIME: f32 = 0.2;
+/// How long a dismissed banner takes to go, in seconds: it fades out, and the
+/// page closes up over it.
+const BANNER_TIME: f32 = 0.25;
 /// How far past its least height the log must be dragged to shut, in points.
 const LOG_BUMP: f32 = 40.0;
 /// The status pane's strip for its scroll bar, taken from its right margin.
@@ -360,6 +363,9 @@ pub struct App {
     /// Notes above pages, such as the formats detection found, by the page
     /// each came from. Each stays until dismissed or replaced there.
     pub notices: BTreeMap<String, String>,
+    /// The notice Dismiss last took away, and when in egui's seconds: it
+    /// fades out where it was.
+    closed: Option<(String, f64)>,
     /// Close the window once the stopped job has ended.
     quitting: bool,
     /// What the last `gw info` said about the device.
@@ -406,8 +412,9 @@ pub struct App {
     /// How this copy was installed, and why it cannot update itself if it cannot.
     copy: Option<Install>,
     stuck: Option<&'static str>,
-    /// The release whose banner was dismissed, as kept in dismissed_file().
-    dismissed: Option<String>,
+    /// The release whose banner was dismissed, as kept in dismissed_file(),
+    /// and when in egui's seconds: the banner fades out from then.
+    dismissed: Option<(String, f64)>,
     /// The Presets menu, while it is open.
     presets: Option<PresetsMenu>,
     /// By page, the preset it last loaded or saved.
@@ -450,7 +457,7 @@ impl App {
         app.kept_theme = theme;
         app.copy = Install::this();
         app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
-        app.dismissed = kept_dismissed(&dismissed_file());
+        app.dismissed = kept_dismissed(&dismissed_file()).map(|tag| (tag, f64::NEG_INFINITY));
         app.kept_size = opening_size();
         app.size_file = Some(size_file());
         if let Some(copy) = &app.copy {
@@ -493,6 +500,7 @@ impl App {
             cli: Cli::default(),
             dialog: None,
             notices: BTreeMap::new(),
+            closed: None,
             quitting: false,
             device: None,
             probe: None,
@@ -619,8 +627,13 @@ impl App {
     /// copy can update itself: Update installs it, Dismiss hides it until a
     /// newer one.
     fn update_banner(&mut self, ui: &mut Ui) {
+        // All of an offer until it is dismissed, then what is left as it fades out.
+        let left = match (&self.app_update, &self.dismissed) {
+            (Update::Newer(tag), Some((dismissed, at))) if tag == dismissed => closing(ui, *at),
+            _ => 1.0,
+        };
         let (text, offered) = match &self.app_update {
-            Update::Newer(tag) if self.stuck.is_none() && self.dismissed.as_ref() != Some(tag) => {
+            Update::Newer(tag) if self.stuck.is_none() && left > 0.0 => {
                 let text = format!("Ferriteweazle {} is available.", update::bare(tag));
                 (text, Some(tag.clone()))
             }
@@ -633,7 +646,7 @@ impl App {
         let (can, tip) = self.update_button(&self.app_update, "Ferriteweazle");
         let (mut install, mut dismiss) = (false, false);
         let room = if offered.is_some() { 150.0 } else { 0.0 };
-        banner(ui, &text, room, |ui| {
+        banner(ui, &text, room, left, |ui| {
             if offered.is_some() {
                 dismiss = ui
                     .small_button("Dismiss")
@@ -646,6 +659,10 @@ impl App {
                     .clicked();
             }
         });
+        // A banner fading out takes no more clicks.
+        if left < 1.0 {
+            return;
+        }
         if install {
             self.install_app(ui.ctx());
         }
@@ -653,7 +670,7 @@ impl App {
             if self.live {
                 keep(&dismissed_file(), Some(tag.clone()));
             }
-            self.dismissed = Some(tag);
+            self.dismissed = Some((tag, ui.input(|i| i.time)));
         }
     }
 
@@ -1423,12 +1440,7 @@ impl App {
                                 let room =
                                     ui.available_width() - REFRESH - ui.spacing().item_spacing.x;
                                 let font = egui::TextStyle::Body.resolve(ui.style());
-                                let full = ui.painter().layout_no_wrap(
-                                    adafruit::NAME.into(),
-                                    font,
-                                    Color32::PLACEHOLDER,
-                                );
-                                match full.size().x <= room {
+                                match text_width(ui, adafruit::NAME, &font) <= room {
                                     true => adafruit::NAME,
                                     false => adafruit::SHORT,
                                 }
@@ -1854,15 +1866,17 @@ impl App {
     }
 
     fn notice_bar(&mut self, ui: &mut Ui, page: &str) {
-        let Some(notice) = self.notices.get(page) else {
-            return;
+        let (notice, left) = match (self.notices.get(page), &self.closed) {
+            (Some(notice), _) => (notice, 1.0),
+            (None, Some((notice, at))) => (notice, closing(ui, *at)),
+            (None, None) => return,
         };
         let mut dismiss = false;
-        banner(ui, notice, 70.0, |ui| {
+        banner(ui, notice, 70.0, left, |ui| {
             dismiss = ui.small_button("Dismiss").clicked();
         });
-        if dismiss {
-            self.notices.remove(page);
+        if dismiss && let Some(notice) = self.notices.remove(page) {
+            self.closed = Some((notice, ui.input(|i| i.time)));
         }
     }
 
@@ -2410,15 +2424,13 @@ impl App {
                     if !about.is_empty() && file.is_some() {
                         about += "  ·  ";
                     }
-                    // The row wraps; a name too long for a line of its own is cut
-                    // in the middle, so the row keeps to two.
+                    // The row wraps; a name too long for a line with the link
+                    // after it is cut in the middle, so the row keeps to two.
                     let small = TextStyle::Small.resolve(ui.style());
-                    let wide = |text: &str| {
-                        let text = text.to_owned();
-                        let galley = ui.painter().layout_no_wrap(text, small.clone(), p.dim);
-                        galley.size().x + ui.spacing().item_spacing.x
+                    let link = match image_kept(job) {
+                        true => text_width(ui, REVEAL, &small) + ui.spacing().item_spacing.x,
+                        false => 0.0,
                     };
-                    let link = if image_kept(job) { wide(REVEAL) } else { 0.0 };
                     let room = ui.available_width() - link;
                     let name = file.as_deref().map(|f| cut_middle(ui, f, &small, room));
                     let cut = matches!(name, Some(Cow::Owned(_)));
@@ -4601,16 +4613,33 @@ fn kept_dismissed(file: &Path) -> Option<String> {
     Some(text.trim().to_owned()).filter(|t| !t.is_empty())
 }
 
+/// What is left of a banner dismissed at `at`, in egui's seconds: 1 falling
+/// to 0 over BANNER_TIME.
+fn closing(ui: &Ui, at: f64) -> f32 {
+    let left = 1.0 - (ui.input(|i| i.time) - at) as f32 / BANNER_TIME;
+    if left > 0.0 {
+        ui.ctx().request_repaint();
+    }
+    left.max(0.0)
+}
+
 /// A banner at the top of a page: `text`, wrapped clear of `room` points at its
-/// right, where `actions` adds its buttons.
-fn banner(ui: &mut Ui, text: &str, room: f32, actions: impl FnOnce(&mut Ui)) {
-    ui.add_space(8.0);
-    let p = theme::palette(ui);
+/// right, where `actions` adds its buttons. `left` of it shows, 1 to 0.
+fn banner(ui: &mut Ui, text: &str, room: f32, left: f32, actions: impl FnOnce(&mut Ui)) {
+    if left <= 0.0 {
+        return;
+    }
+    // Drawn whole in a ui of its own, apart from the page, and faded out by
+    // half way: before the page, closing up over it, reaches its text.
+    let mut whole = ui.new_child(egui::UiBuilder::new());
+    whole.set_opacity(2.0 * left - 1.0);
+    whole.add_space(8.0);
+    let p = theme::palette(&whole);
     Frame::new()
         .fill(p.accent.gamma_multiply(0.12))
         .corner_radius(8)
         .inner_margin(10)
-        .show(ui, |ui| {
+        .show(&mut whole, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
                 ui.allocate_ui(vec2(ui.available_width() - room, 0.0), |ui| {
@@ -4619,6 +4648,9 @@ fn banner(ui: &mut Ui, text: &str, room: f32, actions: impl FnOnce(&mut Ui)) {
                 right(ui, actions);
             });
         });
+    let height = whole.min_rect().height() + ui.spacing().item_spacing.y;
+    let open = egui::emath::easing::cubic_in_out((1.5 * left).min(1.0));
+    ui.add_space(height * open);
 }
 
 /// Where the theme chosen in Settings is kept between runs; System keeps no file.
@@ -4710,15 +4742,18 @@ fn ticked(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
     response
 }
 
+/// How wide `text` is on one line in `font`, in points.
+fn text_width(ui: &Ui, text: &str, font: &FontId) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER);
+    galley.size().x
+}
+
 /// `text`, or where it is wider than `width` in `font`, its two ends about
 /// an ellipsis, so that texts differing at either end stay apart.
 fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
-    let wide = |t: &str| {
-        let galley = ui
-            .painter()
-            .layout_no_wrap(t.to_owned(), font.clone(), Color32::PLACEHOLDER);
-        galley.size().x
-    };
+    let wide = |t: &str| text_width(ui, t, font);
     let whole = wide(text);
     if whole <= width {
         return text.into();
@@ -5266,13 +5301,37 @@ mod tests {
         w.get_by_label("Dismiss").click();
         w.run_steps(2);
         assert!(w.query_by_label_contains("is available").is_none());
-        assert_eq!(w.state().dismissed.as_deref(), Some("v9.9.0"));
+        let dismissed = w.state().dismissed.as_ref().map(|d| d.0.as_str());
+        assert_eq!(dismissed, Some("v9.9.0"));
         w.state_mut().app_update = Update::Newer("v9.9.1".into());
         w.run_steps(2);
         w.get_by_label("Ferriteweazle 9.9.1 is available.");
         // A copy that cannot replace itself is offered nothing.
         w.state_mut().stuck = Some("Read-only.");
         w.run_steps(2);
+        assert!(w.query_by_label_contains("is available").is_none());
+    }
+
+    #[test]
+    fn a_dismissed_offer_fades_out_and_takes_no_more_clicks() {
+        let mut app = offline();
+        (app.copy, app.stuck) = (Some(Install::Folder(PathBuf::from("/opt/F"))), None);
+        app.app_update = Update::Newer("v9.9.0".into());
+        let mut w = Harness::builder()
+            .with_size(vec2(1240.0, 780.0))
+            .with_step_dt(0.05)
+            .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+        w.run_steps(2);
+        w.get_by_label("Dismiss").click();
+        w.run_steps(2);
+        let dismissed = w.state().dismissed.clone();
+        assert!(dismissed.is_some());
+        // Still drawn on its way out, where Dismiss does not start it again.
+        w.get_by_label("Ferriteweazle 9.9.0 is available.");
+        w.get_by_label("Dismiss").click();
+        w.run_steps(2);
+        assert_eq!(w.state().dismissed, dismissed);
+        w.run_steps(4);
         assert!(w.query_by_label_contains("is available").is_none());
     }
 

@@ -483,7 +483,6 @@ mod tests {
         let app = dir.join("Ferriteweazle.app/Contents");
         let python = python_in(&app.join("Resources").join(DATA));
         std::fs::create_dir_all(python.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(app.join("MacOS")).unwrap();
         std::fs::write(&python, "").unwrap();
         let found = python_in(&data_with(&app.join("MacOS/ferriteweazle")).unwrap());
         assert_eq!(found, python, "by name, with no ..");

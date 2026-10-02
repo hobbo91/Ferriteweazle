@@ -64,7 +64,6 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
     ctx.set_theme(shown);
 }
 
-#[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Color32,
     pub sidebar: Color32,

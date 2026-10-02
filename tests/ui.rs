@@ -785,6 +785,61 @@ fn a_notice_shows_only_on_its_page_and_stays_until_dismissed() {
 }
 
 #[test]
+fn a_dismissed_notice_fades_out_and_the_page_closes_up_over_it() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let mut w = build(builder, Settings::default(), None);
+    let below = |w: &Window| image_type(w).rect().top();
+    let without = below(&w);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    let with = below(&w);
+    // The banner's box: the smallest filled one around its text.
+    let text = w.get_by_label(FOUND).rect();
+    let boxes = w.output().shapes.iter().filter_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if r.fill.a() > 0 && r.rect.contains_rect(text) => Some(r.clone()),
+        _ => None,
+    });
+    let whole = boxes
+        .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+        .unwrap();
+    let alpha = |w: &Window| {
+        let found = w.output().shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.rect == whole.rect => Some(r.fill.a()),
+            _ => None,
+        });
+        found.unwrap_or(0)
+    };
+    assert_eq!(alpha(&w), whole.fill.a());
+    w.get_by_label("Dismiss").click();
+    w.step();
+    assert!(app(&w).notices.is_empty(), "it is dismissed at once");
+    let mut frames = Vec::new();
+    while frames.is_empty() || w.query_by_label(FOUND).is_some() {
+        w.step();
+        frames.push((alpha(&w), below(&w)));
+    }
+    let (first, last) = (frames[0], frames[frames.len() - 1]);
+    assert!(
+        first.0 > 0 && first.0 < whole.fill.a(),
+        "it went at once: {frames:?}"
+    );
+    assert_eq!((first.1, last), (with, (0, without)), "{frames:?}");
+    // Fainter, then higher, each frame: the page never moves far at once.
+    for pair in frames.windows(2) {
+        let (faded, rose) = (pair[0].0 >= pair[1].0, pair[0].1 - pair[1].1);
+        let smooth = (0.0..(with - without) / 3.0).contains(&rose);
+        assert!(faded && smooth, "{frames:?}");
+    }
+    // Gone before the page, 10 points below its box, reaches its text.
+    let clear = whole.rect.bottom() - text.bottom() + 10.0;
+    let over = |f: &&(u8, f32)| f.0 > 0 && with - f.1 > clear;
+    assert_eq!(frames.iter().find(over), None, "{frames:?}");
+}
+
+#[test]
 fn fields_share_one_height_and_end_at_one_right_edge() {
     let w = window(chosen());
     let (format, image_type) = (combo(&w, 1).rect(), image_type(&w).rect());
@@ -1407,6 +1462,26 @@ fn side_1_slides_from_under_side_0_to_beside_it_as_the_pane_changes_shape() {
         moving.x > 0.0 && moving.y > 0.0 && moving.y < under.y,
         "a jump back: {moving:?}"
     );
+}
+
+#[test]
+fn side_1_comes_back_in_its_place_after_the_pane_changed_shape_without_it() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(40);
+    let mut w = build(builder, chosen(), None);
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "h=0");
+    w.run();
+    // Wide and short, two sides fit larger side by side.
+    w.set_size(egui::vec2(1400.0, 600.0));
+    w.run();
+    set(&mut app_mut(&mut w).settings, "read", "tracks", "");
+    w.step();
+    let coming = painted(&w, "Side 1");
+    w.run();
+    assert_eq!(coming, painted(&w, "Side 1"), "it slid across as it came");
+    assert_eq!(coming.y, painted(&w, "Side 0").y, "beside side 0");
 }
 
 #[test]
@@ -2124,11 +2199,7 @@ fn a_write_names_the_image_it_takes_and_a_name_past_a_line_is_cut_in_the_middle(
     let long = format!("{}_Disk01_of_12.img", "Samples".repeat(12));
     let w = writing(&format!("/d/{long}"));
     let row = w.get_by_label_contains("akai.1600  ·  Samples");
-    let shown = row
-        .accesskit_node()
-        .value()
-        .or(row.accesskit_node().label());
-    let shown = shown.unwrap_or_default();
+    let shown = row.value().unwrap_or_default();
     assert!(
         shown.contains('…') && shown.ends_with("_of_12.img"),
         "{shown}"

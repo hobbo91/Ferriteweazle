@@ -118,7 +118,12 @@ pub fn show(
     );
     // Side 1's place from side 0's: below it or beside it, sliding between as
     // the pane's shape changes. The squares are one size where the two meet.
-    let beside = slide(ui, egui::Id::new("map across"), f32::from(u8::from(across)));
+    let (slid, to) = (egui::Id::new("map across"), f32::from(u8::from(across)));
+    // A side not shown has no place to slide from: it comes back in its own.
+    if shown <= 1.0 {
+        ui.data_mut(|d| d.insert_temp(slid, (to, to, f64::NEG_INFINITY)));
+    }
+    let beside = slide(ui, slid, to);
     let apart = vec2(
         beside * (grid.x + SIDE_GAP),
         (1.0 - beside) * (grid.y + STACK_GAP),
