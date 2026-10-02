@@ -524,6 +524,43 @@ fn the_presets_menu_ticks_the_preset_the_page_loaded() {
 }
 
 #[test]
+fn a_long_presets_list_scrolls_in_half_the_window() {
+    let folder = std::env::temp_dir().join(format!("fw-many-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let preset = Preset {
+        command: "read".into(),
+        ..Preset::default()
+    };
+    let names: Vec<String> = (0..60).map(|i| format!("Preset {i:02}")).collect();
+    for name in &names {
+        presets::save(&folder, name, &preset).unwrap();
+    }
+    let settings = Settings {
+        presets_folder: Some(folder.clone()),
+        ..chosen()
+    };
+    let mut w = window(settings);
+    for height in [780.0, 520.0] {
+        w.set_size(egui::vec2(1240.0, height));
+        w.run();
+        if w.query_by_label("Save…").is_none() {
+            w.get_by_label("Presets").click();
+            w.run();
+        }
+        let first = w.get_by_label(&names[0]).rect();
+        let save = w.get_by_label("Save…").rect();
+        assert!(save.bottom() <= height, "Save… on the window at {height}");
+        // The list, then the separator above Save….
+        let list = save.top() - first.top();
+        assert!(
+            (height / 2.0..height / 2.0 + 30.0).contains(&list),
+            "the list is half the window at {height}: {list}"
+        );
+    }
+    std::fs::remove_dir_all(folder).ok();
+}
+
+#[test]
 fn a_preset_name_too_long_for_the_menu_is_cut_in_the_middle_and_whole_on_hover() {
     let folder = std::env::temp_dir().join(format!("fw-cut-{}", std::process::id()));
     let name = "Read 5.25in 40-track, 80-track drive, flux, 42 cyl";
