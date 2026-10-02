@@ -2,7 +2,8 @@
 <!-- The Windows installer, built by bundle.sh with WiX 5 from the zip's
      folder (App), the version (Version), the bundled gw's release (Tools) and
      the licence as RTF (Licence).
-     INSTALLGW=0 leaves Greaseweazle Tools out of a silent install. -->
+     INSTALLGW=0 leaves Greaseweazle Tools out of a silent install.
+     LAUNCH=1 opens Ferriteweazle once it is installed. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <!-- A new version, or a new build of the same one, replaces any installed
@@ -103,6 +104,16 @@
       <RegistrySearch Root="HKLM" Key="SOFTWARE\Ferriteweazle" Name="InstallFolder"
                       Type="raw" />
     </Property>
+    <!-- The app closes to be updated, so its update passes LAUNCH=1 (update.rs)
+         for the installer to open the new one, as the Start menu's shortcut
+         does. An immediate action runs as the user, not as the installer. -->
+    <Property Id="LAUNCH" Secure="yes" />
+    <CustomAction Id="Launch" Directory="INSTALLFOLDER" ExeCommand="&quot;[#Program]&quot;"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="Launch" After="InstallFinalize"
+              Condition="LAUNCH = &quot;1&quot; AND NOT Installed" />
+    </InstallExecuteSequence>
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Ferriteweazle">
@@ -112,7 +123,7 @@
 
     <Feature Id="Ferriteweazle" AllowAbsent="no">
       <Component Directory="INSTALLFOLDER">
-        <File Source="$(App)\Ferriteweazle.exe">
+        <File Id="Program" Source="$(App)\Ferriteweazle.exe">
           <Shortcut Name="Ferriteweazle" Directory="ProgramMenuFolder"
                     WorkingDirectory="INSTALLFOLDER" Advertise="no" />
         </File>

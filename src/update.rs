@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 const CHECK_LIMIT: Duration = Duration::from_secs(20);
 /// Must match bridge.py's APP_REPO.
 pub const APP_REPO: &str = "hobbo91/Ferriteweazle";
+/// Has the MSI open the copy it installs. Must match ferriteweazle.wxs.
+const MSI_LAUNCH: &str = "LAUNCH=1";
 
 type Answer = Receiver<Result<String, String>>;
 
@@ -257,15 +259,15 @@ impl Install {
         }
     }
 
-    /// Starts the new copy, or on Windows the MSI that installs it, for the
-    /// window then to close.
+    /// Starts the new copy, or on Windows the MSI that installs and then
+    /// starts it, for the window then to close.
     pub fn relaunch(&self, version: &str) {
         let _ = match self {
             Install::MacApp(app) => Command::new("open").arg("-n").arg(app).spawn(),
             Install::Msi => Command::new("msiexec")
                 .arg("/i")
                 .arg(self.downloads().join(self.asset(version)))
-                .arg("/passive")
+                .args(["/passive", MSI_LAUNCH])
                 .spawn(),
             Install::AppImage(image) => Command::new(image).spawn(),
             Install::Folder(dir) => Command::new(dir.join(program())).spawn(),
@@ -492,6 +494,17 @@ mod tests {
             registry_text("ERROR: The system was unable to find the key."),
             None
         );
+    }
+
+    #[test]
+    fn the_msi_opens_the_copy_it_installs_only_when_an_update_asks() {
+        let wxs = include_str!("../packaging/windows/ferriteweazle.wxs");
+        let (property, value) = MSI_LAUNCH.split_once('=').unwrap();
+        // Secure, so it passes from the user to the installer's service.
+        let passed = format!("<Property Id=\"{property}\" Secure=\"yes\" />");
+        let asked = format!("Condition=\"{property} = &quot;{value}&quot; AND NOT Installed\"");
+        assert!(wxs.contains(&passed), "{passed}");
+        assert!(wxs.contains(&asked), "{asked}");
     }
 
     fn answered(answer: Result<&str, &str>) -> Answer {
