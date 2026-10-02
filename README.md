@@ -43,7 +43,7 @@ macOS 10.15 or newer, Apple Silicon or Intel.
 1. Open [`Ferriteweazle-1.3.0-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-macos-universal.dmg).
 2. Drag **Ferriteweazle** to **Applications**.
 3. Open Ferriteweazle. The app isn't notarised, so macOS blocks it the first time.
-4. Open **System Settings > Privacy & Security** and click **Open Anyway**.
+4. On macOS 15 or newer, open **System Settings > Privacy & Security** and click **Open Anyway**. On older versions, Control-click Ferriteweazle in **Applications**, choose **Open**, then **Open** again.
 
 ### Windows
 
@@ -57,13 +57,19 @@ To run without installing, unzip [`Ferriteweazle-1.3.0-win-x64.zip`](https://git
 
 ### Linux
 
-x86-64 or ARM64, glibc 2.17 or newer.
+x86-64 or ARM64, glibc 2.17 or newer, under Wayland or X11, with Vulkan or OpenGL.
 
 AppImage: [`Ferriteweazle-1.3.0-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-x86_64.AppImage) or [`Ferriteweazle-1.3.0-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-aarch64.AppImage)
 
 ```sh
 chmod +x Ferriteweazle-1.3.0-x86_64.AppImage
 ./Ferriteweazle-1.3.0-x86_64.AppImage
+```
+
+The AppImage needs FUSE to start: `fusermount3` or `fusermount`, from your distribution's FUSE package (usually `fuse3`). Most desktops have it. If it says "Cannot mount AppImage, please check your FUSE setup", run it this way instead, or use the tarball, which needs no FUSE:
+
+```sh
+./Ferriteweazle-1.3.0-x86_64.AppImage --appimage-extract-and-run
 ```
 
 Or the tarball: [`Ferriteweazle-1.3.0-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-linux-x86_64.tar.gz) or [`Ferriteweazle-1.3.0-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.0/Ferriteweazle-1.3.0-linux-aarch64.tar.gz)
@@ -74,6 +80,8 @@ tar -xzf Ferriteweazle-1.3.0-linux-x86_64.tar.gz
 ```
 
 On ARM, use the `aarch64` files in the commands.
+
+File dialogs use your desktop's portal (`xdg-desktop-portal`), or `zenity` where there is none.
 
 ## Building
 
