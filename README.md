@@ -28,7 +28,7 @@ Detection isn't always right, so the app also groups formats and image types to 
 
 ## Why bundle Greaseweazle Tools in the releases?
 
-Greaseweazle still amazes me: with a cheap, widely available interface and almost any floppy drive, you can read almost any floppy disk format. Greaseweazle Tools, though, runs from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical user interface and ships with Greaseweazle Tools included by default, so you can download, run, and get straight to work without following [a bunch of pre-requisite steps first](https://github.com/keirf/greaseweazle/wiki/Software-Installation) if you don't want to. 
+Greaseweazle still amazes me: with a cheap, widely available interface and almost any floppy drive, you can read and write almost any floppy disk format. Greaseweazle Tools, though, runs from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical user interface and ships with Greaseweazle Tools included by default, so you can download, run, and get straight to work without following [a bunch of pre-requisite steps first](https://github.com/keirf/greaseweazle/wiki/Software-Installation) if you don't want to. 
 
 **You do not have to use the bundled version.** Like other Greaseweazle front ends, Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): just set the path in **Settings > Paths** when you first start the app to point to `gw`/`gw.exe`.
 
