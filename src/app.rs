@@ -4561,7 +4561,9 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .max_height(height)
-                .min_scrolled_height(height)
+                // A drawer's sideways bar fits inside its height: added to
+                // it, the drawer would open that much taller every frame.
+                .min_scrolled_height(if drawer { 0.0 } else { height })
                 .show_rows(ui, row, lines, |ui, rows| {
                     for i in rows {
                         let line = log.get(i).map_or(tail, String::as_str);

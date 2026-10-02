@@ -2182,6 +2182,56 @@ fn the_smallest_window_keeps_the_run_bar_settings_and_whole_map_in_view() {
     }
 }
 
+#[test]
+fn the_log_keeps_its_height_when_a_line_is_wider_than_its_box() {
+    let height = |w: &Window| {
+        egui::containers::panel::PanelState::load(&w.ctx, egui::Id::new("log"))
+            .map_or(0.0, |s| s.outer_rect.height())
+    };
+    // The usual read log in the smallest window, and one long line in the default.
+    for (size, long) in [(ferriteweazle::SMALLEST, 0), (DEFAULT, 110)] {
+        let mut log = damaged_read();
+        if long > 0 {
+            log = format!("{log}\n{}", "y".repeat(long));
+        }
+        let settings = Settings {
+            drawer: Some(Drawer::Log),
+            ..chosen()
+        };
+        let mut w = start(
+            Harness::builder().with_size(size),
+            settings,
+            Some(Job::replay("read", &log)),
+        );
+        w.run();
+        let opened = height(&w);
+        // Frames a pointer crossing the page causes, nothing pressed.
+        for i in 0..30 {
+            w.event(egui::Event::PointerMoved(egui::pos2(
+                400.0 + i as f32,
+                150.0,
+            )));
+            w.step();
+        }
+        assert_eq!(height(&w), opened, "{size:?}: the Log grew by itself");
+        // Dragged, it stays where it is put.
+        drag_log(&mut w, 40.0);
+        let dragged = height(&w);
+        assert!(
+            dragged > opened,
+            "{size:?}: the drag from {opened} to {dragged}"
+        );
+        for i in 0..30 {
+            w.event(egui::Event::PointerMoved(egui::pos2(
+                400.0 + i as f32,
+                150.0,
+            )));
+            w.step();
+        }
+        assert_eq!(height(&w), dragged, "{size:?}: the Log grew after a drag");
+    }
+}
+
 /// How far the status pane's rows end from the window's right edge: its margin,
 /// the scroll bar's strip included.
 const STATUS_RIGHT: f32 = 18.0;
