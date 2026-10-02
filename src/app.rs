@@ -128,6 +128,9 @@ const LOGO_CLEAR: f32 = 16.0 / 256.0;
 const CARD_DROP: f32 = 2.0;
 /// A sidebar entry's height.
 const NAV_ROW: f32 = 26.0;
+/// The window's bottom margin: Settings in the sidebar, the run bar's buttons
+/// and the drawers' boxes all end on one line.
+const FOOT: i8 = 14;
 /// The Presets menu's width, in points: longer names are cut in the middle.
 const PRESETS_MENU: f32 = 240.0;
 /// How long a theme chosen in Settings takes to fade in, in seconds.
@@ -724,17 +727,16 @@ impl App {
         egui::Panel::left("nav")
             .exact_size(240.0)
             .resizable(false)
-            .frame(
-                Frame::new()
-                    .fill(p.sidebar)
-                    .inner_margin(Margin::symmetric(14, 16)),
-            )
+            .frame(Frame::new().fill(p.sidebar).inner_margin(Margin {
+                bottom: FOOT,
+                ..Margin::symmetric(14, 16)
+            }))
             .show(ui, |ui| self.nav(ui));
         let page = Frame::new().fill(p.bg).inner_margin(Margin {
             left: 28,
             right: 28 - PAGE_BAR,
             top: 22,
-            bottom: 14,
+            bottom: FOOT,
         });
         match self.settings.page.clone() {
             Page::Settings => {
@@ -1773,10 +1775,8 @@ impl App {
         let width = form::form_width(ui, ui.available_width() - f32::from(PAGE_BAR));
         egui::Panel::bottom("run-bar")
             .frame(Frame::new().inner_margin(Margin {
-                left: 0,
-                right: 0,
                 top: 12,
-                bottom: 4,
+                ..Margin::ZERO
             }))
             .show_separator_line(false)
             .show(ui, |ui| self.run_bar(ui, &schema, cmd));
@@ -2546,7 +2546,7 @@ impl App {
             left: 28,
             right: 18,
             top: 12,
-            bottom: 14,
+            bottom: FOOT,
         });
         let open = self.settings.drawer;
         let switched = self.drawn.is_some() && open.is_some() && self.drawn != open;

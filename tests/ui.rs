@@ -233,6 +233,31 @@ fn the_command_line_has_the_logs_box_and_a_long_command_scrolls_in_it() {
 }
 
 #[test]
+fn settings_the_run_bars_buttons_and_a_drawers_box_end_on_one_line() {
+    let mut w = window(Settings {
+        theme: Choice::Classic,
+        ..chosen()
+    });
+    let foot = w.get_by_label("Settings").rect().bottom();
+    let buttons = [
+        run_button(&w, "Read disk"),
+        w.get_by_label("CLI"),
+        w.get_by_label("Log"),
+    ];
+    for button in buttons {
+        assert_eq!(button.rect().bottom(), foot);
+    }
+    w.get_by_label("CLI").click();
+    w.run();
+    // Classic draws the drawer's box black, as the console.
+    let cli = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if r.fill == egui::Color32::BLACK => Some(r.rect),
+        _ => None,
+    });
+    assert_eq!(cli.expect("the box").bottom(), foot);
+}
+
+#[test]
 fn the_command_lines_menu_pastes_over_the_selection_as_a_text_box_does() {
     let mut w = window(Settings {
         drawer: Some(Drawer::Cli),
