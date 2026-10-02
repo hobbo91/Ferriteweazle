@@ -782,6 +782,7 @@ impl App {
         }
         self.dialogs(&ctx);
         size_corner(&ctx);
+        theme::edge_focus(&ctx, p);
         if p.classic {
             theme::square(&ctx);
         }

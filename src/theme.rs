@@ -110,6 +110,8 @@ pub struct Palette {
     pub dim: Color32,
     pub accent: Color32,
     pub on_accent: Color32,
+    /// A link's colour where the accent would read as a caption (link()).
+    pub link: Option<Color32>,
     pub good: Color32,
     pub partial: Color32,
     pub bad: Color32,
@@ -138,6 +140,7 @@ pub const DARK: Palette = Palette {
     dim: Color32::from_rgb(144, 152, 166),
     accent: Color32::from_rgb(109, 140, 255),
     on_accent: Color32::WHITE,
+    link: None,
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(242, 85, 90),
@@ -162,6 +165,7 @@ pub const LIGHT: Palette = Palette {
     dim: Color32::from_rgb(94, 102, 116),
     accent: Color32::from_rgb(61, 99, 221),
     on_accent: Color32::WHITE,
+    link: None,
     good: Color32::from_rgb(31, 164, 99),
     partial: Color32::from_rgb(212, 138, 0),
     bad: Color32::from_rgb(220, 60, 67),
@@ -188,6 +192,7 @@ pub const GREASEWEAZLE: Palette = Palette {
     dim: Color32::from_rgb(188, 170, 210),
     accent: Color32::from_rgb(178, 118, 255),
     on_accent: Color32::WHITE,
+    link: None,
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(255, 99, 112),
@@ -214,6 +219,7 @@ pub const CLASSIC: Palette = Palette {
     dim: Color32::from_rgb(64, 64, 64),
     accent: Color32::from_rgb(0, 128, 128),
     on_accent: Color32::WHITE,
+    link: None,
     good: Color32::from_rgb(0, 128, 0),
     partial: Color32::from_rgb(224, 160, 0),
     bad: Color32::from_rgb(200, 0, 0),
@@ -249,6 +255,8 @@ pub const VINTAGE: Palette = Palette {
     dim: Color32::from_rgb(78, 84, 88),
     accent: Color32::from_rgb(72, 91, 99),
     on_accent: Color32::from_rgb(238, 241, 219),
+    // Slate is a caption's grey here: a deeper shade of the map's flux blue.
+    link: Some(Color32::from_rgb(40, 76, 132)),
     good: Color32::from_rgb(74, 124, 58),
     partial: Color32::from_rgb(198, 140, 36),
     bad: Color32::from_rgb(176, 58, 46),
@@ -261,6 +269,13 @@ pub const VINTAGE: Palette = Palette {
     bold_bars: false,
 };
 
+impl Palette {
+    /// A link's colour: the accent unless the palette has another.
+    pub fn link(&self) -> Color32 {
+        self.link.unwrap_or(self.accent)
+    }
+}
+
 pub const RADIUS: u8 = 6;
 /// The height of every field, list and button in a form row.
 pub const FIELD_HEIGHT: f32 = 28.0;
@@ -270,14 +285,14 @@ pub const FIELD_HEIGHT: f32 = 28.0;
 pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 
 /// The colours the window has, known by its links': each palette apply()
-/// shows has an accent of its own.
+/// shows has a link colour of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
     let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE, &VINTAGE];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
     shown
         .into_iter()
-        .find(|p| p.accent == v.hyperlink_color)
+        .find(|p| p.link() == v.hyperlink_color)
         .unwrap_or(unthemed)
 }
 
@@ -323,6 +338,41 @@ pub fn square(ctx: &egui::Context) {
     });
 }
 
+/// Edges the focused text field in the accent where egui's edge, the
+/// selection's text colour, is the field's own: Vintage's cream. A field
+/// with no frame (the command line's) has no such edge and keeps none.
+pub fn edge_focus(ctx: &egui::Context, p: &Palette) {
+    if p.on_accent != p.card {
+        return;
+    }
+    let focused = ctx.memory(|m| m.focused());
+    let Some(field) = focused.and_then(|id| ctx.read_response(id)) else {
+        return;
+    };
+    ctx.graphics_mut(|g| {
+        if let Some(list) = g.get_mut(field.layer_id) {
+            for i in 0..list.next_idx().0 {
+                list.mutate_shape(ShapeIdx(i), |s| edge(&mut s.shape, field.rect, p));
+            }
+        }
+    });
+}
+
+fn edge(shape: &mut Shape, field: egui::Rect, p: &Palette) {
+    match shape {
+        Shape::Rect(rect)
+            if rect.stroke.color == p.on_accent
+                && rect.fill == p.card
+                && rect.rect.expand(1.0).contains_rect(field)
+                && field.expand(1.0).contains_rect(rect.rect) =>
+        {
+            rect.stroke.color = p.accent;
+        }
+        Shape::Vec(shapes) => shapes.iter_mut().for_each(|s| edge(s, field, p)),
+        _ => {}
+    }
+}
+
 fn unround(shape: &mut Shape) {
     match shape {
         Shape::Rect(rect) => rect.corner_radius = CornerRadius::ZERO,
@@ -360,7 +410,7 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.text_edit_bg_color = Some(p.card);
     v.faint_bg_color = p.hover;
     v.code_bg_color = p.card;
-    v.hyperlink_color = p.accent;
+    v.hyperlink_color = p.link();
     v.weak_text_color = Some(p.dim);
     v.warn_fg_color = p.partial;
     v.error_fg_color = p.bad;

@@ -3043,6 +3043,75 @@ fn the_vintage_theme_comes_after_classic_light_in_1980s_beige_with_a_green_conso
     assert!(on_black(&cli, theme::VINTAGE.console.unwrap()));
 }
 
+#[test]
+fn the_vintage_theme_edges_a_dialogs_focused_field_in_slate() {
+    let folder = std::env::temp_dir().join(format!("fw-ui-vintage-{}", std::process::id()));
+    let mut w = window(Settings {
+        theme: Choice::Vintage,
+        presets_folder: Some(folder),
+        ..chosen()
+    });
+    w.get_by_label("Presets").click();
+    w.run();
+    w.get_all_by_label("Save…").last().unwrap().click();
+    w.run();
+    let p = &theme::VINTAGE;
+    // The name field, which the dialog opens in.
+    let field = w
+        .get_all_by_role(Role::TextInput)
+        .find(|n| n.is_focused())
+        .expect("a field with the focus")
+        .rect();
+    let edges: Vec<_> = w
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.fill == p.card && r.rect.expand(1.0).contains_rect(field) => {
+                Some((r.rect, r.stroke.color))
+            }
+            _ => None,
+        })
+        .filter(|(rect, _)| field.expand(12.0).contains_rect(*rect))
+        .collect();
+    assert!(
+        edges.iter().any(|(_, colour)| *colour == p.accent),
+        "no slate edge at {field:?}: {edges:?}"
+    );
+    assert!(edges.iter().all(|(_, colour)| *colour != p.on_accent));
+}
+
+#[test]
+fn the_vintage_themes_links_are_blue_and_its_selections_stay_slate() {
+    let w = window(Settings {
+        theme: Choice::Vintage,
+        ..chosen()
+    });
+    let p = &theme::VINTAGE;
+    assert_ne!(p.link(), p.accent);
+    let link = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Text(t) if t.galley.text() == "Type a track list" => Some(t.fallback_color),
+        _ => None,
+    });
+    assert_eq!(link, Some(p.link()));
+    // The palette is still found by its links: the sidebar's chosen row is slate.
+    let slate = |c: &egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == p.accent && r.rect.width() > 150.0,
+        _ => false,
+    };
+    assert!(w.output().shapes.iter().any(slate));
+    // Every other theme's links are its accent, as before.
+    for other in [
+        &theme::LIGHT,
+        &theme::DARK,
+        &theme::CLASSIC,
+        &theme::BLUE,
+        &theme::GREASEWEAZLE,
+    ] {
+        assert_eq!(other.link(), other.accent);
+    }
+}
+
 /// Whether gw's command line shows in `text` in a black box.
 fn on_black(w: &Window, text: egui::Color32) -> bool {
     let console = |c: &&egui::epaint::ClippedShape| match &c.shape {
