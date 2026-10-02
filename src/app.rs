@@ -387,8 +387,8 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
-    /// Classic in the accent last chosen for it while the app runs: Classic
-    /// itself (teal) or Blue.
+    /// Classic in the accent last chosen for it while the app runs: Blue at
+    /// first, or Classic itself (teal).
     classic: theme::Choice,
     /// The delays gw delays last reported, and the port of the Greaseweazle
     /// they are of: kept while another run of it goes on.
@@ -483,8 +483,8 @@ impl App {
         theme::apply(ctx, settings.theme);
         let known = schema.as_ref().ok().cloned().map(Arc::new);
         let classic = match settings.theme {
-            theme::Choice::Blue => theme::Choice::Blue,
-            _ => theme::Choice::Classic,
+            theme::Choice::Classic => theme::Choice::Classic,
+            _ => theme::Choice::Blue,
         };
         App {
             settings,
@@ -2834,7 +2834,7 @@ impl App {
         section(ui, "Theme", |ui| {
             ui.horizontal(|ui| {
                 for (choice, text, tip, _) in theme::CHOICES {
-                    // Blue is Classic's other accent, in Classic's right-click menu.
+                    // Blue is Classic in its first accent, under Classic's button.
                     if choice == theme::Choice::Blue {
                         continue;
                     }
@@ -2850,8 +2850,8 @@ impl App {
                         r.context_menu(|ui| {
                             ui.set_width(100.0);
                             for (accent, name) in [
-                                (theme::Choice::Classic, "Teal"),
                                 (theme::Choice::Blue, "Blue"),
+                                (theme::Choice::Classic, "Teal"),
                             ] {
                                 if ticked(ui, self.classic == accent, name).clicked() {
                                     self.classic = accent;

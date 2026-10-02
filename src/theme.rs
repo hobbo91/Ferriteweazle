@@ -12,14 +12,15 @@ pub enum Choice {
     System,
     Light,
     Dark,
+    /// Classic in teal, the other accent in its right-click menu.
     Classic,
-    /// Classic with a blue accent, from Classic's right-click menu.
+    /// Classic in blue, the accent it starts in.
     Blue,
     Greaseweazle,
 }
 
 /// Each choice in Settings' order: its name, its hover, and the word theme.txt
-/// keeps. Blue is Classic's other accent, with no button of its own.
+/// keeps. Blue is Classic in the accent it starts in, under Classic's button.
 pub const CHOICES: [(Choice, &str, &str, &str); 6] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),

@@ -2770,19 +2770,22 @@ fn the_greaseweazle_theme_is_dark_in_the_boards_purple() {
 }
 
 #[test]
-fn the_classic_theme_is_light_in_90s_gui_grey_and_keeps_its_accent() {
+fn the_classic_theme_is_light_in_90s_gui_grey_blue_at_first_and_keeps_its_accent() {
     let mut w = settings_from(Choice::Light, Harness::builder());
     let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
     w.get_by_label("Classic").click();
     w.run();
     assert_eq!(visuals(&w).panel_fill, theme::CLASSIC.bg);
-    assert_eq!(app(&w).settings.theme, Choice::Classic);
-    w.get_by_label("Classic").click_secondary();
-    w.run();
-    w.get_by_label("Blue").click();
-    w.run();
     assert_eq!(app(&w).settings.theme, Choice::Blue);
     assert_eq!(visuals(&w).selection.bg_fill, theme::BLUE.accent);
+    w.get_by_label("Classic").click_secondary();
+    w.run();
+    let (blue, teal) = (w.get_by_label("Blue").rect(), w.get_by_label("Teal").rect());
+    assert!(blue.top() < teal.top(), "Blue heads its accents");
+    w.get_by_label("Teal").click();
+    w.run();
+    assert_eq!(app(&w).settings.theme, Choice::Classic);
+    assert_eq!(visuals(&w).selection.bg_fill, theme::CLASSIC.accent);
     w.get_by_label("Light").click();
     w.run();
     assert_eq!(visuals(&w).panel_fill, theme::LIGHT.bg);
@@ -2790,28 +2793,28 @@ fn the_classic_theme_is_light_in_90s_gui_grey_and_keeps_its_accent() {
     w.run();
     assert_eq!(
         app(&w).settings.theme,
-        Choice::Blue,
+        Choice::Classic,
         "Classic keeps its accent"
     );
     w.get_by_label("Classic").click_secondary();
     w.run();
-    w.get_by_label("Teal").click();
+    w.get_by_label("Blue").click();
     w.run();
-    assert_eq!(app(&w).settings.theme, Choice::Classic);
-    assert_eq!(visuals(&w).selection.bg_fill, theme::CLASSIC.accent);
+    assert_eq!(app(&w).settings.theme, Choice::Blue);
+    assert_eq!(visuals(&w).selection.bg_fill, theme::BLUE.accent);
 }
 
 #[test]
-fn a_window_that_opens_in_blue_shows_classic_chosen_in_blue() {
-    let w = settings_from(Choice::Blue, Harness::builder());
+fn a_window_that_opens_in_teal_shows_classic_chosen_in_teal() {
+    let w = settings_from(Choice::Classic, Harness::builder());
     let classic = w.get_by_label("Classic").accesskit_node().toggled();
     assert_eq!(classic, Some(egui::accesskit::Toggled::True));
     let shapes = &w.output().shapes;
-    let blue = |c: &&egui::epaint::ClippedShape| match &c.shape {
-        egui::Shape::Rect(r) => r.fill == theme::BLUE.accent && r.rect.width() > 150.0,
+    let teal = |c: &&egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == theme::CLASSIC.accent && r.rect.width() > 150.0,
         _ => false,
     };
-    assert!(shapes.iter().any(|c| blue(&c)), "the sidebar's chosen row");
+    assert!(shapes.iter().any(|c| teal(&c)), "the sidebar's chosen row");
 }
 
 /// Whether gw's command line shows in `text` in a black box.
