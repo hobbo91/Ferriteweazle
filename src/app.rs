@@ -137,6 +137,9 @@ const NAV_ROW: f32 = 26.0;
 const FOOT: i8 = 14;
 /// The Presets menu's width, in points: longer names are cut in the middle.
 const PRESETS_MENU: f32 = 240.0;
+/// The most of the window's height the Presets menu's list takes; more
+/// presets than fit scroll.
+const PRESETS_LIST: f32 = 0.5;
 /// How long a theme chosen in Settings takes to fade in, in seconds.
 const FADE_TIME: f32 = 0.25;
 /// The most of a frame the fade counts, in seconds, so a stall cannot skip it.
@@ -2764,17 +2767,24 @@ impl App {
                 ui.label(RichText::new("No presets saved yet.").weak());
             }
             let loaded = self.applied.get(command).map(|a| &a.path);
-            for (name, path, description) in &menu.saved {
-                let tip = match description.as_str() {
-                    "" => "Use these settings.",
-                    description => description,
-                };
-                let row = ticked(ui, loaded == Some(path), name);
-                if row.on_hover_text(tip).clicked() {
-                    load = Some(path.clone());
-                    ui.close();
-                }
-            }
+            // Half the window at most, as it is now, so the menu stays on it.
+            let most = ui.ctx().content_rect().height() * PRESETS_LIST;
+            egui::ScrollArea::vertical()
+                .id_salt("presets")
+                .max_height(most)
+                .show(ui, |ui| {
+                    for (name, path, description) in &menu.saved {
+                        let tip = match description.as_str() {
+                            "" => "Use these settings.",
+                            description => description,
+                        };
+                        let row = ticked(ui, loaded == Some(path), name);
+                        if row.on_hover_text(tip).clicked() {
+                            load = Some(path.clone());
+                            ui.close();
+                        }
+                    }
+                });
             ui.separator();
             save = ui
                 .button("Save…")
@@ -2787,13 +2797,18 @@ impl App {
             if !menu.saved.is_empty() {
                 ui.menu_button("Delete", |ui| {
                     ui.set_width(PRESETS_MENU);
-                    for (name, path, _) in &menu.saved {
-                        let row = ticked(ui, false, name);
-                        if row.on_hover_text("Delete this preset.").clicked() {
-                            delete = Some((name.clone(), path.clone()));
-                            ui.close();
-                        }
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("delete presets")
+                        .max_height(most)
+                        .show(ui, |ui| {
+                            for (name, path, _) in &menu.saved {
+                                let row = ticked(ui, false, name);
+                                if row.on_hover_text("Delete this preset.").clicked() {
+                                    delete = Some((name.clone(), path.clone()));
+                                    ui.close();
+                                }
+                            }
+                        });
                 });
             }
             if save || pick {
