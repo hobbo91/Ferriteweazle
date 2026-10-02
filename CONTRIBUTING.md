@@ -11,7 +11,7 @@ bundled one.
 
 ## Pull requests
 
-All changes reach `main` through a pull request, and only the maintainer
+Contributions reach `main` through a pull request, and only the maintainer
 merges them.
 
 1. Fork the repository and clone your fork.
