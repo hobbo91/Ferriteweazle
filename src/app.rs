@@ -2669,8 +2669,7 @@ impl App {
             let height = ui.available_height() - frame.total_margin().sum().y;
             frame
                 .show(ui, |ui| {
-                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-                    ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+                    theme::solid_bars(ui, p);
                     egui::ScrollArea::vertical()
                         .id_salt("cli")
                         .max_height(height)
@@ -4427,7 +4426,7 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
             ui.set_width(ui.available_width());
             ui.spacing_mut().scroll = egui::style::ScrollStyle {
                 foreground_color: true,
-                dormant_handle_opacity: 0.35,
+                dormant_handle_opacity: if p.bold_bars { 1.0 } else { 0.35 },
                 ..egui::style::ScrollStyle::thin()
             };
             egui::ScrollArea::horizontal()
@@ -4541,11 +4540,7 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             let row = ui.text_style_height(&TextStyle::Monospace);
             // A line gw has not ended yet comes last.
             let lines = log.len() + usize::from(!tail.is_empty());
-            // Bars drawn whenever there is more to see, as a text view's: a
-            // floating one hides until hovered, and a wheel does not scroll
-            // sideways. The theme paints an idle handle in the card's colour.
-            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+            theme::solid_bars(ui, p);
             egui::ScrollArea::both()
                 .id_salt("log")
                 .stick_to_bottom(true)

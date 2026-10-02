@@ -2,7 +2,7 @@
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
-    ThemePreference, Visuals, layers::ShapeIdx,
+    ThemePreference, Visuals, layers::ShapeIdx, style::ScrollStyle,
 };
 
 /// The theme chosen in Settings.
@@ -61,7 +61,30 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
     };
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
     ctx.set_visuals_of(Theme::Light, visuals(light, Visuals::light()));
+    ctx.style_mut_of(Theme::Dark, |s| s.spacing.scroll = bars(dark));
+    ctx.style_mut_of(Theme::Light, |s| s.spacing.scroll = bars(light));
     ctx.set_theme(shown);
+}
+
+/// egui's bars, which float over what they scroll and show under the pointer:
+/// whole, not faint, where the palette has them bold.
+fn bars(p: &Palette) -> ScrollStyle {
+    let mut bars = ScrollStyle::floating();
+    if p.bold_bars {
+        bars.active_handle_opacity = 1.0;
+    }
+    bars
+}
+
+/// A text view's bars, drawn whenever there is more to see: a floating one
+/// hides until hovered, and a wheel does not scroll sideways.
+pub fn solid_bars(ui: &mut egui::Ui, p: &Palette) {
+    ui.spacing_mut().scroll = ScrollStyle {
+        foreground_color: p.bold_bars,
+        ..ScrollStyle::solid()
+    };
+    // The theme paints an idle handle in the card's colour.
+    ui.visuals_mut().widgets.inactive.bg_fill = p.line;
 }
 
 pub struct Palette {
@@ -89,6 +112,8 @@ pub struct Palette {
     pub classic: bool,
     /// gw's command lines and output on black, as a console (terminal()).
     pub console: bool,
+    /// Scroll bars in the text's colour at full strength: white on the purple.
+    pub bold_bars: bool,
 }
 
 pub const DARK: Palette = Palette {
@@ -112,6 +137,7 @@ pub const DARK: Palette = Palette {
     pending: Color32::from_rgb(42, 47, 56),
     classic: false,
     console: false,
+    bold_bars: false,
 };
 
 pub const LIGHT: Palette = Palette {
@@ -135,6 +161,7 @@ pub const LIGHT: Palette = Palette {
     pending: Color32::from_rgb(228, 231, 236),
     classic: false,
     console: false,
+    bold_bars: false,
 };
 
 /// From the purple of the Greaseweazle's board, rgb(94, 25, 139): darker for
@@ -160,6 +187,7 @@ pub const GREASEWEAZLE: Palette = Palette {
     pending: Color32::from_rgb(60, 25, 90),
     classic: false,
     console: true,
+    bold_bars: true,
 };
 
 /// 90s GUIs standard scheme, on rgb(195, 199, 203): silver-grey
@@ -185,6 +213,7 @@ pub const CLASSIC: Palette = Palette {
     pending: Color32::from_rgb(225, 227, 229),
     classic: true,
     console: true,
+    bold_bars: false,
 };
 
 /// Classic in blue, its accent and flux swapped: a navy with enough green in

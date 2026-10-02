@@ -2845,6 +2845,45 @@ fn the_greaseweazle_theme_shows_gws_command_line_on_black() {
     );
 }
 
+/// How many boxes `thick` points across, as a scroll bar's handle is, are
+/// filled with `colour`.
+fn handles(w: &Window, thick: f32, colour: egui::Color32) -> usize {
+    let handle = |c: &&egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => {
+            (r.rect.width().min(r.rect.height()) - thick).abs() < 0.01 && r.fill == colour
+        }
+        _ => false,
+    };
+    w.output().shapes.iter().filter(handle).count()
+}
+
+#[test]
+fn the_greaseweazle_theme_draws_every_scroll_bar_in_its_texts_white() {
+    // A log too long for its box, in a window too small for its page, with
+    // the pointer over the page: its bar shows under it.
+    let scrolled = |theme| {
+        let settings = Settings {
+            theme,
+            drawer: Some(Drawer::Log),
+            ..chosen()
+        };
+        let job = Job::replay("read", &damaged_read().repeat(3));
+        let builder = Harness::builder().with_size(ferriteweazle::SMALLEST);
+        let mut w = build(builder, settings, Some(job));
+        w.hover_at(egui::pos2(480.0, 200.0));
+        w.run_steps(8);
+        w
+    };
+    // The Log's two bars are 6 points across; the page's, floating, 2.
+    let w = scrolled(Choice::Greaseweazle);
+    let white = theme::GREASEWEAZLE.text;
+    assert_eq!((handles(&w, 6.0, white), handles(&w, 2.0, white)), (2, 1));
+    // Dark's are faint: the Log's its lines' grey, the page's its text's at 0.6.
+    let w = scrolled(Choice::Dark);
+    let (grey, faint) = (theme::DARK.line, theme::DARK.text.gamma_multiply(0.6));
+    assert_eq!((handles(&w, 6.0, grey), handles(&w, 2.0, faint)), (2, 1));
+}
+
 /// The colour the last frame drew `text` in.
 fn text_colour(w: &Window, text: &str) -> egui::Color32 {
     let shape = w.output().shapes.iter().find_map(|c| match &c.shape {
