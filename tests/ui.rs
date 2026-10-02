@@ -1376,6 +1376,40 @@ fn swapping_sides_slides_each_side_into_the_others_place() {
 }
 
 #[test]
+fn side_1_slides_from_under_side_0_to_beside_it_as_the_pane_changes_shape() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(0.05)
+        .with_max_steps(40);
+    let mut w = build(builder, chosen(), None);
+    let apart = |w: &Window| painted(w, "Side 1") - painted(w, "Side 0");
+    let under = apart(&w);
+    assert!(under.x == 0.0 && under.y > 0.0, "stacked: {under:?}");
+    // Wide and short, the sides fit larger side by side.
+    w.set_size(egui::vec2(1400.0, 600.0));
+    w.step();
+    w.step();
+    let moving = apart(&w);
+    w.run();
+    let beside = apart(&w);
+    assert!(beside.x > 0.0 && beside.y == 0.0, "across: {beside:?}");
+    assert!(
+        moving.x > 0.0 && moving.x < beside.x && moving.y > 0.0,
+        "a jump across: {moving:?}"
+    );
+    w.set_size(DEFAULT);
+    w.step();
+    w.step();
+    let moving = apart(&w);
+    w.run();
+    assert_eq!(apart(&w), under);
+    assert!(
+        moving.x > 0.0 && moving.y > 0.0 && moving.y < under.y,
+        "a jump back: {moving:?}"
+    );
+}
+
+#[test]
 fn side_1_slides_down_and_back_up_as_the_map_gains_and_loses_rows() {
     let builder = Harness::builder()
         .with_size(DEFAULT)

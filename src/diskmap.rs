@@ -10,8 +10,8 @@ use eframe::egui::{
 /// Seconds a square takes to fade in.
 const FILL_TIME: f32 = 0.4;
 
-/// Seconds the sides take to slide: to change places as their heads swap, or
-/// to follow the rows as they come and go.
+/// Seconds the sides take to slide: to change places as their heads swap, to
+/// follow the rows as they come and go, or to go from stacked to side by side.
 const SLIDE_TIME: f32 = 0.25;
 
 /// Cylinders to a row, so rows start at 0, 10, 20.
@@ -116,11 +116,14 @@ pub fn show(
         LABEL + ROW as f32 * cell + (ROW - 1) as f32 * gap,
         TITLE + tall * step - gap,
     );
-    let size = match across {
-        true => vec2(grid.x * shown + SIDE_GAP * (shown - 1.0), grid.y),
-        false => vec2(grid.x, grid.y * shown + STACK_GAP * (shown - 1.0)),
-    };
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    // Side 1's place from side 0's: below it or beside it, sliding between as
+    // the pane's shape changes. The squares are one size where the two meet.
+    let beside = slide(ui, egui::Id::new("map across"), f32::from(u8::from(across)));
+    let apart = vec2(
+        beside * (grid.x + SIDE_GAP),
+        (1.0 - beside) * (grid.y + STACK_GAP),
+    );
+    let (rect, response) = ui.allocate_exact_size(grid + (shown - 1.0) * apart, Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let radius = CornerRadius::same((cell / 5.0).round() as u8);
     let id = egui::Id::new("swap");
@@ -131,10 +134,7 @@ pub fn show(
     // Each side's place, 0 first, sliding to the other's as the heads swap.
     let place = |head: u32| if head == 0 { t } else { 1.0 - t };
     let square = |head: u32, cyl: u32| {
-        let origin = match across {
-            true => rect.min + vec2(place(head) * (grid.x + SIDE_GAP), 0.0),
-            false => rect.min + vec2(0.0, place(head) * (grid.y + STACK_GAP)),
-        };
+        let origin = rect.min + place(head) * apart;
         let x = snap(origin.x + LABEL) + (cyl % ROW) as f32 * step;
         let y = snap(origin.y + TITLE) + (cyl / ROW) as f32 * step;
         Rect::from_min_size(pos2(x, y), vec2(cell, cell))
