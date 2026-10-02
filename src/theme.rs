@@ -87,7 +87,7 @@ pub struct Palette {
     pub erased: Color32,
     pub pending: Color32,
     /// Classic GUI look: solid selections and square corners (square()).
-    pub win9x: bool,
+    pub classic: bool,
     /// gw's command lines and output on black, as a console (terminal()).
     pub console: bool,
 }
@@ -111,7 +111,7 @@ pub const DARK: Palette = Palette {
     written: Color32::from_rgb(163, 139, 250),
     erased: Color32::from_rgb(107, 114, 128),
     pending: Color32::from_rgb(42, 47, 56),
-    win9x: false,
+    classic: false,
     console: false,
 };
 
@@ -134,7 +134,7 @@ pub const LIGHT: Palette = Palette {
     written: Color32::from_rgb(123, 97, 232),
     erased: Color32::from_rgb(154, 161, 173),
     pending: Color32::from_rgb(228, 231, 236),
-    win9x: false,
+    classic: false,
     console: false,
 };
 
@@ -159,7 +159,7 @@ pub const GREASEWEAZLE: Palette = Palette {
     written: Color32::from_rgb(240, 140, 220),
     erased: Color32::from_rgb(130, 112, 150),
     pending: Color32::from_rgb(60, 25, 90),
-    win9x: false,
+    classic: false,
     console: true,
 };
 
@@ -184,7 +184,7 @@ pub const CLASSIC: Palette = Palette {
     written: Color32::from_rgb(128, 0, 128),
     erased: Color32::from_rgb(128, 128, 128),
     pending: Color32::from_rgb(225, 227, 229),
-    win9x: true,
+    classic: true,
     console: true,
 };
 
@@ -231,7 +231,7 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// Draws gw's command lines and output with `add`, in the window's palette
 /// or, where that has a console, on black: a dark palette in its own colours,
-/// a light one in the Windows console's.
+/// a light one in the classic console's.
 pub fn terminal<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &Palette) -> R) -> R {
     ui.scope(|ui| {
         let p = palette(ui);
@@ -306,7 +306,7 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.warn_fg_color = p.partial;
     v.error_fg_color = p.bad;
     // egui also edges a focused text box in this text colour: white in Classic.
-    let (fill, text) = match p.win9x {
+    let (fill, text) = match p.classic {
         true => (p.accent, p.on_accent),
         false => (p.accent.gamma_multiply(0.35), p.accent),
     };

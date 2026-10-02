@@ -2699,7 +2699,7 @@ fn the_greaseweazle_theme_is_dark_in_the_boards_purple() {
 }
 
 #[test]
-fn the_classic_theme_is_light_in_windows_9xs_grey_and_keeps_its_accent() {
+fn the_classic_theme_is_light_in_90s_gui_grey_and_keeps_its_accent() {
     let mut w = settings_from(Choice::Light, Harness::builder());
     let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
     w.get_by_label("Classic").click();

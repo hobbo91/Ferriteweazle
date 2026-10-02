@@ -758,7 +758,7 @@ impl App {
         }
         self.dialogs(&ctx);
         size_corner(&ctx);
-        if p.win9x {
+        if p.classic {
             theme::square(&ctx);
         }
     }
@@ -4978,7 +4978,7 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), NAV_ROW), Sense::click());
     let p = theme::palette(ui);
-    let (fill, colour) = match (selected, p.win9x) {
+    let (fill, colour) = match (selected, p.classic) {
         (true, true) => (p.accent, p.on_accent),
         (true, false) => (p.accent.gamma_multiply(0.16), p.accent),
         (false, _) if response.hovered() => (p.hover, p.text),
@@ -4998,7 +4998,7 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
             Align2::RIGHT_CENTER,
             note,
             FontId::proportional(12.0),
-            if selected && p.win9x { colour } else { p.dim },
+            if selected && p.classic { colour } else { p.dim },
         );
     }
     let enabled = ui.is_enabled();
