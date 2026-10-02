@@ -842,7 +842,7 @@ fn a_dismissed_notice_fades_out_and_the_page_closes_up_over_it() {
     w.step();
     assert!(app(&w).notices.is_empty(), "it is dismissed at once");
     let mut frames = Vec::new();
-    while frames.is_empty() || w.query_by_label(FOUND).is_some() {
+    while frames.is_empty() || w.ctx.requested_repaint_last_pass() {
         w.step();
         frames.push((alpha(&w), below(&w)));
     }
@@ -862,6 +862,22 @@ fn a_dismissed_notice_fades_out_and_the_page_closes_up_over_it() {
     let clear = whole.rect.bottom() - text.bottom() + 10.0;
     let over = |f: &&(u8, f32)| f.0 > 0 && with - f.1 > clear;
     assert_eq!(frames.iter().find(over), None, "{frames:?}");
+}
+
+#[test]
+fn a_notice_dismissed_on_one_page_does_not_fade_out_on_the_next() {
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(60);
+    let mut w = build(builder, Settings::default(), None);
+    app_mut(&mut w).notices.insert("read".into(), FOUND.into());
+    w.run();
+    w.get_by_label("Dismiss").click();
+    w.step();
+    app_mut(&mut w).settings.page = Page::Command("write".into());
+    w.step();
+    assert!(w.query_by_label(FOUND).is_none());
 }
 
 #[test]
@@ -2906,6 +2922,12 @@ fn the_greaseweazle_theme_draws_every_scroll_bar_in_its_texts_white() {
     let w = scrolled(Choice::Greaseweazle);
     let white = theme::GREASEWEAZLE.text;
     assert_eq!((handles(&w, 6.0, white), handles(&w, 2.0, white)), (2, 1));
+    // The udev commands' bar is thin: 2 points across until hovered.
+    let mut w = scrolled(Choice::Greaseweazle);
+    app_mut(&mut w).disk = Some(Job::replay("read", REFUSED));
+    w.hover_at(egui::pos2(0.0, 0.0));
+    w.run();
+    assert_eq!(handles(&w, 2.0, white), 1);
     // Dark's are faint: the Log's its lines' grey, the page's its text's at 0.6.
     let w = scrolled(Choice::Dark);
     let (grey, faint) = (theme::DARK.line, theme::DARK.text.gamma_multiply(0.6));

@@ -366,9 +366,9 @@ pub struct App {
     /// Notes above pages, such as the formats detection found, by the page
     /// each came from. Each stays until dismissed or replaced there.
     pub notices: BTreeMap<String, String>,
-    /// The notice Dismiss last took away, and when in egui's seconds: it
-    /// fades out where it was.
-    closed: Option<(String, f64)>,
+    /// The notice Dismiss last took away, as its page and text, and when in
+    /// egui's seconds: it fades out where it was.
+    closed: Option<(String, String, f64)>,
     /// Close the window once the stopped job has ended.
     quitting: bool,
     /// What the last `gw info` said about the device.
@@ -390,8 +390,8 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
-    /// Classic in the accent last chosen for it while the app runs: Blue at
-    /// first, or Classic itself (teal).
+    /// Classic in the accent it opened in or was last given while the app
+    /// runs: Blue otherwise, or Classic itself (teal).
     classic: theme::Choice,
     /// The delays gw delays last reported, and the port of the Greaseweazle
     /// they are of: kept while another run of it goes on.
@@ -1868,15 +1868,15 @@ impl App {
     fn notice_bar(&mut self, ui: &mut Ui, page: &str) {
         let (notice, left) = match (self.notices.get(page), &self.closed) {
             (Some(notice), _) => (notice, 1.0),
-            (None, Some((notice, at))) => (notice, closing(ui, *at)),
-            (None, None) => return,
+            (None, Some((from, notice, at))) if from == page => (notice, closing(ui, *at)),
+            _ => return,
         };
         let mut dismiss = false;
         banner(ui, notice, 70.0, left, |ui| {
             dismiss = ui.small_button("Dismiss").clicked();
         });
-        if dismiss && let Some(notice) = self.notices.remove(page) {
-            self.closed = Some((notice, ui.input(|i| i.time)));
+        if dismiss && let Some((page, notice)) = self.notices.remove_entry(page) {
+            self.closed = Some((page, notice, ui.input(|i| i.time)));
         }
     }
 
@@ -4427,6 +4427,7 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
             ui.spacing_mut().scroll = egui::style::ScrollStyle {
                 foreground_color: true,
                 dormant_handle_opacity: if p.bold_bars { 1.0 } else { 0.35 },
+                interact_handle_opacity: if p.bold_bars { 1.0 } else { 0.6 },
                 ..egui::style::ScrollStyle::thin()
             };
             egui::ScrollArea::horizontal()
@@ -4748,8 +4749,7 @@ fn text_width(ui: &Ui, text: &str, font: &FontId) -> f32 {
 /// `text`, or where it is wider than `width` in `font`, its two ends about
 /// an ellipsis, so that texts differing at either end stay apart.
 fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
-    let wide = |t: &str| text_width(ui, t, font);
-    let whole = wide(text);
+    let whole = text_width(ui, text, font);
     if whole <= width {
         return text.into();
     }
@@ -4763,7 +4763,7 @@ fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, 
             .chain(&['…'])
             .chain(&chars[chars.len() - tail..]);
         let cut: String = ends.collect();
-        if keep == 0 || wide(&cut) <= width {
+        if keep == 0 || text_width(ui, &cut, font) <= width {
             return cut.into();
         }
         keep -= 1;
@@ -5314,7 +5314,7 @@ mod tests {
         app.app_update = Update::Newer("v9.9.0".into());
         let mut w = Harness::builder()
             .with_size(vec2(1240.0, 780.0))
-            .with_step_dt(0.05)
+            .with_step_dt(0.02)
             .build_ui_state(|ui, app: &mut App| app.show(ui), app);
         w.run_steps(2);
         w.get_by_label("Dismiss").click();
@@ -5326,7 +5326,7 @@ mod tests {
         w.get_by_label("Dismiss").click();
         w.run_steps(2);
         assert_eq!(w.state().dismissed, dismissed);
-        w.run_steps(4);
+        w.run_steps(8);
         assert!(w.query_by_label_contains("is available").is_none());
     }
 
