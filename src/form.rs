@@ -2325,7 +2325,7 @@ fn own_tip_id() -> egui::Id {
 /// The arguments shown first, and the rest.
 fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
     let shown = |a: &&Arg| {
-        !GLOBAL.contains(&a.dest.as_str()) && !(a.dest == "no_clobber" && has_output(&cmd.name))
+        !(GLOBAL.contains(&a.dest.as_str()) || a.dest == "no_clobber" && has_output(&cmd.name))
     };
     let args: Vec<&Arg> = cmd.args.iter().filter(shown).collect();
     match FIRST.iter().find(|(c, _)| *c == cmd.name) {

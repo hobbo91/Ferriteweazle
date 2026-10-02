@@ -304,7 +304,7 @@ fn msi_folder() -> Option<&'static Path> {
         registry_text(&String::from_utf8_lossy(&reg.stdout))
     };
     FOLDER
-        .get_or_init(|| read().filter(|_| cfg!(windows)).map(PathBuf::from))
+        .get_or_init(|| cfg!(windows).then(read).flatten().map(PathBuf::from))
         .as_deref()
 }
 

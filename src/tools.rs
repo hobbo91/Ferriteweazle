@@ -180,10 +180,12 @@ fn udev_rule_with(exe: &Path) -> Option<PathBuf> {
 /// beside the program elsewhere, and `target/greaseweazle-bundle` for `cargo run`.
 fn data_with(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
+    // By its name, with no `..`: Settings shows the path.
+    let above = dir.parent().unwrap_or(dir);
     [
-        dir.join("../Resources").join(DATA),
+        above.join("Resources").join(DATA),
         dir.join(DATA),
-        dir.join("../greaseweazle-bundle"),
+        above.join("greaseweazle-bundle"),
     ]
     .into_iter()
     .find(|root| python_in(root).is_file())
@@ -484,10 +486,7 @@ mod tests {
         std::fs::create_dir_all(app.join("MacOS")).unwrap();
         std::fs::write(&python, "").unwrap();
         let found = python_in(&data_with(&app.join("MacOS/ferriteweazle")).unwrap());
-        assert_eq!(
-            found.canonicalize().unwrap(),
-            python.canonicalize().unwrap()
-        );
+        assert_eq!(found, python, "by name, with no ..");
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -1743,10 +1743,7 @@ impl App {
             } else {
                 "file"
             };
-            with.set(
-                dest,
-                values.get(dest).split("::").next().unwrap_or_default(),
-            );
+            with.set(dest, image_path(values.get(dest)));
         }
         // As gw spells them, less the command's name.
         command::argv(cmd, &with).split_off(1)
@@ -3456,7 +3453,7 @@ impl App {
             if !file.is_empty() && !same {
                 let mut out = Output::from_value(file);
                 // The name given holds while the input is the one given with it.
-                let input = values.get("in_file").split("::").next().unwrap_or_default();
+                let input = image_path(values.get("in_file"));
                 out.named_for = input.to_owned();
                 self.settings.outputs.insert(key, out);
             }
@@ -4743,10 +4740,14 @@ fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, 
     }
 }
 
-/// The image a gw command line ends with, without its `::` options.
+/// An image argument's path, without gw's `::` options after it.
+fn image_path(value: &str) -> &str {
+    value.split_once("::").map_or(value, |(path, _)| path)
+}
+
+/// The image a gw command line ends with.
 fn image_arg(args: &[String]) -> Option<&Path> {
-    args.last()
-        .map(|a| Path::new(a.split("::").next().unwrap_or(a)))
+    args.last().map(|a| Path::new(image_path(a)))
 }
 
 /// Where the window's size is kept between runs.
