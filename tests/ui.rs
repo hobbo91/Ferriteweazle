@@ -2709,6 +2709,37 @@ fn a_window_that_opens_in_blue_shows_classic_chosen_in_blue() {
     assert!(shapes.iter().any(|c| blue(&c)), "the sidebar's chosen row");
 }
 
+/// Whether gw's command line shows in `text` in a black box.
+fn on_black(w: &Window, text: egui::Color32) -> bool {
+    let console = |c: &&egui::epaint::ClippedShape| match &c.shape {
+        egui::Shape::Rect(r) => r.fill == egui::Color32::BLACK,
+        egui::Shape::Text(t) => {
+            t.galley.text().starts_with("gw read") && t.galley.job.sections[0].format.color == text
+        }
+        _ => false,
+    };
+    w.output().shapes.iter().filter(console).count() == 2
+}
+
+#[test]
+fn the_greaseweazle_theme_shows_gws_command_line_on_black() {
+    let cli = |theme| {
+        window(Settings {
+            theme,
+            drawer: Some(Drawer::Cli),
+            ..chosen()
+        })
+    };
+    assert!(on_black(
+        &cli(Choice::Greaseweazle),
+        theme::GREASEWEAZLE.text
+    ));
+    assert!(
+        !on_black(&cli(Choice::Dark), theme::DARK.text),
+        "Dark's is its card"
+    );
+}
+
 /// The colour the last frame drew `text` in.
 fn text_colour(w: &Window, text: &str) -> egui::Color32 {
     let shape = w.output().shapes.iter().find_map(|c| match &c.shape {
@@ -2745,16 +2776,10 @@ fn classic_squares_every_corner_and_writes_on_a_selection_in_its_colour() {
     w.get_by_role_and_label(Role::Button, "CLI").click();
     w.run();
     assert_eq!(text_colour(&w, "CLI"), on);
-    // gw's command line is the console's: light grey on black.
-    let console = |c: &egui::epaint::ClippedShape| match &c.shape {
-        egui::Shape::Rect(r) => r.fill == theme::CONSOLE.card,
-        egui::Shape::Text(t) => {
-            t.galley.text().starts_with("gw read")
-                && t.galley.job.sections[0].format.color == theme::CONSOLE.text
-        }
-        _ => false,
-    };
-    assert_eq!(w.output().shapes.iter().filter(|c| console(c)).count(), 2);
+    assert!(
+        on_black(&w, theme::CONSOLE.text),
+        "the console's light grey"
+    );
     // The list of formats opens on the format's family, selected.
     combo(&w, 1).click();
     w.run();

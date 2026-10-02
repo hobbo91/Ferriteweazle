@@ -64,6 +64,7 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
     ctx.set_theme(shown);
 }
 
+#[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Color32,
     pub sidebar: Color32,
@@ -85,9 +86,10 @@ pub struct Palette {
     pub written: Color32,
     pub erased: Color32,
     pub pending: Color32,
-    /// Windows 9x's look: solid selections, square corners (square()) and the
-    /// console for gw's text (terminal()).
+    /// Windows 9x's look: solid selections and square corners (square()).
     pub win9x: bool,
+    /// gw's command lines and output on black, as a console (terminal()).
+    pub console: bool,
 }
 
 pub const DARK: Palette = Palette {
@@ -110,6 +112,7 @@ pub const DARK: Palette = Palette {
     erased: Color32::from_rgb(107, 114, 128),
     pending: Color32::from_rgb(42, 47, 56),
     win9x: false,
+    console: false,
 };
 
 pub const LIGHT: Palette = Palette {
@@ -132,6 +135,7 @@ pub const LIGHT: Palette = Palette {
     erased: Color32::from_rgb(154, 161, 173),
     pending: Color32::from_rgb(228, 231, 236),
     win9x: false,
+    console: false,
 };
 
 /// From the purple of the Greaseweazle's board, rgb(94, 25, 139): darker for
@@ -156,6 +160,7 @@ pub const GREASEWEAZLE: Palette = Palette {
     erased: Color32::from_rgb(130, 112, 150),
     pending: Color32::from_rgb(60, 25, 90),
     win9x: false,
+    console: true,
 };
 
 /// Windows 95 and 98's standard scheme, on rgb(195, 199, 203): silver-grey
@@ -180,6 +185,7 @@ pub const CLASSIC: Palette = Palette {
     erased: Color32::from_rgb(128, 128, 128),
     pending: Color32::from_rgb(225, 227, 229),
     win9x: true,
+    console: true,
 };
 
 /// Classic in blue, its accent and flux swapped: a navy with enough green in
@@ -224,15 +230,21 @@ pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 /// Draws gw's command lines and output with `add`, in the window's palette
-/// or, in Classic, the console's.
+/// or, where that has a console, on black: a dark palette in its own colours,
+/// a light one in the Windows console's.
 pub fn terminal<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui, &Palette) -> R) -> R {
     ui.scope(|ui| {
-        let mut p = palette(ui);
-        if p.win9x {
-            *ui.visuals_mut() = visuals(&CONSOLE, Visuals::dark());
-            p = &CONSOLE;
-        }
-        add(ui, p)
+        let p = palette(ui);
+        let console = match (p.console, ui.visuals().dark_mode) {
+            (false, _) => return add(ui, p),
+            (true, true) => Palette {
+                card: Color32::BLACK,
+                ..*p
+            },
+            (true, false) => CONSOLE,
+        };
+        *ui.visuals_mut() = visuals(&console, Visuals::dark());
+        add(ui, &console)
     })
     .inner
 }
