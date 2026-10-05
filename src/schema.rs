@@ -96,6 +96,10 @@ pub struct FormatInfo {
     /// gw write verifies each track of this format before the next.
     #[serde(default)]
     pub verifies: bool,
+    /// Revolutions gw read takes per track without --revs: whole ones index to
+    /// index, a fraction past one timed.
+    #[serde(default)]
+    pub revs: Option<f64>,
 }
 
 /// What a disk definitions file adds, checked with gw's own parser.

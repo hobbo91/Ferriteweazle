@@ -28,6 +28,9 @@ pub struct Track {
     pub retries: u32,
     /// What gw last said about the track.
     pub text: String,
+    /// Where gw read or wrote it when a step, a swap or an offset moved that
+    /// from the track's own number, as gw says it: `Drive 10.1`, `Image 10.1`.
+    pub place: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -108,16 +111,20 @@ impl Progress {
                     .and_then(|k| self.tracks.get_mut(&k))
                 {
                     t.status = Status::Bad;
-                } else if let Some((key, text)) = track_line(line) {
+                } else if let Some((key, place, text)) = track_line(line) {
                     // gw stopped before the track, as for sectors its input lacks.
                     self.moved_to(key);
                     let t = self.tracks.entry(key).or_insert(Track {
                         status: Status::Bad,
                         retries: 0,
                         text: String::new(),
+                        place: None,
                     });
                     t.status = Status::Bad;
                     text.clone_into(&mut t.text);
+                    if let Some(place) = place {
+                        t.place = Some(place.to_owned());
+                    }
                 }
                 return self.add_to_error(line);
             }
@@ -170,8 +177,8 @@ impl Progress {
             self.total = found(rest);
         } else if let Some(pass) = line.strip_prefix("Pass ").and_then(pass) {
             self.pass = Some(pass);
-        } else if let Some((key, text)) = track_line(line) {
-            self.track(key, text);
+        } else if let Some((key, place, text)) = track_line(line) {
+            self.track(key, place, text);
         } else if let Some((head, sector, cells)) = map_row(line) {
             self.map_row(head, sector, cells);
         } else if line.contains("WARNING:") {
@@ -206,6 +213,7 @@ impl Progress {
                     status: Status::Skipped,
                     retries: 0,
                     text: "Not in the input, so Greaseweazle Tools passed over it.".into(),
+                    place: None,
                 });
             }
         }
@@ -240,7 +248,7 @@ impl Progress {
         tally
     }
 
-    fn track(&mut self, key: (u32, u32), text: &str) {
+    fn track(&mut self, key: (u32, u32), place: Option<&str>, text: &str) {
         let count = sectors(text);
         if count.is_none() && !RESULTS.iter().any(|r| text.starts_with(r)) {
             return;
@@ -253,7 +261,11 @@ impl Progress {
             status: Status::Flux,
             retries: 0,
             text: String::new(),
+            place: None,
         });
+        if let Some(place) = place {
+            t.place = Some(place.to_owned());
+        }
         if text.contains("(Retry #") || text.contains("(Verify Failure") {
             t.retries += 1;
         }
@@ -345,10 +357,17 @@ fn key(s: &str) -> Option<(u32, u32)> {
     Some((c.parse().ok()?, h.parse().ok()?))
 }
 
-/// `T12.1: text` or `T12.1 <- Drive 12.0: text`.
-fn track_line(line: &str) -> Option<((u32, u32), &str)> {
+/// `T12.1: text`, or `T12.1 <- Drive 12.0: text` with where gw read the
+/// track, or `T12.1 -> Drive 24.0: text` with where it wrote it: gw's own
+/// `Drive 12.0` or `Image 12.0`.
+fn track_line(line: &str) -> Option<((u32, u32), Option<&str>, &str)> {
     let (id, text) = line.strip_prefix('T')?.split_once(": ")?;
-    Some((key(id.split_whitespace().next()?)?, text))
+    let (own, rest) = id.split_once(' ').map_or((id, ""), |(a, b)| (a, b.trim()));
+    let place = rest
+        .strip_prefix("<- ")
+        .or_else(|| rest.strip_prefix("-> "))
+        .filter(|p| p.split_once(' ').is_some_and(|(_, at)| key(at).is_some()));
+    Some((key(own)?, place, text))
 }
 
 /// `(17/18 sectors)` anywhere in the text.
@@ -549,6 +568,27 @@ mod tests {
         let p =
             fed("T5.1 <- Drive 10.1: AmigaDOS (0/11 sectors) from Raw Flux (9 flux in 200.00ms)");
         assert_eq!(p.tracks[&(5, 1)].status, Status::Bad);
+    }
+
+    #[test]
+    fn a_track_keeps_where_gw_read_or_wrote_it_when_that_is_not_its_own_number() {
+        let read =
+            fed("T5.1 <- Drive 10.0: AmigaDOS (11/11 sectors) from Raw Flux (9 flux in 200.00ms)");
+        assert_eq!(read.tracks[&(5, 1)].place.as_deref(), Some("Drive 10.0"));
+        let written =
+            fed("Writing c=0-39:h=0-1:step=2\nT3.0 -> Drive 6.0: Writing Track (Flux: 1)");
+        assert_eq!(written.tracks[&(3, 0)].place.as_deref(), Some("Drive 6.0"));
+        let converted =
+            fed("T0.0 <- Image 0.1: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)");
+        assert_eq!(
+            converted.tracks[&(0, 0)].place.as_deref(),
+            Some("Image 0.1")
+        );
+        let own = fed("T0.0: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)");
+        assert_eq!(own.tracks[&(0, 0)].place, None);
+        let odd =
+            fed("T0.0 <- somewhere: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)");
+        assert_eq!(odd.tracks[&(0, 0)].place, None, "not gw's words");
     }
 
     #[test]

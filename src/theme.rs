@@ -284,6 +284,9 @@ pub const FIELD_HEIGHT: f32 = 28.0;
 /// background. Made by packaging/macos/icon.sh.
 pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 
+/// The floppy from the icon, large, for the About window.
+pub const ABOUT: &[u8] = include_bytes!("../assets/about.png");
+
 /// The colours the window has, known by its links': each palette apply()
 /// shows has a link colour of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {

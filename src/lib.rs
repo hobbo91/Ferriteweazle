@@ -10,6 +10,8 @@ pub mod device;
 mod diskmap;
 pub mod form;
 pub mod job;
+#[cfg(target_os = "macos")]
+mod menu;
 #[cfg(target_os = "linux")]
 mod portal;
 pub mod presets;
@@ -22,7 +24,9 @@ pub mod tools;
 mod udev;
 pub mod update;
 
-pub use app::{App, Drawer, Page, SMALLEST, Settings, WINDOW, opening_size};
+pub use app::{
+    ABOUT_SIZE, App, Drawer, Page, SMALLEST, Settings, WINDOW, about, about_image, opening_size,
+};
 
 use std::ffi::OsString;
 use std::path::PathBuf;

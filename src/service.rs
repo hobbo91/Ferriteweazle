@@ -392,9 +392,19 @@ impl Service {
             sectors: None,
             bytes: None,
             verifies: false,
+            revs: None,
         };
         let key = (String::new(), None, name.to_owned());
         self.infos.insert(key, Load::Ready(info));
+    }
+
+    /// Gives a described format the revolutions gw read takes per track.
+    #[cfg(test)]
+    pub fn describe_revs(&mut self, name: &str, revs: f64) {
+        let key = (String::new(), None, name.to_owned());
+        if let Some(Load::Ready(info)) = self.infos.get_mut(&key) {
+            info.revs = Some(revs);
+        }
     }
 
     /// As `format_info`, from what gw has already said.

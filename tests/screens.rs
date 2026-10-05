@@ -412,5 +412,49 @@ fn screens() {
             ..settings("read", theme)
         };
         render_sized("settings", tall, theme, page, None, |_| {});
+        // A newer release on offer: the banner on a page, and Settings' Update.
+        let read = settings("read", theme);
+        render("update-banner", theme, read, None, |w| {
+            w.state_mut().as_mut().unwrap().offer_update("v1.3.4");
+        });
+        let page = Settings {
+            page: Page::Settings,
+            ..settings("read", theme)
+        };
+        render_sized("settings-update", tall, theme, page, None, |w| {
+            w.state_mut().as_mut().unwrap().offer_update("v1.3.4");
+        });
+        about(theme);
     }
+}
+
+/// The About window's contents, as the window shows them.
+fn about(theme: egui::Theme) {
+    let mut texture = None;
+    let mut harness = Harness::builder()
+        .with_size(ferriteweazle::ABOUT_SIZE)
+        .with_pixels_per_point(2.0)
+        .with_theme(theme)
+        .wgpu()
+        .build_ui(move |ui| {
+            let image = texture.get_or_insert_with(|| {
+                ferriteweazle::theme::install(ui.ctx());
+                ferriteweazle::theme::apply(ui.ctx(), theme.into());
+                ferriteweazle::about_image(ui.ctx())
+            });
+            // The window's panel, which the harness's root does not fill.
+            let whole = ui.ctx().content_rect();
+            ui.painter()
+                .rect_filled(whole, 0.0, ui.visuals().panel_fill);
+            ferriteweazle::about(ui, image, Some("Greaseweazle Tools 1.23"));
+        });
+    harness.run_steps(5);
+    let suffix = match theme {
+        egui::Theme::Dark => "dark",
+        egui::Theme::Light => "light",
+    };
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
+    std::fs::create_dir_all(dir).unwrap();
+    let image = harness.render().expect("the window renders");
+    image.save(format!("{dir}/about-{suffix}.png")).unwrap();
 }

@@ -969,7 +969,7 @@ fn every_field_and_its_label_explain_themselves_on_hover() {
             "Revolutions",
             // After the format, before the image type.
             combo(&w, 2).rect().center(),
-            "Revolutions to read per track.",
+            "Whole revolutions to read per track; the default's fraction is timed.",
         ),
         (
             "Image type",

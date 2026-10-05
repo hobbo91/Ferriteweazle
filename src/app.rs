@@ -443,6 +443,12 @@ pub struct App {
     /// gw's udev rule, where a Linux package ships it.
     pub udev_rule: Option<PathBuf>,
     install: RuleInstall,
+    /// The macOS menu bar, whose About opens the About window.
+    #[cfg(target_os = "macos")]
+    menu: Option<crate::menu::MenuBar>,
+    /// The About window is open.
+    about: bool,
+    about_image: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -477,6 +483,10 @@ impl App {
         #[cfg(target_os = "linux")]
         {
             app.desktop_theme = Some(crate::portal::watch(repaint(&cc.egui_ctx)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            app.menu = crate::menu::MenuBar::install(&cc.egui_ctx);
         }
         app
     }
@@ -544,6 +554,10 @@ impl App {
             drawn: None,
             udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
+            #[cfg(target_os = "macos")]
+            menu: None,
+            about: false,
+            about_image: None,
         }
     }
 
@@ -655,9 +669,9 @@ impl App {
         };
         let (can, tip) = self.update_button(&self.app_update, "Ferriteweazle");
         let (mut install, mut dismiss) = (false, false);
-        let room = if offered.is_some() { 150.0 } else { 0.0 };
+        let room = if offered.is_some() { 260.0 } else { 0.0 };
         banner(ui, &text, room, left, |ui| {
-            if offered.is_some() {
+            if let Some(tag) = &offered {
                 dismiss = ui
                     .small_button("Dismiss")
                     .on_hover_text("Hide this until a newer release.")
@@ -667,6 +681,8 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked();
+                // Faded out, the link takes no clicks, as the buttons take none.
+                ui.add_enabled_ui(left >= 1.0, |ui| release_notes(ui, REPO, tag, true));
             }
         });
         // A banner fading out takes no more clicks.
@@ -682,6 +698,14 @@ impl App {
             }
             self.dismissed = Some((tag, ui.input(|i| i.time)));
         }
+    }
+
+    /// Shows release `tag` of Ferriteweazle as on offer, whatever GitHub has,
+    /// as if this copy were installed: for tests and pictures of the window.
+    pub fn offer_update(&mut self, tag: &str) {
+        self.app_update = Update::Newer(tag.to_owned());
+        self.copy = Some(Install::MacApp("/Applications/Ferriteweazle.app".into()));
+        self.stuck = None;
     }
 
     /// Shows these ports as the connected devices, whatever gw finds, until
@@ -727,6 +751,21 @@ impl App {
         self.fade_theme(&ctx);
         self.poll(&ctx);
         self.poll_updates(&ctx);
+        #[cfg(target_os = "macos")]
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(crate::menu::MenuBar::about_chosen)
+        {
+            if self.about {
+                // Open already, perhaps behind the window: brought to the front.
+                ctx.send_viewport_cmd_to(about_id(), ViewportCommand::Focus);
+            }
+            self.about = true;
+        }
+        if self.about {
+            self.about_window(&ctx);
+        }
         self.guard_close(&ctx);
         self.keep_size(&ctx);
         self.take_dropped_files(&ctx);
@@ -1694,10 +1733,6 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
-        // The Overwrite question stands in for gw's -n, which would refuse once it is answered.
-        if form::has_output(&cmd.name) {
-            values.set("no_clobber", "");
-        }
         if cmd.name == "update" {
             form::Firmware::only(&mut values);
         }
@@ -2136,9 +2171,16 @@ impl App {
             }
             _ => Vec::new(),
         };
+        // With -n gw refuses a file that is there, so there is nothing to ask.
+        let asks = !values.on("no_clobber");
         let outputs = &self.settings.outputs;
         let runs = runs(cmd, values, outputs, &images, |v| self.argv(cmd, v));
-        let files: Vec<PathBuf> = runs.makes.iter().filter(|f| f.exists()).cloned().collect();
+        let files: Vec<PathBuf> = runs
+            .makes
+            .iter()
+            .filter(|f| asks && f.exists())
+            .cloned()
+            .collect();
         if files.is_empty() {
             self.begin(ctx, &cmd.name, runs);
         } else {
@@ -2663,15 +2705,6 @@ impl App {
                 }
             });
         });
-        // egui puts the cursor where any button presses; a right-click keeps
-        // the selection, as a system text box does, for its menu's Paste.
-        let ctx = ui.ctx().clone();
-        let selection = || {
-            egui::text_edit::TextEditState::load(&ctx, id)
-                .and_then(|s| s.cursor.char_range())
-                .filter(|r| !r.is_empty())
-        };
-        let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
         // The Log's box, as tall as the drawer leaves; the command scrolls in it.
         let edit = theme::terminal(ui, |ui, p| {
             let edge = match ui.memory(|m| m.has_focus(id)) {
@@ -2688,9 +2721,10 @@ impl App {
                         .max_height(height)
                         .min_scrolled_height(height)
                         .show(ui, |ui| {
-                            ui.add(
+                            form::text_box_with(
+                                ui,
+                                id,
                                 TextEdit::multiline(&mut cli.text)
-                                    .id(id)
                                     .font(TextStyle::Monospace)
                                     .frame(Frame::NONE)
                                     .margin(Margin::ZERO)
@@ -2704,30 +2738,6 @@ impl App {
                 .inner
         })
         .on_hover_text("Type or paste a gw command line. The page follows it.");
-        if let Some(range) = kept
-            && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
-        {
-            state.cursor.set_char_range(Some(range));
-            state.store(&ctx, id);
-        }
-        // Its own menu, as a system text box has: a paste goes in at the
-        // cursor or over the selection.
-        edit.context_menu(|ui| {
-            let selected = selection().is_some();
-            for (name, can, command) in [
-                ("Cut", selected, ViewportCommand::RequestCut),
-                ("Copy", selected, ViewportCommand::RequestCopy),
-                ("Paste", true, ViewportCommand::RequestPaste),
-            ] {
-                let item = ui.add_enabled(can, egui::Button::new(name));
-                if item.on_disabled_hover_text("Nothing selected.").clicked() {
-                    // Back in the box for the cut or paste the next frame brings.
-                    ui.memory_mut(|m| m.request_focus(id));
-                    ui.ctx().send_viewport_cmd(command);
-                    ui.close();
-                }
-            }
-        });
         let mut apply = None;
         if edit.changed() {
             match command::parse(&schema, &cli.text) {
@@ -2954,6 +2964,9 @@ impl App {
                     && let Some(tools) = &self.tools
                 {
                     self.gw_update = Update::gw(tools, tag, repaint(ui.ctx()));
+                }
+                if let Update::Newer(tag) = &self.gw_update {
+                    release_notes(ui, GW_REPO, tag, false);
                 }
             });
         });
@@ -3258,7 +3271,7 @@ impl App {
                             .desired_width(f32::INFINITY);
                         ui.horizontal(|ui| {
                             ui.label("Name");
-                            ui.add(edit).request_focus();
+                            form::text_box(ui, edit).request_focus();
                         });
                         let chosen = Some(typed.trim()).filter(|t| !t.is_empty());
                         let chosen = chosen.unwrap_or(default.as_str()).to_owned();
@@ -3269,7 +3282,18 @@ impl App {
                         let path = out.map(|o| o.named(&chosen).path(1));
                         if let Some(path) = path.filter(|p| !chosen.is_empty() && p.exists()) {
                             let file = path.file_name().unwrap_or_default().to_string_lossy();
-                            let text = format!("{file} exists. Reading replaces it.");
+                            // As start() has it: the question, or gw's -n.
+                            let refuses = self
+                                .settings
+                                .values
+                                .get(command)
+                                .is_some_and(|v| v.on("no_clobber"));
+                            let text = match refuses {
+                                true => format!(
+                                    "{file} exists. No clobber is on, so Greaseweazle Tools refuses it."
+                                ),
+                                false => format!("{file} exists. Reading replaces it."),
+                            };
                             ui.label(RichText::new(text).small().color(p.partial));
                         }
                         named = Some(chosen);
@@ -3331,7 +3355,8 @@ impl App {
                     description,
                 } => {
                     dialog_heading(ui, "Save a preset");
-                    let named = ui.add(
+                    let named = form::text_box(
+                        ui,
                         form::edit(name)
                             .char_limit(form::NAME_LIMIT)
                             .hint_text("e.g. Amiga DD")
@@ -3349,9 +3374,10 @@ impl App {
                         ui.label(RichText::new(text).small().color(p.partial));
                     }
                     ui.add_space(6.0);
-                    ui.add(
+                    form::text_box_with(
+                        ui,
+                        about,
                         form::edit(description)
-                            .id(about)
                             .char_limit(DESCRIPTION_LIMIT)
                             .hint_text(match exists {
                                 true => "Description, empty keeps the old one",
@@ -3525,6 +3551,10 @@ impl App {
             self.app_update,
             Update::Checking(_) | Update::Installing(..)
         );
+        let newer = match &self.app_update {
+            Update::Newer(tag) => Some(tag.clone()),
+            _ => None,
+        };
         ui.horizontal(|ui| {
             if spin {
                 ui.spinner();
@@ -3535,11 +3565,14 @@ impl App {
             }
             right(ui, |ui| {
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
-                if update
+                let clicked = update
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
-                    .clicked()
-                {
+                    .clicked();
+                if let Some(tag) = &newer {
+                    release_notes(ui, REPO, tag, false);
+                }
+                if clicked {
                     self.install_app(ui.ctx());
                 }
             });
@@ -3783,6 +3816,74 @@ impl eframe::App for App {
     }
 }
 
+impl App {
+    /// The About window, a window of its own, until it is closed.
+    fn about_window(&mut self, ctx: &egui::Context) {
+        let tools = self.schema().map(Schema::tools);
+        let image = self
+            .about_image
+            .get_or_insert_with(|| about_image(ctx))
+            .clone();
+        let builder = egui::ViewportBuilder::default()
+            .with_title("About Ferriteweazle")
+            .with_inner_size(ABOUT_SIZE)
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_minimize_button(false);
+        let mut open = true;
+        ctx.show_viewport_immediate(about_id(), builder, |ctx, _| {
+            egui::CentralPanel::default().show(ctx, |ui| about(ui, &image, tools.as_deref()));
+            let closed =
+                ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape));
+            if closed {
+                open = false;
+            }
+        });
+        self.about = open;
+    }
+}
+
+/// The About window's size, in points.
+pub const ABOUT_SIZE: egui::Vec2 = egui::vec2(360.0, 452.0);
+
+/// The About window, as a viewport of the app's.
+fn about_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("about")
+}
+
+/// The floppy from the icon, as a texture of `ctx`.
+pub fn about_image(ctx: &egui::Context) -> egui::TextureHandle {
+    let icon = eframe::icon_data::from_png_bytes(theme::ABOUT).expect("the artwork is a PNG");
+    let size = [icon.width as usize, icon.height as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
+    ctx.load_texture("about", image, egui::TextureOptions::LINEAR)
+}
+
+/// What the About window shows: the floppy from the icon, large, the version,
+/// `tools` as Greaseweazle Tools names itself, and where the project lives.
+pub fn about(ui: &mut Ui, image: &egui::TextureHandle, tools: Option<&str>) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(22.0);
+        ui.image((image.id(), vec2(200.0, 200.0)));
+        ui.add_space(14.0);
+        ui.label(RichText::new("Ferriteweazle").size(22.0).strong());
+        ui.add_space(2.0);
+        ui.label(concat!("Version ", env!("CARGO_PKG_VERSION")));
+        if let Some(tools) = tools {
+            ui.label(RichText::new(tools).weak());
+        }
+        ui.add_space(14.0);
+        ui.hyperlink_to("github.com/hobbo91/Ferriteweazle", REPO)
+            .on_hover_text(REPO);
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("Made by Lee Hobson, under the MIT license.")
+                .small()
+                .weak(),
+        );
+    });
+}
+
 /// A question from gw, such as whether to seek past the last cylinder.
 fn ask(ctx: &egui::Context, job: &mut Job) {
     let question = job.question.clone().unwrap_or_default();
@@ -3803,7 +3904,7 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
             });
         } else {
             let mut text: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
-            ui.add(form::edit(&mut text).desired_width(f32::INFINITY));
+            form::text_box(ui, form::edit(&mut text).desired_width(f32::INFINITY));
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if ui.add(dialog_plain("Answer")).clicked() {
                 answer = Some(text);
@@ -4680,6 +4781,20 @@ fn banner(ui: &mut Ui, text: &str, room: f32, left: f32, actions: impl FnOnce(&m
     ui.add_space(height * open);
 }
 
+/// GitHub's page for release `tag` of `repo`, which holds its notes.
+fn release_notes_url(repo: &str, tag: &str) -> String {
+    format!("{repo}/releases/tag/{tag}")
+}
+
+/// A link to a release's notes on GitHub. `small` in a banner.
+fn release_notes(ui: &mut Ui, repo: &str, tag: &str, small: bool) {
+    let url = release_notes_url(repo, tag);
+    let text = RichText::new("Release notes");
+    let text = if small { text.small() } else { text };
+    ui.add(egui::Hyperlink::from_label_and_url(text, &url))
+        .on_hover_text(&url);
+}
+
 /// Where the theme chosen in Settings is kept between runs; System keeps no file.
 fn theme_file() -> PathBuf {
     crate::data_folder().join("theme.txt")
@@ -5336,6 +5451,34 @@ mod tests {
         w.state_mut().stuck = Some("Read-only.");
         w.run_steps(2);
         assert!(w.query_by_label_contains("is available").is_none());
+    }
+
+    #[test]
+    fn the_about_window_shows_the_floppy_the_version_and_the_projects_home() {
+        let mut texture = None;
+        let mut h = Harness::new_ui(|ui| {
+            let image = texture.get_or_insert_with(|| about_image(ui.ctx()));
+            about(ui, image, Some("Greaseweazle Tools 1.23"));
+        });
+        h.run();
+        h.get_by_label(concat!("Version ", env!("CARGO_PKG_VERSION")));
+        h.get_by_label("Greaseweazle Tools 1.23");
+        h.get_by_label("github.com/hobbo91/Ferriteweazle");
+    }
+
+    #[test]
+    fn a_newer_release_links_to_its_notes_in_the_banner_and_in_settings() {
+        let mut app = offline();
+        app.offer_update("v9.9.9");
+        let mut w = window(app);
+        // egui keeps a link's address from the tree: the page for the tag.
+        let url = "https://github.com/hobbo91/Ferriteweazle/releases/tag/v9.9.9";
+        assert_eq!(release_notes_url(REPO, "v9.9.9"), url);
+        w.get_by_label("Release notes");
+        w.state_mut().settings.page = Page::Settings;
+        w.run_steps(2);
+        w.get_by_label_contains("Update available");
+        w.get_by_label("Release notes");
     }
 
     #[test]
@@ -6482,6 +6625,17 @@ mod tests {
         w.run_steps(2);
         assert!(!read(&w));
         w.get_by_label("Lemmings 2.adf exists. Reading replaces it.");
+        let values = w
+            .state_mut()
+            .settings
+            .values
+            .entry("read".into())
+            .or_default();
+        values.set("no_clobber", command::ON);
+        w.run_steps(2);
+        w.get_by_label(
+            "Lemmings 2.adf exists. No clobber is on, so Greaseweazle Tools refuses it.",
+        );
 
         w.state_mut().end_session();
         let note = "Read 0 of 3 disks. Failed: Lemmings 1. The Log says why.";
@@ -7037,14 +7191,14 @@ mod tests {
         assert_eq!(tracks(&w), "c=0-9");
         let preset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("presets")
-            .join("Read Amiga 880 KB, 84 cyl.json");
+            .join("Read Amiga 880 KB, 84 cyl, flux.json");
         w.state_mut().load_preset("read", &preset);
         w.run_steps(2);
         assert_eq!(tracks(&w), "c=0-83");
     }
 
     #[test]
-    fn a_pasted_no_clobber_is_left_to_the_overwrite_question() {
+    fn no_clobber_goes_to_gw_which_refuses_an_existing_file_in_place_of_the_question() {
         let schema = schema();
         let read = schema.command("read").unwrap();
         let mut app = offline();
@@ -7052,8 +7206,32 @@ mod tests {
         let (name, values, _) = command::parse(&schema, line).unwrap();
         app.fill_in(name, values);
         let args = app.args(read);
-        assert!(args.iter().all(|a| a != "-n"), "{args:?}");
+        assert!(args.iter().any(|a| a == "-n"), "{args:?}");
         assert!(args.iter().any(|a| a == "--format=ibm.1440"), "{args:?}");
+        let dir =
+            std::env::temp_dir().join(format!("ferriteweazle-no-clobber-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.img"), b"").unwrap();
+        app.settings.outputs.insert(
+            "read/file".into(),
+            Output {
+                folder: dir.to_string_lossy().into_owned(),
+                name: "x".into(),
+                ext: ".img".into(),
+                ..Output::default()
+            },
+        );
+        let ctx = egui::Context::default();
+        app.start(&ctx, read);
+        assert!(app.dialog.is_none(), "with -n, gw refuses the file itself");
+        app.settings
+            .values
+            .get_mut("read")
+            .unwrap()
+            .set("no_clobber", "");
+        app.start(&ctx, read);
+        assert!(matches!(app.dialog, Some(Dialog::Overwrite { .. })));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

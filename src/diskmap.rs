@@ -220,6 +220,9 @@ pub fn show(
             match progress.tracks.get(&(cyl, head)) {
                 Some(t) => {
                     ui.label(&t.text);
+                    if let Some(place) = &t.place {
+                        ui.weak(place_text(place));
+                    }
                     if t.retries > 0 {
                         ui.weak(retry_text(t.retries));
                     }
@@ -456,9 +459,35 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
     });
 }
 
+/// Where gw read or wrote the track, from gw's `Drive 10.1` or `Image 10.1`:
+/// the cylinder and head a step, a swap or an offset took it to.
+fn place_text(place: &str) -> String {
+    let parts = place
+        .split_once(' ')
+        .and_then(|(what, at)| Some((what, at.split_once('.')?)));
+    match parts {
+        Some((what, (c, h))) => format!("{what} cylinder {c}, head {h}."),
+        None => place.to_owned(),
+    }
+}
+
 fn retry_text(n: u32) -> String {
     match n {
         1 => "1 retry".into(),
         n => format!("{n} retries"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tracks_place_names_the_drive_or_image_cylinder_and_head() {
+        assert_eq!(place_text("Drive 10.1"), "Drive cylinder 10, head 1.");
+        assert_eq!(place_text("Image 0.0"), "Image cylinder 0, head 0.");
+        assert_eq!(place_text("elsewhere"), "elsewhere", "kept as gw put it");
+        assert_eq!(retry_text(1), "1 retry");
+        assert_eq!(retry_text(3), "3 retries");
     }
 }

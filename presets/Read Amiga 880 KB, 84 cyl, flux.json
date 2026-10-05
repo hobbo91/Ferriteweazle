@@ -1,0 +1,14 @@
+{
+  "command": "read",
+  "values": {
+    "format": "amiga.amigados",
+    "raw": "on",
+    "tracks": "c=0-83"
+  },
+  "outputs": {
+    "read/file": {
+      "ext": ".scp"
+    }
+  },
+  "description": "Flux of all 84 cylinders, as SCP. amiga.amigados defines 80 cylinders, which Greaseweazle Tools decodes as it reads to retry short tracks; a sector image would hold those 80 alone."
+}

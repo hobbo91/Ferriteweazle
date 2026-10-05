@@ -1,7 +1,0 @@
-{
-  "command": "write",
-  "values": {
-    "format": "ibm.1200",
-    "tracks": "c=0-83"
-  }
-}
