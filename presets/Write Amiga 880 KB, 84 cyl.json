@@ -1,7 +1,0 @@
-{
-  "command": "write",
-  "values": {
-    "format": "amiga.amigados",
-    "tracks": "c=0-83"
-  }
-}

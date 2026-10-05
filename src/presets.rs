@@ -160,7 +160,7 @@ mod tests {
         let schema: crate::schema::Schema =
             serde_json::from_str(include_str!("gw-1.23.json")).unwrap();
         let examples = examples();
-        assert_eq!(examples.len(), 37);
+        assert_eq!(examples.len(), 33);
         for (name, preset) in &examples {
             let cmd = schema.command(&preset.command).unwrap();
             let page = if preset.command == "read" {
@@ -190,6 +190,8 @@ mod tests {
             // A read makes the type the page picks for its format, or flux without one.
             let ext = preset.outputs.get("read/file").map(|o| o.ext.as_str());
             let wanted = match (preset.command.as_str(), format) {
+                // Raw keeps flux, which a format only checks.
+                ("read", _) if preset.values.on("raw") => Some(".scp".to_owned()),
                 ("read", "") => Some(".scp".to_owned()),
                 ("read", format) => Some(crate::form::type_for(&schema, format)),
                 _ => None,

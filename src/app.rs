@@ -1694,10 +1694,6 @@ impl App {
         if !custom.iter().any(|f| f == values.get("format")) {
             values.set("diskdefs", "");
         }
-        // The Overwrite question stands in for gw's -n, which would refuse once it is answered.
-        if form::has_output(&cmd.name) {
-            values.set("no_clobber", "");
-        }
         if cmd.name == "update" {
             form::Firmware::only(&mut values);
         }
@@ -2136,9 +2132,16 @@ impl App {
             }
             _ => Vec::new(),
         };
+        // With -n gw refuses a file that is there, so there is nothing to ask.
+        let asks = !values.on("no_clobber");
         let outputs = &self.settings.outputs;
         let runs = runs(cmd, values, outputs, &images, |v| self.argv(cmd, v));
-        let files: Vec<PathBuf> = runs.makes.iter().filter(|f| f.exists()).cloned().collect();
+        let files: Vec<PathBuf> = runs
+            .makes
+            .iter()
+            .filter(|f| asks && f.exists())
+            .cloned()
+            .collect();
         if files.is_empty() {
             self.begin(ctx, &cmd.name, runs);
         } else {
@@ -7037,14 +7040,14 @@ mod tests {
         assert_eq!(tracks(&w), "c=0-9");
         let preset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("presets")
-            .join("Read Amiga 880 KB, 84 cyl.json");
+            .join("Read Amiga 880 KB, 84 cyl, flux.json");
         w.state_mut().load_preset("read", &preset);
         w.run_steps(2);
         assert_eq!(tracks(&w), "c=0-83");
     }
 
     #[test]
-    fn a_pasted_no_clobber_is_left_to_the_overwrite_question() {
+    fn no_clobber_goes_to_gw_which_refuses_an_existing_file_in_place_of_the_question() {
         let schema = schema();
         let read = schema.command("read").unwrap();
         let mut app = offline();
@@ -7052,8 +7055,32 @@ mod tests {
         let (name, values, _) = command::parse(&schema, line).unwrap();
         app.fill_in(name, values);
         let args = app.args(read);
-        assert!(args.iter().all(|a| a != "-n"), "{args:?}");
+        assert!(args.iter().any(|a| a == "-n"), "{args:?}");
         assert!(args.iter().any(|a| a == "--format=ibm.1440"), "{args:?}");
+        let dir =
+            std::env::temp_dir().join(format!("ferriteweazle-no-clobber-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.img"), b"").unwrap();
+        app.settings.outputs.insert(
+            "read/file".into(),
+            Output {
+                folder: dir.to_string_lossy().into_owned(),
+                name: "x".into(),
+                ext: ".img".into(),
+                ..Output::default()
+            },
+        );
+        let ctx = egui::Context::default();
+        app.start(&ctx, read);
+        assert!(app.dialog.is_none(), "with -n, gw refuses the file itself");
+        app.settings
+            .values
+            .get_mut("read")
+            .unwrap()
+            .set("no_clobber", "");
+        app.start(&ctx, read);
+        assert!(matches!(app.dialog, Some(Dialog::Overwrite { .. })));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
