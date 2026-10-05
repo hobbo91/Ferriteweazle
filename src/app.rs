@@ -757,6 +757,10 @@ impl App {
             .as_ref()
             .is_some_and(crate::menu::MenuBar::about_chosen)
         {
+            if self.about {
+                // Open already, perhaps behind the window: brought to the front.
+                ctx.send_viewport_cmd_to(about_id(), ViewportCommand::Focus);
+            }
             self.about = true;
         }
         if self.about {
@@ -3827,8 +3831,7 @@ impl App {
             .with_maximize_button(false)
             .with_minimize_button(false);
         let mut open = true;
-        let id = egui::ViewportId::from_hash_of("about");
-        ctx.show_viewport_immediate(id, builder, |ctx, _| {
+        ctx.show_viewport_immediate(about_id(), builder, |ctx, _| {
             egui::CentralPanel::default().show(ctx, |ui| about(ui, &image, tools.as_deref()));
             let closed =
                 ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape));
@@ -3842,6 +3845,11 @@ impl App {
 
 /// The About window's size, in points.
 pub const ABOUT_SIZE: egui::Vec2 = egui::vec2(360.0, 452.0);
+
+/// The About window, as a viewport of the app's.
+fn about_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("about")
+}
 
 /// The floppy from the icon, as a texture of `ctx`.
 pub fn about_image(ctx: &egui::Context) -> egui::TextureHandle {

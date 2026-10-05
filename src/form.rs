@@ -1459,8 +1459,14 @@ impl<'a> Form<'a> {
                     Some((ext, image)) => {
                         ui.label(RichText::new(image_name(&path, &image.name)).small().weak());
                         if !image.read_opts.is_empty() {
-                            changed |=
-                                image_options(ui, self.service, ext, &image.read_opts, &mut opts);
+                            changed |= image_options(
+                                ui,
+                                self.service,
+                                ext,
+                                &image.read_opts,
+                                &mut opts,
+                                false,
+                            );
                         }
                         let stray = foreign(&opts, &image.read_opts);
                         if !stray.is_empty() {
@@ -1548,13 +1554,29 @@ impl<'a> Form<'a> {
                 row(ui, "", |ui| ui.label(text));
             }
         }
+        // gw keeps every revolution read only as flux: Raw on, or a flux image
+        // converted with no format to decode it.
+        let flux_as_read = match self.cmd.name.as_str() {
+            "read" => self.values.on("raw"),
+            _ => {
+                extension(&input).is_some_and(|e| RAW_FLUX.contains(&e.as_str()))
+                    && effective_format(self.service, schema, self.cmd, self.values).is_none()
+            }
+        };
         if let Some(image) = schema
             .images
             .get(&out.ext)
             .filter(|i| !i.write_opts.is_empty())
         {
             row(ui, "Image options", |ui| {
-                image_options(ui, self.service, &out.ext, &image.write_opts, &mut out.opts)
+                image_options(
+                    ui,
+                    self.service,
+                    &out.ext,
+                    &image.write_opts,
+                    &mut out.opts,
+                    flux_as_read,
+                )
             })
             .0
             .on_hover_text("Settings of this image type.");
@@ -2751,7 +2773,11 @@ const TIPS: &[(&str, &str, &str)] = &[
         "reverse",
         "Reverse the track data, for a flippy disk's other side.",
     ),
-    ("read", "revs", "Revolutions to read per track."),
+    (
+        "read",
+        "revs",
+        "Whole revolutions to read per track; the default's fraction is timed.",
+    ),
     ("erase", "revs", "Revolutions to erase per track."),
     (
         "read",
@@ -3147,6 +3173,7 @@ fn image_options(
     ext: &str,
     options: &[ImageOpt],
     values: &mut BTreeMap<String, String>,
+    flux_as_read: bool,
 ) -> bool {
     let tip = |name: &str| {
         OPTION_TIPS
@@ -3173,9 +3200,14 @@ fn image_options(
                     // Narrower in a small window, so it ends within the page.
                     let width = OPTION_FIELD.min(ui.available_width());
                     if opt.choices.is_empty() && common.is_empty() {
-                        // gw saves every revolution read unless told how many.
-                        let all = (opt.name == "revs").then_some("all".to_owned());
-                        let default = option_default(opt).or(all);
+                        // gw keeps every revolution read as flux; decoded tracks
+                        // get two revolutions of flux in an SCP.
+                        let revs = match (opt.name.as_str(), flux_as_read, ext) {
+                            ("revs", true, _) => Some("all read".to_owned()),
+                            ("revs", false, ".scp") => Some("2".to_owned()),
+                            _ => None,
+                        };
+                        let default = option_default(opt).or(revs);
                         let hint = default_label(default.as_deref());
                         let edit = edit(value).hint_text(hint).desired_width(width);
                         changed |= text_box(ui, edit).changed();
@@ -4914,6 +4946,33 @@ mod tests {
             "raw reads whole revolutions"
         );
         assert_eq!(shown(false, 2.0), "Default (2)");
+    }
+
+    #[test]
+    fn an_scp_images_revolutions_say_what_gw_saves_without_them() {
+        let hint = |raw: bool| {
+            let mut v = values(&[("format", "ibm.1440")]);
+            if raw {
+                v.set("raw", ON);
+            }
+            let mut outputs = BTreeMap::new();
+            outputs.insert("read/file".to_owned(), output(".scp"));
+            let h = page("read", v, outputs);
+            h.get_all_by_role(Role::TextInput)
+                .filter_map(|t| t.accesskit_node().placeholder().map(str::to_owned))
+                .find(|p| p.starts_with("Default"))
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            hint(false),
+            "Default (2)",
+            "decoded tracks get two revolutions"
+        );
+        assert_eq!(
+            hint(true),
+            "Default (all read)",
+            "raw keeps every revolution"
+        );
     }
 
     #[test]
