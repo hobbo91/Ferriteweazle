@@ -442,6 +442,10 @@ fn about(theme: egui::Theme) {
                 ferriteweazle::theme::apply(ui.ctx(), theme.into());
                 ferriteweazle::about_image(ui.ctx())
             });
+            // The window's panel, which the harness's root does not fill.
+            let whole = ui.ctx().content_rect();
+            ui.painter()
+                .rect_filled(whole, 0.0, ui.visuals().panel_fill);
             ferriteweazle::about(ui, image, Some("Greaseweazle Tools 1.23"));
         });
     harness.run_steps(5);
