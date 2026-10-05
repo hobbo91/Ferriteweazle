@@ -443,6 +443,12 @@ pub struct App {
     /// gw's udev rule, where a Linux package ships it.
     pub udev_rule: Option<PathBuf>,
     install: RuleInstall,
+    /// The macOS menu bar, whose About opens the About window.
+    #[cfg(target_os = "macos")]
+    menu: Option<crate::menu::MenuBar>,
+    /// The About window is open.
+    about: bool,
+    about_image: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -477,6 +483,10 @@ impl App {
         #[cfg(target_os = "linux")]
         {
             app.desktop_theme = Some(crate::portal::watch(repaint(&cc.egui_ctx)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            app.menu = crate::menu::MenuBar::install();
         }
         app
     }
@@ -544,6 +554,10 @@ impl App {
             drawn: None,
             udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
+            #[cfg(target_os = "macos")]
+            menu: None,
+            about: false,
+            about_image: None,
         }
     }
 
@@ -736,6 +750,17 @@ impl App {
         self.fade_theme(&ctx);
         self.poll(&ctx);
         self.poll_updates(&ctx);
+        #[cfg(target_os = "macos")]
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(crate::menu::MenuBar::about_chosen)
+        {
+            self.about = true;
+        }
+        if self.about {
+            self.about_window(&ctx);
+        }
         self.guard_close(&ctx);
         self.keep_size(&ctx);
         self.take_dropped_files(&ctx);
@@ -3775,6 +3800,70 @@ impl eframe::App for App {
     }
 }
 
+impl App {
+    /// The About window, a window of its own, until it is closed.
+    fn about_window(&mut self, ctx: &egui::Context) {
+        let tools = self.schema().map(Schema::tools);
+        let image = self
+            .about_image
+            .get_or_insert_with(|| about_image(ctx))
+            .clone();
+        let builder = egui::ViewportBuilder::default()
+            .with_title("About Ferriteweazle")
+            .with_inner_size(ABOUT_SIZE)
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_minimize_button(false);
+        let mut open = true;
+        let id = egui::ViewportId::from_hash_of("about");
+        ctx.show_viewport_immediate(id, builder, |ctx, _| {
+            egui::CentralPanel::default().show(ctx, |ui| about(ui, &image, tools.as_deref()));
+            let closed =
+                ctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape));
+            if closed {
+                open = false;
+            }
+        });
+        self.about = open;
+    }
+}
+
+/// The About window's size, in points.
+pub const ABOUT_SIZE: egui::Vec2 = egui::vec2(360.0, 452.0);
+
+/// The floppy from the icon, as a texture of `ctx`.
+pub fn about_image(ctx: &egui::Context) -> egui::TextureHandle {
+    let icon = eframe::icon_data::from_png_bytes(theme::ABOUT).expect("the artwork is a PNG");
+    let size = [icon.width as usize, icon.height as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
+    ctx.load_texture("about", image, egui::TextureOptions::LINEAR)
+}
+
+/// What the About window shows: the floppy from the icon, large, the version,
+/// `tools` as Greaseweazle Tools names itself, and where the project lives.
+pub fn about(ui: &mut Ui, image: &egui::TextureHandle, tools: Option<&str>) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(22.0);
+        ui.image((image.id(), vec2(200.0, 200.0)));
+        ui.add_space(14.0);
+        ui.label(RichText::new("Ferriteweazle").size(22.0).strong());
+        ui.add_space(2.0);
+        ui.label(concat!("Version ", env!("CARGO_PKG_VERSION")));
+        if let Some(tools) = tools {
+            ui.label(RichText::new(tools).weak());
+        }
+        ui.add_space(14.0);
+        ui.hyperlink_to("github.com/hobbo91/Ferriteweazle", REPO)
+            .on_hover_text(REPO);
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new("MIT licence. Made by Lee Hobson.")
+                .small()
+                .weak(),
+        );
+    });
+}
+
 /// A question from gw, such as whether to seek past the last cylinder.
 fn ask(ctx: &egui::Context, job: &mut Job) {
     let question = job.question.clone().unwrap_or_default();
@@ -5342,6 +5431,19 @@ mod tests {
         w.state_mut().stuck = Some("Read-only.");
         w.run_steps(2);
         assert!(w.query_by_label_contains("is available").is_none());
+    }
+
+    #[test]
+    fn the_about_window_shows_the_floppy_the_version_and_the_projects_home() {
+        let mut texture = None;
+        let mut h = Harness::new_ui(|ui| {
+            let image = texture.get_or_insert_with(|| about_image(ui.ctx()));
+            about(ui, image, Some("Greaseweazle Tools 1.23"));
+        });
+        h.run();
+        h.get_by_label(concat!("Version ", env!("CARGO_PKG_VERSION")));
+        h.get_by_label("Greaseweazle Tools 1.23");
+        h.get_by_label("github.com/hobbo91/Ferriteweazle");
     }
 
     #[test]
