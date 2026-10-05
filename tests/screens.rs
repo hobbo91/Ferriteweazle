@@ -412,5 +412,17 @@ fn screens() {
             ..settings("read", theme)
         };
         render_sized("settings", tall, theme, page, None, |_| {});
+        // A newer release on offer: the banner on a page, and Settings' Update.
+        let read = settings("read", theme);
+        render("update-banner", theme, read, None, |w| {
+            w.state_mut().as_mut().unwrap().offer_update("v1.3.4");
+        });
+        let page = Settings {
+            page: Page::Settings,
+            ..settings("read", theme)
+        };
+        render_sized("settings-update", tall, theme, page, None, |w| {
+            w.state_mut().as_mut().unwrap().offer_update("v1.3.4");
+        });
     }
 }

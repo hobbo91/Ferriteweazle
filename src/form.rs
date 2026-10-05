@@ -26,6 +26,87 @@ const FIRST: &[(&str, &[&str])] = &[
     ("align", &["tracks", "format", "reads"]),
 ];
 
+/// Groups of arguments, each under a heading, empty for none.
+type Groups = &'static [(&'static str, &'static [&'static str])];
+
+/// Arguments under Advanced options, in order, in groups under a heading
+/// (none for an empty one); any others, such as a newer gw's, follow in gw's
+/// own order with no heading.
+const ADVANCED: &[(&str, Groups)] = &[
+    (
+        "read",
+        &[
+            ("", &["diskdefs"]),
+            (
+                "Reading",
+                &["retries", "seek_retries", "pll", "adjust_speed"],
+            ),
+            (
+                "Drive",
+                &[
+                    "densel",
+                    "gen_tg43",
+                    "fake_index",
+                    "hard_sectors",
+                    "reverse",
+                ],
+            ),
+            ("Image", &["raw", "no_clobber"]),
+        ],
+    ),
+    (
+        "write",
+        &[
+            ("", &["diskdefs"]),
+            (
+                "Writing",
+                &["pre_erase", "erase_empty", "retries", "precomp"],
+            ),
+            (
+                "Drive",
+                &[
+                    "densel",
+                    "gen_tg43",
+                    "fake_index",
+                    "hard_sectors",
+                    "reverse",
+                ],
+            ),
+        ],
+    ),
+    (
+        "convert",
+        &[
+            ("", &["diskdefs"]),
+            (
+                "Conversion",
+                &["pll", "adjust_speed", "hard_sectors", "reverse"],
+            ),
+            ("Image", &["no_clobber"]),
+            // Under its own heading, Output track settings.
+            ("", &["out_tracks"]),
+        ],
+    ),
+    (
+        "align",
+        &[
+            ("", &["diskdefs"]),
+            ("Reading", &["revs", "pll", "adjust_speed"]),
+            (
+                "Drive",
+                &[
+                    "densel",
+                    "gen_tg43",
+                    "fake_index",
+                    "hard_sectors",
+                    "reverse",
+                ],
+            ),
+            ("Image", &["raw"]),
+        ],
+    ),
+];
+
 /// Headings over a page's first rows: each groups the argument it names and those after it.
 const HEADINGS: &[(&str, &str, &str)] = &[
     ("read", "format", "Disk settings"),
@@ -453,14 +534,28 @@ impl<'a> Form<'a> {
                 n => format!("Advanced options ({}, {n} set)", rest.len()),
             };
             let title = RichText::new(title).strong();
+            let groups = advanced_groups(&self.cmd.name, &rest);
             egui::CollapsingHeader::new(title)
                 .id_salt(("more", &self.cmd.name))
                 .show_unindented(ui, |ui| {
                     ui.add_space(6.0);
-                    for a in &rest {
-                        match a.is("TrackSet") {
-                            true => self.tracks(ui, a),
-                            false => action = action.or(self.arg(ui, a)),
+                    for (i, (text, args)) in groups.into_iter().enumerate() {
+                        if !text.is_empty() {
+                            if i > 0 {
+                                ui.add_space(GROUP_GAP);
+                            }
+                            heading(ui, text, |_| {});
+                        }
+                        for a in args {
+                            match a.is("TrackSet") {
+                                true => {
+                                    if i > 0 {
+                                        ui.add_space(GROUP_GAP);
+                                    }
+                                    self.tracks(ui, a);
+                                }
+                                false => action = action.or(self.arg(ui, a)),
+                            }
                         }
                     }
                 });
@@ -1778,8 +1873,7 @@ fn shown_step(step: &str) -> bool {
     step == HALF || (step.len() == 1 && step.as_bytes()[0].is_ascii_digit())
 }
 
-const STEP_TIP: &str =
-    "Head steps per cylinder, 0 to 9. 2 reads a 40-track disk in an 80-track drive.";
+const STEP_TIP: &str = "Head steps per cylinder, 0 to 9.";
 
 const OTHER_STEP_TIP: &str = "Any other step, 0 to 9. At 0 the heads stay on cylinder 0.";
 
@@ -2386,9 +2480,13 @@ fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
                 .iter()
                 .filter_map(|n| args.iter().find(|a| a.dest == *n).copied())
                 .collect();
-            let rest = args
+            let rest: Vec<&Arg> = args
                 .into_iter()
                 .filter(|a| !names.contains(&a.dest.as_str()))
+                .collect();
+            let rest = advanced_groups(&cmd.name, &rest)
+                .into_iter()
+                .flat_map(|(_, args)| args)
                 .collect();
             (first, rest)
         }
@@ -2403,6 +2501,32 @@ fn sections(cmd: &Command) -> (Vec<&Arg>, Vec<&Arg>) {
             }
         }
     }
+}
+
+/// The Advanced options of `command` among `rest`, in ADVANCED's groups and
+/// order: each heading, empty for none, with its arguments; the rest, such
+/// as a newer gw's, last under no heading. Empty groups are left out.
+fn advanced_groups<'a>(command: &str, rest: &[&'a Arg]) -> Vec<(&'static str, Vec<&'a Arg>)> {
+    let groups = ADVANCED
+        .iter()
+        .find(|(c, _)| *c == command)
+        .map_or(&[][..], |(_, g)| *g);
+    let find = |n: &str| rest.iter().find(|a| a.dest == n).copied();
+    let mut out: Vec<(&'static str, Vec<&Arg>)> = groups
+        .iter()
+        .map(|(heading, names)| (*heading, names.iter().filter_map(|n| find(n)).collect()))
+        .filter(|(_, args): &(_, Vec<&Arg>)| !args.is_empty())
+        .collect();
+    let listed = |a: &&&Arg| {
+        groups
+            .iter()
+            .any(|(_, names)| names.contains(&a.dest.as_str()))
+    };
+    let others: Vec<&Arg> = rest.iter().filter(|a| !listed(a)).copied().collect();
+    if !others.is_empty() {
+        out.push(("", others));
+    }
+    out
 }
 
 pub fn label(a: &Arg) -> String {
@@ -4357,6 +4481,97 @@ mod tests {
                     a.dest
                 );
             }
+        }
+    }
+
+    #[test]
+    fn advanced_options_keep_a_set_order_under_headings_then_any_a_newer_gw_adds() {
+        let s = schema();
+        let dests = |cmd: &str| -> Vec<String> {
+            let (_, rest) = sections(s.command(cmd).unwrap());
+            rest.iter().map(|a| a.dest.clone()).collect()
+        };
+        assert_eq!(
+            dests("read"),
+            [
+                "diskdefs",
+                "retries",
+                "seek_retries",
+                "pll",
+                "adjust_speed",
+                "densel",
+                "gen_tg43",
+                "fake_index",
+                "hard_sectors",
+                "reverse",
+                "raw",
+                "no_clobber"
+            ]
+        );
+        assert_eq!(
+            dests("write"),
+            [
+                "diskdefs",
+                "pre_erase",
+                "erase_empty",
+                "retries",
+                "precomp",
+                "densel",
+                "gen_tg43",
+                "fake_index",
+                "hard_sectors",
+                "reverse"
+            ]
+        );
+        assert_eq!(
+            dests("convert"),
+            [
+                "diskdefs",
+                "pll",
+                "adjust_speed",
+                "hard_sectors",
+                "reverse",
+                "no_clobber",
+                "out_tracks"
+            ]
+        );
+        for (cmd, groups) in ADVANCED {
+            // A command from a newer gw may be missing from this one.
+            let Some(cmd) = s.command(cmd) else { continue };
+            for (_, names) in *groups {
+                for n in *names {
+                    assert!(cmd.arg(n).is_some(), "gw {} has no {n}", cmd.name);
+                }
+            }
+        }
+        let mut read = s.command("read").unwrap().clone();
+        let new = Arg {
+            flags: vec!["--new".into()],
+            dest: "new_thing".into(),
+            switch: true,
+            ty: None,
+            default: None,
+            choices: Vec::new(),
+            required: false,
+            group: None,
+            metavar: None,
+            help: String::new(),
+        };
+        read.args.insert(3, new);
+        let (_, rest) = sections(&read);
+        let groups = advanced_groups("read", &rest);
+        let headings: Vec<&str> = groups.iter().map(|(h, _)| *h).collect();
+        assert_eq!(headings, ["", "Reading", "Drive", "Image", ""]);
+        assert_eq!(
+            groups.last().map(|(_, a)| a[0].dest.as_str()),
+            Some("new_thing"),
+            "a newer gw's option goes last"
+        );
+        let mut h = page("read", Values::default(), BTreeMap::new());
+        h.get_by_label_contains("Advanced options").click();
+        h.run();
+        for heading in ["Reading", "Drive", "Image"] {
+            h.get_by_label(heading);
         }
     }
 

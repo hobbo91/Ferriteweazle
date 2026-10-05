@@ -655,9 +655,9 @@ impl App {
         };
         let (can, tip) = self.update_button(&self.app_update, "Ferriteweazle");
         let (mut install, mut dismiss) = (false, false);
-        let room = if offered.is_some() { 150.0 } else { 0.0 };
+        let room = if offered.is_some() { 260.0 } else { 0.0 };
         banner(ui, &text, room, left, |ui| {
-            if offered.is_some() {
+            if let Some(tag) = &offered {
                 dismiss = ui
                     .small_button("Dismiss")
                     .on_hover_text("Hide this until a newer release.")
@@ -667,6 +667,7 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked();
+                release_notes(ui, REPO, tag, true);
             }
         });
         // A banner fading out takes no more clicks.
@@ -682,6 +683,14 @@ impl App {
             }
             self.dismissed = Some((tag, ui.input(|i| i.time)));
         }
+    }
+
+    /// Shows release `tag` of Ferriteweazle as on offer, whatever GitHub has,
+    /// as if this copy were installed: for tests and pictures of the window.
+    pub fn offer_update(&mut self, tag: &str) {
+        self.app_update = Update::Newer(tag.to_owned());
+        self.copy = Some(Install::MacApp("/Applications/Ferriteweazle.app".into()));
+        self.stuck = None;
     }
 
     /// Shows these ports as the connected devices, whatever gw finds, until
@@ -2958,6 +2967,9 @@ impl App {
                 {
                     self.gw_update = Update::gw(tools, tag, repaint(ui.ctx()));
                 }
+                if let Update::Newer(tag) = &self.gw_update {
+                    release_notes(ui, GW_REPO, tag, false);
+                }
             });
         });
         section(ui, "Paths", |ui| {
@@ -3528,6 +3540,10 @@ impl App {
             self.app_update,
             Update::Checking(_) | Update::Installing(..)
         );
+        let newer = match &self.app_update {
+            Update::Newer(tag) => Some(tag.clone()),
+            _ => None,
+        };
         ui.horizontal(|ui| {
             if spin {
                 ui.spinner();
@@ -3538,11 +3554,14 @@ impl App {
             }
             right(ui, |ui| {
                 let update = ui.add_enabled(can, egui::Button::new("Update"));
-                if update
+                let clicked = update
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
-                    .clicked()
-                {
+                    .clicked();
+                if let Some(tag) = &newer {
+                    release_notes(ui, REPO, tag, false);
+                }
+                if clicked {
                     self.install_app(ui.ctx());
                 }
             });
@@ -4683,6 +4702,20 @@ fn banner(ui: &mut Ui, text: &str, room: f32, left: f32, actions: impl FnOnce(&m
     ui.add_space(height * open);
 }
 
+/// GitHub's page for release `tag` of `repo`, which holds its notes.
+fn release_notes_url(repo: &str, tag: &str) -> String {
+    format!("{repo}/releases/tag/{tag}")
+}
+
+/// A link to a release's notes on GitHub. `small` in a banner.
+fn release_notes(ui: &mut Ui, repo: &str, tag: &str, small: bool) {
+    let url = release_notes_url(repo, tag);
+    let text = RichText::new("Release notes");
+    let text = if small { text.small() } else { text };
+    ui.add(egui::Hyperlink::from_label_and_url(text, &url))
+        .on_hover_text(&url);
+}
+
 /// Where the theme chosen in Settings is kept between runs; System keeps no file.
 fn theme_file() -> PathBuf {
     crate::data_folder().join("theme.txt")
@@ -5339,6 +5372,21 @@ mod tests {
         w.state_mut().stuck = Some("Read-only.");
         w.run_steps(2);
         assert!(w.query_by_label_contains("is available").is_none());
+    }
+
+    #[test]
+    fn a_newer_release_links_to_its_notes_in_the_banner_and_in_settings() {
+        let mut app = offline();
+        app.offer_update("v9.9.9");
+        let mut w = window(app);
+        // egui keeps a link's address from the tree: the page for the tag.
+        let url = "https://github.com/hobbo91/Ferriteweazle/releases/tag/v9.9.9";
+        assert_eq!(release_notes_url(REPO, "v9.9.9"), url);
+        w.get_by_label("Release notes");
+        w.state_mut().settings.page = Page::Settings;
+        w.run_steps(2);
+        w.get_by_label_contains("Update available");
+        w.get_by_label("Release notes");
     }
 
     #[test]
