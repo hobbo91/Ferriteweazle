@@ -229,6 +229,7 @@ def format_info(name, diskdefs=None):
         # Every encoding on the disk; a scan's "IBM Empty" tracks count as IBM.
         names = dict.fromkeys(re.sub(r'\s*(\(.*|Empty)$', '', t.summary_string()) for t in tracks)
         info['encoding'] = ' and '.join(names)
+        info['revs'] = d.default_revs
         if most := max(t.nsec for t in tracks):
             info['sectors'] = [min(t.nsec for t in tracks), most]
         with contextlib.suppress(Exception):

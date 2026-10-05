@@ -6,7 +6,8 @@ use crate::schema::{Arg, Command, FormatInfo, ImageOpt, Schema, extension};
 use crate::service::{Load, Service};
 use crate::theme;
 use eframe::egui::{
-    self, Color32, CornerRadius, PopupCloseBehavior, RichText, Sense, TextEdit, Ui, pos2, vec2,
+    self, Color32, CornerRadius, PopupCloseBehavior, RichText, Sense, TextEdit, Ui,
+    ViewportCommand, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -394,6 +395,50 @@ pub fn edit(text: &mut String) -> TextEdit<'_> {
         .margin(egui::Margin::symmetric(10, 4))
 }
 
+/// Adds a text box with the menu a system one has: Cut, Copy and Paste on a
+/// right click, which keeps the selection the click would otherwise move.
+pub fn text_box(ui: &mut Ui, edit: TextEdit<'_>) -> egui::Response {
+    text_box_with(ui, ui.next_auto_id(), edit)
+}
+
+/// `text_box`, with the box under `id`.
+pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Response {
+    let ctx = ui.ctx().clone();
+    let selection = || {
+        egui::text_edit::TextEditState::load(&ctx, id)
+            .and_then(|s| s.cursor.char_range())
+            .filter(|r| !r.is_empty())
+    };
+    // egui puts the cursor where any button presses; a right-click keeps the
+    // selection, as a system text box does, for the menu's Cut and Copy.
+    let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
+    let response = ui.add(edit.id(id));
+    if let Some(range) = kept
+        && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
+    {
+        state.cursor.set_char_range(Some(range));
+        state.store(&ctx, id);
+    }
+    // A paste goes in at the cursor or over the selection.
+    response.context_menu(|ui| {
+        let selected = selection().is_some();
+        for (name, can, command) in [
+            ("Cut", selected, ViewportCommand::RequestCut),
+            ("Copy", selected, ViewportCommand::RequestCopy),
+            ("Paste", true, ViewportCommand::RequestPaste),
+        ] {
+            let item = ui.add_enabled(can, egui::Button::new(name));
+            if item.on_disabled_hover_text("Nothing selected.").clicked() {
+                // Back in the box for the cut or paste the next frame brings.
+                ui.memory_mut(|m| m.request_focus(id));
+                ui.ctx().send_viewport_cmd(command);
+                ui.close();
+            }
+        }
+    });
+    response
+}
+
 /// The width left for a field with a button after it, so both end at the
 /// field's right edge.
 fn beside_button(ui: &Ui, button: f32) -> f32 {
@@ -658,10 +703,8 @@ impl<'a> Form<'a> {
     fn suggest(&mut self, ui: &mut Ui, a: &Arg, options: &[&str]) {
         let mut value = self.values.get(&a.dest).to_owned();
         let id = ui.make_persistent_id(("suggest", &self.cmd.name, &a.dest));
-        let unset = a
-            .default
-            .as_deref()
-            .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
+        let default = a.default.clone().or_else(|| self.implied_default(a));
+        let unset = default.map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
         let listed = options.iter().copied();
         ui.horizontal(|ui| {
             let (changed, other) =
@@ -673,6 +716,29 @@ impl<'a> Form<'a> {
                 self.typed(ui, a, hint(a, self.schema), false, SHORT_FIELD);
             }
         });
+    }
+
+    /// gw's default for an argument its parser gives none for: the
+    /// revolutions a read takes per track, which the format sets (a fraction
+    /// past one is timed), else 3. Raw flux is read in whole revolutions, two.
+    fn implied_default(&mut self, a: &Arg) -> Option<String> {
+        if a.dest != "revs" || self.cmd.arg("format").is_none() {
+            return None;
+        }
+        let revs = match self.effective_format() {
+            Some(format) => self.format_info(&format).ready()?.revs?,
+            None => 3.0,
+        };
+        let whole = revs.fract() == 0.0;
+        let revs = if !whole && self.values.on("raw") {
+            2.0
+        } else {
+            revs
+        };
+        Some(match revs.fract() == 0.0 {
+            true => format!("{revs:.0}"),
+            false => revs.to_string(),
+        })
     }
 
     /// Choices as a row of buttons; choosing the chosen one again clears it.
@@ -749,7 +815,7 @@ impl<'a> Form<'a> {
                 if default {
                     ui.visuals_mut().weak_text_color = Some(ui.visuals().text_color());
                 }
-                ui.add(edit).changed()
+                text_box(ui, edit).changed()
             })
             .inner;
         if changed {
@@ -948,7 +1014,7 @@ impl<'a> Form<'a> {
         let edit = TextEdit::singleline(&mut search)
             .hint_text("Search, e.g. akai or 1440")
             .desired_width(f32::INFINITY);
-        ui.add(edit).request_focus();
+        text_box(ui, edit).request_focus();
         let needle = search.trim().to_lowercase();
         ui.data_mut(|d| d.insert_temp(search_id, search));
         let custom = self.service.custom_formats(diskdefs).to_vec();
@@ -1549,7 +1615,8 @@ impl<'a> Form<'a> {
         if batch {
             let tip = "Text added to each input's name, such as Backup in Backup_Game.";
             let (name, _) = row(ui, "Label", |ui| {
-                ui.add(
+                text_box(
+                    ui,
                     edit(&mut out.batch_label)
                         .char_limit(NAME_LIMIT)
                         .hint_text("None")
@@ -1576,13 +1643,17 @@ impl<'a> Form<'a> {
         } else {
             let tip = "The image's file name, extensions are handled by Image type.";
             let (name, _) = row(ui, "Name", |ui| {
-                ui.add_enabled(
-                    !beside,
-                    edit(&mut out.name)
-                        .char_limit(NAME_LIMIT)
-                        .hint_text("Required")
-                        .desired_width(field_width(ui)),
-                )
+                let width = field_width(ui);
+                ui.add_enabled_ui(!beside, |ui| {
+                    text_box(
+                        ui,
+                        edit(&mut out.name)
+                            .char_limit(NAME_LIMIT)
+                            .hint_text("Required")
+                            .desired_width(width),
+                    )
+                })
+                .inner
                 .on_hover_text(tip)
                 .on_disabled_hover_text(BESIDE);
             });
@@ -1765,13 +1836,16 @@ impl<'a> Form<'a> {
                 name.on_hover_text(tip);
                 let tip = "The text before each disk number, such as Disk in Samples_Disk1.";
                 let (name, _) = row(ui, "Label", |ui| {
-                    ui.add_enabled(
-                        numbered,
-                        edit(&mut out.label)
-                            .char_limit(NAME_LIMIT)
-                            .hint_text("e.g. Disk")
-                            .desired_width(SHORT_FIELD),
-                    )
+                    ui.add_enabled_ui(numbered, |ui| {
+                        text_box(
+                            ui,
+                            edit(&mut out.label)
+                                .char_limit(NAME_LIMIT)
+                                .hint_text("e.g. Disk")
+                                .desired_width(SHORT_FIELD),
+                        )
+                    })
+                    .inner
                     .on_hover_text(tip)
                     .on_disabled_hover_text(why);
                 });
@@ -2309,7 +2383,7 @@ fn path_edit(ui: &mut Ui, path: &mut String, hint: &str, width: f32) -> egui::Re
     let typed = ui.data(|d| d.get_temp::<String>(id));
     let typed = typed.filter(|t| ui.memory(|m| m.has_focus(id)) && full_path(t) == *path);
     let mut text = typed.unwrap_or_else(|| short_path(path).into_owned());
-    let response = ui.add(edit(&mut text).id(id).hint_text(hint).desired_width(width));
+    let response = text_box_with(ui, id, edit(&mut text).hint_text(hint).desired_width(width));
     if response.changed() {
         *path = full_path(&text);
     }
@@ -3103,9 +3177,14 @@ fn image_options(
                     // Narrower in a small window, so it ends within the page.
                     let width = OPTION_FIELD.min(ui.available_width());
                     if opt.choices.is_empty() && common.is_empty() {
-                        let hint = option_default(opt).unwrap_or_default();
+                        // gw saves every revolution read unless told how many.
+                        let unset = match opt.name.as_str() {
+                            "revs" => "Default (all)".to_owned(),
+                            _ => String::new(),
+                        };
+                        let hint = option_default(opt).map_or(unset, |d| format!("Default ({d})"));
                         let edit = edit(value).hint_text(hint).desired_width(width);
-                        changed |= ui.add(edit).changed();
+                        changed |= text_box(ui, edit).changed();
                         return;
                     }
                     let unset = option_default(opt)
@@ -3114,7 +3193,7 @@ fn image_options(
                     let (chose, other) = drop_down(ui, id, value, &unset, false, width, listed);
                     changed |= chose;
                     if other {
-                        changed |= ui.add(edit(value).desired_width(width)).changed();
+                        changed |= text_box(ui, edit(value).desired_width(width)).changed();
                     }
                 });
                 if let Some(tip) = tip(&opt.name) {
@@ -4286,7 +4365,9 @@ mod tests {
 
     #[test]
     fn other_shows_gws_default_as_an_example() {
-        let mut h = page("read", Values::default(), BTreeMap::new());
+        // A format, so Revolutions waits for gw's word and Retries alone says 3.
+        let v = values(&[("format", "ibm.1440")]);
+        let mut h = page("read", v, BTreeMap::new());
         h.get_by_label_contains("Advanced options").click();
         h.run();
         let retries = h
@@ -4747,6 +4828,52 @@ mod tests {
         h.get_all_by_role(Role::SpinButton).last().unwrap().hover();
         h.run();
         h.get_by_label("Needs side 1.");
+    }
+
+    #[test]
+    fn a_text_box_has_cut_copy_and_paste_on_a_right_click_and_keeps_its_selection() {
+        let mut h = page("read", Values::default(), BTreeMap::new());
+        // The first box: the image's folder.
+        h.get_all_by_role(Role::TextInput).next().unwrap().click();
+        h.run();
+        h.event(egui::Event::Text("abc".into()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run();
+        h.get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .click_secondary();
+        h.run();
+        assert!(
+            !h.get_by_label("Cut").accesskit_node().is_disabled(),
+            "the selection is kept"
+        );
+        h.get_by_label("Paste").click();
+        h.step();
+        let pasted = h
+            .output()
+            .viewport_output
+            .values()
+            .flat_map(|v| &v.commands)
+            .any(|c| *c == ViewportCommand::RequestPaste);
+        assert!(pasted, "the system pastes");
+    }
+
+    #[test]
+    fn revolutions_show_the_default_gw_resolves_for_the_page() {
+        let value = |command: &str, text: &str| {
+            let mut h = page(command, Values::default(), BTreeMap::new());
+            // Erase keeps its revolutions under Advanced options.
+            if let Some(more) = h.query_by_label_contains("Advanced options") {
+                more.click();
+            }
+            h.run();
+            h.query_all_by_role(Role::ComboBox)
+                .any(|c| c.value().as_deref() == Some(text))
+        };
+        assert!(value("read", "Default (3)"), "with no format, gw reads 3");
+        assert!(value("erase", "Default (1)"), "gw erase's own default");
     }
 
     #[test]
@@ -5373,6 +5500,7 @@ mod tests {
             sectors: Some(sectors),
             bytes: Some(bytes),
             verifies: true,
+            revs: None,
         };
         let shown = |i| describe(&i).replace('\u{a0}', " ");
         assert_eq!(

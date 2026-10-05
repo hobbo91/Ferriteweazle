@@ -2675,15 +2675,6 @@ impl App {
                 }
             });
         });
-        // egui puts the cursor where any button presses; a right-click keeps
-        // the selection, as a system text box does, for its menu's Paste.
-        let ctx = ui.ctx().clone();
-        let selection = || {
-            egui::text_edit::TextEditState::load(&ctx, id)
-                .and_then(|s| s.cursor.char_range())
-                .filter(|r| !r.is_empty())
-        };
-        let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
         // The Log's box, as tall as the drawer leaves; the command scrolls in it.
         let edit = theme::terminal(ui, |ui, p| {
             let edge = match ui.memory(|m| m.has_focus(id)) {
@@ -2700,9 +2691,10 @@ impl App {
                         .max_height(height)
                         .min_scrolled_height(height)
                         .show(ui, |ui| {
-                            ui.add(
+                            form::text_box_with(
+                                ui,
+                                id,
                                 TextEdit::multiline(&mut cli.text)
-                                    .id(id)
                                     .font(TextStyle::Monospace)
                                     .frame(Frame::NONE)
                                     .margin(Margin::ZERO)
@@ -2716,30 +2708,6 @@ impl App {
                 .inner
         })
         .on_hover_text("Type or paste a gw command line. The page follows it.");
-        if let Some(range) = kept
-            && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
-        {
-            state.cursor.set_char_range(Some(range));
-            state.store(&ctx, id);
-        }
-        // Its own menu, as a system text box has: a paste goes in at the
-        // cursor or over the selection.
-        edit.context_menu(|ui| {
-            let selected = selection().is_some();
-            for (name, can, command) in [
-                ("Cut", selected, ViewportCommand::RequestCut),
-                ("Copy", selected, ViewportCommand::RequestCopy),
-                ("Paste", true, ViewportCommand::RequestPaste),
-            ] {
-                let item = ui.add_enabled(can, egui::Button::new(name));
-                if item.on_disabled_hover_text("Nothing selected.").clicked() {
-                    // Back in the box for the cut or paste the next frame brings.
-                    ui.memory_mut(|m| m.request_focus(id));
-                    ui.ctx().send_viewport_cmd(command);
-                    ui.close();
-                }
-            }
-        });
         let mut apply = None;
         if edit.changed() {
             match command::parse(&schema, &cli.text) {
@@ -3346,7 +3314,8 @@ impl App {
                     description,
                 } => {
                     dialog_heading(ui, "Save a preset");
-                    let named = ui.add(
+                    let named = form::text_box(
+                        ui,
                         form::edit(name)
                             .char_limit(form::NAME_LIMIT)
                             .hint_text("e.g. Amiga DD")
@@ -3364,9 +3333,10 @@ impl App {
                         ui.label(RichText::new(text).small().color(p.partial));
                     }
                     ui.add_space(6.0);
-                    ui.add(
+                    form::text_box_with(
+                        ui,
+                        about,
                         form::edit(description)
-                            .id(about)
                             .char_limit(DESCRIPTION_LIMIT)
                             .hint_text(match exists {
                                 true => "Description, empty keeps the old one",
@@ -3825,7 +3795,7 @@ fn ask(ctx: &egui::Context, job: &mut Job) {
             });
         } else {
             let mut text: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
-            ui.add(form::edit(&mut text).desired_width(f32::INFINITY));
+            form::text_box(ui, form::edit(&mut text).desired_width(f32::INFINITY));
             ui.data_mut(|d| d.insert_temp(id, text.clone()));
             if ui.add(dialog_plain("Answer")).clicked() {
                 answer = Some(text);

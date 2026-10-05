@@ -41,8 +41,8 @@ are in the repository at
 
     https://github.com/hobbo91/Ferriteweazle/tree/main/presets
 
-Put them in Documents/Ferriteweazle/Presets, or the folder chosen in
-Settings, and the menu lists them.
+Download to Documents/Ferriteweazle/Presets or load them via the Presets
+menu.
 
 Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
 holds the licences of the software it includes. Greaseweazle is by Keir
