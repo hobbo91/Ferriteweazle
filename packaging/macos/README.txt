@@ -20,5 +20,15 @@ If macOS says the app is damaged, run this in Terminal:
 
     xattr -dr com.apple.quarantine /Applications/Ferriteweazle.app
 
+Presets
+-------
+Example presets for common disks, which each page's Presets menu loads,
+are in the repository at
+
+    https://github.com/hobbo91/Ferriteweazle/tree/main/presets
+
+Put them in Documents/Ferriteweazle/Presets, or the folder chosen in
+Settings, and the menu lists them.
+
 Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
 holds the licences of the software it includes.
