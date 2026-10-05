@@ -30,6 +30,15 @@ const FIRST: &[(&str, &[&str])] = &[
 /// Groups of arguments, each under a heading, empty for none.
 type Groups = &'static [(&'static str, &'static [&'static str])];
 
+/// The drive's own options, the same on every page that reads or writes one.
+const DRIVE: &[&str] = &[
+    "densel",
+    "gen_tg43",
+    "fake_index",
+    "hard_sectors",
+    "reverse",
+];
+
 /// Arguments under Advanced options, in order, in groups under a heading
 /// (none for an empty one); any others, such as a newer gw's, follow in gw's
 /// own order with no heading.
@@ -42,16 +51,7 @@ const ADVANCED: &[(&str, Groups)] = &[
                 "Reading",
                 &["retries", "seek_retries", "pll", "adjust_speed"],
             ),
-            (
-                "Drive",
-                &[
-                    "densel",
-                    "gen_tg43",
-                    "fake_index",
-                    "hard_sectors",
-                    "reverse",
-                ],
-            ),
+            ("Drive", DRIVE),
             ("Image", &["raw", "no_clobber"]),
         ],
     ),
@@ -63,16 +63,7 @@ const ADVANCED: &[(&str, Groups)] = &[
                 "Writing",
                 &["pre_erase", "erase_empty", "retries", "precomp"],
             ),
-            (
-                "Drive",
-                &[
-                    "densel",
-                    "gen_tg43",
-                    "fake_index",
-                    "hard_sectors",
-                    "reverse",
-                ],
-            ),
+            ("Drive", DRIVE),
         ],
     ),
     (
@@ -93,16 +84,7 @@ const ADVANCED: &[(&str, Groups)] = &[
         &[
             ("", &["diskdefs"]),
             ("Reading", &["revs", "pll", "adjust_speed"]),
-            (
-                "Drive",
-                &[
-                    "densel",
-                    "gen_tg43",
-                    "fake_index",
-                    "hard_sectors",
-                    "reverse",
-                ],
-            ),
+            ("Drive", DRIVE),
             ("Image", &["raw"]),
         ],
     ),
@@ -411,7 +393,10 @@ pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Res
     };
     // egui puts the cursor where any button presses; a right-click keeps the
     // selection, as a system text box does, for the menu's Cut and Copy.
-    let kept = selection().filter(|_| ui.input(|i| i.pointer.secondary_pressed()));
+    let kept = ui
+        .input(|i| i.pointer.secondary_pressed())
+        .then(selection)
+        .flatten();
     let response = ui.add(edit.id(id));
     if let Some(range) = kept
         && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
@@ -579,26 +564,21 @@ impl<'a> Form<'a> {
                 n => format!("Advanced options ({}, {n} set)", rest.len()),
             };
             let title = RichText::new(title).strong();
-            let groups = advanced_groups(&self.cmd.name, &rest);
             egui::CollapsingHeader::new(title)
                 .id_salt(("more", &self.cmd.name))
                 .show_unindented(ui, |ui| {
                     ui.add_space(6.0);
+                    let groups = advanced_groups(&self.cmd.name, &rest);
                     for (i, (text, args)) in groups.into_iter().enumerate() {
+                        if i > 0 {
+                            ui.add_space(GROUP_GAP);
+                        }
                         if !text.is_empty() {
-                            if i > 0 {
-                                ui.add_space(GROUP_GAP);
-                            }
                             heading(ui, text, |_| {});
                         }
                         for a in args {
                             match a.is("TrackSet") {
-                                true => {
-                                    if i > 0 {
-                                        ui.add_space(GROUP_GAP);
-                                    }
-                                    self.tracks(ui, a);
-                                }
+                                true => self.tracks(ui, a),
                                 false => action = action.or(self.arg(ui, a)),
                             }
                         }
@@ -704,7 +684,7 @@ impl<'a> Form<'a> {
         let mut value = self.values.get(&a.dest).to_owned();
         let id = ui.make_persistent_id(("suggest", &self.cmd.name, &a.dest));
         let default = a.default.clone().or_else(|| self.implied_default(a));
-        let unset = default.map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
+        let unset = default_label(default.as_deref());
         let listed = options.iter().copied();
         ui.horizontal(|ui| {
             let (changed, other) =
@@ -729,16 +709,12 @@ impl<'a> Form<'a> {
             Some(format) => self.format_info(&format).ready()?.revs?,
             None => 3.0,
         };
-        let whole = revs.fract() == 0.0;
-        let revs = if !whole && self.values.on("raw") {
-            2.0
-        } else {
-            revs
+        // Raw flux is read in whole revolutions: a timed fraction becomes two.
+        let revs = match revs.fract() != 0.0 && self.values.on("raw") {
+            true => 2.0,
+            false => revs,
         };
-        Some(match revs.fract() == 0.0 {
-            true => format!("{revs:.0}"),
-            false => revs.to_string(),
-        })
+        Some(revs.to_string())
     }
 
     /// Choices as a row of buttons; choosing the chosen one again clears it.
@@ -1014,7 +990,8 @@ impl<'a> Form<'a> {
         let edit = TextEdit::singleline(&mut search)
             .hint_text("Search, e.g. akai or 1440")
             .desired_width(f32::INFINITY);
-        text_box(ui, edit).request_focus();
+        // No menu: egui keeps one popup open, so one would shut the list.
+        ui.add(edit).request_focus();
         let needle = search.trim().to_lowercase();
         ui.data_mut(|d| d.insert_temp(search_id, search));
         let custom = self.service.custom_formats(diskdefs).to_vec();
@@ -1246,9 +1223,12 @@ impl<'a> Form<'a> {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let current = spec.step.clone().unwrap_or_else(|| "1".into());
-                    // Other… stays chosen, its box showing, until a button is.
-                    let other = !STEPS.contains(&current.as_str())
-                        || ui.data(|d| d.get_temp(other_id)).unwrap_or(false);
+                    // Other… stays chosen, its box showing, while the step is the
+                    // one it gave: a button, a preset or a typed list that changes
+                    // the step shuts it.
+                    let given: Option<String> = ui.data(|d| d.get_temp(other_id));
+                    let other =
+                        !STEPS.contains(&current.as_str()) || given == Some(current.clone());
                     for value in STEPS {
                         let (text, tip) = match value {
                             HALF => ("½", HALF_TIP),
@@ -1257,14 +1237,14 @@ impl<'a> Form<'a> {
                         let on = !other && current == value;
                         let r = ui.add(egui::Button::selectable(on, text));
                         if r.on_hover_text(tip).clicked() && !on {
-                            ui.data_mut(|d| d.insert_temp(other_id, false));
+                            ui.data_mut(|d| d.remove_temp::<String>(other_id));
                             spec.pick_step(value, (first, last), whole, free);
                             changed = true;
                         }
                     }
                     let r = ui.add(egui::Button::selectable(other, OTHER));
                     if r.on_hover_text(OTHER_STEP_TIP).clicked() && !other {
-                        ui.data_mut(|d| d.insert_temp(other_id, true));
+                        ui.data_mut(|d| d.insert_temp(other_id, current.clone()));
                     }
                     if other {
                         // gw's step=[0-9]: a half step shows as 1 until changed.
@@ -1276,6 +1256,8 @@ impl<'a> Form<'a> {
                         });
                         if r.inner.on_hover_text(OTHER_STEP_TIP).changed() {
                             spec.pick_step(&n.to_string(), (first, last), whole, free);
+                            let given = spec.step.clone().unwrap_or_else(|| "1".into());
+                            ui.data_mut(|d| d.insert_temp(other_id, given));
                             changed = true;
                         }
                     }
@@ -1320,7 +1302,15 @@ impl<'a> Form<'a> {
             }
         }
         // The list as it stands, where it runs past the format's cylinders.
-        let spec = TrackSpec::parse(self.values.get(&a.dest));
+        let spec = match as_text {
+            true => TrackSpec::parse(self.values.get(&a.dest)),
+            false => spec,
+        };
+        // A sector image has no tracks past its format; a flux or track image may.
+        let sectors = !self
+            .schema
+            .image(input_file(self.cmd, self.values))
+            .is_some_and(|(_, i)| i.tracks);
         if let (Some((format_cyls, _)), Some(format), false) = (known, &format, output)
             && let Some(note) = past_format(
                 &self.cmd.name,
@@ -1328,6 +1318,7 @@ impl<'a> Form<'a> {
                 &spec,
                 format_cyls,
                 self.values.on("raw"),
+                sectors,
             )
         {
             row(ui, "", |ui| {
@@ -3134,6 +3125,11 @@ const OPTION_TIPS: &[(&str, &str)] = &[
     ("version", "HFE version: 1, or 3 for HFEv3."),
 ];
 
+/// "Default (2)" for a default gw has, else "Default".
+fn default_label(default: Option<&str>) -> String {
+    default.map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"))
+}
+
 /// An image option's default as shown: gw's name for it, or a whole number.
 fn option_default(opt: &ImageOpt) -> Option<String> {
     match opt.default.as_ref()? {
@@ -3178,17 +3174,14 @@ fn image_options(
                     let width = OPTION_FIELD.min(ui.available_width());
                     if opt.choices.is_empty() && common.is_empty() {
                         // gw saves every revolution read unless told how many.
-                        let unset = match opt.name.as_str() {
-                            "revs" => "Default (all)".to_owned(),
-                            _ => String::new(),
-                        };
-                        let hint = option_default(opt).map_or(unset, |d| format!("Default ({d})"));
+                        let all = (opt.name == "revs").then_some("all".to_owned());
+                        let default = option_default(opt).or(all);
+                        let hint = default_label(default.as_deref());
                         let edit = edit(value).hint_text(hint).desired_width(width);
                         changed |= text_box(ui, edit).changed();
                         return;
                     }
-                    let unset = option_default(opt)
-                        .map_or_else(|| "Default".to_owned(), |d| format!("Default ({d})"));
+                    let unset = default_label(option_default(opt).as_deref());
                     let id = ui.make_persistent_id(("image option", ext, &opt.name));
                     let (chose, other) = drop_down(ui, id, value, &unset, false, width, listed);
                     changed |= chose;
@@ -3595,13 +3588,15 @@ pub fn last_cylinder(tracks: &str, cyls: Option<u32>) -> Option<u32> {
 
 /// What gw does with the cylinders a track list names past a format's `cyls`,
 /// if it names any: it decodes nothing there, and a sector image holds nothing
-/// there. None for a read with --raw, which keeps their flux.
+/// there. None for a read with --raw, which keeps their flux. `sectors`: the
+/// image written is a sector image, which has no track there to skip.
 fn past_format(
     command: &str,
     format: &str,
     spec: &TrackSpec,
     cyls: u32,
     raw: bool,
+    sectors: bool,
 ) -> Option<String> {
     let mut past: Vec<u32> = spec
         .c
@@ -3624,9 +3619,12 @@ fn past_format(
             format!("cylinders {} are", list.join(", "))
         }
     };
-    let fate = match command {
-        "read" => "read but not decoded or saved. Raw keeps the flux",
-        "write" => "skipped, or erased with Erase empty tracks",
+    let fate = match (command, sectors) {
+        ("read", _) => "read but not decoded or saved. Raw keeps the flux",
+        ("write", true) => "skipped, or erased with Erase empty tracks",
+        ("write", false) => {
+            "skipped, or erased with Erase empty tracks where the image has no track"
+        }
         _ => "skipped",
     };
     Some(format!("{format} has {cyls} cylinders, so {which} {fate}."))
@@ -3945,9 +3943,21 @@ mod tests {
         outputs: BTreeMap<String, Output>,
         standalone: bool,
     ) -> Harness<'static, Page> {
+        page_set(command, values, outputs, standalone, |_| {})
+    }
+
+    /// As `page_with`, with `setup` done to the service first, such as describing a format.
+    fn page_set(
+        command: &str,
+        values: Values,
+        outputs: BTreeMap<String, Output>,
+        standalone: bool,
+        setup: impl FnOnce(&mut Service),
+    ) -> Harness<'static, Page> {
         let schema = schema();
         let cmd = schema.command(command).unwrap().clone();
         let mut service = Service::offline(Ok(schema.clone()));
+        setup(&mut service);
         // Tall enough for the read page with Advanced options open.
         let mut h = Harness::builder()
             .with_size(vec2(800.0, 900.0))
@@ -4877,6 +4887,36 @@ mod tests {
     }
 
     #[test]
+    fn revolutions_default_is_the_formats_and_raw_rounds_a_fraction_to_two() {
+        let shown = |raw: bool, revs: f64| {
+            let mut v = values(&[("format", "amiga.amigados")]);
+            if raw {
+                v.set("raw", ON);
+            }
+            let mut h = page_set("read", v, BTreeMap::new(), false, |s| {
+                s.describe("amiga.amigados", 80, 2);
+                s.describe_revs("amiga.amigados", revs);
+            });
+            h.run();
+            h.query_all_by_role(Role::ComboBox)
+                .filter_map(|c| c.value())
+                .find(|v| v.starts_with("Default ("))
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            shown(false, 1.1),
+            "Default (1.1)",
+            "a timed fraction past one"
+        );
+        assert_eq!(
+            shown(true, 1.1),
+            "Default (2)",
+            "raw reads whole revolutions"
+        );
+        assert_eq!(shown(false, 2.0), "Default (2)");
+    }
+
+    #[test]
     fn other_takes_the_rest_of_gws_steps_in_a_number_box() {
         let mut h = page("erase", Values::default(), BTreeMap::new());
         let spins = |h: &Harness<'_, Page>| h.get_all_by_role(Role::SpinButton).count();
@@ -4903,6 +4943,16 @@ mod tests {
         h.run();
         assert_eq!(h.state().0.get("tracks"), "c=0-40:step=2");
         assert_eq!(spins(&h), before, "a button shuts the box");
+        h.get_by_label("Other…").click();
+        h.run();
+        assert_eq!(spins(&h), before + 1);
+        h.state_mut().0.set("tracks", "c=0-26:step=3");
+        h.run();
+        assert_eq!(
+            spins(&h),
+            before,
+            "a preset or a typed list changing the step shuts it"
+        );
         let v = values(&[("tracks", "c=0-8:step=9")]);
         let h = page("erase", v, BTreeMap::new());
         assert_eq!(spins(&h), before + 1, "a step past the buttons opens it");
@@ -4911,7 +4961,7 @@ mod tests {
     #[test]
     fn a_track_list_past_the_format_says_what_gw_does_there() {
         let spec = TrackSpec::parse;
-        let past = |cmd, list, raw| past_format(cmd, "ibm.1440", &spec(list), 80, raw);
+        let past = |cmd, list, raw| past_format(cmd, "ibm.1440", &spec(list), 80, raw, true);
         assert_eq!(past("read", "c=0-79", false), None, "within the format");
         assert_eq!(past("read", "h=0", false), None, "the format's own");
         assert_eq!(
@@ -4932,6 +4982,14 @@ mod tests {
         assert_eq!(
             past("convert", "c=0-83/2:step=1/2", false).as_deref(),
             Some("ibm.1440 has 80 cylinders, so cylinders 80, 82 are skipped.")
+        );
+        // A flux image may hold the track: gw then finds it, cannot decode it, and skips it.
+        assert_eq!(
+            past_format("write", "ibm.1440", &spec("c=0-80"), 80, false, false).as_deref(),
+            Some(
+                "ibm.1440 has 80 cylinders, so cylinder 80 is skipped, or erased with \
+                 Erase empty tracks where the image has no track."
+            )
         );
     }
 

@@ -454,6 +454,7 @@ fn about(theme: egui::Theme) {
         egui::Theme::Light => "light",
     };
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
+    std::fs::create_dir_all(dir).unwrap();
     let image = harness.render().expect("the window renders");
     image.save(format!("{dir}/about-{suffix}.png")).unwrap();
 }

@@ -122,8 +122,8 @@ impl Progress {
                     });
                     t.status = Status::Bad;
                     text.clone_into(&mut t.text);
-                    if place.is_some() {
-                        t.place = place.map(str::to_owned);
+                    if let Some(place) = place {
+                        t.place = Some(place.to_owned());
                     }
                 }
                 return self.add_to_error(line);
@@ -263,8 +263,8 @@ impl Progress {
             text: String::new(),
             place: None,
         });
-        if place.is_some() {
-            t.place = place.map(str::to_owned);
+        if let Some(place) = place {
+            t.place = Some(place.to_owned());
         }
         if text.contains("(Retry #") || text.contains("(Verify Failure") {
             t.retries += 1;

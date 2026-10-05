@@ -2109,6 +2109,16 @@ fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
     };
     assert!(info("ibm.1440").verifies);
     assert!(info("amiga.amigados").verifies);
+    assert_eq!(
+        info("ibm.1440").revs,
+        Some(2.0),
+        "IBM reads two revolutions"
+    );
+    assert_eq!(
+        info("amiga.amigados").revs,
+        Some(1.1),
+        "a timed fraction past one"
+    );
     assert!(!info("raw.250").verifies, "gw cannot check bitcells");
     let mut verifies = |args: &[&str]| {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();

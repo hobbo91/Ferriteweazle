@@ -477,3 +477,17 @@ fn retry_text(n: u32) -> String {
         n => format!("{n} retries"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tracks_place_names_the_drive_or_image_cylinder_and_head() {
+        assert_eq!(place_text("Drive 10.1"), "Drive cylinder 10, head 1.");
+        assert_eq!(place_text("Image 0.0"), "Image cylinder 0, head 0.");
+        assert_eq!(place_text("elsewhere"), "elsewhere", "kept as gw put it");
+        assert_eq!(retry_text(1), "1 retry");
+        assert_eq!(retry_text(3), "3 retries");
+    }
+}

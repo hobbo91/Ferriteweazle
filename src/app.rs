@@ -486,7 +486,7 @@ impl App {
         }
         #[cfg(target_os = "macos")]
         {
-            app.menu = crate::menu::MenuBar::install();
+            app.menu = crate::menu::MenuBar::install(&cc.egui_ctx);
         }
         app
     }
@@ -681,7 +681,8 @@ impl App {
                     .on_hover_text(&tip)
                     .on_disabled_hover_text(&tip)
                     .clicked();
-                release_notes(ui, REPO, tag, true);
+                // Faded out, the link takes no clicks, as the buttons take none.
+                ui.add_enabled_ui(left >= 1.0, |ui| release_notes(ui, REPO, tag, true));
             }
         });
         // A banner fading out takes no more clicks.
@@ -3266,7 +3267,7 @@ impl App {
                             .desired_width(f32::INFINITY);
                         ui.horizontal(|ui| {
                             ui.label("Name");
-                            ui.add(edit).request_focus();
+                            form::text_box(ui, edit).request_focus();
                         });
                         let chosen = Some(typed.trim()).filter(|t| !t.is_empty());
                         let chosen = chosen.unwrap_or(default.as_str()).to_owned();
@@ -3277,7 +3278,18 @@ impl App {
                         let path = out.map(|o| o.named(&chosen).path(1));
                         if let Some(path) = path.filter(|p| !chosen.is_empty() && p.exists()) {
                             let file = path.file_name().unwrap_or_default().to_string_lossy();
-                            let text = format!("{file} exists. Reading replaces it.");
+                            // As start() has it: the question, or gw's -n.
+                            let refuses = self
+                                .settings
+                                .values
+                                .get(command)
+                                .is_some_and(|v| v.on("no_clobber"));
+                            let text = match refuses {
+                                true => format!(
+                                    "{file} exists. No clobber is on, so Greaseweazle Tools refuses it."
+                                ),
+                                false => format!("{file} exists. Reading replaces it."),
+                            };
                             ui.label(RichText::new(text).small().color(p.partial));
                         }
                         named = Some(chosen);
@@ -3857,7 +3869,7 @@ pub fn about(ui: &mut Ui, image: &egui::TextureHandle, tools: Option<&str>) {
             .on_hover_text(REPO);
         ui.add_space(12.0);
         ui.label(
-            RichText::new("MIT licence. Made by Lee Hobson.")
+            RichText::new("Made by Lee Hobson, under the MIT license.")
                 .small()
                 .weak(),
         );
@@ -6605,6 +6617,17 @@ mod tests {
         w.run_steps(2);
         assert!(!read(&w));
         w.get_by_label("Lemmings 2.adf exists. Reading replaces it.");
+        let values = w
+            .state_mut()
+            .settings
+            .values
+            .entry("read".into())
+            .or_default();
+        values.set("no_clobber", command::ON);
+        w.run_steps(2);
+        w.get_by_label(
+            "Lemmings 2.adf exists. No clobber is on, so Greaseweazle Tools refuses it.",
+        );
 
         w.state_mut().end_session();
         let note = "Read 0 of 3 disks. Failed: Lemmings 1. The Log says why.";
