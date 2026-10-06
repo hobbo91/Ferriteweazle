@@ -15,7 +15,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-/// How often the list of connected devices is refreshed.
+/// How often the bridge's thread lists the connected devices while the
+/// window asks nothing.
 const PORTS_EVERY: Duration = Duration::from_secs(2);
 /// How often the files asked about are looked at again.
 const WATCH_EVERY: Duration = Duration::from_secs(1);
@@ -28,6 +29,9 @@ const FOLDER_EVERY: Duration = Duration::from_millis(500);
 type Times = Mutex<HashMap<String, Option<SystemTime>>>;
 
 pub type Repaint = Box<dyn Fn() + Send>;
+
+/// A list of the devices as gw gives it, or why it could not.
+type Listed = Result<Value, String>;
 
 /// Something asked of the bridge: waiting for a reply, or answered.
 pub enum Load<T> {
@@ -85,8 +89,13 @@ struct Request {
 pub struct Service {
     requests: Sender<Request>,
     pub schema: Load<Schema>,
-    ports: Load<Vec<Port>>,
-    ports_asked: Instant,
+    /// Every list of devices: those asked for, and those the bridge's thread
+    /// finds changed on its own.
+    listed: Receiver<Listed>,
+    /// Where a list asked for is sent.
+    lister: Sender<Listed>,
+    /// A list asked for and not yet answered.
+    asking: bool,
     last_ports: Vec<Port>,
     /// Why the last list of devices failed, if it did.
     ports_error: Option<String>,
@@ -111,37 +120,47 @@ pub struct Service {
 impl Service {
     pub fn start(tools: &Tools, repaint: Repaint) -> Service {
         let (requests, rx) = mpsc::channel();
+        let (lister, listed) = mpsc::channel();
+        let found = lister.clone();
         match tools.standalone {
             true => {
                 let gw = tools.python.clone();
-                std::thread::spawn(move || serve_standalone(&gw, rx, repaint));
+                std::thread::spawn(move || serve_standalone(&gw, rx, found, repaint));
             }
             false => {
                 let cmd = tools.bridge("serve");
-                std::thread::spawn(move || serve(cmd, rx, repaint));
+                std::thread::spawn(move || serve(cmd, rx, found, repaint));
             }
         }
         let schema = Load::Waiting(call(&requests, json!({"op": "schema"})));
-        let ports = Load::Waiting(call(&requests, json!({"op": "ports"})));
-        Service::new(requests, schema, ports)
+        let mut service = Service::new(requests, schema, lister, listed);
+        service.refresh_ports();
+        service
     }
 
     /// A service with no Greaseweazle Tools behind it: every question fails but the schema, if given.
     pub fn offline(schema: Result<Schema, String>) -> Service {
         let (requests, _) = mpsc::channel();
+        let (lister, listed) = mpsc::channel();
         let schema = schema.map_or_else(Load::Failed, Load::Ready);
-        Service::new(requests, schema, Load::Ready(Vec::new()))
+        Service::new(requests, schema, lister, listed)
     }
 
-    fn new(requests: Sender<Request>, schema: Load<Schema>, ports: Load<Vec<Port>>) -> Service {
+    fn new(
+        requests: Sender<Request>,
+        schema: Load<Schema>,
+        lister: Sender<Listed>,
+        listed: Receiver<Listed>,
+    ) -> Service {
         let times = Arc::default();
         let watched = Arc::downgrade(&times);
         std::thread::spawn(move || watch(&watched));
         Service {
             requests,
             schema,
-            ports,
-            ports_asked: Instant::now(),
+            listed,
+            lister,
+            asking: false,
             last_ports: Vec::new(),
             ports_error: None,
             pinned: false,
@@ -158,9 +177,15 @@ impl Service {
     /// Takes in replies that have arrived.
     pub fn poll(&mut self) {
         self.schema.poll();
-        if self.ports.poll() {
-            self.ports_error = self.ports.error().map(str::to_owned);
-            self.last_ports = self.ports.ready().cloned().unwrap_or_default();
+        while let Ok(list) = self.listed.try_recv() {
+            self.asking = false;
+            if self.pinned {
+                continue;
+            }
+            let ports: Result<Vec<Port>, String> =
+                list.and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()));
+            self.ports_error = ports.as_ref().err().cloned();
+            self.last_ports = ports.unwrap_or_default();
         }
         for load in self.diskdefs.values_mut() {
             load.poll();
@@ -179,15 +204,9 @@ impl Service {
         }
     }
 
-    /// Every serial port, likeliest Greaseweazle first, refreshed every PORTS_EVERY.
-    pub fn ports(&mut self) -> &[Port] {
-        if self.ports_asked.elapsed() > PORTS_EVERY {
-            self.refresh_ports();
-        }
-        &self.last_ports
-    }
-
-    /// The devices last listed, without asking again.
+    /// Every serial port as last listed, likeliest Greaseweazle first. The
+    /// bridge's thread lists them again every PORTS_EVERY and sends a changed
+    /// list, which `poll` takes in.
     pub fn known_ports(&self) -> &[Port] {
         &self.last_ports
     }
@@ -197,26 +216,29 @@ impl Service {
         self.ports_error.as_deref()
     }
 
-    /// Asks for the list of devices now, not when it is next due.
+    /// Asks for the list of devices now, not when the thread next lists them.
     pub fn refresh_ports(&mut self) {
-        if !self.pinned && !matches!(self.ports, Load::Waiting(_)) {
-            self.ports = Load::Waiting(call(&self.requests, json!({"op": "ports"})));
-            self.ports_asked = Instant::now();
+        if !self.pinned && !self.asking {
+            let request = Request {
+                body: json!({"op": "ports"}),
+                reply: self.lister.clone(),
+            };
+            // Not sent with no gw to ask, so the list stays as it is.
+            self.asking = self.requests.send(request).is_ok();
         }
     }
 
     /// The devices to show until gw first lists them; ignored with no gw to ask.
     pub fn seed_ports(&mut self, ports: Vec<Port>) {
-        if matches!(self.ports, Load::Waiting(_)) {
+        if self.asking {
             self.last_ports = ports;
         }
     }
 
-    /// Lists these devices and stops asking gw: a window with a made-up
-    /// Greaseweazle, for tests and pictures.
+    /// Lists these devices and takes no more lists from gw: a window with a
+    /// made-up Greaseweazle, for tests and pictures.
     pub fn pin_ports(&mut self, ports: Vec<Port>) {
-        // Drops a reply on its way, which would replace them.
-        self.ports = Load::Ready(Vec::new());
+        self.asking = false;
         self.last_ports = ports;
         self.ports_error = None;
         self.pinned = true;
@@ -470,10 +492,102 @@ fn call<T>(requests: &Sender<Request>, body: Value) -> Pending<T> {
     }
 }
 
+/// The bridge thread's own listing of the devices: the last list it or the
+/// window got, and when the next is due. A device plugged in or taken out
+/// wakes the window; an idle window with nothing changing is left alone.
+struct Listing {
+    last: Option<Listed>,
+    due: Instant,
+    /// The serial device nodes as they were when `last` was listed.
+    nodes: Option<Vec<Node>>,
+}
+
+impl Listing {
+    fn new() -> Listing {
+        Listing {
+            last: None,
+            due: Instant::now() + PORTS_EVERY,
+            nodes: None,
+        }
+    }
+
+    fn wait(&self) -> Duration {
+        self.due.saturating_duration_since(Instant::now())
+    }
+
+    /// A list the window asked for, which the next own listing is compared with.
+    fn asked(&mut self, list: &Listed) {
+        self.last = Some(list.clone());
+        self.nodes = serial_nodes();
+        self.due = Instant::now() + PORTS_EVERY;
+    }
+
+    /// Whether gw is to list the devices now: when due, unless on macOS the
+    /// serial device nodes are as they were, as gw's list there comes from
+    /// them alone. Elsewhere the list can change without them, as when Linux
+    /// grants access to one, so gw is asked.
+    fn due(&mut self) -> bool {
+        if self.wait() > Duration::ZERO {
+            return false;
+        }
+        let nodes = serial_nodes();
+        let same = nodes.is_some() && nodes == self.nodes;
+        self.nodes = nodes;
+        if same {
+            self.due = Instant::now() + PORTS_EVERY;
+        }
+        !same
+    }
+
+    /// A list made on its own: sent to `found`, and the window woken, when
+    /// it differs from the last.
+    fn found(&mut self, list: Listed, found: &Sender<Listed>, repaint: &Repaint) {
+        self.due = Instant::now() + PORTS_EVERY;
+        if self.last.as_ref() != Some(&list) {
+            let _ = found.send(list.clone());
+            repaint();
+            self.last = Some(list);
+        }
+    }
+}
+
+/// A serial device node's name.
+type Node = std::ffi::OsString;
+
+/// The serial device nodes as they are now, or none where gw's list is not
+/// drawn from them alone. The unit tests' bridges list what they like,
+/// whatever the system holds, so they are not looked at there.
+fn serial_nodes() -> Option<Vec<Node>> {
+    match cfg!(test) {
+        true => None,
+        false => system_nodes(),
+    }
+}
+
+/// macOS's serial device nodes: /dev/cu.*, the callout devices pyserial
+/// lists, whose name, product and USB ID are all gw reports there.
+#[cfg(target_os = "macos")]
+fn system_nodes() -> Option<Vec<Node>> {
+    let mut nodes: Vec<Node> = std::fs::read_dir("/dev")
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name())
+        .filter(|name| name.to_string_lossy().starts_with("cu."))
+        .collect();
+    nodes.sort();
+    Some(nodes)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_nodes() -> Option<Vec<Node>> {
+    None
+}
+
 /// Runs the bridge and answers requests in order until the Service is
-/// dropped. With nothing asked for PORTS_EVERY it wakes the window, which
-/// asks for the devices only when it draws.
-fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
+/// dropped. Between requests it lists the devices itself every PORTS_EVERY,
+/// and sends a list that differs from the last to `found` and wakes the
+/// window.
+fn serve(mut cmd: Command, requests: Receiver<Request>, found: Sender<Listed>, repaint: Repaint) {
     let spawned = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -492,29 +606,52 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
     let stderr = child.stderr.take().expect("stderr is piped");
     let last_words = std::thread::spawn(move || last_line(stderr));
     let mut line = String::new();
-    loop {
-        let r = match requests.recv_timeout(PORTS_EVERY) {
-            Ok(r) => r,
-            Err(RecvTimeoutError::Timeout) => {
-                repaint();
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+    // Sends a request and reads its reply; none once the bridge has stopped.
+    let mut ask = |body: &Value| -> Option<Listed> {
         line.clear();
-        let sent = writeln!(stdin, "{}", r.body).and_then(|()| stdin.flush());
-        if let Ok(1..) = sent.and_then(|()| stdout.read_line(&mut line)) {
-            let _ = r.reply.send(parse(&line));
-            repaint();
+        let sent = writeln!(stdin, "{body}").and_then(|()| stdin.flush());
+        match sent.and_then(|()| stdout.read_line(&mut line)) {
+            Ok(1..) => Some(parse(&line)),
+            _ => None,
+        }
+    };
+    let mut listing = Listing::new();
+    // The request the bridge stopped on, if it did.
+    let mut unanswered = None;
+    let stopped = loop {
+        if listing.due() {
+            let Some(list) = ask(&json!({"op": "ports"})) else {
+                break true;
+            };
+            listing.found(list, &found, &repaint);
             continue;
         }
+        let r = match requests.recv_timeout(listing.wait()) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break false,
+        };
+        let Some(reply) = ask(&r.body) else {
+            unanswered = Some(r);
+            break true;
+        };
+        if r.body["op"] == "ports" {
+            listing.asked(&reply);
+        }
+        let _ = r.reply.send(reply);
+        repaint();
+    };
+    if stopped {
         let _ = child.kill();
         let _ = child.wait();
         let why = match last_words.join().unwrap_or_default() {
             last if last.is_empty() => "Greaseweazle Tools stopped.".to_owned(),
             last => format!("Greaseweazle Tools stopped: {}", last.trim()),
         };
-        let _ = r.reply.send(Err(why.clone()));
+        if let Some(r) = unanswered {
+            let _ = r.reply.send(Err(why.clone()));
+        }
+        let _ = found.send(Err(why.clone()));
         return refuse(requests, &repaint, why);
     }
     // The bridge ends when its input closes; waiting reaps it.
@@ -525,21 +662,32 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, repaint: Repaint) {
 /// Answers for a standalone gw, which has no bridge: its schema from its help,
 /// the serial ports Windows lists, and no objections. What only the bridge
 /// can tell, such as a format's layout, stays unanswered.
-fn serve_standalone(gw: &Path, requests: Receiver<Request>, repaint: Repaint) {
+fn serve_standalone(
+    gw: &Path,
+    requests: Receiver<Request>,
+    found: Sender<Listed>,
+    repaint: Repaint,
+) {
     let mut unanswered = Vec::new();
+    let mut listing = Listing::new();
     loop {
-        let r = match requests.recv_timeout(PORTS_EVERY) {
+        if listing.due() {
+            listing.found(Ok(json!(standalone::ports())), &found, &repaint);
+            continue;
+        }
+        let r = match requests.recv_timeout(listing.wait()) {
             Ok(r) => r,
-            Err(RecvTimeoutError::Timeout) => {
-                repaint();
-                continue;
-            }
+            Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
         let reply = match r.body["op"].as_str() {
             Some("schema") => standalone::schema(gw)
                 .and_then(|s| serde_json::to_value(s).map_err(|e| e.to_string())),
-            Some("ports") => Ok(json!(standalone::ports())),
+            Some("ports") => {
+                let list = Ok(json!(standalone::ports()));
+                listing.asked(&list);
+                list
+            }
             Some("check" | "check_opt" | "fits") => Ok(Value::Null),
             _ => {
                 unanswered.push(r.reply);
@@ -620,14 +768,20 @@ mod tests {
         }
     }
 
-    /// A bridge that answers every request with an empty list, and writes its
-    /// process id beside itself.
+    /// A bridge that answers every request with an empty list, until the
+    /// `from`th, from which it lists a Greaseweazle (0: never), and writes
+    /// its process id beside itself.
     #[cfg(unix)]
-    fn fake_tools(dir: &std::path::Path) -> Tools {
+    fn fake_tools(dir: &std::path::Path, from: usize) -> Tools {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("bridge");
-        let text =
-            "#!/bin/sh\necho $$ > \"$0.pid\"\nwhile read -r line; do echo '{\"ok\": []}'; done\n";
+        let device =
+            r#"{"device": "/dev/ttyACM0", "name": "Greaseweazle", "score": 20, "denied": false}"#;
+        let text = format!(
+            "#!/bin/sh\necho $$ > \"$0.pid\"\nn=0\nwhile read -r line; do\n  n=$((n+1))\n  \
+             if [ {from} -gt 0 ] && [ $n -ge {from} ]; then echo '{{\"ok\": [{device}]}}'; \
+             else echo '{{\"ok\": []}}'; fi\ndone\n"
+        );
         std::fs::write(&script, text).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         Tools {
@@ -683,6 +837,23 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_serial_device_nodes_are_named_as_pyserial_lists_them() {
+        let nodes = system_nodes().expect("/dev is readable");
+        let names: Vec<String> = nodes
+            .iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| n.starts_with("cu.")), "{names:?}");
+        assert!(names.is_sorted(), "{names:?}");
+        assert_eq!(
+            system_nodes().as_ref(),
+            Some(&nodes),
+            "the same until a device changes"
+        );
+    }
+
     #[test]
     fn a_failed_device_list_keeps_its_reason() {
         let tools = Tools {
@@ -722,7 +893,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_idle_window_is_woken_when_the_devices_are_due() {
+    fn an_idle_window_is_woken_only_when_the_devices_change() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let dir = scratch("idle");
         let wakes = Arc::new(AtomicUsize::new(0));
@@ -730,11 +901,24 @@ mod tests {
         let repaint = Box::new(move || {
             count.fetch_add(1, Ordering::SeqCst);
         });
-        let _service = Service::start(&fake_tools(&dir), repaint);
-        // One wake for each of the first two replies, then one with nothing asked.
-        wait_for("a wake", || {
-            (wakes.load(Ordering::SeqCst) > 2).then_some(())
+        // The schema and the devices are asked for, then the bridge's thread
+        // lists them itself: the third list has the Greaseweazle.
+        let mut service = Service::start(&fake_tools(&dir, 3), repaint);
+        wait_for("the Greaseweazle", || {
+            service.poll();
+            (!service.known_ports().is_empty()).then_some(())
         });
+        assert_eq!(service.known_ports()[0].device, "/dev/ttyACM0");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            3,
+            "two replies, then the change"
+        );
+        // Listed again and again, unchanged: no more wakes.
+        std::thread::sleep(2 * PORTS_EVERY + Duration::from_millis(500));
+        service.poll();
+        assert_eq!(wakes.load(Ordering::SeqCst), 3);
+        assert_eq!(service.known_ports().len(), 1);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -742,11 +926,11 @@ mod tests {
     #[test]
     fn a_dropped_service_leaves_no_bridge_behind() {
         let dir = scratch("reaped");
-        let tools = fake_tools(&dir);
+        let tools = fake_tools(&dir, 0);
         let mut service = Service::start(&tools, Box::new(|| {}));
         wait_for("the devices", || {
             service.poll();
-            service.ports.ready().map(|_| ())
+            (!service.asking).then_some(())
         });
         let pid = std::fs::read_to_string(dir.join("bridge.pid")).unwrap();
         drop(service);

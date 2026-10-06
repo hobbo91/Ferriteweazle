@@ -1080,8 +1080,7 @@ impl App {
     }
 
     /// The Greaseweazle the sidebar shows.
-    fn found_port(&mut self) -> Option<&Port> {
-        self.service.ports();
+    fn found_port(&self) -> Option<&Port> {
         self.settings.port(self.service.known_ports())
     }
 
