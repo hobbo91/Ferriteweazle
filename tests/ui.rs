@@ -1987,6 +1987,136 @@ fn text_dragged_across_the_log_is_copied() {
     );
 }
 
+/// The right-click menu of the line `text`, where it shows first: its
+/// Copy, the one nearest the pointer, not the box's own.
+fn copy_item<'w>(w: &'w mut Window, text: &str) -> Node<'w> {
+    let at = w
+        .get_all_by_label(text)
+        .next()
+        .expect("the line")
+        .rect()
+        .left_center()
+        + egui::vec2(20.0, 0.0);
+    right_click(w, at);
+    let far = |n: &Node| (n.rect().center() - at).length() as u32;
+    w.get_all_by_role_and_label(Role::Button, "Copy")
+        .min_by_key(far)
+        .expect("the menu's Copy")
+}
+
+/// Selects all the lines of the box the line `text` is in, from its menu.
+fn select_all(w: &mut Window, text: &str) {
+    copy_item(w, text);
+    w.get_by_label("Select All").click();
+    w.run();
+}
+
+#[test]
+fn a_selection_is_let_go_once_its_lines_are_gone_from_the_log_or_an_output_box() {
+    let mut w = window(Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    // All of a read's lines selected, then cleared, and a shorter job's
+    // lines in their place.
+    let mut job = Job::replay("read", WORKBENCH);
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw read Workbench.adf".into(), &mut job);
+    log.end(&mut job, "Done in 0:42.".into());
+    w.run();
+    select_all(&mut w, "Done in 0:42.");
+    let copy = copy_item(&mut w, "Done in 0:42.");
+    assert!(!copy.accesskit_node().is_disabled());
+    // Escape shuts the menu, and leaves the selection.
+    w.key_press(egui::Key::Escape);
+    w.run();
+    assert!(w.query_by_label("Select All").is_none());
+    let copy = copy_item(&mut w, "Done in 0:42.");
+    assert!(!copy.accesskit_node().is_disabled());
+    w.key_press(egui::Key::Escape);
+    w.run();
+    w.get_by_role_and_label(Role::Button, "Clear").click();
+    w.run();
+    let mut job = Job::replay("bandwidth", BANDWIDTH);
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw bandwidth".into(), &mut job);
+    log.follow(&mut job);
+    w.run();
+    // Its Copy took the read's lines, gone, and panicked.
+    let copy = copy_item(&mut w, " -> Min. Ave. Flux: 1.289 us");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+
+    // A page's own box, its job's lines all selected, then another job's.
+    let mut w = window(Settings {
+        page: Page::Command("bandwidth".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).tool = Some(Job::replay("bandwidth", BANDWIDTH));
+    w.run();
+    select_all(&mut w, " -> Min. Ave. Flux: 1.289 us");
+    app_mut(&mut w).tool = Some(Job::replay("bandwidth", "Write Bandwidth: 7.66"));
+    w.run();
+    let copy = copy_item(&mut w, "Write Bandwidth: 7.66");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+}
+
+#[test]
+fn a_double_click_in_the_log_selects_a_word_a_triple_its_line_and_escape_neither() {
+    // Frames a 60th of a second apart, as a double click's presses are.
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    };
+    let mut w = build(builder, settings, None);
+    let mut job = Job::replay("bandwidth", "Write Bandwidth:  7.66\nRead Bandwidth:  8.15");
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw bandwidth".into(), &mut job);
+    log.follow(&mut job);
+    w.run();
+    // Within "Bandwidth", the line's 7th to 15th characters, each a fixed width.
+    let line = w.get_by_label("Write Bandwidth:  7.66").rect();
+    let font = egui::TextStyle::Monospace.resolve(&w.ctx.global_style());
+    let advance = w.ctx.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let at = egui::pos2(line.left() + 9.5 * advance, line.center().y);
+    let clicks = |w: &mut Window, n: usize| {
+        w.hover_at(at);
+        w.step();
+        for _ in 0..n {
+            for pressed in [true, false] {
+                w.event(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            w.step();
+        }
+        w.event(egui::Event::Copy);
+        w.step();
+        copied(w)
+    };
+    assert_eq!(clicks(&mut w, 2).as_deref(), Some("Bandwidth"));
+    // A pause, then three: the line, to the next.
+    w.run();
+    assert_eq!(
+        clicks(&mut w, 3).as_deref(),
+        Some("Write Bandwidth:  7.66\n")
+    );
+    // Escape lets go of it, and the box keeps the keyboard.
+    w.key_press(egui::Key::Escape);
+    w.run();
+    w.event(egui::Event::Copy);
+    w.step();
+    assert_eq!(copied(&w), None);
+    let copy = copy_item(&mut w, "Write Bandwidth:  7.66");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+}
+
 #[test]
 fn clear_empties_the_log() {
     let mut w = window(Settings {
