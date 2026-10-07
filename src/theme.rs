@@ -438,6 +438,9 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.window_shadow = v.popup_shadow;
 
     let w = &mut v.widgets;
+    // One edge's width, a whole point, in every state: egui pads a button by
+    // its padding less its edge, rounded to a whole point, so an edge that
+    // changes or is fractional moves its text.
     for (state, fill, stroke, text) in [
         (&mut w.noninteractive, p.bg, p.line, p.text),
         (&mut w.inactive, p.card, p.line, p.text),
@@ -453,6 +456,5 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
         state.corner_radius = CornerRadius::same(RADIUS);
         state.expansion = 0.0;
     }
-    w.active.bg_stroke.width = 1.5;
     v
 }

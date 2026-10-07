@@ -211,9 +211,12 @@ pub fn choose_shows(ui: &mut egui::Ui, shows: &mut Shows, progress: &Progress, d
     };
     for (view, name, _) in SHOWS.into_iter().rev() {
         let why = (view == Shows::Flux && !fluxed).then_some("No flux reported.");
-        let button = egui::Button::selectable(showing == view, name);
+        let button = egui::Button::new(name);
         let chosen = ui
-            .add_enabled(why.is_none(), button)
+            .add_enabled_ui(why.is_none(), |ui| {
+                form::selectable(ui, showing == view, button)
+            })
+            .inner
             .on_disabled_hover_text(why.unwrap_or_default());
         if chosen.clicked() {
             *shows = view;

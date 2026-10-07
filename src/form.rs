@@ -766,15 +766,14 @@ impl<'a> Form<'a> {
             };
             if a.default.is_none()
                 && !a.required
-                && ui
-                    .selectable_label(current.is_empty(), unset)
+                && selectable(ui, current.is_empty(), egui::Button::new(unset))
                     .own_tip(tip)
                     .clicked()
             {
                 self.values.set(&a.dest, "");
             }
             for &(value, text) in options {
-                if ui.selectable_label(current == value, text).clicked() {
+                if selectable(ui, current == value, egui::Button::new(text)).clicked() {
                     self.values
                         .set(&a.dest, if current == value { "" } else { value });
                 }
@@ -793,7 +792,7 @@ impl<'a> Form<'a> {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for f in offered {
-                    let button = ui.selectable_label(f == chosen, f.name());
+                    let button = selectable(ui, f == chosen, egui::Button::new(f.name()));
                     if button.on_hover_text(f.tip()).clicked() {
                         self.values.set(FIRMWARE, f.name());
                     }
@@ -1068,14 +1067,13 @@ impl<'a> Form<'a> {
                             ui.label(RichText::new(heading(&family)).strong());
                             group = family;
                         }
-                        if ui.selectable_label(*f == current, f.as_str()).clicked() {
+                        if selectable(ui, *f == current, egui::Button::new(f.as_str())).clicked() {
                             chosen = Some((*f).clone());
                         }
                     }
                 });
         } else {
-            if ui
-                .selectable_label(current.is_empty(), "None")
+            if selectable(ui, current.is_empty(), egui::Button::new("None"))
                 .on_hover_text("Use the image's own format, if it has one.")
                 .clicked()
             {
@@ -1117,7 +1115,9 @@ impl<'a> Form<'a> {
                                 {
                                     text = text.strong();
                                 }
-                                if ui.selectable_label(*family == open, text).clicked() {
+                                if selectable(ui, *family == open, egui::Button::new(text))
+                                    .clicked()
+                                {
                                     ui.data_mut(|d| d.insert_temp(family_id, family.clone()));
                                 }
                                 if family == CUSTOM {
@@ -1134,7 +1134,9 @@ impl<'a> Form<'a> {
                         ui.set_width(210.0);
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             for f in all.iter().filter(|f| family_of(f) == open) {
-                                if ui.selectable_label(*f == current, f.as_str()).clicked() {
+                                if selectable(ui, *f == current, egui::Button::new(f.as_str()))
+                                    .clicked()
+                                {
                                     chosen = Some((*f).clone());
                                 }
                             }
@@ -1241,7 +1243,10 @@ impl<'a> Form<'a> {
                     for head in 0..2u32 {
                         let on = sides.has_head(head, heads);
                         let r = ui
-                            .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
+                            .add_enabled_ui(!fixed, |ui| {
+                                selectable(ui, on, egui::Button::new(head.to_string()))
+                            })
+                            .inner
                             .on_disabled_hover_text("This format is single sided.");
                         if r.clicked() {
                             sides.toggle_head(head, heads);
@@ -1273,14 +1278,14 @@ impl<'a> Form<'a> {
                             _ => (value, STEP_TIP),
                         };
                         let on = !other && current == value;
-                        let r = ui.add(egui::Button::selectable(on, text));
+                        let r = selectable(ui, on, egui::Button::new(text));
                         if r.on_hover_text(tip).clicked() && !on {
                             ui.data_mut(|d| d.remove_temp::<String>(other_id));
                             spec.pick_step(value, (first, last), whole, free);
                             changed = true;
                         }
                     }
-                    let r = ui.add(egui::Button::selectable(other, OTHER));
+                    let r = selectable(ui, other, egui::Button::new(OTHER));
                     if r.on_hover_text(OTHER_STEP_TIP).clicked() && !other {
                         ui.data_mut(|d| d.insert_temp(other_id, current.clone()));
                     }
@@ -1394,8 +1399,7 @@ impl<'a> Form<'a> {
                     "Every image in the folder, sequentially in order of name.",
                 ),
             ] {
-                if ui
-                    .selectable_label(batch == on, name)
+                if selectable(ui, batch == on, egui::Button::new(name))
                     .own_tip(tip)
                     .clicked()
                     && batch != on
@@ -1448,9 +1452,9 @@ impl<'a> Form<'a> {
                 egui::ComboBox::from_id_salt(("batch type", &self.cmd.name))
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut only, String::new(), "Every type");
+                        selectable_value(ui, &mut only, String::new(), "Every type");
                         for e in &types {
-                            ui.selectable_value(&mut only, e.clone(), name(e));
+                            selectable_value(ui, &mut only, e.clone(), name(e));
                         }
                     })
                     .response
@@ -1568,7 +1572,12 @@ impl<'a> Form<'a> {
                     .height(380.0)
                     .show_ui(ui, |ui| {
                         for (e, image) in schema.images.iter().filter(|(_, i)| i.writable) {
-                            ui.selectable_value(&mut picked, e.clone(), image_name(e, &image.name));
+                            selectable_value(
+                                ui,
+                                &mut picked,
+                                e.clone(),
+                                image_name(e, &image.name),
+                            );
                         }
                     })
                     .response
@@ -1681,9 +1690,9 @@ impl<'a> Form<'a> {
                 ui.add_enabled_ui(labelled, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.selectable_value(&mut out.label_first, false, "After the name")
+                        selectable_value(ui, &mut out.label_first, false, "After the name")
                             .on_hover_text("Game_Backup, Demo_Backup…");
-                        ui.selectable_value(&mut out.label_first, true, "Before the name")
+                        selectable_value(ui, &mut out.label_first, true, "Before the name")
                             .on_hover_text("Backup_Game, Backup_Demo…");
                     });
                 })
@@ -1786,11 +1795,11 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(on, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.whole_disk, false, "Incomplete tracks")
+                            selectable_value(ui, &mut out.whole_disk, false, "Incomplete tracks")
                                 .on_hover_text(
                                     "Attempt to re-read only the tracks still missing sectors.",
                                 );
-                            ui.selectable_value(&mut out.whole_disk, true, "Whole disk")
+                            selectable_value(ui, &mut out.whole_disk, true, "Whole disk")
                                 .on_hover_text("Attempt to re-read the entire disk.");
                         });
                     })
@@ -1848,9 +1857,9 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(out.disks > 1, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.ask_names, false, "Numbered")
+                            selectable_value(ui, &mut out.ask_names, false, "Numbered")
                                 .on_hover_text("Name each image file with a numbered label.");
-                            ui.selectable_value(&mut out.ask_names, true, "Ask for each")
+                            selectable_value(ui, &mut out.ask_names, true, "Ask for each")
                                 .on_hover_text("Type each disk's name when asked for the disk.");
                         });
                     })
@@ -1905,9 +1914,9 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(numbered, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.number_first, false, "After the name")
+                            selectable_value(ui, &mut out.number_first, false, "After the name")
                                 .on_hover_text("Game_Disk1, Game_Disk2…");
-                            ui.selectable_value(&mut out.number_first, true, "Before the name")
+                            selectable_value(ui, &mut out.number_first, true, "Before the name")
                                 .on_hover_text("Disk1_Game, Disk2_Game…");
                         });
                     })
@@ -3125,18 +3134,17 @@ fn drop_down<'o>(
             .width(width)
             .show_ui(ui, |ui| {
                 if !required
-                    && ui
-                        .selectable_label(!other && value.is_empty(), unset)
+                    && selectable(ui, !other && value.is_empty(), egui::Button::new(unset))
                         .clicked()
                 {
                     chosen = Some((false, ""));
                 }
                 for o in options {
-                    if ui.selectable_label(!other && value == o, o).clicked() {
+                    if selectable(ui, !other && value == o, egui::Button::new(o)).clicked() {
                         chosen = Some((false, o));
                     }
                 }
-                if ui.selectable_label(other, OTHER).clicked() {
+                if selectable(ui, other, egui::Button::new(OTHER)).clicked() {
                     chosen = Some((true, ""));
                 }
             })
@@ -3876,6 +3884,44 @@ fn heading(ui: &mut Ui, text: &str, end: impl FnOnce(&mut Ui)) -> egui::Response
     .inner
 }
 
+/// One of a set of choices, as egui's selectable button looks, its text
+/// where it lies in every state. egui lays an unselected one out without its
+/// frame until the pointer is over it, an edge's width nearer its corner, so
+/// its text and size change on a hover: here its frame is laid out always,
+/// drawn in nothing while idle. In a scope either way, so that its id, and
+/// with it keyboard focus, stays as it is chosen.
+pub(crate) fn selectable(ui: &mut Ui, selected: bool, button: egui::Button) -> egui::Response {
+    let button = button
+        .selected(selected)
+        .frame_when_inactive(true)
+        .frame(true);
+    ui.scope(|ui| {
+        if !selected {
+            let idle = &mut ui.visuals_mut().widgets.inactive;
+            idle.weak_bg_fill = Color32::TRANSPARENT;
+            idle.bg_stroke.color = Color32::TRANSPARENT;
+        }
+        ui.add(button)
+    })
+    .inner
+}
+
+/// A selectable() choice of `value`: chosen while `current` is it, and a
+/// click makes it so.
+pub(crate) fn selectable_value<'a, T: PartialEq>(
+    ui: &mut Ui,
+    current: &mut T,
+    value: T,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    let mut response = selectable(ui, *current == value, egui::Button::new(text));
+    if response.clicked() && *current != value {
+        *current = value;
+        response.mark_changed();
+    }
+    response
+}
+
 /// A checkbox as a row's field, centred on the row's label.
 fn row_checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     ui.horizontal(|ui| checkbox(ui, on, text)).inner
@@ -3978,6 +4024,96 @@ mod tests {
 
     fn schema() -> Schema {
         serde_json::from_str(include_str!("gw-1.23.json")).unwrap()
+    }
+
+    /// Where egui paints `text`: the position of the text shape that lays it
+    /// out, among the frame's shapes.
+    fn text_at(output: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+        fn find(shape: &egui::Shape, text: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
+                _ => None,
+            }
+        }
+        output.shapes.iter().find_map(|c| find(&c.shape, text))
+    }
+
+    /// A choice, named B, drawn in a Ui.
+    type Choose = fn(&mut Ui) -> egui::Response;
+
+    /// Where the text of the choice `choose` draws lies, and the choice's own
+    /// size, idle, hovered and pressed, in `theme`'s colours.
+    fn choice_states(theme: theme::Choice, choose: Choose) -> [(egui::Pos2, egui::Vec2); 3] {
+        let mut harness = Harness::builder()
+            .with_size(vec2(200.0, 80.0))
+            .build_ui(move |ui| {
+                theme::install(ui.ctx());
+                theme::apply(ui.ctx(), theme);
+                choose(ui);
+            });
+        let seen = |harness: &Harness| {
+            let text = text_at(harness.output(), "B").expect("B painted");
+            (text, harness.get_by_label("B").rect().size())
+        };
+        harness.run();
+        let idle = seen(&harness);
+        let middle = harness.get_by_label("B").rect().center();
+        harness.hover_at(middle);
+        harness.run();
+        let hovered = seen(&harness);
+        harness.drag_at(middle);
+        harness.run();
+        [idle, hovered, seen(&harness)]
+    }
+
+    #[test]
+    fn a_choices_text_and_size_stay_as_they_are_on_a_hover_and_a_press() {
+        // egui lays an unselected selectable out two points narrower, its
+        // text a point off, until it is hovered; a wider edge when pressed
+        // rounds its text half a point on: issue 6.
+        let choices: [(&str, Choose); 4] = [
+            ("unselected", |ui| {
+                selectable(ui, false, egui::Button::new("B"))
+            }),
+            ("selected", |ui| {
+                selectable(ui, true, egui::Button::new("B"))
+            }),
+            ("a chosen value", |ui| selectable_value(ui, &mut 1, 1, "B")),
+            ("a button", |ui| ui.add(egui::Button::new("B"))),
+        ];
+        for theme in [theme::Choice::Light, theme::Choice::Dark] {
+            for (name, choose) in choices {
+                let [idle, hovered, pressed] = choice_states(theme, choose);
+                assert_eq!(idle, hovered, "{name} in {theme:?}, hovered");
+                assert_eq!(idle, pressed, "{name} in {theme:?}, pressed");
+            }
+        }
+    }
+
+    #[test]
+    fn a_choice_keeps_its_id_and_the_keyboards_focus_as_it_is_chosen() {
+        let mut harness = Harness::builder()
+            .with_size(vec2(200.0, 80.0))
+            .build_ui_state(
+                |ui, chosen: &mut (bool, Option<egui::Id>)| {
+                    let response = selectable(ui, chosen.0, egui::Button::new("B"));
+                    if response.clicked() {
+                        chosen.0 = true;
+                    }
+                    chosen.1 = Some(response.id);
+                },
+                (false, None),
+            );
+        harness.run();
+        let unchosen = harness.state().1;
+        harness.get_by_label("B").focus();
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert!(harness.state().0, "chosen from the keyboard");
+        assert_eq!(harness.state().1, unchosen);
+        assert!(harness.get_by_label("B").is_focused(), "still focused");
     }
 
     fn values(pairs: &[(&str, &str)]) -> Values {

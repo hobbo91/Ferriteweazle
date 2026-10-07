@@ -1654,8 +1654,7 @@ impl App {
                                 _ => short_port(&port.device).to_owned(),
                             };
                             let here = found.as_ref().is_some_and(|f| f.device == port.device);
-                            if ui
-                                .selectable_label(here, text)
+                            if form::selectable(ui, here, egui::Button::new(text))
                                 .on_hover_text(port.device.as_str())
                                 .clicked()
                             {
@@ -1676,12 +1675,14 @@ impl App {
                         self.settings.drive.clone()
                     };
                     for (id, about) in &drives {
-                        let button = egui::Button::selectable(current == *id, id.as_str())
-                            .min_size(vec2(26.0, 24.0));
+                        let button = egui::Button::new(id.as_str()).min_size(vec2(26.0, 24.0));
                         let possible =
                             kind == Kind::Greaseweazle || adafruit::DRIVES.contains(&id.as_str());
                         if ui
-                            .add_enabled(possible, button)
+                            .add_enabled_ui(possible, |ui| {
+                                form::selectable(ui, current == *id, button)
+                            })
+                            .inner
                             .on_hover_text(about.as_str())
                             .on_disabled_hover_text(adafruit::OPTION)
                             .clicked()
@@ -2917,9 +2918,10 @@ impl App {
                     true => ui.visuals().selection.stroke.color,
                     false => ui.visuals().strong_text_color(),
                 };
-                let chosen = egui::Button::selectable(selected, RichText::new(name).color(colour));
+                let chosen = egui::Button::new(RichText::new(name).color(colour));
                 let chosen = ui
-                    .add_enabled(why.is_none(), chosen)
+                    .add_enabled_ui(why.is_none(), |ui| form::selectable(ui, selected, chosen))
+                    .inner
                     .on_disabled_hover_text(why.unwrap_or_default());
                 if chosen.clicked() {
                     *analysis = view;
@@ -2938,7 +2940,7 @@ impl App {
                             let over = size.holds().filter(|&n| span > n);
                             let why = over.map(|n| format!("{span} cylinders: it holds {n}."));
                             ui.add_enabled_ui(over.is_none(), |ui| {
-                                ui.selectable_value(media, size, name)
+                                form::selectable_value(ui, media, size, name)
                             })
                             .inner
                             .on_disabled_hover_text(why.unwrap_or_default());
@@ -3220,9 +3222,12 @@ impl App {
                     }
                     let classic = choice == theme::Choice::Classic;
                     let choice = if classic { self.classic } else { choice };
-                    let r = ui
-                        .selectable_label(self.settings.theme == choice, text)
-                        .on_hover_text(tip);
+                    let r = form::selectable(
+                        ui,
+                        self.settings.theme == choice,
+                        egui::Button::new(text),
+                    )
+                    .on_hover_text(tip);
                     if r.clicked() {
                         self.choose_theme(ui.ctx(), choice);
                     }
