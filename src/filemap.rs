@@ -169,11 +169,11 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     }
     // Where gw is in the image while it works, as the disk view rings it.
     let current = job.as_ref().and_then(|j| j.current(map.image.role));
-    if let Some((track, row)) = placed
+    let reported = placed
         .iter()
         .zip(&rows)
-        .find(|(t, _)| Some(t.key) == current)
-    {
+        .find(|(t, _)| Some(t.key) == current);
+    if let Some((track, row)) = reported {
         let line = drawn(*row, track, track.start, track.len, widest, ppp);
         let stroke = egui::Stroke::new(1.5, look.last);
         marks.rect_stroke(line, 0.0, stroke, egui::StrokeKind::Outside);
@@ -209,14 +209,20 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         }
     }
     window(ui.ctx(), map, &placed, digits);
-    // The legend where the disk view's is, under the rows' first column.
+    // The legend where the disk view's is, under the rows' first column; as
+    // wide as from there with a column for each side, however many more
+    // the room gives the rows: its height sets the rows' room, which sets
+    // how many columns there are, and they where the legend begins.
     let top = area.bottom();
+    let fewest = Grid::with(&plan, picture, ppp, plan.sides);
+    let wide = area.right() - fewest.origin.x;
+    let left = grid.origin.x.min(area.right() - wide);
     let drawn = ui.scope_builder(
         egui::UiBuilder::new().max_rect(Rect::from_min_max(
-            egui::pos2(grid.origin.x, top + 6.0),
-            egui::pos2(area.right(), top + 6.0 + ui.available_height().max(0.0)),
+            egui::pos2(left, top + 6.0),
+            egui::pos2(left + wide, top + 6.0 + ui.available_height().max(0.0)),
         )),
-        |ui| legend_rows(ui, map, &placed, current.is_some(), &look, p),
+        |ui| legend_rows(ui, map, &placed, reported.is_some(), &look, p),
     );
     let height = drawn.response.rect.bottom() - top;
     if (height - legend).abs() > 0.5 {
@@ -682,12 +688,12 @@ fn hex_digits(size: u64) -> usize {
 }
 
 /// The key to what the parts hold, with how many of each, and while gw
-/// works, the mark on the track it last reported.
+/// works, the mark on the track it last reported, where it is drawn.
 fn legend_rows(
     ui: &mut egui::Ui,
     map: &Map,
     placed: &[Placed],
-    current: bool,
+    reported: bool,
     look: &Look,
     p: &Palette,
 ) {
@@ -731,7 +737,7 @@ fn legend_rows(
                 });
             }
         }
-        if current {
+        if reported {
             surface::key(ui, Mark::Frame(look.last), "Last reported");
         }
         if placed.iter().any(|t| !t.kept) {
@@ -1052,6 +1058,64 @@ mod tests {
                 .collect();
         }
         (texts, busy.iter().rev().take(5).any(|&b| b))
+    }
+
+    #[test]
+    fn the_columns_and_the_legend_settle_whatever_the_room() {
+        // The legend's height sets the rows' room, which sets how many
+        // columns they run in, which set where the legend begins. Wrapped
+        // in what was left across from there, the legend took another line
+        // with each column fewer and gave it back with one more: in these
+        // rooms, each frame. Single-sided files, as a D64 is.
+        let rooms = [
+            (40, 1, 30, 800.0, 160.0, 200.0),
+            (40, 1, 30, 600.0, 330.0, 204.0),
+            (40, 1, 30, 700.0, 100.0, 124.0),
+            (35, 1, 30, 550.0, 120.0, 112.0),
+            (35, 1, 30, 650.0, 160.0, 180.0),
+            (160, 2, 40, 900.0, 330.0, 300.0),
+            (160, 2, 40, 700.0, 150.0, 200.0),
+        ];
+        for (tracks, sides, least, width, diameter, height) in rooms {
+            let image = made(tracks, sides, least);
+            let progress = reading(&image, (5, 0));
+            let map = Map {
+                progress: Some(&progress),
+                image: &image,
+                running: true,
+                converts: false,
+            };
+            let disks = Place {
+                sides,
+                diameter,
+                width: sides as f32 * diameter + 32.0 * (sides as f32 - 1.0),
+            };
+            let size = vec2(width, height);
+            let (_, busy) = view(&map, size, Some(disks), 30);
+            assert!(
+                !busy,
+                "{tracks} tracks in {size:?}, disks {diameter} across"
+            );
+        }
+    }
+
+    #[test]
+    fn the_legend_names_the_mark_on_the_track_gw_last_reported_only_where_it_is_drawn() {
+        let image = made(160, 2, 40);
+        let size = vec2(900.0, 400.0);
+        for (current, named) in [((21, 0), true), ((90, 0), false)] {
+            let progress = reading(&image, current);
+            let map = Map {
+                progress: Some(&progress),
+                image: &image,
+                running: true,
+                converts: false,
+            };
+            let (texts, _) = view(&map, size, None, 3);
+            let named_it = texts.iter().any(|(t, _)| t == "Last reported");
+            assert_eq!(named_it, named, "{texts:?}");
+            assert!(texts.iter().any(|(t, _)| t.starts_with("Faint: ")));
+        }
     }
 
     #[test]
