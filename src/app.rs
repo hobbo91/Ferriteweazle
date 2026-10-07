@@ -2916,9 +2916,7 @@ impl App {
                         }
                     });
                 ui.add_space(8.0);
-                for (view, name, _) in SHOWS.into_iter().rev() {
-                    ui.selectable_value(shows, view, name);
-                }
+                surface::choose_shows(ui, shows, progress, disk);
             });
         });
         let args = job.map_or(&[][..], |j| &j.args[..]);

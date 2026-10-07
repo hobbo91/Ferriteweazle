@@ -5,7 +5,7 @@
 use crate::diskmap;
 use crate::form;
 use crate::lines::Lines;
-use crate::progress::Progress;
+use crate::progress::{Progress, Status};
 use crate::theme::{self, Palette};
 use crate::track::{Data, Facts, Header, Id, Sector, Source, Spin};
 use eframe::egui::{
@@ -171,8 +171,49 @@ pub struct Map<'a> {
 
 /// The cylinders the disk view spans for `progress` on a disk of `disk`'s.
 pub fn span(progress: &Progress, disk: (u32, u32)) -> u32 {
-    let (cyls, _) = progress.layout();
-    disk.0.max(cyls.last().map_or(0, |c| c + 1))
+    let cyls = progress
+        .cyls
+        .iter()
+        .chain(progress.tracks.keys().map(|(c, _)| c));
+    disk.0.max(cyls.max().map_or(0, |c| c + 1))
+}
+
+/// The sides it shows, one or two.
+fn sides(progress: &Progress, disk: (u32, u32)) -> u32 {
+    let heads = progress
+        .heads
+        .iter()
+        .chain(progress.tracks.keys().map(|(_, h)| h));
+    disk.1.max(heads.max().map_or(0, |h| h + 1)).clamp(1, 2)
+}
+
+/// Whether any track the disk view spans, `span` cylinders on `sides`
+/// sides, has flux reported.
+fn fluxed(progress: &Progress, span: u32, sides: u32) -> bool {
+    progress
+        .facts
+        .iter()
+        .any(|(&(c, h), f)| c < span && h < sides && !f.absent && f.flux.is_some())
+}
+
+/// The choice of what the tracks show: Flux greyed with why where no track
+/// the disk view spans has flux, and their sectors shown.
+pub fn choose_shows(ui: &mut egui::Ui, shows: &mut Shows, progress: &Progress, disk: (u32, u32)) {
+    let fluxed = fluxed(progress, span(progress, disk), sides(progress, disk));
+    let showing = match *shows {
+        Shows::Flux if fluxed => Shows::Flux,
+        _ => Shows::Sectors,
+    };
+    for (view, name, _) in SHOWS.into_iter().rev() {
+        let why = (view == Shows::Flux && !fluxed).then_some("No flux reported.");
+        let button = egui::Button::selectable(showing == view, name);
+        let chosen = ui
+            .add_enabled(why.is_none(), button)
+            .on_disabled_hover_text(why.unwrap_or_default());
+        if chosen.clicked() {
+            *shows = view;
+        }
+    }
 }
 
 /// Room for a side's name above its disk.
@@ -215,10 +256,15 @@ pub(crate) struct Look {
     pub(crate) body: Color32,
     pub(crate) hub: Color32,
     pub(crate) rim: Color32,
-    /// Where no sector was found on a track gw read.
+    /// Where no sector was found on a track gw decoded from flux.
     pub(crate) gap: Color32,
-    /// A track gw is to work on and has not reported.
+    /// A track gw is to work on and has not reported: in the image view, and
+    /// on the disk, a shade off its surface toward the text's colour.
     pub(crate) pending: Color32,
+    to_do: Color32,
+    /// A track of which what the view shows was not reported: where its
+    /// sectors lie, or its flux. Further toward the text's colour, no hue.
+    unknown: Color32,
     pub(crate) good: Color32,
     pub(crate) empty: Color32,
     pub(crate) bad: Color32,
@@ -243,6 +289,8 @@ impl Look {
             rim: p.line_strong,
             gap: theme::lerp(body, p.flux, 0.25),
             pending: p.pending,
+            to_do: theme::lerp(body, p.text, 0.12),
+            unknown: theme::lerp(body, p.text, 0.35),
             good: theme::lerp(p.good, body, 0.15),
             empty: theme::lerp(p.good, body, 0.55),
             bad: p.bad,
@@ -302,13 +350,8 @@ struct Fit {
 impl Fit {
     fn of(ui: &egui::Ui, map: &Map) -> Option<Fit> {
         let progress = map.progress;
-        let (_, heads) = progress.layout();
         let span = span(progress, map.disk);
-        let sides = map
-            .disk
-            .1
-            .max(heads.last().map_or(0, |h| h + 1))
-            .clamp(1, 2);
+        let sides = sides(progress, map.disk);
         if span == 0 {
             return None;
         }
@@ -422,8 +465,9 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
         );
     }
     let fits = map.media.holds().is_none_or(|n| span <= n);
+    let drawn = Drawn::of(map, span, sides, fits, p);
     for d in &disks {
-        d.draw(ui, &painter, map, &look, fits);
+        d.draw(ui, &painter, map, &look, &drawn, fits);
     }
     let pointer = response.hover_pos();
     let hovered = pointer.and_then(|at| {
@@ -440,7 +484,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
         let sector = at.zip(found).map(|(i, f)| &f.sectors[i]);
         let faint = Stroke::new(1.0, look.ink.gamma_multiply(0.45));
         d.outline(&painter, cyl, faint);
-        if let Some((start, end)) = sector.and_then(|s| drawn(s, least)) {
+        if let Some((start, end)) = sector.and_then(|s| extent(s, least)) {
             let stroke = Stroke::new(1.5, look.ink);
             d.outline_arc(&painter, cyl, start, end, stroke);
         }
@@ -459,7 +503,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
     if let Some(d) = over_title {
         response
             .clone()
-            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head));
+            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head, span));
     }
     inspector(ui.ctx(), map);
     let top = ui.cursor().top();
@@ -473,7 +517,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
                 let text = format!("{span} cylinders: a {} disk holds {n}.", map.media.name());
                 ui.label(RichText::new(text).color(p.bad));
             }
-            None => legend_rows(ui, map, &look),
+            None => legend_rows(ui, map, &look, &drawn),
         }
     });
     let height = drawn.response.rect.bottom() - top;
@@ -611,30 +655,28 @@ impl Disk {
     /// Draws the disk: its picture, painted again where what it shows has
     /// changed, the index's mark at the top, and round the last track gw
     /// reported, a ring.
-    fn draw(&self, ui: &egui::Ui, painter: &egui::Painter, map: &Map, look: &Look, fits: bool) {
+    fn draw(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        map: &Map,
+        look: &Look,
+        drawn: &Drawn,
+        fits: bool,
+    ) {
         let p = theme::palette(ui);
         let key = Key {
             media: map.media,
-            shows: map.shows,
+            shows: drawn.shows,
             span: self.span,
             side: self.side,
             head: self.head,
             geometry: self.geometry,
-            palette: [
-                p.card,
-                p.line,
-                p.line_strong,
-                p.good,
-                p.partial,
-                p.bad,
-                p.flux,
-                p.written,
-                p.erased,
-                p.pending,
-            ],
+            palette: p,
             fits,
+            pure: drawn.pure,
         };
-        let stamps = stamps(map.progress, self.side, self.span);
+        let stamps = stamps(map.progress, self.side, self.span, p);
         let id = egui::Id::new(("disk picture", self.head));
         let picture = ui.data_mut(|d| d.get_temp_mut_or_default::<Shared>(id).clone());
         let mut picture = picture.lock().expect("one painter at a time");
@@ -654,7 +696,7 @@ impl Disk {
             let mut rows = std::mem::take(&mut picture.rows);
             rows.resize_with(self.span as usize, Row::default);
             for &cyl in &changed {
-                rows[cyl] = row(map, (cyl as u32, self.side), look, p, fits);
+                rows[cyl] = row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
             }
             let ppp = ui.ctx().pixels_per_point();
             let canvas = Canvas::new(self, look, &rows, ppp);
@@ -747,38 +789,95 @@ impl Disk {
     }
 }
 
-/// What a track shows round it. In the Sectors view, each sector where it
+/// What a track's ring shows, as the legend names it.
+#[derive(Clone, Copy)]
+enum Ring<'a> {
+    /// Nothing: the bare disk. gw's image holds no such track, or gw passed
+    /// over it, or the job has nothing to do with it.
+    Bare,
+    /// gw is to work on it and has not reported it.
+    ToDo,
+    /// What the view shows of it was not reported: where its sectors lie, or
+    /// its flux.
+    Unknown,
+    /// Each sector gw found, where it found it; where gw decoded flux and
+    /// found none, the gap's colour.
+    Sectors(&'a Facts),
+    /// Read as flux, not decoded.
+    Flux,
+    /// The flux round it, against the track's average.
+    Spin(&'a Spin),
+    /// Its colour on the grid, where no track drawn shows more than gw's
+    /// line: the grid's legend names it.
+    Status(Color32),
+}
+
+/// What track `key`'s ring shows: in the Sectors view, the sectors gw found
+/// where it found them, or that it read flux and decoded none of it; in the
+/// Flux view, its flux. With neither, its status as the grid shows it if no
+/// track drawn has more; else not known, or nothing if gw passed over it.
+/// Then, if gw is to work on it, to do; else nothing.
+fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palette) -> Ring<'a> {
+    let progress = map.progress;
+    let facts = progress.facts.get(&key);
+    let track = progress.tracks.get(&key);
+    if !fits || facts.is_some_and(|f| f.absent) {
+        return Ring::Bare;
+    }
+    if facts.is_none() && track.is_none() {
+        return match planned(progress, key) {
+            true => Ring::ToDo,
+            false => Ring::Bare,
+        };
+    }
+    if drawn.pure {
+        return match diskmap::fill(progress, key, p) {
+            Some(colour) => Ring::Status(colour),
+            None if planned(progress, key) => Ring::ToDo,
+            None => Ring::Bare,
+        };
+    }
+    let placed = facts.is_some_and(|f| f.sectors.iter().any(|s| s.at.is_some()));
+    match (drawn.shows, facts) {
+        (
+            Shows::Flux,
+            Some(Facts {
+                flux: Some(spin), ..
+            }),
+        ) => Ring::Spin(spin),
+        (Shows::Sectors, Some(f)) if placed || (f.summary.is_some() && f.sectors.is_empty()) => {
+            Ring::Sectors(f)
+        }
+        (Shows::Sectors, Some(f)) if f.summary.is_none() && f.flux.is_some() => Ring::Flux,
+        (_, None) if track.is_some_and(|t| t.status == Status::Skipped) => Ring::Bare,
+        _ => Ring::Unknown,
+    }
+}
+
+/// What a ring shows round it: in the Sectors view, each sector where it
 /// was found, its ID field shaded, where none was found the gap's colour,
-/// and a line where two meet; in the Flux view, its flux against the track's
-/// average. With no report, its status as gw printed it; else, if gw is to
-/// work on it, pending; else nothing.
-fn row(map: &Map, key: (u32, u32), look: &Look, p: &Palette, fits: bool) -> Row {
-    let body = rgb(look.body);
-    let mut row = Row::new(body);
-    let facts = map.progress.facts.get(&key).filter(|_| fits);
-    let spin = facts.and_then(|f| f.flux.as_ref());
-    let sectors = facts.map(|f| &f.sectors[..]).unwrap_or_default();
-    let placed = sectors.iter().any(|s| s.at.is_some());
-    match (map.shows, spin) {
-        (Shows::Flux, Some(spin)) => {
-            let relative = spin.relative();
-            row = Row::pieces(relative.iter().map(|&d| rgb(look.flux_at(d))));
+/// and a line where two meet; in the Flux view, its flux against the
+/// track's average; else one colour all round.
+fn row(ring: Ring, look: &Look) -> Row {
+    let mut row = match ring {
+        Ring::Bare => Row::new(rgb(look.body)),
+        Ring::ToDo => Row::new(rgb(look.to_do)),
+        Ring::Unknown => Row::new(rgb(look.unknown)),
+        Ring::Flux => Row::new(rgb(look.flux)),
+        Ring::Status(colour) => Row::new(rgb(colour)),
+        Ring::Spin(spin) => Row::pieces(spin.relative().iter().map(|&d| rgb(look.flux_at(d)))),
+        Ring::Sectors(f) => {
+            let background = match f.flux {
+                Some(_) => look.gap,
+                None => look.body,
+            };
+            let mut row = Row::new(rgb(background));
+            for s in &f.sectors {
+                row.sector(s, look);
+            }
+            row
         }
-        (Shows::Sectors, Some(_)) => row = Row::new(rgb(look.gap)),
-        _ => {}
-    }
-    if map.shows == Shows::Sectors && placed {
-        for s in sectors {
-            row.sector(s, look);
-        }
-    } else if spin.is_none() && !placed && fits {
-        match map.progress.tracks.get(&key) {
-            // All gw says of this track is its line.
-            Some(t) => row = Row::new(rgb(diskmap::status_colour(t.status, p))),
-            None if planned(map.progress, key) => row = Row::new(rgb(look.pending)),
-            None => {}
-        }
-    }
+    };
     row.finish();
     row
 }
@@ -788,8 +887,80 @@ fn planned(progress: &Progress, (cyl, head): (u32, u32)) -> bool {
     progress.cyls.contains(&cyl) && progress.heads.contains(&head)
 }
 
+/// What the disk view draws, as its legend counts it.
+#[derive(Debug, Default, PartialEq)]
+struct Drawn {
+    /// What the tracks show: their flux only where a track drawn has some.
+    shows: Shows,
+    /// No track drawn shows more than gw's line: see Ring::Status.
+    pure: bool,
+    /// The sectors drawn, by how they decoded: good, empty, bad, incomplete;
+    /// and of the incomplete, whether headers alone and data alone are drawn.
+    sectors: [usize; 4],
+    headers_alone: bool,
+    data_alone: bool,
+    /// ID fields; sectors that meet; and where gw decoded flux, places with
+    /// no sector.
+    id_fields: bool,
+    meet: bool,
+    gaps: bool,
+    /// Tracks read as flux and not decoded, not known, and to do.
+    flux: usize,
+    unknown: usize,
+    to_do: usize,
+    /// The sectors the formats lay out that gw did not find.
+    missing: usize,
+    /// Each track's colour on the grid, where it shows that.
+    statuses: Vec<Color32>,
+}
+
+impl Drawn {
+    /// What the disk view draws of `map`'s tracks: `span` cylinders on
+    /// `sides` sides, if the disk holds them.
+    fn of(map: &Map, span: u32, sides: u32, fits: bool, p: &Palette) -> Drawn {
+        let progress = map.progress;
+        let fluxed = fluxed(progress, span, sides);
+        let placed = progress
+            .facts
+            .iter()
+            .any(|(&(c, h), f)| c < span && h < sides && f.sectors.iter().any(|s| s.at.is_some()));
+        let shows = match map.shows {
+            Shows::Flux if fluxed => Shows::Flux,
+            _ => Shows::Sectors,
+        };
+        let mut drawn = Drawn {
+            shows,
+            pure: !fluxed && !placed,
+            ..Drawn::default()
+        };
+        for (cyl, side) in (0..span).flat_map(|c| (0..sides).map(move |s| (c, s))) {
+            match ring(map, (cyl, side), &drawn, fits, p) {
+                Ring::Sectors(f) => {
+                    for s in f.sectors.iter().filter(|s| s.at.is_some()) {
+                        let n = status(s);
+                        drawn.sectors[n] += 1;
+                        drawn.headers_alone |= n == 3 && s.header != Header::None;
+                        drawn.data_alone |= n == 3 && s.header == Header::None;
+                        drawn.id_fields |= s.header_end.is_some();
+                    }
+                    drawn.meet |= meet(&f.sectors);
+                    drawn.gaps |= f.flux.is_some();
+                }
+                Ring::Flux => drawn.flux += 1,
+                Ring::Unknown => drawn.unknown += 1,
+                Ring::ToDo => drawn.to_do += 1,
+                Ring::Status(colour) => drawn.statuses.push(colour),
+                Ring::Bare | Ring::Spin(_) => {}
+            }
+            let facts = progress.facts.get(&(cyl, side)).filter(|_| fits);
+            drawn.missing += facts.map_or(0, |f| f.missing.len());
+        }
+        drawn
+    }
+}
+
 /// What a disk's picture is of, beside its tracks.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 struct Key {
     media: Media,
     shows: Shows,
@@ -797,9 +968,11 @@ struct Key {
     side: u32,
     head: u32,
     geometry: Geometry,
-    /// The palette's colours the picture shows, which a theme changes.
-    palette: [Color32; 10],
+    /// The palette its colours are from, which a theme changes.
+    palette: &'static Palette,
     fits: bool,
+    /// See Drawn::pure.
+    pure: bool,
 }
 
 impl Key {
@@ -821,26 +994,29 @@ type Shared = Arc<Mutex<Picture>>;
 #[derive(Default)]
 struct Picture {
     key: Option<Key>,
-    stamps: Vec<u64>,
+    stamps: Vec<Stamp>,
     rows: Vec<Row>,
     image: egui::ColorImage,
     texture: Option<egui::TextureHandle>,
     at: f64,
 }
 
-/// A number for each of `side`'s tracks that changes as what is known of it
-/// does: its status and retries as gw printed them, the bridge's report, and
-/// whether gw is to work on it.
-fn stamps(progress: &Progress, side: u32, span: u32) -> Vec<u64> {
-    use std::hash::{Hash, Hasher};
+/// What is known of a track that its ring shows: its status as gw printed
+/// it, the bridge's report, whether gw is to work on it, and its colour on
+/// the grid.
+type Stamp = (Option<Status>, Option<u64>, bool, Option<Color32>);
+
+/// What is known of each of `side`'s tracks.
+fn stamps(progress: &Progress, side: u32, span: u32, p: &Palette) -> Vec<Stamp> {
     (0..span)
         .map(|cyl| {
             let key = (cyl, side);
-            let mut hash = std::collections::hash_map::DefaultHasher::new();
-            let track = progress.tracks.get(&key).map(|t| (t.status, t.retries));
-            let facts = progress.facts.get(&key).map(|f| f.revision);
-            (track, facts, planned(progress, key)).hash(&mut hash);
-            hash.finish()
+            (
+                progress.tracks.get(&key).map(|t| t.status),
+                progress.facts.get(&key).map(|f| f.revision),
+                planned(progress, key),
+                diskmap::fill(progress, key, p),
+            )
         })
         .collect()
 }
@@ -1187,10 +1363,15 @@ impl Origin {
 /// What is known of the hovered track and sector.
 fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least: f64) {
     let progress = map.progress;
-    let facts = progress.facts.get(&(cyl, side));
+    let reported = progress.facts.get(&(cyl, side));
+    let absent = reported.is_some_and(|f| f.absent);
+    let facts = reported.filter(|f| !f.absent);
     let track = progress.tracks.get(&(cyl, side));
     ui.strong(format!("Cylinder {cyl} · side {side}"));
     match (facts.and_then(|f| f.summary.as_deref()), track) {
+        _ if absent => {
+            ui.label("Not in the image");
+        }
         (Some(summary), _) => {
             ui.label(summary);
         }
@@ -1236,7 +1417,10 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
         ui.label(format!("Missing: {}", ids.join(", ")));
     }
     if unplaced > 0 {
-        ui.label(format!("{unplaced} sectors not placed"));
+        ui.label(match unplaced {
+            1 => "1 sector not placed".to_owned(),
+            n => format!("{n} sectors not placed"),
+        });
     }
     if let Some(spin) = &f.flux {
         ui.separator();
@@ -1291,24 +1475,34 @@ pub(crate) fn grouped(n: u64) -> String {
     out
 }
 
-/// A side's sums: the sectors found and those bad and missing, and the
-/// encodings gw decoded.
-fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32) {
+/// A side's sums: the sectors gw found by how they decoded, as the legend
+/// names them, those missing, and the encodings gw decoded; of the side's
+/// tracks the disk view spans, `span` cylinders.
+fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32, span: u32) {
     match side == head {
         true => ui.strong(format!("Side {side}")),
         false => ui.strong(format!("Side {side} · head {head}")),
     };
-    let facts = map.progress.facts.iter().filter(|((_, h), _)| *h == side);
-    let (mut found, mut bad, mut missing) = (0, 0, 0);
+    let (sums, encodings) = sums(map.progress, side, span);
+    if !sums.is_empty() {
+        ui.label(sums);
+    }
+    if !encodings.is_empty() {
+        ui.label(encodings.join(", "));
+    }
+}
+
+/// A side's sectors gw found by how they decoded and those missing, in a
+/// line, and the encodings gw decoded, over the `span` cylinders drawn.
+fn sums(progress: &Progress, side: u32, span: u32) -> (String, Vec<&str>) {
+    let facts = progress.facts.iter();
+    let facts = facts.filter(|((c, h), f)| *h == side && *c < span && !f.absent);
+    let (mut counts, mut missing) = ([0usize; 4], 0);
     let mut encodings: Vec<&str> = Vec::new();
     for (_, f) in facts {
         missing += f.missing.len();
-        for s in f.sectors.iter().filter(|s| s.data != Data::None) {
-            found += 1;
-            let good = (s.header, s.data);
-            if !matches!(good, (Header::Good, Data::Good | Data::Empty(_))) {
-                bad += 1;
-            }
+        for s in &f.sectors {
+            counts[status(s)] += 1;
         }
         let summary = f.summary.as_deref().unwrap_or_default();
         let encoding = summary.split(" (").next().unwrap_or_default();
@@ -1316,12 +1510,15 @@ fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32) {
             encodings.push(encoding);
         }
     }
-    if found > 0 || missing > 0 {
-        ui.label(format!("{found} sectors · {bad} bad · {missing} missing"));
+    let names = ["Good", "Empty", "Bad", "Incomplete"];
+    let mut sums: Vec<String> = (names.iter().zip(counts))
+        .filter(|&(_, n)| n > 0)
+        .map(|(name, n)| format!("{name} {n}"))
+        .collect();
+    if missing > 0 {
+        sums.push(format!("{missing} missing"));
     }
-    if !encodings.is_empty() {
-        ui.label(encodings.join(", "));
-    }
+    (sums.join(" · "), encodings)
 }
 
 /// The id under which the sector whose data is open is kept.
@@ -1548,7 +1745,7 @@ fn under(sectors: &[Sector], share: f64, least: f64) -> Option<usize> {
 }
 
 fn holds(s: &Sector, share: f64, least: f64) -> bool {
-    drawn(s, least).is_some_and(|(start, end)| {
+    extent(s, least).is_some_and(|(start, end)| {
         [share - 1.0, share, share + 1.0]
             .iter()
             .any(|x| (start..end).contains(x))
@@ -1557,7 +1754,7 @@ fn holds(s: &Sector, share: f64, least: f64) -> bool {
 
 /// Where a sector is drawn, in shares of a revolution: where it was found,
 /// or one shorter than `least`, that much about its middle.
-fn drawn(s: &Sector, least: f64) -> Option<(f64, f64)> {
+fn extent(s: &Sector, least: f64) -> Option<(f64, f64)> {
     let [start, _, end] = s.at?.map(f64::from);
     if end - start >= least {
         return Some((start, end));
@@ -1670,66 +1867,80 @@ fn sector_tip(ui: &mut egui::Ui, s: &Sector, preview: bool) {
     }
 }
 
-/// The key to what the disk shows: in the Sectors view, the sectors drawn
-/// by how they decoded, with how many, their ID fields, the lines where two
-/// meet and where none was found; in the Flux view, its shading. Then the index's
-/// mark, and the tracks to do and the last reported. With nothing decoded
-/// or read, the tracks by their status, as the grid's legend counts them.
-fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look) {
+/// The key to what the disk shows, `drawn`: in the Sectors view, the
+/// sectors drawn by how they decoded, with how many, their ID fields, the
+/// lines where two meet and where none was found, and the tracks read as
+/// flux and not decoded; in the Flux view, its shading. Where no track
+/// shows more than gw's line, each status as the grid's legend counts it.
+/// Then the tracks not known, the index's mark, the tracks to do and the
+/// last reported, and the sectors missing or the retries.
+fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look, drawn: &Drawn) {
+    let p = theme::palette(ui);
     let progress = map.progress;
-    let all = progress.facts.values().flat_map(|f| f.sectors.iter());
-    let mut counts = [0usize; 4];
-    for s in all.filter(|s| s.at.is_some()) {
-        counts[status(s)] += 1;
-    }
-    let missing: usize = progress.facts.values().map(|f| f.missing.len()).sum();
-    let fluxed = progress.facts.values().any(|f| f.flux.is_some());
-    if counts.iter().all(|&n| n == 0) && !fluxed {
-        diskmap::legend_for(ui, progress, map.verifying);
-        return;
-    }
     // Rows as tall as their text, not a field.
     ui.spacing_mut().interact_size.y = ui.text_style_height(&egui::TextStyle::Small).max(10.0);
     ui.horizontal_wrapped(|ui| {
-        match map.shows {
+        match drawn.shows {
+            Shows::Sectors if drawn.pure => {
+                let statuses = diskmap::entries(&drawn.statuses, progress, map.verifying, p);
+                for (colour, skipped, text, tip) in statuses {
+                    let mark = match skipped {
+                        true => Mark::Hole(look.seen(colour), p.line_strong),
+                        false => Mark::Swatch(look.seen(colour)),
+                    };
+                    key(ui, mark, &text).on_hover_text(tip);
+                }
+            }
             Shows::Sectors => {
-                for ((colour, name, tip), n) in [
-                    (look.good, "Good", ""),
-                    (look.empty, "Empty", "Every byte the same"),
-                    (look.bad, "Bad", "A CRC that fails"),
+                // An incomplete sector: a header alone, all ID field, or
+                // data alone; as the sectors drawn are.
+                let (header, data) = (look.seen(look.id(look.alone)), look.seen(look.alone));
+                let incomplete = match (drawn.headers_alone, drawn.data_alone) {
+                    (true, true) => Mark::Split(header, data),
+                    (true, false) => Mark::Swatch(header),
+                    _ => Mark::Swatch(data),
+                };
+                for ((mark, name, tip), n) in [
+                    (Mark::Swatch(look.seen(look.good)), "Good", ""),
                     (
-                        look.alone,
+                        Mark::Swatch(look.seen(look.empty)),
+                        "Empty",
+                        "Every byte the same",
+                    ),
+                    (Mark::Swatch(look.seen(look.bad)), "Bad", "A CRC that fails"),
+                    (
+                        incomplete,
                         "Incomplete",
                         "A header with no data, or data with no header",
                     ),
                 ]
                 .into_iter()
-                .zip(counts)
+                .zip(drawn.sectors)
                 {
                     if n > 0 {
-                        let swatch = Mark::Swatch(look.seen(colour));
-                        let entry = key(ui, swatch, &format!("{name} {n}"));
+                        let entry = key(ui, mark, &format!("{name} {n}"));
                         if !tip.is_empty() {
                             entry.on_hover_text(tip);
                         }
                     }
                 }
-                let placed = || {
-                    let all = progress.facts.values().flat_map(|f| f.sectors.iter());
-                    all.filter(|s| s.at.is_some())
-                };
-                if placed().any(|s| s.header_end.is_some()) {
+                if drawn.id_fields {
                     key(ui, Mark::Swatch(look.seen(look.id(look.good))), "ID field");
                 }
-                if progress.facts.values().any(|f| meet(&f.sectors)) {
+                if drawn.meet {
                     key(
                         ui,
                         Mark::Line(look.seen(look.good), look.body),
                         "Sectors meet",
                     );
                 }
-                if fluxed {
+                if drawn.gaps {
                     key(ui, Mark::Swatch(look.seen(look.gap)), "No sector found");
+                }
+                if drawn.flux > 0 {
+                    let text = format!("Flux {}", drawn.flux);
+                    key(ui, Mark::Swatch(look.seen(look.flux)), &text)
+                        .on_hover_text("Read as flux, not decoded");
                 }
             }
             Shows::Flux => {
@@ -1739,25 +1950,28 @@ fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look) {
                     .on_hover_text("Against the track's average");
             }
         }
+        if drawn.unknown > 0 {
+            let tip = match drawn.shows {
+                Shows::Sectors => "No sector places reported",
+                Shows::Flux => "No flux reported",
+            };
+            let text = format!("Not known {}", drawn.unknown);
+            key(ui, Mark::Swatch(look.seen(look.unknown)), &text).on_hover_text(tip);
+        }
         key(ui, Mark::Index(look.index), "Index");
-        let (cyls, heads) = (&progress.cyls, &progress.heads);
-        let to_do = cyls
-            .iter()
-            .flat_map(|&c| heads.iter().map(move |&h| (c, h)))
-            .filter(|k| !progress.tracks.contains_key(k) && !progress.facts.contains_key(k))
-            .count();
-        if to_do > 0 {
-            key(
-                ui,
-                Mark::Swatch(look.seen(look.pending)),
-                &format!("To do {to_do}"),
-            );
+        if drawn.to_do > 0 {
+            let text = format!("To do {}", drawn.to_do);
+            key(ui, Mark::Swatch(look.seen(look.to_do)), &text);
         }
         if map.current.is_some() {
             key(ui, Mark::Ring(look.last), "Last reported");
         }
-        if missing > 0 && map.shows == Shows::Sectors {
-            ui.label(RichText::new(format!("{missing} missing")).small().weak())
+        let retries = progress.tally().retries;
+        if drawn.pure && retries > 0 {
+            ui.label(RichText::new(diskmap::retry_text(retries)).small().weak());
+        } else if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
+            let text = format!("{} missing", drawn.missing);
+            ui.label(RichText::new(text).small().weak())
                 .on_hover_text("In the format, not found");
         }
     });
@@ -1815,6 +2029,10 @@ pub(crate) enum Mark {
     Shades([Color32; 5]),
     /// A line across a sector's colour, as where two sectors meet.
     Line(Color32, Color32),
+    /// A square of one colour, then another, as an ID field and data.
+    Split(Color32, Color32),
+    /// A square outlined, as a track gw passed over.
+    Hole(Color32, Color32),
     /// The index's notch.
     Index(Color32),
     /// A ring, as round the last track reported.
@@ -1856,6 +2074,21 @@ pub(crate) fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
                 let part = Rect::from_min_size(egui::pos2(x, square.top()), vec2(step, 10.0));
                 painter.rect_filled(part, 0.0, colour);
             }
+        }
+        Mark::Split(first, then) => {
+            let (left, right) = square.split_left_right_at_fraction(0.5);
+            let round = |west: u8, east: u8| egui::CornerRadius {
+                nw: west,
+                sw: west,
+                ne: east,
+                se: east,
+            };
+            painter.rect_filled(left, round(2, 0), first);
+            painter.rect_filled(right, round(0, 2), then);
+        }
+        Mark::Hole(fill, edge) => {
+            let edge = Stroke::new(1.0, edge);
+            painter.rect(square, 2.0, fill, edge, egui::StrokeKind::Inside);
         }
         Mark::Line(fill, colour) => {
             painter.rect_filled(square, 2.0, fill);
@@ -2233,6 +2466,152 @@ mod tests {
                 assert_eq!(at(centre - r - 1, centre), right, "left");
             }
         }
+    }
+
+    /// What each ring shows, by name.
+    fn kind(ring: Ring) -> &'static str {
+        match ring {
+            Ring::Bare => "bare",
+            Ring::ToDo => "to do",
+            Ring::Unknown => "not known",
+            Ring::Sectors(_) => "sectors",
+            Ring::Flux => "flux",
+            Ring::Spin(_) => "spin",
+            Ring::Status(_) => "status",
+        }
+    }
+
+    fn map_of(progress: &Progress, shows: Shows) -> Map<'_> {
+        Map {
+            progress,
+            image: false,
+            disk: (0, 0),
+            swapped: false,
+            verifying: false,
+            media: Media::Fit,
+            shows,
+            current: None,
+        }
+    }
+
+    /// The rings of `map`'s side 0, and what its legend counts.
+    fn rings(map: &Map) -> (Vec<&'static str>, Drawn) {
+        let span = span(map.progress, map.disk);
+        let drawn = Drawn::of(map, span, 1, true, &theme::DARK);
+        let rings = (0..span)
+            .map(|c| kind(ring(map, (c, 0), &drawn, true, &theme::DARK)))
+            .collect();
+        (rings, drawn)
+    }
+
+    #[test]
+    fn each_ring_shows_only_what_gw_reported_of_its_track() {
+        let flux = serde_json::json!({"freq": 1000, "index": [100, 100], "cued": true,
+            "period": 100, "end": 200, "bins": [1, 1, 1, 1]});
+        // AmigaDOS's sector 0, where gw found it or with no place.
+        let amiga = |placed: bool| {
+            let mut codec = serde_json::json!({"summary": "AmigaDOS (1/11 sectors)",
+                "nsec": 11, "good": [0], "data": {"0": "00ff"}});
+            if placed {
+                codec["places"] = serde_json::json!({"0": {"at": 10.0, "data": 12.0,
+                    "end": 20.0, "revs": [100.0, 100.0], "cued": true}});
+            }
+            codec
+        };
+        let none = serde_json::json!({"summary": "AmigaDOS (0/11 sectors)", "nsec": 11,
+            "good": []});
+        let mut progress = Progress::blank((0..8).collect(), vec![0]);
+        for (c, report) in [
+            (0, serde_json::json!({"flux": flux, "codec": amiga(true)})),
+            (1, serde_json::json!({"absent": true})),
+            (2, serde_json::json!({"flux": flux})),
+            (4, serde_json::json!({"flux": flux, "codec": amiga(false)})),
+            (7, serde_json::json!({"flux": flux, "codec": none})),
+        ] {
+            let mut report = report;
+            (report["c"], report["h"]) = (c.into(), 0.into());
+            progress.report(&report.to_string());
+        }
+        progress.feed("T3.0: AmigaDOS (10/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
+        progress.feed("T6.0: WARNING: Track is outside the format");
+        let (sectors, drawn) = rings(&map_of(&progress, Shows::Sectors));
+        assert_eq!(
+            sectors,
+            [
+                "sectors",
+                "bare",
+                "flux",
+                "not known",
+                "not known",
+                "to do",
+                "bare",
+                "sectors"
+            ]
+        );
+        assert_eq!(drawn.sectors, [1, 0, 0, 0]);
+        let counted = (drawn.flux, drawn.unknown, drawn.to_do, drawn.gaps);
+        assert_eq!(counted, (1, 2, 1, true), "not in the image: not to do");
+        let (flux, drawn) = rings(&map_of(&progress, Shows::Flux));
+        assert_eq!(drawn.shows, Shows::Flux);
+        assert_eq!(
+            flux,
+            [
+                "spin",
+                "bare",
+                "spin",
+                "not known",
+                "spin",
+                "to do",
+                "bare",
+                "spin"
+            ]
+        );
+        assert_eq!((drawn.unknown, drawn.to_do), (1, 1));
+        // With no flux, the sectors show.
+        let mut sectors_only = Progress::blank(vec![0], vec![0]);
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": amiga(true)});
+        sectors_only.report(&report.to_string());
+        let (shown, drawn) = rings(&map_of(&sectors_only, Shows::Flux));
+        assert_eq!((shown, drawn.shows), (vec!["sectors"], Shows::Sectors));
+        // gw's lines alone, or sectors with no place and no flux, as an
+        // image's are: each track as the grid has it.
+        let mut lines = Progress::blank((0..3).collect(), vec![0]);
+        lines.feed("T0.0: AmigaDOS (11/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
+        lines.feed("T1.0: AmigaDOS (5/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
+        let report = serde_json::json!({"c": 1, "h": 0, "codec": amiga(false)});
+        lines.report(&report.to_string());
+        let (shown, drawn) = rings(&map_of(&lines, Shows::Sectors));
+        assert_eq!(shown, ["status", "status", "to do"]);
+        assert!(drawn.pure);
+        let p = &theme::DARK;
+        assert_eq!(drawn.statuses, [p.good, p.partial]);
+    }
+
+    #[test]
+    fn a_sides_sums_count_each_sector_as_the_legend_does() {
+        // A data block found with no header, and a header with no data: two
+        // incomplete sectors, the format's two missing.
+        let data = Sector {
+            id: Id::None,
+            header: Header::None,
+            data: Data::Unread,
+            ..sector([0.2, 0.2, 0.24], None)
+        };
+        let header = Sector {
+            data: Data::None,
+            ..sector([0.5, 0.51, 0.51], None)
+        };
+        let mut progress = Progress::blank(vec![0], vec![0]);
+        let facts = Facts {
+            summary: Some("IBM MFM (0/2 sectors)".into()),
+            sectors: vec![data, header],
+            missing: vec![Id::Ibm([0, 0, 1, 2]), Id::Ibm([0, 0, 2, 2])],
+            ..Facts::default()
+        };
+        progress.facts.insert((0, 0), facts);
+        let (line, encodings) = sums(&progress, 0, 1);
+        assert_eq!(line, "Incomplete 2 · 2 missing");
+        assert_eq!(encodings, ["IBM MFM"]);
     }
 
     #[test]

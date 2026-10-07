@@ -98,6 +98,7 @@ pub fn solid_bars(ui: &mut egui::Ui, p: &Palette) {
     w.active.bg_fill = p.strong;
 }
 
+#[derive(PartialEq)]
 pub struct Palette {
     pub bg: Color32,
     pub sidebar: Color32,

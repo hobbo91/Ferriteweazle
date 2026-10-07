@@ -4007,6 +4007,68 @@ fn analyse_shows_the_disk_under_the_page_and_the_status_pane_leaves_out_its_grid
     assert!(squares(&w).count() > 0, "the grid is back");
 }
 
+/// A conversion of cylinders 0 and 1 from an image, with the bridge's
+/// reports on the tracks gw took from it, `reports`.
+fn converted_from(reports: &[serde_json::Value]) -> Job {
+    let mut job = Job::replay("convert", "Converting c=0-1:h=0-1 -> c=0-1:h=0-1");
+    for report in reports {
+        job.progress.report(&report.to_string());
+    }
+    job
+}
+
+/// An IBM-style track of an image, as the bridge reports it: two sectors
+/// laid out by the format's bit cells, no flux.
+fn ibm_image_track(c: u32) -> serde_json::Value {
+    let sector = |r: u8, start: u32| {
+        serde_json::json!({"id": [c, 0, r, 2], "start": start, "header_end": start + 100,
+            "data_start": start + 200, "end": start + 4400, "header": true, "data": true,
+            "mark": 251, "bytes": "00ff00ff"})
+    };
+    serde_json::json!({"c": c, "h": 0, "codec": {"summary": "IBM MFM (2/2 sectors)",
+        "nsec": 2, "good": [0, 1], "time_per_rev": 0.2, "clock": 2e-6,
+        "found": [sector(1, 100), sector(2, 50_000)]}})
+}
+
+#[test]
+fn analyse_greys_flux_with_why_where_no_track_has_any_and_shows_the_sectors() {
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        shows: Shows::Flux,
+        ..Settings::default()
+    };
+    let job = converted_from(&[ibm_image_track(0), ibm_image_track(1)]);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let flux = w.get_by_role_and_label(Role::Button, "Flux");
+    assert!(flux.accesskit_node().is_disabled());
+    flux.hover();
+    w.run();
+    w.get_by_label("No flux reported.");
+    // The sectors show, as the image lays them out.
+    w.get_by_label("Good 4");
+    assert_eq!(app(&w).settings.shows, Shows::Flux, "kept for flux");
+}
+
+#[test]
+fn analyse_draws_a_track_not_in_the_image_as_bare_disk_and_says_so() {
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let absent = serde_json::json!({"c": 1, "h": 0, "absent": true});
+    let job = converted_from(&[ibm_image_track(0), absent]);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // Track 1's centreline, a track in from track 0's, by ECMA-125.
+    w.hover_at(on_disk(&w, (39.5 - 0.1875) / 42.9, 90.0));
+    w.run();
+    w.get_by_label("Cylinder 1 · side 0");
+    w.get_by_label("Not in the image");
+    assert!(w.query_by_label_contains("To do").is_none());
+}
+
 #[test]
 fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged() {
     // Taller than two disks side by side need.

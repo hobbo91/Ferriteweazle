@@ -350,7 +350,7 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
 
 /// A track's colour, by its sectors once gw has mapped them; `None` until gw
 /// reports the track.
-fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
+pub(crate) fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
     let Some(sectors) = progress.sector_map.get(&key) else {
         return progress
             .tracks
@@ -408,63 +408,15 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
     }
 }
 
-/// The legend of the tracks `progress` takes, as the map would show them.
-pub(crate) fn legend_for(ui: &mut egui::Ui, progress: &Progress, verifying: bool) {
-    let p = theme::palette(ui);
-    let (cyls, heads) = progress.layout();
-    let shown: Vec<Color32> = cyls
-        .iter()
-        .flat_map(|&c| heads.iter().map(move |&h| (c, h)))
-        .filter_map(|key| fill(progress, key, p))
-        .collect();
-    legend(ui, &shown, progress, verifying, p);
-}
-
 /// Each colour on the map with its track count, then the retries. `verifying`: a
 /// write gw verifies is running, so its one written track is the one gw checks.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
-    let written = match verifying {
-        true => "The track Greaseweazle Tools is writing and checking.",
-        false => progress
-            .unverified
-            .as_deref()
-            .unwrap_or("Written, no verify reported."),
-    };
     ui.horizontal_wrapped(|ui| {
-        for (status, name, tip) in [
-            (
-                Status::Good,
-                "Good",
-                "Every sector found, or written and verified.",
-            ),
-            (Status::Partial, "Short", "Some sectors missing."),
-            (Status::Bad, "Bad", "No sectors found, or the write failed."),
-            (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (
-                Status::Written,
-                if verifying { "Verifying" } else { "Written" },
-                written,
-            ),
-            (Status::Erased, "Erased", "Erased."),
-            (
-                Status::Skipped,
-                "Skipped",
-                "Outside the format, or not in the input.",
-            ),
-        ] {
-            let swatch = status_colour(status, p);
-            let tracks = shown.iter().filter(|&&c| c == swatch).count();
-            if tracks == 0 {
-                continue;
-            }
+        for (swatch, skipped, text, tip) in entries(shown, progress, verifying, p) {
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            let edge = edge(status == Status::Skipped, p);
+            let edge = edge(skipped, p);
             ui.painter()
                 .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
-            let text = match status == Status::Written && verifying {
-                true => name.to_owned(),
-                false => format!("{name} {tracks}"),
-            };
             ui.label(RichText::new(text).small()).on_hover_text(tip);
             ui.add_space(6.0);
         }
@@ -473,6 +425,58 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
             ui.label(RichText::new(retry_text(retries)).small().weak());
         }
     });
+}
+
+/// The legend's entries for tracks shown in `shown` colours, as the map
+/// shows them: each status's colour, whether it is a skipped track's, its
+/// name and count, and what it means.
+pub(crate) fn entries<'a>(
+    shown: &[Color32],
+    progress: &'a Progress,
+    verifying: bool,
+    p: &Palette,
+) -> Vec<(Color32, bool, String, &'a str)> {
+    let written = match verifying {
+        true => "The track Greaseweazle Tools is writing and checking.",
+        false => progress
+            .unverified
+            .as_deref()
+            .unwrap_or("Written, no verify reported."),
+    };
+    [
+        (
+            Status::Good,
+            "Good",
+            "Every sector found, or written and verified.",
+        ),
+        (Status::Partial, "Short", "Some sectors missing."),
+        (Status::Bad, "Bad", "No sectors found, or the write failed."),
+        (Status::Flux, "Flux", "Read as flux, not decoded."),
+        (
+            Status::Written,
+            if verifying { "Verifying" } else { "Written" },
+            written,
+        ),
+        (Status::Erased, "Erased", "Erased."),
+        (
+            Status::Skipped,
+            "Skipped",
+            "Outside the format, or not in the input.",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(status, name, tip)| {
+        let swatch = status_colour(status, p);
+        let tracks = shown.iter().filter(|&&c| c == swatch).count();
+        (tracks > 0).then(|| {
+            let text = match status == Status::Written && verifying {
+                true => name.to_owned(),
+                false => format!("{name} {tracks}"),
+            };
+            (swatch, status == Status::Skipped, text, tip)
+        })
+    })
+    .collect()
 }
 
 /// Where gw read or wrote the track, from gw's `Drive 10.1` or `Image 10.1`:
