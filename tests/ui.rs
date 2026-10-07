@@ -2384,6 +2384,32 @@ fn a_detect_that_finds_no_format_shows_the_flux_it_read_whatever_the_pages_forma
     w.get_by_label("Disk map");
     let facts = &app(&w).disk.as_ref().unwrap().progress.facts;
     assert!(facts.len() == 3 && facts.values().all(|f| f.flux.is_some()));
+    // Counted as tracks, where the legend's other counts are of sectors.
+    w.get_by_label("Flux 3 tracks");
+}
+
+#[test]
+fn the_disks_legend_counts_tracks_to_do_as_tracks() {
+    let reached = WORKBENCH
+        .split_inclusive('\n')
+        .take_while(|l| !l.starts_with("T41.1"))
+        .collect::<String>();
+    let mut running = Job::replay("read", &reached);
+    running.ended = None;
+    running.progress.current = Some((41, 0));
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = start(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(running),
+    );
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label_contains("Good ");
+    w.get_by_label("To do 77 tracks");
 }
 
 #[test]

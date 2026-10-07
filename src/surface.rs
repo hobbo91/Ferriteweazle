@@ -2427,11 +2427,14 @@ impl Legend {
         match drawn.shows {
             Shows::Sectors if drawn.pure => {
                 let statuses = diskmap::entries(&drawn.statuses, progress, map.verifying, p);
-                for (colour, skipped, text, tip) in statuses {
+                for (colour, skipped, name, tracks, tip) in statuses {
                     let mark = match skipped {
                         true => Mark::Hole(look.seen(colour), p.line_strong),
                         false => Mark::Swatch(look.seen(colour)),
                     };
+                    let text = tracks.map_or(name.to_owned(), |n| {
+                        format!("{name} {}", diskmap::tracks(n))
+                    });
                     entries.push(entry(Some(mark), text, Some(tip)));
                 }
             }
@@ -2484,7 +2487,8 @@ impl Legend {
                 if drawn.flux > 0 {
                     let mark = Mark::Swatch(look.seen(look.flux));
                     let tip = Some("Read as flux, not decoded");
-                    entries.push(entry(Some(mark), format!("Flux {}", drawn.flux), tip));
+                    let text = format!("Flux {}", diskmap::tracks(drawn.flux));
+                    entries.push(entry(Some(mark), text, tip));
                 }
             }
             Shows::Flux => {
@@ -2505,14 +2509,15 @@ impl Legend {
             let mark = Mark::Swatch(look.seen(look.unknown));
             entries.push(entry(
                 Some(mark),
-                format!("Not known {}", drawn.unknown),
+                format!("Not known {}", diskmap::tracks(drawn.unknown)),
                 Some(tip),
             ));
         }
         entries.push(entry(Some(Mark::Index(look.index)), "Index".into(), None));
         if drawn.to_do > 0 {
             let mark = Mark::Swatch(look.seen(look.to_do));
-            entries.push(entry(Some(mark), format!("To do {}", drawn.to_do), None));
+            let text = format!("To do {}", diskmap::tracks(drawn.to_do));
+            entries.push(entry(Some(mark), text, None));
         }
         if map.current.is_some() {
             entries.push(entry(

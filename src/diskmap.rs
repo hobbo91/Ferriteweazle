@@ -419,11 +419,13 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
 /// write gw verifies is running, so its one written track is the one gw checks.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
     ui.horizontal_wrapped(|ui| {
-        for (swatch, skipped, text, tip) in entries(shown, progress, verifying, p) {
+        for (swatch, skipped, name, tracks, tip) in entries(shown, progress, verifying, p) {
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             let edge = edge(skipped, p);
             ui.painter()
                 .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
+            // The grid's squares are tracks: its counts need no word for them.
+            let text = tracks.map_or(name.to_owned(), |n| format!("{name} {n}"));
             ui.label(RichText::new(text).small()).on_hover_text(tip);
             ui.add_space(6.0);
         }
@@ -436,13 +438,13 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
 
 /// The legend's entries for tracks shown in `shown` colours, as the map
 /// shows them: each status's colour, whether it is a skipped track's, its
-/// name and count, and what it means.
+/// name, how many tracks show it where that is told, and what it means.
 pub(crate) fn entries<'a>(
     shown: &[Color32],
     progress: &'a Progress,
     verifying: bool,
     p: &Palette,
-) -> Vec<(Color32, bool, String, &'a str)> {
+) -> Vec<(Color32, bool, &'static str, Option<usize>, &'a str)> {
     let written = match verifying {
         true => "The track Greaseweazle Tools is writing and checking.",
         false => progress
@@ -476,14 +478,20 @@ pub(crate) fn entries<'a>(
         let swatch = status_colour(status, p);
         let tracks = shown.iter().filter(|&&c| c == swatch).count();
         (tracks > 0).then(|| {
-            let text = match status == Status::Written && verifying {
-                true => name.to_owned(),
-                false => format!("{name} {tracks}"),
-            };
-            (swatch, status == Status::Skipped, text, tip)
+            // The one track gw is writing and checking.
+            let count = (status != Status::Written || !verifying).then_some(tracks);
+            (swatch, status == Status::Skipped, name, count, tip)
         })
     })
     .collect()
+}
+
+/// `n` tracks, as a legend counts them where it also counts sectors.
+pub(crate) fn tracks(n: usize) -> String {
+    match n {
+        1 => "1 track".to_owned(),
+        n => format!("{n} tracks"),
+    }
 }
 
 /// Where gw read or wrote the track, from gw's `Drive 10.1` or `Image 10.1`:
