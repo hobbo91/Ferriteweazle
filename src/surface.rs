@@ -436,7 +436,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
         let key = (cyl, d.side);
         let found = progress.facts.get(&key);
         let least = d.line_at(pointer.unwrap_or_default());
-        let at = found.and_then(|f| f.sectors.iter().position(|s| holds(s, share, least)));
+        let at = found.and_then(|f| under(&f.sectors, share, least));
         let sector = at.zip(found).map(|(i, f)| &f.sectors[i]);
         let faint = Stroke::new(1.0, look.ink.gamma_multiply(0.45));
         d.outline(&painter, cyl, faint);
@@ -1037,8 +1037,9 @@ impl Row {
     /// which may run on past 1, over the index, but no further round than
     /// `from`.
     fn lay(&mut self, from: f64, to: f64, colour: [f64; 3]) {
+        let length = (to - from).min(1.0);
         let from = from.rem_euclid(1.0);
-        let to = from + (to - from).min(1.0);
+        let to = from + length;
         let parts = [(from, to.min(1.0)), (0.0, (to - 1.0).max(0.0))];
         for (from, to) in parts.into_iter().filter(|(a, b)| b > a) {
             let a = self.split(from);
@@ -1219,7 +1220,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     let Some(f) = facts else {
         return;
     };
-    if let Some(s) = f.sectors.iter().find(|s| holds(s, share, least)) {
+    if let Some(s) = under(&f.sectors, share, least).map(|i| &f.sectors[i]) {
         ui.separator();
         sector_tip(ui, s, true);
         if s.bytes.len() > 64 {
@@ -1524,6 +1525,26 @@ fn dump(bytes: &[u8], rows: usize, base: usize) -> String {
         )
     });
     lines.collect::<Vec<_>>().join("\n")
+}
+
+/// The sector drawn at `share` of a revolution, as the track is painted with
+/// lines `least` long: those shorter than a line lie over the rest, a line
+/// long, the longest of them on top; under them, the last of the sectors
+/// laid there.
+fn under(sectors: &[Sector], share: f64, least: f64) -> Option<usize> {
+    let length = |s: &Sector| {
+        s.at.map_or(f64::INFINITY, |[a, _, b]| f64::from(b) - f64::from(a))
+    };
+    let mut short: Vec<usize> = (0..sectors.len())
+        .filter(|&i| length(&sectors[i]) < least)
+        .collect();
+    short.sort_by(|&a, &b| length(&sectors[a]).total_cmp(&length(&sectors[b])));
+    let on = |&i: &usize| holds(&sectors[i], share, least);
+    short
+        .into_iter()
+        .rev()
+        .find(on)
+        .or_else(|| (0..sectors.len()).rev().find(on))
 }
 
 fn holds(s: &Sector, share: f64, least: f64) -> bool {
@@ -2101,6 +2122,58 @@ mod tests {
         // A sector a line long or more is found only where it lies.
         let whole = sector([0.25, 0.25, 0.5], None);
         assert!(holds(&whole, 0.25, w) && !holds(&whole, 0.25 - w / 4.0, w));
+    }
+
+    #[test]
+    fn a_sector_from_just_before_the_index_lies_only_from_it() {
+        // gw's start a hair before the index, taken into the next revolution
+        // in f32: 1.0, and on to 1.05.
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let (gap, good) = (rgb(look.gap), rgb(look.good));
+        let row = row_of(&[sector([1.0, 1.0, 1.05], None)]);
+        let w = 1.0 / 1024.0;
+        assert!(near(row.sample(0.025, w, w, [9.0; 3]), good));
+        assert!(
+            near(row.sample(0.5, w, w, [9.0; 3]), gap),
+            "not round the track"
+        );
+        assert!(holds(&sector([1.0, 1.0, 1.05], None), 0.025, w));
+    }
+
+    #[test]
+    fn the_pointer_names_the_sector_drawn_on_top() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let w = 1.0 / 1024.0;
+        // Across the seam between two revolutions, one runs on over the next.
+        let bad = Sector {
+            data: Data::Bad,
+            ..sector([0.299, 0.299, 0.5], None)
+        };
+        let sectors = [sector([0.1, 0.1, 0.3], None), bad];
+        let row = row_of(&sectors);
+        assert!(near(
+            row.sample(0.2995, w / 4.0, w, [9.0; 3]),
+            rgb(look.bad)
+        ));
+        assert_eq!(under(&sectors, 0.2995, w), Some(1));
+        assert_eq!(under(&sectors, 0.2, w), Some(0));
+        // Two too short to see: each a line long, the longer over the other.
+        let mark = |at: f64, long: f64, header, data| Sector {
+            header,
+            data,
+            ..sector([at as f32, at as f32, (at + long) as f32], None)
+        };
+        let marks = [
+            mark(0.5, w / 4.0, Header::None, Data::Unread),
+            mark(0.5 + w / 8.0, w / 8.0, Header::Good, Data::Bad),
+        ];
+        let row = row_of(&marks);
+        let middle = 0.5 + w / 8.0;
+        assert!(near(
+            row.sample(middle, w / 4.0, w, [9.0; 3]),
+            rgb(look.alone)
+        ));
+        assert_eq!(under(&marks, middle, w), Some(0));
     }
 
     #[test]
