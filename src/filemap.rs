@@ -115,10 +115,12 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         .max(ROW_LEAST);
     let (area, _) = ui.allocate_exact_size(vec2(room.x, TITLE + height), Sense::hover());
     let picture = Rect::from_min_max(egui::pos2(area.left(), area.top() + TITLE), area.max);
+    let widest = placed.iter().map(|t| t.len).max().unwrap_or(1).max(1);
     let plan = Plan {
         tracks: placed.len(),
         sides,
         parts: placed.iter().map(|t| t.parts.len()).max().unwrap_or(1),
+        units: units(&placed, widest),
         column: disks.map(|d| d.diameter),
         label,
     };
@@ -144,7 +146,6 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     // them may reach a little past it.
     let painter = ui.painter_at(area);
     let marks = ui.painter_at(area.expand(2.0));
-    let widest = placed.iter().map(|t| t.len).max().unwrap_or(1).max(1);
     // An offset's digits from the top of the row it names.
     let ink = offset_ink(ui, &font);
     for (grid, opacity) in &layers {
@@ -309,22 +310,35 @@ fn offset_ink(ui: &egui::Ui, font: &FontId) -> f32 {
 }
 
 /// What the rows are laid out for: how many tracks, the sides of the disk
-/// and its tracks' parts at most, the disks' diameter where they are drawn,
-/// and the width of a column's offsets with their gap.
+/// and its tracks' parts at most; how many units the widest track's bytes
+/// make, of the most bytes every part's length is a multiple of; the disks'
+/// diameter where they are drawn, and the width of a column's offsets with
+/// their gap.
 struct Plan {
     tracks: usize,
     sides: usize,
     parts: usize,
+    units: u64,
     column: Option<f32>,
     label: f32,
 }
 
+impl Plan {
+    /// A column's rows' width at least: as wide as its parts need.
+    fn least(&self, ppp: f32) -> f32 {
+        COLUMN_LEAST.max(self.parts as f32 * PART_LEAST / ppp)
+    }
+}
+
 /// The rows the file runs down, where the disks lie: in a column for each
-/// side of the disk, or more where rows would be thinner than ROW_LEAST;
+/// side of the disk, or more where rows would be thinner than ROW_LEAST,
+/// but no more than the room's width holds as wide as their parts need;
 /// each row a whole number of pixels tall, the rows centred in the room's
 /// height; each column as wide as a disk, or the room's width shared out
-/// where no disks are drawn, centred, each with its offsets before it.
-#[derive(Clone, Copy, PartialEq)]
+/// where no disks are drawn, centred, each with its offsets before it; and
+/// each a whole number of pixels for each unit of the widest track's
+/// bytes, so that parts alike are drawn alike.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Grid {
     rows: usize,
     columns: usize,
@@ -340,25 +354,35 @@ struct Grid {
 
 impl Grid {
     fn new(plan: &Plan, room: Rect, ppp: f32) -> Grid {
+        let fits = (room.height() / ROW_LEAST).floor().max(1.0) as usize;
+        Grid::with(plan, room, ppp, plan.tracks.max(1).div_ceil(fits))
+    }
+
+    /// The rows in `columns` columns, or one for each side if that is
+    /// more, or what the room's width holds if that is fewer.
+    fn with(plan: &Plan, room: Rect, ppp: f32, columns: usize) -> Grid {
         let tracks = plan.tracks.max(1);
-        let height = room.height();
-        let fits = (height / ROW_LEAST).floor().max(1.0) as usize;
-        let columns = tracks.div_ceil(fits).max(plan.sides).min(tracks);
+        let between = COLUMN_GAP + plan.label;
+        let least = plan.least(ppp);
+        let room_width = room.width() - plan.label;
+        let most = ((room_width + between) / (least + between))
+            .floor()
+            .max(1.0) as usize;
+        let columns = columns.max(plan.sides).min(tracks).min(most).max(1);
         let rows = tracks.div_ceil(columns);
+        let height = room.height();
         let row = ((height / rows as f32).min(ROW_MOST) * ppp)
             .floor()
             .max(1.0)
             / ppp;
         let n = columns as f32;
-        let between = COLUMN_GAP + plan.label;
-        let least = COLUMN_LEAST.max(plan.parts as f32 * PART_LEAST / ppp);
-        let room_width = room.width() - plan.label;
         let shared = (room_width - (n - 1.0) * between) / n;
         let wide = plan.column.unwrap_or(shared).max(least);
-        let width = (n * wide + (n - 1.0) * between).min(room_width);
-        let column = ((width - (n - 1.0) * between) / n).max(1.0);
+        let column = uniform(wide.min(shared).max(1.0), (least, shared), plan.units, ppp);
+        let width = n * column + (n - 1.0) * between;
         let left = (room.center().x - width / 2.0).max(room.left() + plan.label);
-        let spare = height - row * rows as f32;
+        // Rows that cannot be thinner run past the room's foot, not its top.
+        let spare = (height - row * rows as f32).max(0.0);
         let top = room.top() + (spare / 2.0 * ppp).floor() / ppp;
         Grid {
             rows,
@@ -376,6 +400,40 @@ impl Grid {
         let (column, row) = (i / self.rows, i % self.rows);
         let at = vec2(column as f32 * self.pitch, row as f32 * self.row);
         Rect::from_min_size(self.origin + at, vec2(self.column, self.row))
+    }
+}
+
+/// `width` on whole pixels, as many as a whole number for each of `units`
+/// where it has a pixel for each: then each part, as many units, is a
+/// whole number of pixels wide, and parts alike are alike. Fewer, unless
+/// that is narrower than `least` and more is no wider than `most`.
+fn uniform(width: f32, (least, most): (f32, f32), units: u64, ppp: f32) -> f32 {
+    let pixels = (width * ppp).floor().max(1.0);
+    let units = units.max(1) as f32;
+    if pixels < units {
+        return pixels / ppp;
+    }
+    let fewer = (pixels / units).floor() * units;
+    let more = fewer + units;
+    match fewer < (least * ppp).ceil() && more <= (most * ppp).floor() {
+        true => more / ppp,
+        false => fewer / ppp,
+    }
+}
+
+/// How many units the widest track's bytes, `widest`, make: of the most
+/// bytes every part's length is a multiple of.
+fn units(placed: &[Placed], widest: u64) -> u64 {
+    let gcd = |mut a: u64, mut b: u64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    let lens = placed.iter().flat_map(|t| &t.parts).map(|(p, _, _)| p.len);
+    match lens.fold(0, gcd) {
+        0 => 1,
+        unit => (widest / unit).max(1),
     }
 }
 
@@ -736,12 +794,13 @@ fn filler_text(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// 160 tracks of 11 parts on two sides, offsets 48 points wide.
+    /// 160 tracks of 11 parts alike on two sides, offsets 48 points wide.
     fn layout(column: Option<f32>) -> Plan {
         Plan {
             tracks: 160,
             sides: 2,
             parts: 11,
+            units: 11,
             column,
             label: 48.0,
         }
@@ -753,14 +812,15 @@ mod tests {
         let room = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 500.0));
         let grid = Grid::new(&layout(Some(300.0)), room, 2.0);
         assert_eq!((grid.columns, grid.rows, grid.row), (2, 80, 6.0));
-        // Each column a disk's width, the second's offsets between them,
+        // Each column a disk's width, to the pixel its 11 parts alike take
+        // whole: 54 of its 600 each. The second's offsets between them,
         // centred; the rows centred in the room's height.
         let between = COLUMN_GAP + 48.0;
-        let width = 600.0 + between;
-        assert_eq!(grid.column, 300.0);
+        assert_eq!(grid.column, 54.0 * 11.0 / 2.0);
+        let width = 2.0 * grid.column + between;
         assert_eq!(grid.origin, egui::pos2(500.0 - width / 2.0, 10.0));
         let second = grid.row(80);
-        assert_eq!(second.min.x, grid.origin.x + 300.0 + between);
+        assert_eq!(second.min.x, grid.origin.x + grid.column + between);
         assert_eq!(second.right(), 500.0 + width / 2.0);
     }
 
@@ -771,14 +831,17 @@ mod tests {
         let room = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 200.0));
         let grid = Grid::new(&layout(Some(150.0)), room, 2.0);
         assert_eq!((grid.columns, grid.rows, grid.row), (4, 40, 5.0));
-        assert_eq!(grid.column, 150.0);
-        // No narrower than its parts need, nor wider than the room.
+        assert_eq!(grid.column, 27.0 * 11.0 / 2.0);
+        // No narrower than its parts need, nor wider than the room: each
+        // still a whole number of pixels for each part.
         let between = COLUMN_GAP + 48.0;
         let narrow = Grid::new(&layout(Some(20.0)), room, 2.0);
-        assert_eq!(narrow.column, COLUMN_LEAST);
-        assert_eq!(narrow.pitch, COLUMN_LEAST + between);
+        assert_eq!(narrow.column, 12.0 * 11.0 / 2.0);
+        assert!(narrow.column >= COLUMN_LEAST);
+        assert_eq!(narrow.pitch, narrow.column + between);
         let wide = Grid::new(&layout(Some(400.0)), room, 2.0);
-        assert_eq!(wide.column, (1000.0 - 48.0 - 3.0 * between) / 4.0);
+        let shared = (1000.0 - 48.0 - 3.0 * between) / 4.0;
+        assert_eq!(wide.column, (shared * 2.0 / 11.0).floor() * 11.0 / 2.0);
         // Rows a whole number of pixels, and no taller than the most.
         let few = Plan {
             tracks: 10,
@@ -797,6 +860,76 @@ mod tests {
         assert_eq!(hex_digits(0x10001), 5);
         assert_eq!(hex_digits(901_120), 5);
         assert_eq!(hex_digits(1_638_400), 6);
+    }
+
+    #[test]
+    fn a_tiny_room_keeps_its_columns_within_it_and_each_as_wide_as_its_parts_need() {
+        // 20 points: rows 4 tall would want 32 columns.
+        let room = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 20.0));
+        for column in [None, Some(150.0)] {
+            let plan = layout(column);
+            let grid = Grid::new(&plan, room, 2.0);
+            let last = grid.row(plan.tracks - 1);
+            assert!(last.right() <= room.right(), "{grid:?}");
+            assert!(grid.column >= plan.least(2.0), "{grid:?}");
+            assert!(grid.row * 2.0 >= 1.0, "a pixel tall at least");
+            // Thinner rows run on past the room's foot.
+            assert_eq!(grid.origin.y, room.top());
+        }
+        // A room too narrow for one column of the least width has one.
+        let narrow = Rect::from_min_size(Pos2::ZERO, vec2(80.0, 400.0));
+        let grid = Grid::new(&layout(None), narrow, 2.0);
+        assert_eq!(grid.columns, 1);
+    }
+
+    /// A track of `parts` sectors of 512 bytes, from the file's start.
+    fn alike(parts: usize) -> Placed {
+        let part = |i: usize| Part {
+            index: i,
+            id: None,
+            len: 512,
+            filler: 0,
+        };
+        Placed {
+            key: (0, 0),
+            start: 0,
+            len: 512 * parts as u64,
+            parts: (0..parts)
+                .map(|i| (part(i), 512 * i as u64, State::Data))
+                .collect(),
+            kept: true,
+        }
+    }
+
+    #[test]
+    fn parts_alike_are_drawn_alike() {
+        // 18 parts in 660 pixels: 36 and 37 wide by turns, drawn as they fell.
+        let plan = Plan {
+            tracks: 160,
+            sides: 2,
+            parts: 18,
+            units: 18,
+            column: Some(330.0),
+            label: 48.0,
+        };
+        let room = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 500.0));
+        let grid = Grid::new(&plan, room, 2.0);
+        assert_eq!(grid.column, 36.0 * 18.0 / 2.0);
+        let track = alike(18);
+        for i in [0, 80] {
+            let row = grid.row(i);
+            let widths: Vec<f32> = track
+                .parts
+                .iter()
+                .map(|(p, at, _)| drawn(row, &track, *at, p.len, track.len, 2.0).width())
+                .collect();
+            assert!(widths.iter().all(|&w| w == widths[0]), "{widths:?}");
+        }
+        // Parts of two lengths, each a whole number of the lesser's pixels.
+        let mut mixed = alike(3);
+        mixed.parts[2].0.len = 1024;
+        mixed.len = 2048;
+        assert_eq!(units(std::slice::from_ref(&mixed), mixed.len), 4);
     }
 
     #[test]
