@@ -7,7 +7,9 @@ use crate::form;
 use crate::lines::Lines;
 use crate::progress::{Progress, Status};
 use crate::theme::{self, Palette};
-use crate::track::{Data, Facts, Header, Id, Sector, Source, Spin};
+use crate::track::{
+    Before, Data, Facts, Header, Id, Intervals, Layout, Sector, Seen, Source, Spin, Turns,
+};
 use eframe::egui::{
     self, Align2, Color32, FontId, Galley, Pos2, Rect, RichText, Sense, Shape, Stroke,
     emath::GuiRounding, plugin::TypedPluginHandle, vec2,
@@ -281,7 +283,12 @@ pub(crate) struct Look {
     unknown: Color32,
     pub(crate) good: Color32,
     pub(crate) empty: Color32,
+    /// Data its mark calls deleted, its CRC holding.
+    pub(crate) deleted: Color32,
+    /// A CRC that fails: of the data; of the header, a shade further toward
+    /// the ink.
     pub(crate) bad: Color32,
+    pub(crate) bad_header: Color32,
     /// A header with no data after it, or data with no header.
     pub(crate) alone: Color32,
     pub(crate) flux: Color32,
@@ -307,7 +314,9 @@ impl Look {
             unknown: theme::lerp(body, p.text, 0.35),
             good: theme::lerp(p.good, body, 0.15),
             empty: theme::lerp(p.good, body, 0.55),
+            deleted: theme::lerp(p.written, body, 0.15),
             bad: p.bad,
+            bad_header: theme::lerp(p.bad, p.strong, 0.45),
             alone: p.partial,
             flux: p.flux,
             last: p.accent,
@@ -325,7 +334,14 @@ impl Look {
 
     /// A sector's colour, by how it decoded: as the legend counts it.
     fn status(&self, s: &Sector) -> Color32 {
-        [self.good, self.empty, self.bad, self.alone][status(s)]
+        match Class::of(s) {
+            Class::Good => self.good,
+            Class::Empty => self.empty,
+            Class::Deleted => self.deleted,
+            Class::BadData => self.bad,
+            Class::BadHeader => self.bad_header,
+            Class::Incomplete => self.alone,
+        }
     }
 
     /// The ID field of a sector in `colour`: a shade further from the disk's.
@@ -981,9 +997,9 @@ struct Drawn {
     shows: Shows,
     /// No track drawn shows more than gw's line: see Ring::Status.
     pure: bool,
-    /// The sectors drawn, by how they decoded: good, empty, bad, incomplete;
-    /// and of the incomplete, whether headers alone and data alone are drawn.
-    sectors: [usize; 4],
+    /// The sectors drawn, by how they decoded, as Class lists them; and of
+    /// the incomplete, whether headers alone and data alone are drawn.
+    sectors: [usize; Class::ALL.len()],
     headers_alone: bool,
     data_alone: bool,
     /// ID fields; sectors that meet; and where gw decoded flux, places with
@@ -995,8 +1011,10 @@ struct Drawn {
     flux: usize,
     unknown: usize,
     to_do: usize,
-    /// The sectors the formats lay out that gw did not find.
+    /// The sectors the formats lay out that gw did not find, and those that
+    /// share their ID with another of their track's.
     missing: usize,
+    shared: usize,
     /// Each track's colour on the grid, where it shows that.
     statuses: Vec<Color32>,
 }
@@ -1066,10 +1084,11 @@ impl Drawn {
             match ring(map, (cyl, side), &drawn, fits, p) {
                 Ring::Sectors(f) => {
                     for s in f.sectors.iter().filter(|s| s.at.is_some()) {
-                        let n = status(s);
-                        drawn.sectors[n] += 1;
-                        drawn.headers_alone |= n == 3 && s.header != Header::None;
-                        drawn.data_alone |= n == 3 && s.header == Header::None;
+                        let class = Class::of(s);
+                        drawn.sectors[class as usize] += 1;
+                        let alone = class == Class::Incomplete;
+                        drawn.headers_alone |= alone && s.header != Header::None;
+                        drawn.data_alone |= alone && s.header == Header::None;
                         drawn.id_fields |= s.header_end.is_some();
                     }
                     drawn.meet |= meet(&f.sectors);
@@ -1083,6 +1102,12 @@ impl Drawn {
             }
             let facts = progress.facts.get(&(cyl, side)).filter(|_| fits);
             drawn.missing += facts.map_or(0, |f| f.missing.len());
+            drawn.shared += facts.map_or(0, |f| {
+                let sectors = &f.sectors;
+                let shares =
+                    |s: &Sector| sectors.iter().any(|t| !std::ptr::eq(s, t) && same_id(s, t));
+                sectors.iter().filter(|s| shares(s)).count()
+            });
         }
         drawn
     }
@@ -1902,19 +1927,37 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     if !notes.is_empty() {
         ui.weak(notes.join(" · "));
     }
+    // Where the pointer is: by the revolution the track is drawn by, in time.
+    let period = facts.and_then(|f| f.flux.as_ref()).map(|spin| spin.period);
+    ui.weak(match period {
+        Some(period) => format!(
+            "At {:.1}° · {:.2} ms from the index",
+            share * 360.0,
+            share * period * 1e3
+        ),
+        None => format!("At {:.1}° from the index", share * 360.0),
+    });
     let Some(f) = facts else {
         return;
     };
     if let Some(s) = under(&f.sectors, share, least).map(|i| &f.sectors[i]) {
         ui.separator();
-        sector_tip(ui, s);
+        sector_tip(ui, s, &f.sectors);
         if s.bytes.len() > 64 {
             ui.weak(format!("Click for all {} bytes", s.bytes.len()));
         }
     }
     let unplaced = f.sectors.iter().filter(|s| s.at.is_none()).count();
-    if !f.missing.is_empty() || unplaced > 0 {
+    let order = order(&f.sectors);
+    let repeated = repeated(&f.sectors);
+    if !f.missing.is_empty() || unplaced > 0 || order.is_some() || !repeated.is_empty() {
         ui.separator();
+    }
+    if let Some(order) = order {
+        ui.label(format!("Order: {order}"));
+    }
+    if !repeated.is_empty() {
+        ui.label(format!("ID repeated: {}", repeated.join(", ")));
     }
     if !f.missing.is_empty() {
         let ids: Vec<String> = f.missing.iter().map(short_id).collect();
@@ -1935,6 +1978,107 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
             ui.label(format!("Flux here: {here}% of the track's average"));
         }
         spin_tip(ui, f, spin, Origin::of(map.image, f.source));
+        if let Some(intervals) = &spin.intervals {
+            intervals_chart(ui, intervals);
+        }
+    }
+}
+
+/// The IDs of a track's sectors in turn round it from the index, each R,
+/// or number: of every sector with an ID, where all are placed and there
+/// are two or more.
+fn order(sectors: &[Sector]) -> Option<String> {
+    let named: Vec<&Sector> = sectors.iter().filter(|s| s.id != Id::None).collect();
+    if named.len() < 2 || named.iter().any(|s| s.at.is_none()) {
+        return None;
+    }
+    let ids: Vec<String> = named
+        .iter()
+        .map(|s| match s.id {
+            Id::Ibm([.., r, _]) => r.to_string(),
+            Id::Number(n) => n.to_string(),
+            Id::None => unreachable!(),
+        })
+        .collect();
+    Some(ids.join(" "))
+}
+
+/// Each ID two or more of a track's sectors carry, from headers whose CRC
+/// holds, and how many: as `R3 ×2`.
+fn repeated(sectors: &[Sector]) -> Vec<String> {
+    let mut seen: Vec<(Id, usize)> = Vec::new();
+    for s in sectors.iter().filter(|s| sure_id(s)) {
+        match seen.iter_mut().find(|(id, _)| *id == s.id) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((s.id, 1)),
+        }
+    }
+    seen.into_iter()
+        .filter(|&(_, n)| n > 1)
+        .map(|(id, n)| format!("{} ×{n}", short_id(&id)))
+        .collect()
+}
+
+/// How far apart the track's flux transitions are: a count of each bin's,
+/// from no time to the longest counted, and how many were longer.
+fn intervals_chart(ui: &mut egui::Ui, i: &Intervals) {
+    if i.counts.is_empty() && i.longer == 0 {
+        return;
+    }
+    let p = theme::palette(ui);
+    let width_us = i.width * 1e6;
+    let span = (i.first as usize + i.counts.len()) as f64 * width_us;
+    // Whole microseconds along the bottom, one or two apart.
+    let step = if span > 12.0 { 2.0 } else { 1.0 };
+    let end = ((span / step).ceil() * step).max(step);
+    let bin = match i.width < 1e-6 {
+        true => format!("{:.1} ns", i.width * 1e9),
+        false => format!("{} µs", (i.width * 1e9).round() / 1e3),
+    };
+    ui.label(format!("Flux intervals in µs, bins of {bin}"));
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let label = ui.text_style_height(&egui::TextStyle::Small);
+    let (rect, _) = ui.allocate_exact_size(vec2(240.0, 56.0 + label + 2.0), Sense::hover());
+    // Room either side for half a label, as each is centred on its tick.
+    let plot = Rect::from_min_max(
+        rect.min + vec2(6.0, 0.0),
+        egui::pos2(rect.right() - 8.0, rect.bottom() - label - 2.0),
+    );
+    let painter = ui.painter();
+    let most = f64::from(i.counts.iter().copied().max().unwrap_or(1).max(1));
+    let x = |us: f64| plot.left() + (us / end) as f32 * plot.width();
+    for (k, &n) in i.counts.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        // Over the values its bin holds, from its first tick to its last.
+        let from = (i.first as usize + k) as f64 * width_us;
+        let to = from + width_us - i.tick * 1e6;
+        let height = (f64::from(n) / most) as f32 * plot.height();
+        let bar = Rect::from_min_max(
+            egui::pos2(x(from), plot.bottom() - height.max(1.0)),
+            egui::pos2(x(to).max(x(from) + 1.0), plot.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, p.flux);
+    }
+    painter.hline(
+        plot.x_range(),
+        plot.bottom() + 0.5,
+        Stroke::new(1.0, p.line_strong),
+    );
+    let mut us = 0.0;
+    while us <= end + 1e-9 {
+        let at = egui::pos2(x(us), plot.bottom() + 2.0);
+        painter.text(at, Align2::CENTER_TOP, format!("{us}"), font.clone(), p.dim);
+        us += step;
+    }
+    if i.longer > 0 {
+        let top = i.top * 1e6;
+        let top = match (top - top.round()).abs() < 1e-6 {
+            true => format!("{}", top.round()),
+            false => format!("{top:.2}"),
+        };
+        ui.weak(format!("{} of {top} µs or longer", grouped(i.longer)));
     }
 }
 
@@ -2001,12 +2145,12 @@ fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32, span: u32) {
 fn sums(progress: &Progress, side: u32, span: u32) -> (String, Vec<&str>) {
     let facts = progress.facts.iter();
     let facts = facts.filter(|((c, h), f)| *h == side && *c < span && !f.absent);
-    let (mut counts, mut missing) = ([0usize; 4], 0);
+    let (mut counts, mut missing) = ([0usize; Class::ALL.len()], 0);
     let mut encodings: Vec<&str> = Vec::new();
     for (_, f) in facts {
         missing += f.missing.len();
         for s in &f.sectors {
-            counts[status(s)] += 1;
+            counts[Class::of(s) as usize] += 1;
         }
         let summary = f.summary.as_deref().unwrap_or_default();
         let encoding = summary.split(" (").next().unwrap_or_default();
@@ -2014,8 +2158,7 @@ fn sums(progress: &Progress, side: u32, span: u32) -> (String, Vec<&str>) {
             encodings.push(encoding);
         }
     }
-    let names = ["Good", "Empty", "Bad", "Incomplete"];
-    let mut sums: Vec<String> = (names.iter().zip(counts))
+    let mut sums: Vec<String> = (Class::ALL.map(Class::name).iter().zip(counts))
         .filter(|&(_, n)| n > 0)
         .map(|(name, n)| format!("{name} {n}"))
         .collect();
@@ -2055,7 +2198,7 @@ fn inspector(ctx: &egui::Context, map: &Map) {
     let id = egui::Id::new("disk sector window");
     let shown = Shown {
         title: &title,
-        lines: &sector_lines(s),
+        lines: &sector_lines(s, facts.map_or(&[][..], |f| &f.sectors)),
         bytes: &s.bytes,
         base: 0,
     };
@@ -2295,9 +2438,10 @@ pub(crate) enum Tone {
     Weak,
 }
 
-/// What is said of a sector, line by line: its ID and size, its checks and
-/// mark, its place, and notes.
-fn sector_lines(s: &Sector) -> Vec<(String, Tone)> {
+/// What is said of a sector of a track's `sectors`, line by line: its ID
+/// and size, its checks and mark, its place, in degrees and in bytes, how gw
+/// found it in each revolution, any other sector with its ID, and notes.
+fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
     let size = match s.id {
         _ if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
         // The data its header calls for, as gw's decoder reads it.
@@ -2331,20 +2475,37 @@ fn sector_lines(s: &Sector) -> Vec<(String, Tone)> {
         },
     ];
     if let Some(mark) = s.mark {
-        let deleted = matches!(mark, 0xf8 | 0xf9);
         checks.push(format!(
             "Mark {mark:02X}{}",
-            if deleted { " (deleted)" } else { "" }
+            if deleted(s) { " (deleted)" } else { "" }
         ));
     }
     lines.push((checks.join(" · "), Tone::Plain));
+    let deg = |x: f32| x * 360.0;
     if let Some([start, data, end]) = s.at {
-        let deg = |x: f32| x * 360.0;
         let mut place = format!("{:.1}°–{:.1}°", deg(start), deg(end));
-        if data > start {
+        // A header with no data after it has none to place.
+        if data > start && s.data != Data::None {
             place += &format!(" · data {:.1}°", deg(data));
+            if let Some(cells) = s.layout.and_then(|l| l.id_to_data) {
+                place += &format!(", {} after the ID", bytes(cells));
+            }
         }
         lines.push((place, Tone::Weak));
+    }
+    if let Some(layout) = &s.layout {
+        lines.push((layout_line(layout), Tone::Weak));
+    }
+    if let Some(turns) = s.turns.as_ref().and_then(turns_line) {
+        lines.push((turns, Tone::Plain));
+    }
+    let twins: Vec<String> = sectors
+        .iter()
+        .filter(|t| !std::ptr::eq(*t, s) && same_id(s, t))
+        .filter_map(|t| t.at.map(|[start, ..]| format!("{:.1}°", deg(start))))
+        .collect();
+    if !twins.is_empty() {
+        lines.push((format!("Its ID also at {}", twins.join(", ")), Tone::Plain));
     }
     let notes: Vec<&str> = [
         (s.extra, "Not in the format"),
@@ -2359,9 +2520,90 @@ fn sector_lines(s: &Sector) -> Vec<(String, Tone)> {
     lines
 }
 
-/// A sector: what is said of it, and its data's first rows.
-fn sector_tip(ui: &mut egui::Ui, s: &Sector) {
-    for (text, tone) in sector_lines(s) {
+/// Whether a sector's ID is one gw read from a header whose CRC holds.
+fn sure_id(s: &Sector) -> bool {
+    s.header == Header::Good && matches!(s.id, Id::Ibm(_))
+}
+
+/// Whether two sectors carry the same ID, each sure.
+fn same_id(a: &Sector, b: &Sector) -> bool {
+    sure_id(a) && sure_id(b) && a.id == b.id
+}
+
+/// Bit cells as bytes, 16 cells to a byte, as gw's FM and MFM decoders
+/// count them: whole bytes, and any cells over.
+fn bytes(cells: f64) -> String {
+    let cells = cells.round() as i64;
+    let (whole, over) = (cells.abs() / 16, cells.abs() % 16);
+    let unit = if whole == 1 { "byte" } else { "bytes" };
+    match over {
+        0 => format!("{} {unit}", grouped(whole as u64)),
+        _ => format!("{} {unit} {over} cells", grouped(whole as u64)),
+    }
+}
+
+/// Where a sector lies in bytes: from the index, and after what gw found
+/// before it.
+fn layout_line(l: &Layout) -> String {
+    let mut parts = vec![format!("{} from the index", bytes(l.from_index))];
+    if let Some((cells, before)) = l.after {
+        let what = match before {
+            Before::IndexMark => "the index mark".to_owned(),
+            Before::Sector(id, _) => short_id(&id),
+            Before::Header(id, _) => format!("{}'s header", short_id(&id)),
+        };
+        parts.push(match cells < 0.0 {
+            true => format!("into {what} by {}", bytes(-cells)),
+            false => format!("{} after {what}", bytes(cells)),
+        });
+    }
+    parts.join(" · ")
+}
+
+/// How gw found a sector in each revolution read: how often each way, the
+/// best first, as `Good in 2 of 3 revolutions · data bad in 1`.
+fn turns_line(t: &Turns) -> Option<String> {
+    let all = t.seen.len();
+    let ways = [
+        (Seen::Good, "good"),
+        (Seen::BadData, "data bad"),
+        (Seen::BadHeader, "header bad"),
+        (Seen::HeaderAlone, "no data"),
+        (Seen::DataAlone, "no header"),
+        (Seen::NotFound, "not found"),
+    ];
+    let mut parts = ways.iter().filter_map(|&(way, name)| {
+        let n = t.seen.iter().filter(|&&s| s == way).count();
+        (n > 0).then(|| format!("{name} in {n}"))
+    });
+    let first = parts.next()?;
+    let noun = if all == 1 {
+        "revolution"
+    } else {
+        "revolutions"
+    };
+    let reads = match t.reads {
+        1 => String::new(),
+        n => format!(" over {n} reads"),
+    };
+    // Each name starts with a lower-case ASCII letter.
+    let first = format!(
+        "{}{} of {all} {noun}{reads}",
+        first[..1].to_uppercase(),
+        &first[1..]
+    );
+    Some(
+        std::iter::once(first)
+            .chain(parts)
+            .collect::<Vec<_>>()
+            .join(" · "),
+    )
+}
+
+/// A sector of a track's `sectors`: what is said of it, and its data's
+/// first rows.
+fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector]) {
+    for (text, tone) in sector_lines(s, sectors) {
         match tone {
             Tone::Strong => ui.strong(text),
             Tone::Plain => ui.label(text),
@@ -2462,29 +2704,18 @@ impl Legend {
                     (true, false) => Mark::Swatch(header),
                     _ => Mark::Swatch(data),
                 };
-                for ((mark, name, tip), n) in [
-                    (Mark::Swatch(look.seen(look.good)), "Good", None),
-                    (
-                        Mark::Swatch(look.seen(look.empty)),
-                        "Empty",
-                        Some("Every byte the same"),
-                    ),
-                    (
-                        Mark::Swatch(look.seen(look.bad)),
-                        "Bad",
-                        Some("A CRC that fails"),
-                    ),
-                    (
-                        incomplete,
-                        "Incomplete",
-                        Some("A header with no data, or data with no header"),
-                    ),
-                ]
-                .into_iter()
-                .zip(drawn.sectors)
-                {
+                for (class, n) in Class::ALL.into_iter().zip(drawn.sectors) {
+                    let mark = match class {
+                        Class::Good => Mark::Swatch(look.seen(look.good)),
+                        Class::Empty => Mark::Swatch(look.seen(look.empty)),
+                        Class::Deleted => Mark::Swatch(look.seen(look.deleted)),
+                        Class::BadData => Mark::Swatch(look.seen(look.bad)),
+                        Class::BadHeader => Mark::Swatch(look.seen(look.bad_header)),
+                        Class::Incomplete => incomplete,
+                    };
                     if n > 0 {
-                        entries.push(entry(Some(mark), format!("{name} {n}"), tip));
+                        let text = format!("{} {n}", class.name());
+                        entries.push(entry(Some(mark), text, class.tip()));
                     }
                 }
                 if drawn.id_fields {
@@ -2547,6 +2778,10 @@ impl Legend {
         } else if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
             let tip = Some("In the format, not found");
             entries.push(entry(None, format!("{} missing", drawn.missing), tip));
+        }
+        if drawn.shared > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
+            let tip = Some("Sectors of one track with the same C, H, R and N");
+            entries.push(entry(None, format!("{} share an ID", drawn.shared), tip));
         }
         legend
     }
@@ -2669,15 +2904,72 @@ impl Legend {
     }
 }
 
-/// How a sector decoded, as the legend lists them: good, empty, bad, or
-/// incomplete.
-fn status(s: &Sector) -> usize {
-    match (s.header, s.data) {
-        (Header::None, _) | (_, Data::None) => 3,
-        (Header::Bad, _) | (_, Data::Bad) => 2,
-        (_, Data::Empty(_)) => 1,
-        (_, Data::Good | Data::Unread) => 0,
+/// How a sector decoded, as the legend lists them, in its order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    Good,
+    /// Good, every byte the same.
+    Empty,
+    /// Good, its mark calling its data deleted.
+    Deleted,
+    /// Its header's CRC holds, its data's fails.
+    BadData,
+    /// Its header's CRC fails: its ID is not known for sure.
+    BadHeader,
+    /// A header with no data, or data with no header.
+    Incomplete,
+}
+
+impl Class {
+    const ALL: [Class; 6] = [
+        Class::Good,
+        Class::Empty,
+        Class::Deleted,
+        Class::BadData,
+        Class::BadHeader,
+        Class::Incomplete,
+    ];
+
+    /// Its name in the legend and the side's sums.
+    fn name(self) -> &'static str {
+        match self {
+            Class::Good => "Good",
+            Class::Empty => "Empty",
+            Class::Deleted => "Deleted",
+            Class::BadData => "Bad data",
+            Class::BadHeader => "Bad header",
+            Class::Incomplete => "Incomplete",
+        }
     }
+
+    /// What its legend entry says on a hover.
+    fn tip(self) -> Option<&'static str> {
+        match self {
+            Class::Good => None,
+            Class::Empty => Some("Every byte the same"),
+            Class::Deleted => Some("Data mark F8, or F9 on a DEC RX02"),
+            Class::BadData => Some("The data's CRC fails"),
+            Class::BadHeader => Some("The header's CRC fails"),
+            Class::Incomplete => Some("A header with no data, or data with no header"),
+        }
+    }
+
+    fn of(s: &Sector) -> Class {
+        match (s.header, s.data) {
+            (Header::None, _) | (_, Data::None) => Class::Incomplete,
+            (Header::Bad, _) => Class::BadHeader,
+            (_, Data::Bad) => Class::BadData,
+            _ if deleted(s) => Class::Deleted,
+            (_, Data::Empty(_)) => Class::Empty,
+            (_, Data::Good | Data::Unread) => Class::Good,
+        }
+    }
+}
+
+/// Whether a sector's data mark calls its data deleted: gw's IBM deleted
+/// data mark, F8, or a DEC RX02's for double density, F9.
+fn deleted(s: &Sector) -> bool {
+    matches!(s.mark, Some(0xf8 | 0xf9))
 }
 
 /// Whether any two of `sectors` meet, one starting where another ends.
@@ -2964,6 +3256,8 @@ mod tests {
             bytes: Vec::new(),
             extra: false,
             before: false,
+            turns: None,
+            layout: None,
         }
     }
 
@@ -3239,6 +3533,7 @@ mod tests {
             revs: vec![0.2],
             per_rev: 4.0,
             bins: vec![1.0; 4],
+            intervals: None,
         };
         let amiga = |placed: bool, flux: bool| Facts {
             summary: Some("AmigaDOS (1/11 sectors)".into()),
@@ -3295,7 +3590,7 @@ mod tests {
                 "sectors"
             ]
         );
-        assert_eq!(drawn.sectors, [1, 0, 0, 0]);
+        assert_eq!(drawn.sectors, [1, 0, 0, 0, 0, 0]);
         let counted = (drawn.flux, drawn.unknown, drawn.to_do, drawn.gaps);
         assert_eq!(counted, (1, 2, 1, true), "not in the image: not to do");
         let (flux, drawn) = rings(&map_of(&progress, Shows::Flux));
@@ -3374,6 +3669,134 @@ mod tests {
         let (line, encodings) = sums(&progress, 0, 1);
         assert_eq!(line, "Incomplete 2 · 2 missing");
         assert_eq!(encodings, ["IBM MFM"]);
+    }
+
+    #[test]
+    fn a_sector_is_classed_by_its_worst_check_and_deleted_data_by_its_mark() {
+        let with = |header, data, mark| Sector {
+            id: Id::Ibm([0, 0, 1, 2]),
+            header,
+            data,
+            mark,
+            ..sector([0.1, 0.11, 0.2], Some(0.105))
+        };
+        let (fb, f8, f9, fa) = (Some(0xfb), Some(0xf8), Some(0xf9), Some(0xfa));
+        let cases = [
+            (with(Header::Good, Data::Good, fb), Class::Good),
+            (with(Header::Good, Data::Empty(0xe5), fb), Class::Empty),
+            (with(Header::Good, Data::Good, f8), Class::Deleted),
+            (with(Header::Good, Data::Empty(0xe5), f8), Class::Deleted),
+            (with(Header::Good, Data::Good, f9), Class::Deleted),
+            // TRS-80's directory mark is not one gw calls deleted.
+            (with(Header::Good, Data::Good, fa), Class::Good),
+            (with(Header::Good, Data::Bad, f8), Class::BadData),
+            (with(Header::Bad, Data::Good, fb), Class::BadHeader),
+            (with(Header::Bad, Data::Bad, fb), Class::BadHeader),
+            (with(Header::Bad, Data::None, None), Class::Incomplete),
+            (with(Header::None, Data::Unread, f8), Class::Incomplete),
+        ];
+        for (i, (s, class)) in cases.iter().enumerate() {
+            assert_eq!(Class::of(s), *class, "{i}");
+        }
+        // A bad header's sector a shade off bad data's, its ID field
+        // shaded as any.
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let w = 1.0 / 4096.0;
+        for (i, colour) in [(6, look.bad), (7, look.bad_header)] {
+            let row = row_of(std::slice::from_ref(&cases[i].0));
+            let at = |share: f64| row.sample(share, Shadow::square(w), w, [9.0; 3]);
+            assert!(near(at(0.15), rgb(colour)), "{i}");
+            assert!(near(at(0.102), rgb(look.id(colour))), "{i}");
+        }
+        assert_ne!(look.bad, look.bad_header);
+    }
+
+    #[test]
+    fn where_a_sector_lies_and_how_each_revolution_read_it_are_said_in_bytes_and_counts() {
+        assert_eq!(bytes(528.0), "33 bytes");
+        assert_eq!(bytes(16.0), "1 byte");
+        assert_eq!(bytes(55_239.0), "3,452 bytes 7 cells");
+        let layout = |after| Layout {
+            from_index: 2528.0,
+            after,
+            id_to_data: Some(544.0),
+        };
+        let r8 = Before::Sector(Id::Ibm([0, 0, 8, 2]), true);
+        let header = Before::Header(Id::Ibm([0, 0, 25, 0]), true);
+        assert_eq!(
+            layout_line(&layout(Some((992.0, Before::IndexMark)))),
+            "158 bytes from the index · 62 bytes after the index mark"
+        );
+        assert_eq!(
+            layout_line(&layout(Some((2896.0, header)))),
+            "158 bytes from the index · 181 bytes after R25's header"
+        );
+        assert_eq!(
+            layout_line(&layout(Some((-32.0, r8)))),
+            "158 bytes from the index · into R8 by 2 bytes"
+        );
+        assert_eq!(layout_line(&layout(None)), "158 bytes from the index");
+        let turns = |seen: Vec<Seen>, reads| Turns { seen, reads };
+        let line = |t: Turns| turns_line(&t).unwrap();
+        assert_eq!(
+            line(turns(vec![Seen::Good, Seen::BadData, Seen::Good], 1)),
+            "Good in 2 of 3 revolutions · data bad in 1"
+        );
+        assert_eq!(
+            line(turns(vec![Seen::BadHeader, Seen::NotFound], 2)),
+            "Header bad in 1 of 2 revolutions over 2 reads · not found in 1"
+        );
+        assert_eq!(
+            line(turns(vec![Seen::HeaderAlone], 1)),
+            "No data in 1 of 1 revolution"
+        );
+        assert_eq!(turns_line(&turns(Vec::new(), 1)), None);
+    }
+
+    #[test]
+    fn a_tracks_order_and_its_repeated_ids_are_of_ids_gw_read_from_good_headers() {
+        let at = |share: f32, r: u8, header| Sector {
+            id: Id::Ibm([0, 0, r, 2]),
+            header,
+            ..sector([share, share + 0.01, share + 0.1], Some(share + 0.005))
+        };
+        let data = Sector {
+            id: Id::None,
+            header: Header::None,
+            data: Data::Unread,
+            ..sector([0.9, 0.9, 0.95], None)
+        };
+        let sectors = [
+            at(0.1, 1, Header::Good),
+            at(0.3, 7, Header::Good),
+            at(0.5, 7, Header::Good),
+            at(0.7, 7, Header::Bad),
+            data,
+        ];
+        assert_eq!(order(&sectors).as_deref(), Some("1 7 7 7"));
+        assert_eq!(repeated(&sectors), ["R7 ×2"]);
+        let said = |s: &Sector| -> Vec<String> {
+            sector_lines(s, &sectors)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect()
+        };
+        let lines = said(&sectors[1]);
+        assert!(
+            lines.iter().any(|l| l == "Its ID also at 180.0°"),
+            "{lines:?}"
+        );
+        let unsure = said(&sectors[3]);
+        assert!(
+            !unsure.iter().any(|l| l.starts_with("Its ID")),
+            "{unsure:?}"
+        );
+        // A sector with no place leaves the order unsaid.
+        let unplaced = Sector {
+            at: None,
+            ..at(0.2, 2, Header::Good)
+        };
+        assert_eq!(order(&[sectors[0].clone(), unplaced]), None);
     }
 
     /// The pixel at `x`, `y` of `canvas`'s picture as the mean of `n` by `n`

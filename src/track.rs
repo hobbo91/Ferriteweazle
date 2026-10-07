@@ -18,6 +18,10 @@ struct Report {
     /// gw's image holds no such track.
     #[serde(default)]
     absent: bool,
+    /// Its flux's revolutions are the disk's under a head: raw flux gw read,
+    /// not flux gw made, as of its master track or an image's bitcells.
+    #[serde(default)]
+    turned: bool,
     #[serde(default, deserialize_with = "lenient")]
     flux: Option<Flux>,
     #[serde(default, deserialize_with = "lenient")]
@@ -51,6 +55,21 @@ struct Flux {
     passes: Vec<[f64; 2]>,
     /// Flux transitions in equal parts of a revolution, over those passes.
     bins: Vec<u32>,
+    #[serde(default, deserialize_with = "lenient")]
+    intervals: Option<Counted>,
+}
+
+/// How far apart a track's flux transitions are, as the bridge counted
+/// gw's flux values: in bins `width` sample ticks wide, from bin `first`,
+/// the first with any, to the last before bin `top`, and how many were in
+/// that bin or past it.
+#[derive(Debug, Deserialize)]
+struct Counted {
+    width: f64,
+    first: u64,
+    top: u64,
+    counts: Vec<u32>,
+    longer: u64,
 }
 
 /// What gw decoded of a track.
@@ -85,6 +104,158 @@ struct Codec {
     /// Other codecs' sectors' data, by number.
     #[serde(default)]
     data: BTreeMap<u32, Bytes>,
+    /// An IBM-style track's mode, as gw names it: IBM FM, IBM MFM or DEC RX02.
+    mode: Option<String>,
+    /// Each decode gw made of an IBM-style track from flux.
+    #[serde(default, deserialize_with = "lenient")]
+    decodes: Option<Vec<Decode>>,
+}
+
+/// A decode gw made of an IBM-style track from flux, as bridge.py's
+/// decoded_from notes it: the flux decoded, by number, as gw decodes a flux
+/// again with another PLL; each revolution's bit cells, index to index, and
+/// those after the last index; and each area found, in turn round the track.
+#[derive(Debug, Clone, Deserialize)]
+struct Decode {
+    flux: u64,
+    cells: Vec<f64>,
+    tail: f64,
+    areas: Vec<Vec<f64>>,
+}
+
+/// An area gw's decoder found, as a decode lists it: where in bit cells from
+/// the index of the revolution it lies in, `rev`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Area {
+    /// An index address mark.
+    Mark { rev: usize, start: f64, end: f64 },
+    /// A header, and data after it.
+    Whole {
+        rev: usize,
+        start: f64,
+        header_end: f64,
+        data_start: f64,
+        end: f64,
+        header: bool,
+        data: bool,
+        id: [u8; 4],
+    },
+    /// A header, and no data after it.
+    Header {
+        rev: usize,
+        start: f64,
+        end: f64,
+        ok: bool,
+        id: [u8; 4],
+    },
+    /// Data with no header: gw reads only its mark, so its end is not known.
+    Data { rev: usize, start: f64 },
+}
+
+impl Area {
+    /// An area from its list: its kind, revolution, places and what gw read.
+    fn of(v: &[f64]) -> Option<Area> {
+        let whole = |x: f64| x >= 0.0 && x.fract() == 0.0 && x < f64::from(u32::MAX);
+        if !v.iter().all(|&x| whole(x)) {
+            return None;
+        }
+        let byte = |x: f64| u8::try_from(x as u32).ok();
+        let id = |at: &[f64]| Some([byte(at[0])?, byte(at[1])?, byte(at[2])?, byte(at[3])?]);
+        let rev = *v.get(1)? as usize;
+        Some(match (v.first()?, v.len()) {
+            (0.0, 4) => Area::Mark {
+                rev,
+                start: v[2],
+                end: v[3],
+            },
+            (1.0, 13) => Area::Whole {
+                rev,
+                start: v[2],
+                header_end: v[3],
+                data_start: v[4],
+                end: v[5],
+                header: v[6] == 1.0,
+                data: v[7] == 1.0,
+                id: id(&v[9..13])?,
+            },
+            (2.0, 9) => Area::Header {
+                rev,
+                start: v[2],
+                end: v[3],
+                ok: v[4] == 1.0,
+                id: id(&v[5..9])?,
+            },
+            (3.0, 5) => Area::Data { rev, start: v[2] },
+            _ => return None,
+        })
+    }
+
+    fn rev(self) -> usize {
+        match self {
+            Area::Mark { rev, .. }
+            | Area::Whole { rev, .. }
+            | Area::Header { rev, .. }
+            | Area::Data { rev, .. } => rev,
+        }
+    }
+
+    fn start(self) -> f64 {
+        match self {
+            Area::Mark { start, .. }
+            | Area::Whole { start, .. }
+            | Area::Header { start, .. }
+            | Area::Data { start, .. } => start,
+        }
+    }
+
+    /// Where it ends, if gw read so far.
+    fn end(self) -> Option<f64> {
+        match self {
+            Area::Mark { end, .. } | Area::Whole { end, .. } | Area::Header { end, .. } => {
+                Some(end)
+            }
+            Area::Data { .. } => None,
+        }
+    }
+}
+
+/// A decode, its areas parsed and placed: each revolution's start in bit
+/// cells from the decode's first index, then where the last ends, and
+/// where the flux ends.
+struct Decoded {
+    flux: u64,
+    starts: Vec<f64>,
+    total: f64,
+    areas: Vec<Area>,
+}
+
+impl Decoded {
+    /// None for a decode whose parts do not all parse: its areas are
+    /// numbered in the list.
+    fn of(d: &Decode) -> Option<Decoded> {
+        let areas = d
+            .areas
+            .iter()
+            .map(|v| Area::of(v))
+            .collect::<Option<Vec<_>>>()?;
+        let mut starts = vec![0.0];
+        for &cells in &d.cells {
+            starts.push(starts.last()? + cells);
+        }
+        let total = starts.last()? + d.tail;
+        let placed = areas.iter().all(|a| a.rev() < starts.len());
+        placed.then_some(Decoded {
+            flux: d.flux,
+            starts,
+            total,
+            areas,
+        })
+    }
+
+    /// Where `a` lies, in bit cells from the decode's first index.
+    fn at(&self, a: Area) -> f64 {
+        self.starts[a.rev()] + a.start()
+    }
 }
 
 /// An IBM-style sector: its places in bit cells from the index, and where
@@ -108,6 +279,8 @@ struct Found {
     data: bool,
     mark: u8,
     bytes: Option<Bytes>,
+    /// The decode it was found in, and its place in that decode's areas.
+    copy: Option<[usize; 2]>,
 }
 
 /// A header or data block found by itself, which gw's decoder drops.
@@ -123,6 +296,8 @@ struct Apart {
     /// Its start and end in time: see Found::times.
     times: Option<[f64; 2]>,
     turn: Option<f64>,
+    /// See Found::copy.
+    copy: Option<[usize; 2]>,
 }
 
 /// Where a sector of a codec that is not IBM's lies on its PLL track.
@@ -222,6 +397,21 @@ pub struct Spin {
     /// Flux transitions in equal parts of a revolution from the index, per
     /// time the read passed each part.
     pub bins: Vec<f32>,
+    pub intervals: Option<Intervals>,
+}
+
+/// How far apart a track's flux transitions are, as gw holds its flux: how
+/// many of its values fall in each bin, `width` seconds wide, of whole
+/// sample ticks `tick` seconds long, from bin `first`, the first with any;
+/// and how many were `longer`, as long as `top` seconds or more.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Intervals {
+    pub width: f64,
+    pub tick: f64,
+    pub first: u64,
+    pub counts: Vec<u32>,
+    pub top: f64,
+    pub longer: u64,
 }
 
 impl Spin {
@@ -271,6 +461,59 @@ pub struct Sector {
     /// the length of a revolution: the next one's, or gw's measure of the
     /// drive's.
     pub before: bool,
+    /// How gw found it in each revolution of the disk it read.
+    pub turns: Option<Turns>,
+    /// Where it lies in bit cells, as gw found it in flux.
+    pub layout: Option<Layout>,
+}
+
+/// How gw found a sector in a revolution, the best of its decodes of it:
+/// gw's decoder sees each revolution's copy of an IBM-style sector, and
+/// keeps one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Seen {
+    /// Not found, in a revolution that held its place.
+    NotFound,
+    /// Its data, with no header before it.
+    DataAlone,
+    /// Its header, with no data after it.
+    HeaderAlone,
+    /// Its header's CRC fails.
+    BadHeader,
+    /// Its header's CRC holds and its data's fails.
+    BadData,
+    Good,
+}
+
+/// How gw found a sector in each revolution of the disk it read, in turn:
+/// those read whole, then any part of one read after the last index that
+/// held its place; over `reads` reads, as gw reads a track again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Turns {
+    pub seen: Vec<Seen>,
+    pub reads: usize,
+}
+
+/// Where a sector lies, in bit cells by gw's PLL as it decoded the flux:
+/// from its revolution's index to its start, from the end of what gw found
+/// before it, and from the end of its ID field to its data.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    pub from_index: f64,
+    /// None where gw found nothing before it after the index the decode
+    /// starts at, or only a data block's mark.
+    pub after: Option<(f64, Before)>,
+    pub id_to_data: Option<f64>,
+}
+
+/// What gw found just before a sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Before {
+    IndexMark,
+    /// A header and its data: its ID, and whether its CRC holds.
+    Sector(Id, bool),
+    /// A header with no data after it.
+    Header(Id, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,15 +538,124 @@ pub enum Data {
     None,
 }
 
-/// gw's tolerance for one sector seen twice, in bit cells: its decoders
-/// count areas this close as one.
-const SAME: f64 = 1000.0;
+/// Areas this close, in bit cells, are one area gw found again, in another
+/// revolution or another decode: far more than the same area moves from
+/// one revolution to the next, under 8 cells in real reads, and far less
+/// than the shortest area, an FM ID field's 112, so two never pass for one.
+/// gw's own decoder takes sectors within 1000 cells as one; that leaves
+/// one sector of each, but would take a header 44 bytes before another
+/// sector as part of it.
+const COPY: f64 = 64.0;
+
+/// The layout of the area a sector was found as, `copy`, in its decode;
+/// `mmfm` where a data block's end in FM cells does not hold, as a DEC
+/// RX02 track's double-density data's does not.
+fn layout(decodes: &[Option<Decoded>], copy: Option<[usize; 2]>, mmfm: bool) -> Option<Layout> {
+    let [d, i] = copy?;
+    let decode = decodes.get(d)?.as_ref()?;
+    let area = *decode.areas.get(i)?;
+    let after = i.checked_sub(1).and_then(|j| {
+        let before = decode.areas[j];
+        let end = decode.starts[before.rev()] + before.end()?;
+        let what = match before {
+            Area::Mark { .. } => Before::IndexMark,
+            Area::Whole { .. } if mmfm => return None,
+            Area::Whole { id, header, .. } => Before::Sector(Id::Ibm(id), header),
+            Area::Header { id, ok, .. } => Before::Header(Id::Ibm(id), ok),
+            Area::Data { .. } => return None,
+        };
+        Some((decode.at(area) - end, what))
+    });
+    let id_to_data = match area {
+        Area::Whole {
+            header_end,
+            data_start,
+            ..
+        } => Some(data_start - header_end),
+        _ => None,
+    };
+    Some(Layout {
+        from_index: area.start(),
+        after,
+        id_to_data,
+    })
+}
+
+/// How gw found the sector it found as area `copy` in each revolution of
+/// each flux it decoded: the copy of each decode nearest its place, within
+/// COPY, the best of them. Where the read held its place, from the index to
+/// COPY past its end, not found if none; where it may not have, only a
+/// copy found whole, else left out.
+fn turns(decodes: &[Option<Decoded>], copy: Option<[usize; 2]>) -> Option<Turns> {
+    let [d, i] = copy?;
+    let kept = *decodes.get(d)?.as_ref()?.areas.get(i)?;
+    let place = kept.start();
+    let length = kept.end().map_or(0.0, |end| end - place);
+    // Where its data starts after its start, to know its data found alone.
+    let data = match kept {
+        Area::Whole {
+            start, data_start, ..
+        } => Some(data_start - start),
+        Area::Data { .. } => Some(0.0),
+        _ => None,
+    };
+    let decodes: Vec<&Decoded> = decodes.iter().flatten().collect();
+    let mut fluxes: Vec<u64> = Vec::new();
+    for x in &decodes {
+        if !fluxes.contains(&x.flux) {
+            fluxes.push(x.flux);
+        }
+    }
+    let mut seen = Vec::new();
+    for &flux in &fluxes {
+        let of: Vec<&&Decoded> = decodes.iter().filter(|x| x.flux == flux).collect();
+        for k in 0..of[0].starts.len() {
+            let best = of.iter().filter_map(|x| {
+                let at = x.starts.get(k)? + place;
+                let found = x.areas.iter().filter_map(|&a| {
+                    let (to, how) = match a {
+                        Area::Whole { header, data, .. } => (
+                            at,
+                            match (header, data) {
+                                (true, true) => Seen::Good,
+                                (true, false) => Seen::BadData,
+                                (false, _) => Seen::BadHeader,
+                            },
+                        ),
+                        Area::Header { .. } => (at, Seen::HeaderAlone),
+                        Area::Data { .. } => (at + data?, Seen::DataAlone),
+                        Area::Mark { .. } => return None,
+                    };
+                    let off = (x.at(a) - to).abs();
+                    (off < COPY).then_some((off, how))
+                });
+                found.min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, how)| how)
+            });
+            // Where the read ran out, only a sector found whole counts: a
+            // header with no data may be one the read cut short.
+            let held = of[0].starts[k] + place + length + COPY <= of[0].total;
+            match best.max() {
+                Some(how) if held || how >= Seen::BadHeader => seen.push(how),
+                None if held => seen.push(Seen::NotFound),
+                _ => {}
+            }
+        }
+    }
+    Some(Turns {
+        seen,
+        reads: fluxes.len(),
+    })
+}
 
 impl Facts {
     /// Parses a TRACK line's JSON: the track's cylinder and head, and its facts.
     pub fn parse(json: &str) -> Option<((u32, u32), Facts)> {
         let report: Report = serde_json::from_str(json).ok()?;
-        let mut facts = report.codec.map(Facts::decoded).unwrap_or_default();
+        let turned = report.turned;
+        let mut facts = report
+            .codec
+            .map(|codec| Facts::decoded(codec, turned))
+            .unwrap_or_default();
         facts.flux = report.flux.as_ref().and_then(spin);
         facts.absent = report.absent;
         facts.source = match report.source.as_deref() {
@@ -315,7 +667,9 @@ impl Facts {
         Some(((report.c, report.h), facts))
     }
 
-    fn decoded(mut codec: Codec) -> Facts {
+    /// What gw decoded of a track; how it found each sector in each
+    /// revolution only where they are the disk's, `turned`.
+    fn decoded(mut codec: Codec, turned: bool) -> Facts {
         let mut facts = Facts {
             summary: Some(std::mem::take(&mut codec.summary)),
             cell: codec.clock,
@@ -323,17 +677,22 @@ impl Facts {
         };
         match codec.time_per_rev.zip(codec.clock) {
             Some((per_rev, cell)) if !codec.found.is_empty() || codec.laid.is_some() => {
-                facts.ibm(&mut codec, Timing { per_rev, cell })
+                facts.ibm(&mut codec, Timing { per_rev, cell }, turned)
             }
             _ => facts.numbered(&mut codec),
         }
         facts
     }
 
-    /// An IBM-style track's sectors, placed as gw found them.
-    fn ibm(&mut self, codec: &mut Codec, timing: Timing) {
+    /// An IBM-style track's sectors, placed as gw found them, with how gw
+    /// found each in each revolution where they are the disk's, `turned`.
+    fn ibm(&mut self, codec: &mut Codec, timing: Timing, turned: bool) {
         let mut found = std::mem::take(&mut codec.found);
         let laid = codec.laid.as_deref();
+        let decodes: Vec<Option<Decoded>> =
+            codec.decodes.iter().flatten().map(Decoded::of).collect();
+        let mmfm = codec.mode.as_deref() == Some("DEC RX02");
+        let turns = |copy| if turned { turns(&decodes, copy) } else { None };
         let expected = |id: &[u8; 4]| laid.is_none_or(|l| l.iter().any(|s| s.id == *id));
         for s in &mut found {
             let bytes = s.bytes.take().unwrap_or_default().0;
@@ -360,6 +719,8 @@ impl Facts {
                 bytes,
                 extra: s.header && !expected(&s.id),
                 before: false,
+                turns: turns(s.copy),
+                layout: layout(&decodes, s.copy, mmfm),
             });
         }
         // Blocks found apart, once each, unless part of a sector found
@@ -367,12 +728,12 @@ impl Facts {
         let mut apart: Vec<&Apart> = Vec::new();
         for a in &codec.apart {
             let whole = found.iter().any(|s| match a.id {
-                Some(_) => (s.start - a.start).abs() < SAME,
-                None => (s.data_start - a.start).abs() < SAME,
+                Some(_) => (s.start - a.start).abs() < COPY,
+                None => (s.data_start - a.start).abs() < COPY,
             });
             let seen = apart
                 .iter()
-                .position(|b| b.id.is_some() == a.id.is_some() && (b.start - a.start).abs() < SAME);
+                .position(|b| b.id.is_some() == a.id.is_some() && (b.start - a.start).abs() < COPY);
             match seen {
                 _ if whole => {}
                 Some(i) if a.header == Some(true) && apart[i].header != Some(true) => apart[i] = a,
@@ -397,6 +758,8 @@ impl Facts {
                     bytes: Vec::new(),
                     extra: false,
                     before: false,
+                    turns: turns(a.copy),
+                    layout: layout(&decodes, a.copy, mmfm),
                 },
                 None => Sector {
                     id: Id::None,
@@ -408,6 +771,8 @@ impl Facts {
                     bytes: Vec::new(),
                     extra: false,
                     before: false,
+                    turns: turns(a.copy),
+                    layout: layout(&decodes, a.copy, mmfm),
                 },
             });
         }
@@ -453,6 +818,8 @@ impl Facts {
                 bytes,
                 extra: false,
                 before: placed.is_some_and(|(_, before)| before),
+                turns: None,
+                layout: None,
             });
         }
         self.sectors
@@ -576,11 +943,24 @@ fn spin(f: &Flux) -> Option<Spin> {
             }
         })
         .collect();
+    let intervals = f
+        .intervals
+        .as_ref()
+        .filter(|c| c.width > 0.0)
+        .map(|c| Intervals {
+            width: c.width / f.freq,
+            tick: 1.0 / f.freq,
+            first: c.first,
+            counts: c.counts.clone(),
+            top: c.top as f64 * c.width / f.freq,
+            longer: c.longer,
+        });
     Some(Spin {
         period: f.period / f.freq,
         revs: f.revs.iter().map(|r| r / f.freq).collect(),
         per_rev: bins.iter().map(|&b| f64::from(b)).sum(),
         bins,
+        intervals,
     })
 }
 
@@ -657,6 +1037,7 @@ mod tests {
             revs: vec![100.0],
             passes: vec![[0.5, 1.0], [0.0, 1.0]],
             bins: vec![2, 2, 1, 1],
+            intervals: None,
         };
         let spin = spin(&flux).unwrap();
         assert_eq!(spin.bins, [2.0, 2.0, 0.5, 0.5]);
@@ -780,6 +1161,7 @@ mod tests {
             revs,
             passes,
             bins: vec![1; 4],
+            intervals: None,
         };
         assert!(spin(&flux(vec![100.0], vec![[0.0, 1.0]])).is_some());
         assert!(
@@ -806,6 +1188,169 @@ mod tests {
             cued: false,
         };
         assert_eq!(place(&p, Some(100.0)), None, "no revolution to place it in");
+    }
+
+    /// An IBM-style track as the bridge reports one from flux the disk
+    /// turned under the head: sector R1 kept as `copy`, with each decode.
+    fn decoded(copy: [usize; 2], decodes: serde_json::Value) -> Facts {
+        let report = serde_json::json!({"c": 0, "h": 0, "turned": true, "codec": {
+            "summary": "IBM MFM (1/1 sectors)", "nsec": 1, "good": [0],
+            "time_per_rev": 0.2, "clock": 2e-6, "mode": "IBM MFM",
+            "found": [{"id": [0, 0, 1, 2], "start": 1001, "header_end": 1161,
+                "data_start": 1705, "end": 10001, "header": true, "data": true,
+                "mark": 251, "copy": copy}],
+            "apart": [], "decodes": decodes}});
+        Facts::parse(&report.to_string()).unwrap().1
+    }
+
+    /// Sector R1 whole in revolution `rev`, `start` cells from its index,
+    /// its header's CRC and its data's holding or not.
+    fn whole(rev: u32, start: u32, header: u8, data: u8) -> serde_json::Value {
+        serde_json::json!([
+            1,
+            rev,
+            start,
+            start + 160,
+            start + 704,
+            start + 9000,
+            header,
+            data,
+            251,
+            0,
+            0,
+            1,
+            2
+        ])
+    }
+
+    #[test]
+    fn each_revolution_counts_once_as_the_best_of_gws_decodes_of_its_flux() {
+        let facts = decoded(
+            [1, 0],
+            serde_json::json!([
+                // Flux 7 decoded twice, as gw does again with another PLL:
+                // revolution 0 bad, then good; revolution 1 good.
+                {"flux": 7, "cells": [100_000, 100_000], "tail": 5000,
+                 "areas": [whole(0, 1000, 1, 0), whole(1, 1003, 1, 1)]},
+                {"flux": 7, "cells": [100_001, 100_001], "tail": 5000,
+                 "areas": [whole(0, 1001, 1, 1)]},
+                // A read again: its header alone, then a revolution that
+                // holds its place and none of it.
+                {"flux": 8, "cells": [100_000, 100_000], "tail": 0,
+                 "areas": [[2, 0, 1002, 1162, 1, 0, 0, 1, 2]]},
+            ]),
+        );
+        let turns = facts.sectors[0].turns.clone().unwrap();
+        // Flux 7's part after its last index ends 5000 cells on: short of
+        // the sector's end, so not counted; flux 8's has none.
+        assert_eq!(
+            turns.seen,
+            [Seen::Good, Seen::Good, Seen::HeaderAlone, Seen::NotFound]
+        );
+        assert_eq!(turns.reads, 2);
+    }
+
+    #[test]
+    fn where_a_read_ran_out_only_a_sector_found_whole_counts() {
+        let facts = decoded(
+            [0, 0],
+            serde_json::json!([{"flux": 1, "cells": [100_000], "tail": 9500, "areas": [
+                whole(0, 1001, 1, 1),
+                // After the last index, the read ran out within its data:
+                // its header alone says nothing of the disk.
+                [2, 1, 1001, 1161, 1, 0, 0, 1, 2],
+            ]}]),
+        );
+        assert_eq!(facts.sectors[0].turns.as_ref().unwrap().seen, [Seen::Good]);
+        let found = decoded(
+            [0, 0],
+            serde_json::json!([{"flux": 1, "cells": [100_000], "tail": 9500, "areas": [
+                whole(0, 1001, 1, 1), whole(1, 1001, 1, 0)]}]),
+        );
+        let seen = &found.sectors[0].turns.as_ref().unwrap().seen;
+        assert_eq!(
+            seen,
+            &[Seen::Good, Seen::BadData],
+            "found whole all the same"
+        );
+    }
+
+    #[test]
+    fn a_sectors_layout_is_in_bit_cells_from_its_index_and_what_gw_found_before_it() {
+        let facts = decoded(
+            [0, 1],
+            serde_json::json!([{"flux": 1, "cells": [100_000], "tail": 0, "areas": [
+                [0, 0, 400, 464], whole(0, 1001, 1, 1)]}]),
+        );
+        let layout = facts.sectors[0].layout.unwrap();
+        assert_eq!(layout.from_index, 1001.0);
+        assert_eq!(layout.after, Some((537.0, Before::IndexMark)));
+        assert_eq!(layout.id_to_data, Some(544.0));
+        // Across the index from the sector before; after a data block's mark
+        // alone, its end not known.
+        let across = decoded(
+            [0, 1],
+            serde_json::json!([{"flux": 1, "cells": [100_000, 100_000], "tail": 0, "areas": [
+                [2, 0, 99_000, 99_160, 1, 0, 0, 9, 2], whole(1, 1001, 1, 1)]}]),
+        );
+        let after = across.sectors[0].layout.unwrap().after;
+        assert_eq!(
+            after,
+            Some((1841.0, Before::Header(Id::Ibm([0, 0, 9, 2]), true)))
+        );
+        let mark = decoded(
+            [0, 1],
+            serde_json::json!([{"flux": 1, "cells": [100_000], "tail": 0, "areas": [
+                [3, 0, 400, 464, 251], whole(0, 1001, 1, 1)]}]),
+        );
+        assert_eq!(mark.sectors[0].layout.unwrap().after, None);
+        // Not the disk's revolutions: where it lies, but no count of them.
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (1/1 sectors)", "nsec": 1, "good": [0],
+            "time_per_rev": 0.2, "clock": 2e-6, "found": [{"id": [0, 0, 1, 2],
+            "start": 1001, "header_end": 1161, "data_start": 1705, "end": 10001,
+            "header": true, "data": true, "mark": 251, "copy": [0, 0]}],
+            "decodes": [{"flux": 1, "cells": [100_000], "tail": 0,
+                "areas": [whole(0, 1001, 1, 1)]}]}});
+        let made = Facts::parse(&report.to_string()).unwrap().1;
+        assert!(made.sectors[0].layout.is_some() && made.sectors[0].turns.is_none());
+    }
+
+    #[test]
+    fn a_header_alone_just_before_a_sector_is_its_own() {
+        // As gw lays out an EDSK's header with no data: 44 bytes before the
+        // next sector, inside gw's own 1000 cells for one sector.
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (1/1 sectors)", "nsec": 1, "good": [0],
+            "time_per_rev": 0.2, "clock": 2e-6,
+            "found": [{"id": [0, 0, 7, 2], "start": 43_232, "header_end": 43_392,
+                "data_start": 43_936, "end": 52_224, "header": true, "data": true,
+                "mark": 251}],
+            "apart": [{"id": [0, 0, 6, 2], "header": true, "start": 42_528, "end": 42_688}]}});
+        let facts = Facts::parse(&report.to_string()).unwrap().1;
+        let ids: Vec<Id> = facts.sectors.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [Id::Ibm([0, 0, 6, 2]), Id::Ibm([0, 0, 7, 2])]);
+    }
+
+    #[test]
+    fn intervals_are_counted_in_seconds_as_the_bridge_binned_its_ticks() {
+        let flux = Flux {
+            freq: 40e6,
+            period: 8e6,
+            revs: vec![8e6],
+            passes: vec![[0.0, 1.0]],
+            bins: vec![1; 4],
+            intervals: Some(Counted {
+                width: 2.0,
+                first: 80,
+                top: 400,
+                counts: vec![3, 0, 5],
+                longer: 2,
+            }),
+        };
+        let i = spin(&flux).unwrap().intervals.unwrap();
+        assert!((i.width - 50e-9).abs() < 1e-15 && (i.top - 20e-6).abs() < 1e-12);
+        assert_eq!((i.first, i.counts, i.longer), (80, vec![3, 0, 5], 2));
     }
 
     /// Bytes no disk holds of its own: gw's filler, one byte over and over,
