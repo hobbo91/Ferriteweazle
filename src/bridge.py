@@ -1,5 +1,6 @@
 """Ferriteweazle's link to gw, through gw's own modules, patched only by
-steady_handshake, bundled_caps, adafruit_seeks, read_passes and report_tracks.
+steady_handshake, bundled_caps, adafruit_seeks, read_passes, report_tracks
+and report_images.
 
 Modes: serve (one JSON request per stdin line, one reply per stdout line),
 run ARGS (`gw ARGS`; stdin takes 'answer TEXT', anything else stops it),
@@ -10,6 +11,7 @@ import argparse, bisect, builtins, contextlib, copy, functools, importlib, io, i
 ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
 TRACK = '@ferriteweazle track '
+IMAGE = '@ferriteweazle image '
 
 # The equal parts of a revolution a track's report counts its flux in: a
 # quarter of a degree each.
@@ -322,7 +324,7 @@ def schema():
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
            'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check,
-           'fits': fits, 'check_opt': check_opt}
+           'fits': fits, 'check_opt': check_opt, 'image': image}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)
@@ -939,6 +941,223 @@ def report_tracks(command):
                 cls.verify_track = verifying(cls.verify_track)
 
 
+def report_images(command):
+    """Has gw report on IMAGE lines the image a job makes, as a read or a
+    conversion does, or takes its tracks from, as a write or a conversion
+    does: how gw lays out its file, each track in turn and each sector's
+    part of it, checked against the file's bytes where there are any, and
+    a file it takes tracks from as it read it; as gw puts each track in an
+    image it makes, which of its sectors hold data and which gw's filler,
+    and the bytes it holds; and once gw has made the file's bytes, the file
+    as written. For a conversion, first, where each track it goes through
+    lies in each image."""
+    if command == 'read':
+        from greaseweazle.tools import read
+        read.open_image = making(read.open_image)
+    elif command == 'convert':
+        from greaseweazle.tools import convert
+        convert.open_output_image = making(convert.open_output_image)
+        convert.open_input_image = taking_from(convert.open_input_image)
+        convert.convert = routing(convert.convert)
+    elif command == 'write':
+        from greaseweazle.tools import write
+        write.open_image = taking_from(write.open_image)
+
+
+def image_line(event, **facts):
+    print(IMAGE + json.dumps({'event': event, **facts}, separators=(',', ':')), flush=True)
+
+
+def making(opened):
+    """`opened`, which makes the image a job writes, made to report it."""
+    def open_image(args, image_class):
+        image = opened(args, image_class)
+        with contextlib.suppress(Exception):
+            image_line('open', role='made', file=getattr(image, 'filename', None),
+                       type=type(image).__name__, layout=image_layout(image))
+            emit, made = image.emit_track, image.get_image
+
+            def emit_track(cyl, side, track):
+                emit(cyl, side, track)
+                with contextlib.suppress(Exception):
+                    has = [bool(track.has_sec(i)) for i in range(track.nsec)]
+                    held = bytes(track.get_img_track()).hex()
+                    image_line('track', c=cyl, h=side, has=has, bytes=held)
+
+            def get_image():
+                dat = made()
+                with contextlib.suppress(Exception):
+                    image_line('written', size=len(dat), tracks=as_laid_out(image, dat, False))
+                return dat
+
+            image.emit_track, image.get_image = emit_track, get_image
+        return image
+    return open_image
+
+
+def taking_from(opened):
+    """`opened`, which reads the image a job takes its tracks from, made to
+    report it, checked against the file gw read it from."""
+    def open_image(args, image_class):
+        image = opened(args, image_class)
+        with contextlib.suppress(Exception):
+            image_line('open', **taken(image))
+        return image
+    return open_image
+
+
+def taken(image):
+    """What an image gw takes tracks from is: its file and gw's type, and
+    how gw lays out the file, with its bytes, where the file is laid out so."""
+    name = getattr(image, 'filename', None)
+    layout = image_layout(image)
+    size = held = None
+    if layout is not None:
+        with open(name, 'rb') as f:
+            dat = f.read()
+        size = len(dat)
+        if as_laid_out(image, dat, True) is None:
+            layout = None
+        else:
+            held = dat.hex()
+    return {'role': 'source', 'file': name, 'type': type(image).__name__,
+            'layout': layout, 'size': size, 'bytes': held}
+
+
+def image(args):
+    """The image a write or a conversion is to take its tracks from, as its
+    job reports it on opening: gw's own command run with `args`, as the job
+    would run it, up to where gw has opened that image, before it opens a
+    device or a conversion's output."""
+    rest = list(args)
+    while rest and rest[0].startswith('-'):  # gw's own options, such as --bt
+        rest.pop(0)
+    command = rest[0] if rest else None
+    opener = {'write': 'open_image', 'convert': 'open_input_image'}.get(command)
+    if opener is None:
+        raise ValueError(f'gw {command} takes its tracks from no image.')
+    tool = importlib.import_module('greaseweazle.tools.' + command)
+    opened = getattr(tool, opener)
+
+    def open_image(a, image_class):
+        raise Captured(taken(opened(a, image_class)))
+
+    said = io.StringIO()
+    setattr(tool, opener, open_image)
+    try:
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            tool.main(['gw'] + rest)
+    except Captured as c:
+        return c.args[0]
+    except SystemExit:
+        # gw's parser has said why, last, after its name.
+        lines = said.getvalue().strip().splitlines()
+        why = lines[-1].split(' error: ', 1)[-1] if lines else 'gw took none of these arguments.'
+        raise ValueError(why)
+    finally:
+        setattr(tool, opener, opened)
+    raise ValueError('gw opened no image.')
+
+
+def routing(converting):
+    """gw's conversion, made to report first each track it goes through, as
+    its track lines name it, with where it lies in the input image and where
+    in the output: gw's track lists can move them."""
+    def convert(args, in_image, out_image):
+        with contextlib.suppress(Exception):
+            routes = [[t.cyl, t.head, *args.tracks.ch_to_pch(t.cyl, t.head),
+                       t.physical_cyl, t.physical_head]
+                      for t in args.out_tracks if (t.cyl, t.head) in args.tracks]
+            image_line('routes', tracks=routes)
+        return converting(args, in_image, out_image)
+    return convert
+
+
+def image_layout(image):
+    """How gw lays out a sector image's file: each track in the file's
+    order, keyed as gw keeps it, with the bytes each of its sectors takes, in
+    turn, and the filler gw writes in place of each one it lacks; and the
+    least cylinders the file has, past which gw writes cylinders up to the
+    last it holds data in. None for an image gw keeps some other way, such
+    as flux, or one this cannot lay out."""
+    from greaseweazle.image.img import IMG
+    if not isinstance(image, IMG):
+        return None
+    try:
+        return sector_layout(image)
+    except Exception:
+        return None
+
+
+def sector_layout(image):
+    tracks, fillers = [], []
+    for cyl, head in placed(image):
+        track = image.fmt.mk_track(cyl, head)
+        empty = bytes(track.get_img_track())
+        parts = sector_parts(track)
+        if not empty or parts is None or sum(n for _, _, n in parts) != len(empty):
+            return None
+        sectors, at = [], 0
+        for index, sid, n in parts:
+            filler = empty[at:at + n].hex()
+            if filler not in fillers:
+                fillers.append(filler)
+            sectors.append({'i': index, 'id': sid, 'len': n, 'fill': fillers.index(filler)})
+            at += n
+        tracks.append({'c': cyl, 'h': head, 'sectors': sectors})
+    return {'tracks': tracks, 'fillers': fillers, 'min_cyls': image.min_cyls}
+
+
+def placed(image):
+    """The tracks of a sector image in its file's order, keyed as gw keeps them."""
+    for cyl, head in image.track_list():
+        yield cyl, head ^ 1 if image.sides_swapped else head
+
+
+def sector_parts(track):
+    """Each of a track's sectors as gw puts them in a sector image, in turn:
+    its index among the track's sectors, its C, H, R and N where it has them,
+    and the bytes it takes. None where they are not all one size and gw has
+    no other order for them."""
+    if hasattr(track, 'sectors') and hasattr(track, 'img_bps'):
+        # IBM-style: in the order of R, each padded to the format's bytes per sector.
+        order = sorted(range(len(track.sectors)), key=lambda i: track.sectors[i].idam.r)
+        size = lambda s: len(s.dam.data) if track.img_bps is None else track.img_bps
+        return [(i, list(sector_id(track.sectors[i])), size(track.sectors[i])) for i in order]
+    # Apple II's in its format's order, by their numbers; others' in their own.
+    from greaseweazle.codec.apple2 import apple2_gcr
+    if isinstance(track, apple2_gcr.Apple2GCR):
+        order = list(track.config.secs)
+    else:
+        order = list(range(track.nsec))
+    whole = len(track.get_img_track())
+    if not order or whole % len(order):
+        return None
+    return [(i, None, whole // len(order)) for i in order]
+
+
+def as_laid_out(image, dat, reading):
+    """Each track's part of `dat`, an image's file, as [c, h, start, end], if
+    every track there is gw's bytes for it, in turn, to the file's end: a
+    file gw reads, padded as gw pads it, else one it writes, which ends early
+    where gw left out the cylinders past the last it holds data in. None if
+    they differ."""
+    out, at = [], 0
+    for cyl, head in placed(image):
+        track = image.to_track.get((cyl, head)) or image.fmt.mk_track(cyl, head)
+        want = bytes(track.get_img_track())
+        if not reading and at == len(dat):
+            break
+        got = dat[at:at + len(want)]
+        if reading:
+            got = got.ljust(len(want), b'\0')
+        if got != want:
+            return None
+        out.append([cyl, head, at, at + len(want)])
+        at += len(want)
+    return out if reading or at == len(dat) else None
+
+
 def codecs():
     """Every codec class gw has."""
     from greaseweazle.codec import codec
@@ -1241,7 +1460,9 @@ def gw(args):
         reread = os.environ.get('FERRITEWEAZLE_REREAD') == 'disk'
         read_passes(passes, reread, os.environ.get('FERRITEWEAZLE_KEEP'))
     # gw's own options, such as --bt, come before its command.
-    report_tracks(next((a for a in args if not a.startswith('-')), None))
+    command = next((a for a in args if not a.startswith('-')), None)
+    report_tracks(command)
+    report_images(command)
     sys.argv = ['gw'] + args
     return cli.main()
 

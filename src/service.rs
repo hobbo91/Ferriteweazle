@@ -1,6 +1,7 @@
 //! The long-lived bridge that answers questions about gw: its schema,
 //! connected devices, disk formats, and whether a value is valid.
 
+use crate::image::{Image, Preview};
 use crate::schema::{DiskDefs, FormatInfo, Port, Schema};
 use crate::standalone;
 use crate::tools::Tools;
@@ -27,6 +28,9 @@ const FOLDER_EVERY: Duration = Duration::from_millis(500);
 
 /// When each file asked about last changed, by path.
 type Times = Mutex<HashMap<String, Option<SystemTime>>>;
+
+/// An image asked for by its gw arguments and the time its file last changed.
+type ImageKey = (Vec<String>, Option<SystemTime>);
 
 pub type Repaint = Box<dyn Fn() + Send>;
 
@@ -115,6 +119,10 @@ pub struct Service {
     times: Arc<Times>,
     /// gw's objections, or none, by the request that asked for them.
     objections: HashMap<String, Load<Option<String>>>,
+    /// The image last asked for by `image`, by its gw arguments and the
+    /// time its file last changed; or, pinned, one for every request.
+    preview: Option<(ImageKey, Load<Preview>)>,
+    pinned_preview: Option<Load<Preview>>,
 }
 
 impl Service {
@@ -171,6 +179,8 @@ impl Service {
             folders: HashMap::new(),
             times,
             objections: HashMap::new(),
+            preview: None,
+            pinned_preview: None,
         }
     }
 
@@ -200,6 +210,9 @@ impl Service {
             load.poll();
         }
         for load in self.objections.values_mut() {
+            load.poll();
+        }
+        if let Some((_, load)) = &mut self.preview {
             load.poll();
         }
     }
@@ -242,6 +255,44 @@ impl Service {
         self.last_ports = ports;
         self.ports_error = None;
         self.pinned = true;
+    }
+
+    /// The image `path` a write or a conversion run with gw arguments `args`
+    /// is to take its tracks from, as gw opens it, before any job; asked
+    /// again when they or the file change. Only the last is kept.
+    pub fn image(&mut self, args: &[String], path: &str) -> &Load<Preview> {
+        if let Some(pinned) = &self.pinned_preview {
+            return pinned;
+        }
+        let key = (args.to_vec(), self.modified(path));
+        if self.preview.as_ref().is_none_or(|(k, _)| *k != key) {
+            let load = Load::Waiting(call(&self.requests, json!({"op": "image", "args": args})));
+            self.preview = Some((key, load));
+        }
+        &self.preview.as_ref().expect("just set").1
+    }
+
+    /// As `image`, from what gw has already said.
+    pub fn known_image(&self, args: &[String], path: &str) -> Option<&Preview> {
+        if let Some(pinned) = &self.pinned_preview {
+            return pinned.ready();
+        }
+        let (key, load) = self.preview.as_ref()?;
+        let current = key.0 == args && key.1 == self.modified(path);
+        load.ready().filter(|_| current)
+    }
+
+    /// Why gw could not open the image asked for by `image`, if it could not.
+    pub fn image_error(&self, args: &[String], path: &str) -> Option<&str> {
+        let (key, load) = self.preview.as_ref()?;
+        let current = key.0 == args && key.1 == self.modified(path);
+        load.error().filter(|_| current)
+    }
+
+    /// Answers every `image` request with `image`: a window with a made-up
+    /// file to write, for tests and pictures.
+    pub fn pin_image(&mut self, image: Image) {
+        self.pinned_preview = Some(Load::Ready(Preview(image)));
     }
 
     /// gw's own format names.

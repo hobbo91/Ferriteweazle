@@ -3,6 +3,7 @@
 //! Unrecognised lines are left to the log, so a gw that rewords its output
 //! loses the map, never the job.
 
+use crate::image::{self, Image, Role, Route};
 use crate::track::Facts;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +50,12 @@ pub struct Progress {
     /// What the bridge reports of each track gw read, converted or wrote:
     /// where its sectors lie and how they decoded, and how its flux fell.
     pub facts: BTreeMap<(u32, u32), Facts>,
+    /// What the bridge reports of the image the job makes, and of the one
+    /// it takes its tracks from.
+    pub made: Option<Image>,
+    pub source: Option<Image>,
+    /// A conversion's tracks, where each lies in its input and its output.
+    pub routes: Option<Vec<Route>>,
     /// Sectors found and expected over the whole disk.
     pub total: Option<(u32, u32)>,
     /// The track being worked on.
@@ -206,6 +213,28 @@ impl Progress {
             self.touch();
             facts.revision = self.revision;
             self.facts.insert(key, facts);
+        }
+    }
+
+    /// Takes the bridge's report on the job's images: how gw lays one out,
+    /// a track gw put in it, the file as gw wrote it, or where each of a
+    /// conversion's tracks lies in its input and its output.
+    pub fn image(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return;
+        };
+        self.touch();
+        if v["event"] == "open" {
+            if let Some(image) = Image::parse(&v) {
+                match image.role {
+                    Role::Made => self.made = Some(image),
+                    Role::Source => self.source = Some(image),
+                }
+            }
+        } else if v["event"] == "routes" {
+            self.routes = image::routes(&v);
+        } else if let Some(made) = self.made.as_mut() {
+            made.take(&v);
         }
     }
 

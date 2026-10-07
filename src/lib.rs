@@ -9,6 +9,7 @@ pub mod command;
 pub mod device;
 mod diskmap;
 pub mod form;
+pub mod image;
 pub mod job;
 mod lines;
 #[cfg(target_os = "macos")]

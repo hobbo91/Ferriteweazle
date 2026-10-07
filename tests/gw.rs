@@ -9,6 +9,7 @@ use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
 use ferriteweazle::form::{self, Output};
+use ferriteweazle::image;
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
 use ferriteweazle::progress::Status;
@@ -771,6 +772,200 @@ fn a_flux_image_written_as_it_is_is_reported_as_gw_writes_it_one_revolution_from
             spin.revs
         );
     }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// How far a finished conversion went with its images.
+fn converted(job: &Job) -> image::Job<'_> {
+    image::Job {
+        progress: &job.progress,
+        running: false,
+        converts: true,
+    }
+}
+
+/// Each part of a made image's file, where the job's report on it lays
+/// it, holds what the report says: data as `want`, else gw's filler; and
+/// the bytes the report gives for it.
+fn holds_as_reported(job: &Job, file: &Path, want: &[u8]) -> (usize, usize, usize) {
+    let made = job.progress.made.as_ref().expect("the image's report");
+    let layout = made.layout.as_ref().expect("laid out");
+    let written = std::fs::read(file).unwrap();
+    assert_eq!(made.bytes(), Some(written.len() as u64), "the file's size");
+    let (mut data, mut filler, mut unread) = (0, 0, 0);
+    for track in made.placed(Some(&converted(job))).expect("as written") {
+        for (k, (part, at, state)) in track.parts.iter().enumerate() {
+            let (at, len) = (*at as usize, part.len as usize);
+            let got = &written[at..at + len];
+            let reported = made.part_bytes(&track, k);
+            assert_eq!(reported.as_deref(), Some(got), "{:?} {:?}", track.key, part);
+            match state {
+                image::State::Data => {
+                    data += 1;
+                    assert_eq!(got, &want[at..at + len], "{:?} {:?}", track.key, part);
+                }
+                image::State::Filler | image::State::Unread => {
+                    match state {
+                        image::State::Filler => filler += 1,
+                        _ => unread += 1,
+                    }
+                    assert_eq!(
+                        got, layout.fillers[part.filler],
+                        "{:?} {:?}",
+                        track.key, part
+                    );
+                }
+                other => panic!("{other:?} in a made image"),
+            }
+        }
+    }
+    (data, filler, unread)
+}
+
+#[test]
+fn an_image_gw_makes_holds_each_sector_where_the_report_lays_it_as_data_or_filler() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("image-layout");
+    for (format, ext, size) in [
+        ("ibm.1440", "img", 1_474_560),
+        ("amiga.amigados", "adf", 901_120),
+        ("apple2.appledos.140", "do", 143_360),
+        ("commodore.1541", "d64", 174_848),
+    ] {
+        let (img, scp) = (dir.join(format!("a.{ext}")), dir.join(format!("{ext}.scp")));
+        let back = dir.join(format!("b.{ext}"));
+        let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(&img, &bytes).unwrap();
+        let fmt = format!("--format={format}");
+        // The image gw takes its tracks from, checked against its file, and
+        // each part's bytes as the file holds them.
+        let job = run(&tools, &["convert", &fmt, &path(&img), &path(&scp)]);
+        let source = job.progress.source.as_ref().expect("the source's report");
+        assert!(source.layout.is_some(), "{format}: laid out");
+        assert_eq!(source.size, Some(size), "{format}");
+        let mut padded = bytes.clone();
+        for track in source.placed(Some(&converted(&job))).expect("laid out") {
+            for (k, (part, at, state)) in track.parts.iter().enumerate() {
+                let (at, len) = (*at as usize, part.len as usize);
+                padded.resize(padded.len().max(at + len), 0);
+                let reported = source.part_bytes(&track, k);
+                assert_eq!(reported.as_deref(), Some(&padded[at..at + len]), "{format}");
+                assert!(
+                    matches!(state, image::State::Data | image::State::PastEnd),
+                    "{format}: {:?} {state:?}",
+                    track.key
+                );
+            }
+        }
+        // Back again: every sector's data where it was, past the source's
+        // end gw's zeros.
+        let job = run(&tools, &["convert", &fmt, &path(&scp), &path(&back)]);
+        let made = std::fs::read(&back).unwrap();
+        let mut want = bytes.clone();
+        want.resize(made.len().max(want.len()), 0);
+        let (data, filler, unread) = holds_as_reported(&job, &back, &want);
+        assert!(
+            data > 0 && filler == 0 && unread == 0,
+            "{format}: {data} {filler} {unread}"
+        );
+    }
+    // Decoded as a format the flux is not: gw's filler throughout.
+    let (scp, wrong) = (dir.join("img.scp"), dir.join("wrong.img"));
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.720", &path(&scp), &path(&wrong)],
+    );
+    let (data, filler, unread) = holds_as_reported(&job, &wrong, &[]);
+    assert_eq!((data, filler, unread), (0, 1440, 0));
+    // Two cylinders converted: gw's filler for the rest, which it did not read.
+    let part = dir.join("part.img");
+    let args = [
+        "convert",
+        "--format=ibm.1440",
+        "--tracks=c=0-1",
+        &path(&scp),
+        &path(&part),
+    ];
+    let job = run(&tools, &args);
+    let want: Vec<u8> = (0..1_474_560u32).map(|i| (i * 7 % 251) as u8).collect();
+    let (data, filler, unread) = holds_as_reported(&job, &part, &want);
+    assert_eq!((data, filler, unread), (72, 0, 2808));
+    // Every other cylinder of the input, which gw's track lines name as
+    // their own, half as far in.
+    let (img, stepped) = (dir.join("a.img"), dir.join("stepped.scp"));
+    let args = [
+        "convert",
+        "--format=ibm.1440",
+        "--tracks=c=0-39:step=2",
+        &path(&img),
+        &path(&stepped),
+    ];
+    let job = run(&tools, &args);
+    let route = image::Route {
+        own: (5, 1),
+        from: (10, 1),
+        to: (5, 1),
+    };
+    let routes = job
+        .progress
+        .routes
+        .as_ref()
+        .expect("the conversion's routes");
+    assert_eq!(routes.len(), 80);
+    assert!(routes.contains(&route), "{routes:?}");
+    let job_of = converted(&job);
+    assert_eq!(job_of.named(image::Role::Source, (10, 1)), [(5, 1)]);
+    assert!(job_of.named(image::Role::Source, (11, 1)).is_empty());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks_from() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("image-before");
+    let (adf, scp) = (dir.join("Disk.adf"), dir.join("Disk.scp"));
+    let mut bytes: Vec<u8> = (0..901_120u32).map(|i| (i * 7 % 251) as u8).collect();
+    // gw's filler where the file's track 0.1 has its sector 3.
+    let at = 11 * 512 + 3 * 512;
+    bytes[at..at + 512].copy_from_slice(&b"-=[BAD SECTOR]=-".repeat(32));
+    std::fs::write(&adf, &bytes).unwrap();
+    let mut service = Service::start(&tools, Box::new(|| {}));
+    let mut opened = |args: &[&str], file: &Path| {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        wait("the image", || {
+            service.poll();
+            match service.image(&args, &path(file)) {
+                Load::Ready(p) => Some(Ok(p.0.clone())),
+                Load::Failed(e) => Some(Err(e.clone())),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    let states = |image: &image::Image| {
+        let mut counts = BTreeMap::new();
+        for track in image.placed(None).expect("laid out") {
+            for (_, _, state) in track.parts {
+                *counts.entry(format!("{state:?}")).or_insert(0) += 1;
+            }
+        }
+        counts
+    };
+    // A write's: gw's filler as the file holds it, the rest its data.
+    let write = opened(&["write", &path(&adf)], &adf).unwrap();
+    assert_eq!(write.role, image::Role::Source);
+    assert_eq!((write.kind.as_str(), write.size), ("ADF", Some(901_120)));
+    assert_eq!(write.content.as_deref(), Some(&bytes[..]));
+    let counts = states(&write);
+    assert_eq!((counts["Data"], counts["Filler"]), (1759, 1), "{counts:?}");
+    // As another format lays it out: past the file's end, gw's zeros.
+    let wide = opened(&["write", "--format=ibm.1440", &path(&adf)], &adf).unwrap();
+    assert_eq!(states(&wide)["PastEnd"], (1_474_560 - 901_120) / 512);
+    // A conversion's input, its output not made.
+    let input = opened(&["convert", &path(&adf), &path(&scp)], &adf).unwrap();
+    assert!(input.layout.is_some() && !scp.exists());
+    // gw's own words where it cannot.
+    let wrong = opened(&["write", "--format=no.such", &path(&adf)], &adf).unwrap_err();
+    assert!(wrong.starts_with("Unknown format 'no.such'"), "{wrong}");
     std::fs::remove_dir_all(dir).ok();
 }
 

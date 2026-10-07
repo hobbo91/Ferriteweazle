@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const ASK: &str = "@ferriteweazle ask ";
 const RESULT: &str = "@ferriteweazle result ";
 const TRACK: &str = "@ferriteweazle track ";
+const IMAGE: &str = "@ferriteweazle image ";
 
 /// The bridge's own command that finds a disk's format.
 pub const DETECT: &str = "detect";
@@ -291,6 +292,8 @@ impl Job {
             self.step = result["step"].as_u64().map_or(1, |s| s.max(1) as u32);
         } else if let Some(report) = line.strip_prefix(TRACK) {
             self.progress.report(report);
+        } else if let Some(report) = line.strip_prefix(IMAGE) {
+            self.progress.image(report);
         } else {
             // With no --format, gw names the image type's own or the one it finds in the file.
             if self.format.is_none() {
