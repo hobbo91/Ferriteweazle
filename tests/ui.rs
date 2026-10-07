@@ -3973,8 +3973,17 @@ fn analyse_shows_the_disk_under_the_page_and_the_status_pane_leaves_out_its_grid
         "under the page and the status pane"
     );
     assert_eq!(squares(&w).count(), 0, "no grid while the disk shows below");
-    w.get_by_label("Side 0");
-    w.get_by_label("Side 1");
+    // Each side's disk under its name, painted in the map.
+    let named = |text: &str| {
+        w.output().shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => t.galley.text() == text && map.contains(t.pos),
+            _ => false,
+        })
+    };
+    assert!(
+        named("Side 0") && named("Side 1"),
+        "each side under its name"
+    );
     let size = w
         .get_all_by_role(Role::ComboBox)
         .find(|c| c.value().is_some_and(|v| v == "Fit"))

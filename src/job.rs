@@ -315,30 +315,40 @@ enum Chunk {
     Partial(String),
 }
 
+/// The start of the bridge's own lines, which are for the app, not to show.
+const OWN: &[u8] = b"@ferriteweazle ";
+
 /// Passes on gw's output from `from` as it comes: each line, and a line not
-/// yet ended each time it grows.
+/// yet ended where gw stops short of its end, as at a question. Not one of
+/// the bridge's own, which may run to megabytes, until it ends.
 fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
     let mut reader = BufReader::new(from);
+    let full = reader.capacity();
     let mut line = Vec::new();
     loop {
-        let (used, ended) = match reader.fill_buf() {
+        let (used, ended, paused) = match reader.fill_buf() {
             Ok([]) if line.is_empty() => break,
             // The end of the output ends the line too.
-            Ok([]) => (0, true),
+            Ok([]) => (0, true, true),
             Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
                 Some(end) => {
                     line.extend_from_slice(&buf[..end]);
-                    (end + 1, true)
+                    (end + 1, true, true)
                 }
                 None => {
                     line.extend_from_slice(buf);
-                    (buf.len(), false)
+                    // Less than a buffer full: gw has written no more for now.
+                    (buf.len(), false, buf.len() < full)
                 }
             },
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
         reader.consume(used);
+        let own = line.starts_with(OWN) || OWN.starts_with(&line);
+        if !ended && (own || !paused) {
+            continue;
+        }
         let text = String::from_utf8_lossy(&line)
             .trim_end_matches('\r')
             .to_owned();
@@ -669,6 +679,28 @@ mod tests {
         assert_eq!(log.tail(&clean), "Pass 2: 0");
         log.begin("gw info".into(), &mut job("info"));
         assert_eq!(log.tail(&clean), "", "another job's lines came after");
+    }
+
+    #[test]
+    fn the_bridges_own_lines_pass_whole_and_never_show() {
+        let (from, mut gw) = std::io::pipe().unwrap();
+        let (to, lines) = mpsc::channel();
+        std::thread::spawn(move || relay(from, to, Box::new(|| ())));
+        let mut read = Job::new("read", Vec::new(), lines);
+        // As the bridge prints one: its start, then more, a while apart.
+        for piece in [&b"@ferri"[..], b"teweazle track {\"c\":3,", &[b' '; 20_000]] {
+            gw.write_all(piece).unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+            read.poll();
+            assert_eq!(read.partial, "", "none of it shows");
+        }
+        gw.write_all(b"\"h\":1}\nT3.1: Ra").unwrap();
+        poll_until(&mut read, |j| j.partial == "T3.1: Ra");
+        assert!(
+            read.progress.facts.contains_key(&(3, 1)),
+            "the report, whole"
+        );
+        assert!(read.log.is_empty(), "and not in the log");
     }
 
     #[test]

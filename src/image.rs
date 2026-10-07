@@ -452,9 +452,18 @@ mod tests {
                                               {"i": 1, "id": null, "len": 512, "fill": 0}]},
                 {"c": 1, "h": 0, "sectors": [{"i": 0, "id": null, "len": 512, "fill": 0},
                                               {"i": 1, "id": null, "len": 512, "fill": 0}]}],
-                "fillers": ["2d3d5b42"], "min_cyls": null}
+                "fillers": [hex(&filler())], "min_cyls": null}
         });
         Image::parse(&open).unwrap()
+    }
+
+    /// gw's filler for a 512-byte sector it lacks.
+    fn filler() -> Vec<u8> {
+        b"-=[BAD SECTOR]=-".repeat(32)
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// A read of cylinders 0 and 1's side 0, which gw has said nothing of.
@@ -476,7 +485,7 @@ mod tests {
     fn a_made_image_is_laid_out_from_its_first_byte_and_holds_what_gw_put_in_it() {
         let mut image = made();
         assert_eq!(image.bytes(), Some(2048), "as gw will write it");
-        assert_eq!(image.layout.as_ref().unwrap().fillers[0], b"-=[B");
+        assert_eq!(image.layout.as_ref().unwrap().fillers[0], filler());
         let track = serde_json::json!({"event": "track", "c": 0, "h": 0, "has": [true, false]});
         image.take(&track);
         let progress = announced();
@@ -543,10 +552,7 @@ mod tests {
         assert_eq!(placed[0].parts[1].2, State::Filler);
         assert_eq!(image.part_bytes(&placed[0], 1), Some(second));
         // A track gw did not read: the filler it writes for it.
-        assert_eq!(
-            image.part_bytes(&placed[1], 0).as_deref(),
-            Some(&b"-=[B"[..])
-        );
+        assert_eq!(image.part_bytes(&placed[1], 0), Some(filler()));
         // Nothing yet of a track it is to read.
         let placed = image.placed(Some(&job(&progress, true))).unwrap();
         assert_eq!(image.part_bytes(&placed[1], 0), None);

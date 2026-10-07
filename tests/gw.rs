@@ -668,24 +668,49 @@ const FORMATS: [(&str, &str); 23] = [
     ("acorn.dfs.ss", ".ssd"),
 ];
 
+/// What the stand-in drive's gw write prints, after making `image` of random
+/// bytes in `format` (with none, writing `image` as it is): tests/data/drive.py
+/// over the bridge, which must have written to the stand-in.
+fn stand_in_write(tools: &Tools, format: &str, image: &Path, tracks: &str) -> String {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .arg(data.join("drive.py"))
+        .arg(&bridge)
+        .arg(format)
+        .arg(image)
+        .arg(format!("--tracks={tracks}"))
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.contains("drive.py: the stand-in drive"),
+        "{format}: not the stand-in: {}",
+        unreported(&text)
+    );
+    text.into_owned()
+}
+
+/// gw's own lines of `text`, without the bridge's reports.
+fn unreported(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with("@ferriteweazle "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
     let Some(tools) = tools() else { return };
     let dir = scratch("writes");
-    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
-    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
     for (format, ext) in FORMATS {
         let image = dir.join(format!("{}{ext}", format.replace('.', "_")));
-        let out = std::process::Command::new(&tools.python)
-            .arg(data.join("drive.py"))
-            .arg(&bridge)
-            .arg(format)
-            .arg(&image)
-            .arg("--tracks=c=0-3")
-            .output()
-            .expect("python runs");
-        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-        assert!(text.contains("All tracks verified"), "{format}: {text}");
+        let text = stand_in_write(&tools, format, &image, "c=0-3");
+        assert!(
+            text.contains("All tracks verified"),
+            "{format}: {}",
+            unreported(&text)
+        );
         let (mut written, mut verified) = (BTreeMap::new(), BTreeMap::new());
         for line in text
             .lines()
@@ -698,15 +723,33 @@ fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
                 other => panic!("{format}: a report on {other:?}"),
             };
         }
-        assert!(!written.is_empty(), "{format}: {text}");
+        assert!(!written.is_empty(), "{format}: {}", unreported(&text));
         assert_eq!(
             written.keys().collect::<Vec<_>>(),
             verified.keys().collect::<Vec<_>>(),
             "{format}"
         );
+        // The file as gw lays it out, as the bridge reported it opened.
+        let source = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("@ferriteweazle image "))
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .find_map(|v| image::Image::parse(&v).filter(|i| i.role == image::Role::Source))
+            .expect("the image the write takes its tracks from");
+        let laid = source.placed(None).expect("the file laid out");
+        let file = std::fs::read(&image).unwrap();
         for (key, w) in &written {
             let v = &verified[key];
             assert!(!w.sectors.is_empty(), "{format} {key:?}: no sectors");
+            // The sectors written hold the file's bytes, each its part's.
+            let track = laid.iter().find(|t| t.key == *key).expect("laid out");
+            let mut file_parts: Vec<&[u8]> = (track.parts.iter())
+                .map(|(p, at, _)| &file[*at as usize..(at + p.len) as usize])
+                .collect();
+            let mut sent: Vec<&[u8]> = w.sectors.iter().map(|s| &s.bytes[..]).collect();
+            file_parts.sort();
+            sent.sort();
+            assert!(sent == file_parts, "{format} {key:?}: not the file's bytes");
             assert!(
                 w.missing.is_empty() && v.missing.is_empty(),
                 "{format} {key:?}"
@@ -747,25 +790,15 @@ fn a_flux_image_written_as_it_is_is_reported_as_gw_writes_it_one_revolution_from
         &tools,
         &["convert", "--format=ibm.360", &path(&img), &path(&scp)],
     );
-    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
-    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
-    let out = std::process::Command::new(&tools.python)
-        .arg(data.join("drive.py"))
-        .arg(&bridge)
-        .arg("")
-        .arg(&scp)
-        .arg("--tracks=c=0-1")
-        .output()
-        .expect("python runs");
-    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    let text = stand_in_write(&tools, "", &scp, "c=0-1");
     // Raw flux has no format to verify it by.
-    assert!(text.contains("No tracks verified"), "{text}");
+    assert!(text.contains("No tracks verified"), "{}", unreported(&text));
     let reports: Vec<_> = text
         .lines()
         .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
         .map(|l| Facts::parse(l).expect("a report"))
         .collect();
-    assert_eq!(reports.len(), 4, "{text}");
+    assert_eq!(reports.len(), 4, "{}", unreported(&text));
     for (key, facts) in reports {
         assert_eq!(facts.source, Some(Source::Image), "{key:?}");
         assert!(
@@ -849,51 +882,63 @@ fn an_image_gw_makes_holds_each_sector_where_the_report_lays_it_as_data_or_fille
             })
         })
         .collect();
-    // Each format in a gw of its own, at once.
+    // Each format in a gw of its own, as many at once as the machine has cores.
+    let formats = std::sync::Mutex::new(FORMATS.iter().zip(sizes));
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     std::thread::scope(|scope| {
-        for (&(format, ext), size) in FORMATS.iter().zip(sizes) {
-            let (tools, dir) = (&tools, &dir);
+        for _ in 0..cores.min(FORMATS.len()) {
+            let (tools, dir, formats) = (&tools, &dir, &formats);
             scope.spawn(move || {
-                let name = format.replace('.', "_");
-                let img = dir.join(format!("{name}{ext}"));
-                let (scp, back) = (
-                    dir.join(format!("{name}.scp")),
-                    dir.join(format!("{name}-back{ext}")),
-                );
-                let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
-                std::fs::write(&img, &bytes).unwrap();
-                let fmt = format!("--format={format}");
-                // The image gw takes its tracks from, checked against its file,
-                // and each part's bytes as the file holds them.
-                let job = run(tools, &["convert", &fmt, &path(&img), &path(&scp)]);
-                let source = job.progress.source.as_ref().expect("the source's report");
-                assert!(source.layout.is_some(), "{format}: laid out");
-                assert_eq!(source.size, Some(size), "{format}");
-                let mut padded = bytes.clone();
-                for track in source.placed(Some(&converted(&job))).expect("laid out") {
-                    for (k, (part, at, state)) in track.parts.iter().enumerate() {
-                        let (at, len) = (*at as usize, part.len as usize);
-                        padded.resize(padded.len().max(at + len), 0);
-                        let reported = source.part_bytes(&track, k);
-                        assert_eq!(reported.as_deref(), Some(&padded[at..at + len]), "{format}");
-                        assert!(
-                            matches!(state, image::State::Data | image::State::PastEnd),
-                            "{format}: {:?} {state:?}",
-                            track.key
-                        );
+                loop {
+                    let next = formats.lock().unwrap_or_else(|e| e.into_inner()).next();
+                    let Some((&(format, ext), size)) = next else {
+                        break;
+                    };
+                    let name = format.replace('.', "_");
+                    let img = dir.join(format!("{name}{ext}"));
+                    let (scp, back) = (
+                        dir.join(format!("{name}.scp")),
+                        dir.join(format!("{name}-back{ext}")),
+                    );
+                    let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
+                    std::fs::write(&img, &bytes).unwrap();
+                    let fmt = format!("--format={format}");
+                    // The image gw takes its tracks from, checked against its file,
+                    // and each part's bytes as the file holds them.
+                    let job = run(tools, &["convert", &fmt, &path(&img), &path(&scp)]);
+                    let source = job.progress.source.as_ref().expect("the source's report");
+                    assert!(source.layout.is_some(), "{format}: laid out");
+                    assert_eq!(source.size, Some(size), "{format}");
+                    let mut padded = bytes.clone();
+                    for track in source.placed(Some(&converted(&job))).expect("laid out") {
+                        for (k, (part, at, state)) in track.parts.iter().enumerate() {
+                            let (at, len) = (*at as usize, part.len as usize);
+                            padded.resize(padded.len().max(at + len), 0);
+                            let reported = source.part_bytes(&track, k);
+                            assert_eq!(
+                                reported.as_deref(),
+                                Some(&padded[at..at + len]),
+                                "{format}"
+                            );
+                            assert!(
+                                matches!(state, image::State::Data | image::State::PastEnd),
+                                "{format}: {:?} {state:?}",
+                                track.key
+                            );
+                        }
                     }
+                    // Back again: every sector's data where it was, past the
+                    // source's end gw's zeros.
+                    let job = run(tools, &["convert", &fmt, &path(&scp), &path(&back)]);
+                    let made = std::fs::read(&back).unwrap();
+                    let mut want = bytes.clone();
+                    want.resize(made.len().max(want.len()), 0);
+                    let (data, filler, unread) = holds_as_reported(&job, &back, &want);
+                    assert!(
+                        data > 0 && filler == 0 && unread == 0,
+                        "{format}: {data} {filler} {unread}"
+                    );
                 }
-                // Back again: every sector's data where it was, past the
-                // source's end gw's zeros.
-                let job = run(tools, &["convert", &fmt, &path(&scp), &path(&back)]);
-                let made = std::fs::read(&back).unwrap();
-                let mut want = bytes.clone();
-                want.resize(made.len().max(want.len()), 0);
-                let (data, filler, unread) = holds_as_reported(&job, &back, &want);
-                assert!(
-                    data > 0 && filler == 0 && unread == 0,
-                    "{format}: {data} {filler} {unread}"
-                );
             });
         }
     });
@@ -1526,6 +1571,7 @@ fn detection_names_the_format_of_a_flux_image() {
             "{key:?}"
         );
         assert!(facts.flux.is_some(), "{key:?}");
+        assert_eq!(facts.sectors.len(), 5, "{key:?}");
         assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
     }
     // A codec that keeps no places: gw's decoder noted placing each sector.
@@ -1534,12 +1580,15 @@ fn detection_names_the_format_of_a_flux_image() {
         job.detected.first().map(String::as_str),
         Some("amiga.amigados")
     );
-    for (key, facts) in &job.progress.facts {
+    let facts = &job.progress.facts;
+    assert!(facts.len() >= 3, "{:?}", facts.keys());
+    for (key, facts) in facts {
         assert_eq!(
             facts.summary.as_deref(),
             Some("AmigaDOS (11/11 sectors)"),
             "{key:?}"
         );
+        assert_eq!(facts.sectors.len(), 11, "{key:?}");
         assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
     }
     std::fs::remove_dir_all(dir).ok();

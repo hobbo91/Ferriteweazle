@@ -1283,9 +1283,22 @@ def report_codec(dat):
             out['laid'] = [ibm_sector(s, False) for s in inner.sectors]
     else:
         out['places'] = getattr(dat, PLACES, {})
-        sectors = getattr(dat, 'sector', [])
-        out['data'] = {i: (s[1] if isinstance(s, tuple) else s).hex()  # AmigaDOS's has its label
-                       for i, s in enumerate(sectors) if s is not None}
+        out['data'] = image_data(dat)
+    return out
+
+
+def image_data(track):
+    """A track's sectors that decoded, by number, each as gw puts it in a
+    sector image: without a Mac sector's tag bytes or an AmigaDOS sector's
+    label, which gw's images do not keep."""
+    parts = sector_parts(track)
+    if parts is None:
+        return {}
+    held, at, out = bytes(track.get_img_track()), 0, {}
+    for i, _, n in parts:
+        if track.has_sec(i):
+            out[i] = held[at:at + n].hex()
+        at += n
     return out
 
 

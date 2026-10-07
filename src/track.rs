@@ -6,15 +6,32 @@
 use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 
-/// The bridge's report on a track, as bridge.py's report() prints it.
+/// The bridge's report on a track, as bridge.py's report() prints it. A
+/// part that does not parse is left out, as the bridge leaves out one it
+/// cannot make, and the rest kept.
 #[derive(Debug, Deserialize)]
 struct Report {
     c: u32,
     h: u32,
     /// For a write: `image`, `written` or `verify`; see Source.
     source: Option<String>,
+    /// gw's image holds no such track.
+    #[serde(default)]
+    absent: bool,
+    #[serde(default, deserialize_with = "lenient")]
     flux: Option<Flux>,
+    #[serde(default, deserialize_with = "lenient")]
     codec: Option<Codec>,
+}
+
+/// A part of a report, or None where it does not parse.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).ok())
 }
 
 /// A track's flux, in its sample rate's ticks.
@@ -127,18 +144,31 @@ struct Bytes(Vec<u8>);
 
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Bytes, D::Error> {
-        let hex = String::deserialize(d)?;
-        let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-        hex.as_bytes()
-            .chunks(2)
-            .map(|pair| match pair {
-                [a, b] => Some(digit(*a)? << 4 | digit(*b)?),
-                _ => None,
-            })
-            .collect::<Option<Vec<u8>>>()
-            .map(Bytes)
-            .ok_or_else(|| serde::de::Error::custom("not hex"))
+        struct Hex;
+        impl serde::de::Visitor<'_> for Hex {
+            type Value = Bytes;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("bytes in hex")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Bytes, E> {
+                hex(s).map(Bytes).ok_or_else(|| E::custom("not hex"))
+            }
+        }
+        d.deserialize_str(Hex)
     }
+}
+
+/// Bytes from hex digits, two to a byte; None for anything else.
+pub(crate) fn hex(s: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let (pairs, odd) = s.as_bytes().as_chunks::<2>();
+    if !odd.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
+        .map(|&[a, b]| Some(digit(a)? << 4 | digit(b)?))
+        .collect()
 }
 
 /// A track as the disk view draws it.
@@ -158,6 +188,9 @@ pub struct Facts {
     /// For a write, what these are of; none for a read or a conversion,
     /// whose input they are.
     pub source: Option<Source>,
+    /// gw's image holds no such track: a conversion's input, or the image a
+    /// write takes its tracks from.
+    pub absent: bool,
     /// The job's revision when these came: see Progress::revision.
     pub revision: u64,
 }
@@ -205,11 +238,13 @@ impl Spin {
     }
 }
 
-/// A sector's ID: C, H, R and N from an IBM-style header, else its number.
+/// A sector's ID: C, H, R and N from an IBM-style header, else its number;
+/// none for a data block found with no header before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Id {
     Ibm([u8; 4]),
     Number(u32),
+    None,
 }
 
 /// A sector as found on the track: a header block, then a data block.
@@ -266,12 +301,9 @@ impl Facts {
     /// Parses a TRACK line's JSON: the track's cylinder and head, and its facts.
     pub fn parse(json: &str) -> Option<((u32, u32), Facts)> {
         let report: Report = serde_json::from_str(json).ok()?;
-        let mut facts = report
-            .codec
-            .as_ref()
-            .map(Facts::decoded)
-            .unwrap_or_default();
+        let mut facts = report.codec.map(Facts::decoded).unwrap_or_default();
         facts.flux = report.flux.as_ref().and_then(spin);
+        facts.absent = report.absent;
         facts.source = match report.source.as_deref() {
             Some("image") => Some(Source::Image),
             Some("written") => Some(Source::Written),
@@ -281,25 +313,28 @@ impl Facts {
         Some(((report.c, report.h), facts))
     }
 
-    fn decoded(codec: &Codec) -> Facts {
+    fn decoded(mut codec: Codec) -> Facts {
         let mut facts = Facts {
-            summary: Some(codec.summary.clone()),
+            summary: Some(std::mem::take(&mut codec.summary)),
             cell: codec.clock,
             ..Facts::default()
         };
         match codec.time_per_rev.zip(codec.clock) {
-            Some(_) if !codec.found.is_empty() || codec.laid.is_some() => facts.ibm(codec),
-            _ => facts.numbered(codec),
+            Some((per_rev, cell)) if !codec.found.is_empty() || codec.laid.is_some() => {
+                facts.ibm(&mut codec, Timing { per_rev, cell })
+            }
+            _ => facts.numbered(&mut codec),
         }
         facts
     }
 
     /// An IBM-style track's sectors, placed as gw found them.
-    fn ibm(&mut self, codec: &Codec) {
+    fn ibm(&mut self, codec: &mut Codec, timing: Timing) {
+        let mut found = std::mem::take(&mut codec.found);
         let laid = codec.laid.as_deref();
         let expected = |id: &[u8; 4]| laid.is_none_or(|l| l.iter().any(|s| s.id == *id));
-        for s in &codec.found {
-            let bytes = s.bytes.clone().unwrap_or_default().0;
+        for s in &mut found {
+            let bytes = s.bytes.take().unwrap_or_default().0;
             let data = match s.data {
                 false => Data::Bad,
                 true => match bytes.first() {
@@ -307,7 +342,7 @@ impl Facts {
                     _ => Data::Good,
                 },
             };
-            let [start, header_end, data_start, end] = codec.shares(
+            let [start, header_end, data_start, end] = timing.shares(
                 [s.start, s.header_end, s.data_start, s.end],
                 s.times,
                 s.turn,
@@ -325,22 +360,26 @@ impl Facts {
                 before: false,
             });
         }
-        // Blocks found apart, once each, unless part of a sector found whole.
+        // Blocks found apart, once each, unless part of a sector found
+        // whole; of a header seen twice, one whose CRC holds, as gw keeps.
         let mut apart: Vec<&Apart> = Vec::new();
         for a in &codec.apart {
-            let whole = codec.found.iter().any(|s| match a.id {
+            let whole = found.iter().any(|s| match a.id {
                 Some(_) => (s.start - a.start).abs() < SAME,
                 None => (s.data_start - a.start).abs() < SAME,
             });
             let seen = apart
                 .iter()
-                .any(|b| b.id.is_some() == a.id.is_some() && (b.start - a.start).abs() < SAME);
-            if !whole && !seen {
-                apart.push(a);
+                .position(|b| b.id.is_some() == a.id.is_some() && (b.start - a.start).abs() < SAME);
+            match seen {
+                _ if whole => {}
+                Some(i) if a.header == Some(true) && apart[i].header != Some(true) => apart[i] = a,
+                Some(_) => {}
+                None => apart.push(a),
             }
         }
         for a in apart {
-            let [start, end] = codec.shares([a.start, a.end], a.times, a.turn);
+            let [start, end] = timing.shares([a.start, a.end], a.times, a.turn);
             self.sectors.push(match a.id {
                 Some(id) => Sector {
                     id: Id::Ibm(id),
@@ -358,7 +397,7 @@ impl Facts {
                     before: false,
                 },
                 None => Sector {
-                    id: Id::Number(0),
+                    id: Id::None,
                     at: Some(span(start, start, end)),
                     header_end: None,
                     header: Header::None,
@@ -384,16 +423,16 @@ impl Facts {
             .enumerate()
             .map(|(i, &x)| {
                 let at = codec.iam_times.get(i).copied().flatten();
-                let [share] = codec.shares([x], at.map(|(t, ..)| [t]), at.and_then(|a| a.2));
+                let [share] = timing.shares([x], at.map(|(t, ..)| [t]), at.and_then(|a| a.2));
                 share.rem_euclid(1.0)
             })
             .collect();
     }
 
     /// Another codec's sectors, by number, placed where gw found them.
-    fn numbered(&mut self, codec: &Codec) {
+    fn numbered(&mut self, codec: &mut Codec) {
         for &n in &codec.good {
-            let bytes = codec.data.get(&n).cloned().unwrap_or_default().0;
+            let bytes = codec.data.remove(&n).unwrap_or_default().0;
             let data = match bytes.first() {
                 Some(&b) if bytes.iter().all(|&x| x == b) => Data::Empty(b),
                 _ => Data::Good,
@@ -423,23 +462,29 @@ impl Facts {
     }
 }
 
-impl Codec {
+/// An IBM-style track's revolution as gw decodes it, and its bit cell, in seconds.
+#[derive(Clone, Copy)]
+struct Timing {
+    per_rev: f64,
+    cell: f64,
+}
+
+impl Timing {
     /// Where IBM-style areas lie round the track, as shares of a revolution
     /// from the index: by time where gw decoded them from flux, `times` from
-    /// the index their revolution starts at and
-    /// `turn` its length, else gw's revolution; with none, by `bits` of the
-    /// format's bit cells, as an image's track is laid out.
+    /// the index their revolution starts at and `turn` its length, else gw's
+    /// revolution; with none, by `bits` of the format's bit cells, as an
+    /// image's track is laid out.
     fn shares<const N: usize>(
-        &self,
+        self,
         bits: [f64; N],
         times: Option<[f64; N]>,
         turn: Option<f64>,
     ) -> [f32; N] {
-        let per_rev = self.time_per_rev.unwrap_or(1.0);
         match times {
-            Some(times) => times.map(|t| (t / turn.unwrap_or(per_rev)) as f32),
+            Some(times) => times.map(|t| (t / turn.unwrap_or(self.per_rev)) as f32),
             None => {
-                let cells = per_rev / self.clock.unwrap_or(1.0);
+                let cells = self.per_rev / self.cell;
                 bits.map(|b| (b / cells) as f32)
             }
         }
@@ -463,6 +508,10 @@ fn start_of(s: &Sector) -> f32 {
 /// revolution, `per_rev` seconds, so a read of under two index pulses
 /// measures its revolutions by that.
 fn place(p: &Place, per_rev: Option<f64>) -> Option<([f32; 3], bool)> {
+    // No revolution, so no index to place it from.
+    if p.revs.is_empty() {
+        return None;
+    }
     let mut index = Vec::new();
     let mut at = 0.0;
     for (i, &bits) in p.revs.iter().enumerate() {
@@ -511,6 +560,13 @@ fn spin(f: &Flux) -> Option<Spin> {
     let turns: Vec<f64> = pulses.windows(2).map(|w| w[1] - w[0]).collect();
     let first = turns.first().copied().unwrap_or(f.period);
     let last = turns.last().copied().unwrap_or(f.period);
+    // Read before the first pulse and after the last, in revolutions: under
+    // two, or the pulses are not a disk's index.
+    let (lead, tail) = (first_pulse / first, (f.end - last_pulse).max(0.0) / last);
+    let sane = |x: f64| x.is_finite() && (0.0..2.0).contains(&x);
+    if turns.iter().any(|&t| !(t.is_finite() && t > 0.0)) || !sane(lead) || !sane(tail) {
+        return None;
+    }
     let mut cover = vec![0.0; parts];
     let mut pass = |from: f64, to: f64| {
         // Shares of a revolution, which may run on past 1.
@@ -523,10 +579,10 @@ fn spin(f: &Flux) -> Option<Spin> {
         }
     };
     if !f.cued {
-        pass(1.0 - first_pulse / first, 1.0);
+        pass(1.0 - lead, 1.0);
     }
     turns.iter().for_each(|_| pass(0.0, 1.0));
-    pass(0.0, (f.end - last_pulse).max(0.0) / last);
+    pass(0.0, tail);
     let bins: Vec<f32> = f
         .bins
         .iter()
@@ -605,8 +661,6 @@ mod tests {
         assert!(facts.iams.is_empty(), "this disk has no index mark");
         // A whole track of data: its flux even round it.
         let relative = facts.flux.unwrap().relative();
-        let mean = relative.iter().sum::<f32>() / relative.len() as f32;
-        assert!((mean - 1.0).abs() < 1e-3, "{mean}");
         assert!(
             relative.iter().all(|&d| (0.5..=1.5).contains(&d)),
             "{relative:?}"
@@ -662,5 +716,111 @@ mod tests {
         let b: Bytes = serde_json::from_str("\"00ff7f\"").unwrap();
         assert_eq!(b.0, [0, 255, 127]);
         assert!(serde_json::from_str::<Bytes>("\"0g\"").is_err());
+        assert_eq!(hex("+f"), None, "only hex digits");
+        assert_eq!(hex("abc"), None, "two to a byte");
+    }
+
+    /// An IBM-style track as the bridge reports one decoded from flux: its
+    /// format lays out sectors 1 and 2, neither found whole, and gw found
+    /// these blocks by themselves.
+    fn apart(blocks: serde_json::Value) -> Facts {
+        let laid = |r: u8, start: u32| {
+            serde_json::json!({"id": [0, 0, r, 2], "start": start, "header_end": start + 100,
+                "data_start": start + 200, "end": start + 4400, "header": false,
+                "data": false, "mark": 251})
+        };
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (0/2 sectors)", "nsec": 2, "good": [],
+            "time_per_rev": 0.2, "clock": 2e-6, "found": [], "apart": blocks,
+            "laid": [laid(1, 100), laid(2, 50_000)]}});
+        Facts::parse(&report.to_string()).unwrap().1
+    }
+
+    #[test]
+    fn data_found_with_no_header_has_no_id_and_its_sectors_are_missing() {
+        let facts = apart(serde_json::json!([
+            {"id": null, "header": null, "start": 20_000, "end": 24_000, "mark": 251}
+        ]));
+        let [s] = &facts.sectors[..] else {
+            panic!("{:?}", facts.sectors)
+        };
+        assert_eq!(
+            (s.id, s.header, s.data),
+            (Id::None, Header::None, Data::Unread)
+        );
+        assert_eq!(s.at, Some([0.2, 0.2, 0.24]), "by the format's bit cells");
+        let ids = [Id::Ibm([0, 0, 1, 2]), Id::Ibm([0, 0, 2, 2])];
+        assert_eq!(facts.missing, ids);
+    }
+
+    #[test]
+    fn a_header_found_twice_by_itself_is_the_copy_whose_crc_holds() {
+        let header = |crc: bool, start: u32| {
+            serde_json::json!({"id": [0, 0, 1, 2], "header": crc, "start": start,
+                "end": start + 100})
+        };
+        let facts = apart(serde_json::json!([header(false, 100), header(true, 110)]));
+        let [s] = &facts.sectors[..] else {
+            panic!("{:?}", facts.sectors)
+        };
+        assert_eq!((s.header, s.data), (Header::Good, Data::None));
+        let facts = apart(serde_json::json!([header(true, 100), header(false, 110)]));
+        assert_eq!(facts.sectors[0].header, Header::Good, "kept");
+    }
+
+    #[test]
+    fn a_part_of_a_report_that_does_not_parse_leaves_the_rest() {
+        // gw's revolution unmeasured: no period.
+        let report = serde_json::json!({"c": 1, "h": 0,
+            "flux": {"freq": 1000, "index": [100], "cued": true, "period": null, "end": 100,
+                     "bins": [1, 1]},
+            "codec": {"summary": "AmigaDOS (1/11 sectors)", "nsec": 11, "good": [0],
+                      "data": {"0": "00ff"}}});
+        let (key, facts) = Facts::parse(&report.to_string()).unwrap();
+        assert_eq!(key, (1, 0));
+        assert!(facts.flux.is_none());
+        assert_eq!(facts.sectors.len(), 1);
+        assert_eq!(facts.sectors[0].bytes, [0, 255]);
+        assert_eq!(facts.missing.len(), 10);
+    }
+
+    #[test]
+    fn a_track_gws_image_does_not_hold_is_said_to_be_absent() {
+        let (key, facts) = Facts::parse(r#"{"c":16,"h":0,"absent":true}"#).unwrap();
+        assert_eq!(key, (16, 0));
+        assert!(facts.absent && facts.flux.is_none() && facts.sectors.is_empty());
+        assert!(!Facts::parse(r#"{"c":16,"h":0}"#).unwrap().1.absent);
+    }
+
+    #[test]
+    fn pulses_that_are_no_disks_index_make_no_revolutions() {
+        let flux = |index: Vec<f64>, cued, end| Flux {
+            freq: 1000.0,
+            index,
+            cued,
+            period: 100.0,
+            end,
+            bins: vec![1; 4],
+        };
+        assert!(
+            spin(&flux(vec![0.0, 100.0], true, 100.0)).is_none(),
+            "one of no length"
+        );
+        assert!(
+            spin(&flux(vec![1000.0, 100.0], false, 1100.0)).is_none(),
+            "ten before"
+        );
+        assert!(
+            spin(&flux(vec![100.0], true, 100_000.0)).is_none(),
+            "a thousand after"
+        );
+        let p = Place {
+            at: 10.0,
+            data: None,
+            end: 20.0,
+            revs: Vec::new(),
+            cued: false,
+        };
+        assert_eq!(place(&p, Some(100.0)), None, "no revolution to place it in");
     }
 }

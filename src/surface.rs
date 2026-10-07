@@ -1549,6 +1549,7 @@ pub(crate) fn id_text(id: &Id) -> String {
     match id {
         Id::Ibm([c, h, r, n]) => format!("C{c} H{h} R{r} N{n}"),
         Id::Number(n) => format!("Sector {n}"),
+        Id::None => "Data block".to_owned(),
     }
 }
 
@@ -1557,6 +1558,7 @@ fn short_id(id: &Id) -> String {
     match id {
         Id::Ibm([.., r, _]) => format!("R{r}"),
         Id::Number(n) => n.to_string(),
+        Id::None => "No ID".to_owned(),
     }
 }
 
@@ -1572,13 +1574,14 @@ pub(crate) enum Tone {
 /// mark, its place, and notes.
 fn sector_lines(s: &Sector) -> Vec<(String, Tone)> {
     let size = match s.id {
-        Id::Ibm([.., n]) => Some(128u32 << n.min(7)),
-        Id::Number(_) if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
-        Id::Number(_) => None,
+        _ if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
+        // The data its header calls for, as gw's decoder reads it.
+        Id::Ibm([.., n]) if n <= 7 => Some(128u32 << n),
+        _ => None,
     };
     let name = match s.id {
         Id::Ibm(_) => format!("Sector {}", id_text(&s.id)),
-        Id::Number(_) => id_text(&s.id),
+        Id::Number(_) | Id::None => id_text(&s.id),
     };
     let mut lines = vec![(
         match size {

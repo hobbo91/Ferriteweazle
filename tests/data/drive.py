@@ -2,7 +2,9 @@
 exactly 300 rpm, keeps each track as gw writes it from the index, and reads
 it back from wherever it is when gw verifies. Makes IMAGE first, of random
 bytes in FORMAT; with FORMAT empty, writes IMAGE, a flux image, as it is.
-Prints gw's output, with the bridge's TRACK lines.
+Prints gw's output, with the bridge's TRACK lines, and STAND_IN once the
+stand-in is in use. gw is given a port that does not exist, so that it could
+not reach a real drive even if it got past the stand-in.
 
     python drive.py BRIDGE FORMAT IMAGE [gw write options...]
 """
@@ -20,7 +22,11 @@ if fmt:
                if (t := d.mk_track(c, h)))
     rand = random.Random(fmt)
     with open(image, 'wb') as f:
-        f.write(bytes(rand.randrange(256) for _ in range(size)))
+        f.write(rand.getrandbits(8 * size).to_bytes(size, 'little'))
+
+
+STAND_IN = 'drive.py: the stand-in drive'
+NO_SUCH_PORT = '/dev/ferriteweazle-no-such-port'
 
 
 class Drive:
@@ -28,6 +34,7 @@ class Drive:
     sample_freq = 72_000_000
 
     def __init__(self):
+        print(STAND_IN, file=sys.stderr, flush=True)
         self.period = self.sample_freq * 60 / 300
         self.tracks, self.at, self.rand = {}, (0, 0), random.Random(1)
 
@@ -76,4 +83,5 @@ class Drive:
 
 
 util.usb_open = lambda *a, **k: Drive()
-bridge['gw'](['write', *([f'--format={fmt}'] if fmt else []), *options, image])
+bridge['gw'](['write', f'--device={NO_SUCH_PORT}', *([f'--format={fmt}'] if fmt else []),
+              *options, image])
