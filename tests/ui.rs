@@ -2410,9 +2410,20 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
             lines.extend(held.take());
         }
     }
+    // gw's lines so far, taken as a running job takes them.
     let running = |n: usize| {
-        let mut job = Job::replay("write", &lines[..n].join("\n"));
+        let mut job = Job::replay("write", "");
         job.ended = None;
+        for line in &lines[..n] {
+            match line.split_once(' ') {
+                Some(("@ferriteweazle", rest)) => match rest.split_once(' ') {
+                    Some(("track", report)) => job.progress.report(report),
+                    Some(("image", report)) => job.progress.image(report),
+                    _ => {}
+                },
+                _ => job.progress.feed(line),
+            }
+        }
         job
     };
     let mut w = start(
@@ -2428,12 +2439,16 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
     w.run_steps(4);
     let disks = |w: &Window| w.get_by_label("Disk map").rect().size();
     let first = disks(&w);
-    // A track gw is writing is known by its line alone until written.
     for n in 40..120 {
         app_mut(&mut w).disk = Some(running(n));
         // Stepped, not run: a running job keeps the window repainting.
         w.run_steps(2);
         assert_eq!(disks(&w), first, "after {n} lines");
+        // The track gw is writing is to do until gw says it is written.
+        assert!(
+            w.query_by_label_contains("Not known").is_none(),
+            "after {n} lines"
+        );
     }
 }
 

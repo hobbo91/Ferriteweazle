@@ -892,8 +892,8 @@ enum Ring<'a> {
 /// What track `key`'s ring shows: in the Sectors view, the sectors gw found
 /// where it found them, or that it read flux and decoded none of it; in the
 /// Flux view, its flux. With neither, its status as the grid shows it if no
-/// track drawn has more; else not known, or nothing if gw passed over it.
-/// Then, if gw is to work on it, to do; else nothing.
+/// track drawn has more; else to do while gw is on it, not known, or nothing
+/// if gw passed over it. Then, if gw is to work on it, to do; else nothing.
 fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palette) -> Ring<'a> {
     let progress = map.progress;
     let facts = progress.facts.get(&key);
@@ -913,6 +913,16 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
             None if planned(progress, key) => Ring::ToDo,
             None => Ring::Bare,
         };
+    }
+    // The track gw is on, its line all gw has said of it yet: its report is
+    // to come, as a write's comes once gw has written the track.
+    if facts.is_none()
+        && map.running
+        && map.current == Some(key)
+        && track.is_some_and(|t| t.status != Status::Skipped)
+        && planned(progress, key)
+    {
+        return Ring::ToDo;
     }
     let placed = facts.is_some_and(|f| f.sectors.iter().any(|s| s.at.is_some()));
     match (drawn.shows, facts) {
@@ -3304,6 +3314,16 @@ mod tests {
             ]
         );
         assert_eq!((drawn.unknown, drawn.to_do), (1, 1));
+        // While gw works, the track it is on, its line alone: to do, unless
+        // gw passes over it.
+        for (current, shown) in [((3, 0), "to do"), ((6, 0), "bare")] {
+            let running = Map {
+                current: Some(current),
+                running: true,
+                ..map_of(&progress, Shows::Sectors)
+            };
+            assert_eq!(rings(&running).0[current.0 as usize], shown);
+        }
         // With no flux, the sectors show.
         let mut sectors_only = Progress::blank(vec![0], vec![0]);
         sectors_only.facts.insert((0, 0), amiga(true, false));
@@ -3320,6 +3340,13 @@ mod tests {
         assert!(drawn.pure);
         let p = &theme::DARK;
         assert_eq!(drawn.statuses, [p.good, p.partial]);
+        // The track gw is on, too, while it works.
+        let running = Map {
+            current: Some((1, 0)),
+            running: true,
+            ..map_of(&lines, Shows::Sectors)
+        };
+        assert_eq!(rings(&running).0, shown);
     }
 
     #[test]
