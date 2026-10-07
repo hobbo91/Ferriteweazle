@@ -640,21 +640,29 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// A format of each of gw 1.23's codec families, with an image type that holds it.
-const FORMATS: [(&str, &str); 16] = [
+/// Formats of each of gw 1.23's codecs that lays out sectors, and their
+/// variants, with an image type that holds each.
+const FORMATS: [(&str, &str); 23] = [
     ("ibm.1440", ".img"),
     ("ibm.dmf", ".img"),
     ("ibm.360", ".img"),
     ("ibm.1200", ".img"),
     ("amiga.amigados", ".adf"),
+    ("amiga.amigados_hd", ".adf"),
     ("commodore.1541", ".d64"),
+    ("commodore.1571", ".d71"),
     ("mac.800", ".img"),
+    ("mac.400", ".img"),
     ("apple2.appledos.140", ".do"),
+    ("apple2.prodos.140", ".po"),
     ("hp.mmfm.9885", ".img"),
+    ("hp.mmfm.9895", ".img"),
     ("northstar.fm.ss", ".nsi"),
+    ("northstar.mfm.ds", ".nsi"),
     ("micropolis.100tpi.ss", ".img"),
     ("datageneral.2f", ".img"),
     ("dec.rx02", ".img"),
+    ("dec.rx01", ".img"),
     ("atarist.720", ".st"),
     ("akai.800", ".img"),
     ("acorn.dfs.ss", ".ssd"),
@@ -826,51 +834,71 @@ fn holds_as_reported(job: &Job, file: &Path, want: &[u8]) -> (usize, usize, usiz
 fn an_image_gw_makes_holds_each_sector_where_the_report_lays_it_as_data_or_filler() {
     let Some(tools) = tools() else { return };
     let dir = scratch("image-layout");
-    for (format, ext, size) in [
-        ("ibm.1440", "img", 1_474_560),
-        ("amiga.amigados", "adf", 901_120),
-        ("apple2.appledos.140", "do", 143_360),
-        ("commodore.1541", "d64", 174_848),
-    ] {
-        let (img, scp) = (dir.join(format!("a.{ext}")), dir.join(format!("{ext}.scp")));
-        let back = dir.join(format!("b.{ext}"));
-        let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
-        std::fs::write(&img, &bytes).unwrap();
-        let fmt = format!("--format={format}");
-        // The image gw takes its tracks from, checked against its file, and
-        // each part's bytes as the file holds them.
-        let job = run(&tools, &["convert", &fmt, &path(&img), &path(&scp)]);
-        let source = job.progress.source.as_ref().expect("the source's report");
-        assert!(source.layout.is_some(), "{format}: laid out");
-        assert_eq!(source.size, Some(size), "{format}");
-        let mut padded = bytes.clone();
-        for track in source.placed(Some(&converted(&job))).expect("laid out") {
-            for (k, (part, at, state)) in track.parts.iter().enumerate() {
-                let (at, len) = (*at as usize, part.len as usize);
-                padded.resize(padded.len().max(at + len), 0);
-                let reported = source.part_bytes(&track, k);
-                assert_eq!(reported.as_deref(), Some(&padded[at..at + len]), "{format}");
-                assert!(
-                    matches!(state, image::State::Data | image::State::PastEnd),
-                    "{format}: {:?} {state:?}",
-                    track.key
+    let mut service = Service::start(&tools, Box::new(|| {}));
+    // As many bytes as gw lays out for each format.
+    let sizes: Vec<u64> = FORMATS
+        .iter()
+        .map(|(format, _)| {
+            wait(format, || {
+                service.poll();
+                match service.format_info("", format) {
+                    Load::Ready(info) => Some(info.bytes.expect("a layout")),
+                    Load::Failed(e) => panic!("{format}: {e}"),
+                    Load::Waiting(_) => None,
+                }
+            })
+        })
+        .collect();
+    // Each format in a gw of its own, at once.
+    std::thread::scope(|scope| {
+        for (&(format, ext), size) in FORMATS.iter().zip(sizes) {
+            let (tools, dir) = (&tools, &dir);
+            scope.spawn(move || {
+                let name = format.replace('.', "_");
+                let img = dir.join(format!("{name}{ext}"));
+                let (scp, back) = (
+                    dir.join(format!("{name}.scp")),
+                    dir.join(format!("{name}-back{ext}")),
                 );
-            }
+                let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
+                std::fs::write(&img, &bytes).unwrap();
+                let fmt = format!("--format={format}");
+                // The image gw takes its tracks from, checked against its file,
+                // and each part's bytes as the file holds them.
+                let job = run(tools, &["convert", &fmt, &path(&img), &path(&scp)]);
+                let source = job.progress.source.as_ref().expect("the source's report");
+                assert!(source.layout.is_some(), "{format}: laid out");
+                assert_eq!(source.size, Some(size), "{format}");
+                let mut padded = bytes.clone();
+                for track in source.placed(Some(&converted(&job))).expect("laid out") {
+                    for (k, (part, at, state)) in track.parts.iter().enumerate() {
+                        let (at, len) = (*at as usize, part.len as usize);
+                        padded.resize(padded.len().max(at + len), 0);
+                        let reported = source.part_bytes(&track, k);
+                        assert_eq!(reported.as_deref(), Some(&padded[at..at + len]), "{format}");
+                        assert!(
+                            matches!(state, image::State::Data | image::State::PastEnd),
+                            "{format}: {:?} {state:?}",
+                            track.key
+                        );
+                    }
+                }
+                // Back again: every sector's data where it was, past the
+                // source's end gw's zeros.
+                let job = run(tools, &["convert", &fmt, &path(&scp), &path(&back)]);
+                let made = std::fs::read(&back).unwrap();
+                let mut want = bytes.clone();
+                want.resize(made.len().max(want.len()), 0);
+                let (data, filler, unread) = holds_as_reported(&job, &back, &want);
+                assert!(
+                    data > 0 && filler == 0 && unread == 0,
+                    "{format}: {data} {filler} {unread}"
+                );
+            });
         }
-        // Back again: every sector's data where it was, past the source's
-        // end gw's zeros.
-        let job = run(&tools, &["convert", &fmt, &path(&scp), &path(&back)]);
-        let made = std::fs::read(&back).unwrap();
-        let mut want = bytes.clone();
-        want.resize(made.len().max(want.len()), 0);
-        let (data, filler, unread) = holds_as_reported(&job, &back, &want);
-        assert!(
-            data > 0 && filler == 0 && unread == 0,
-            "{format}: {data} {filler} {unread}"
-        );
-    }
+    });
     // Decoded as a format the flux is not: gw's filler throughout.
-    let (scp, wrong) = (dir.join("img.scp"), dir.join("wrong.img"));
+    let (scp, wrong) = (dir.join("ibm_1440.scp"), dir.join("wrong.img"));
     let job = run(
         &tools,
         &["convert", "--format=ibm.720", &path(&scp), &path(&wrong)],
@@ -892,7 +920,7 @@ fn an_image_gw_makes_holds_each_sector_where_the_report_lays_it_as_data_or_fille
     assert_eq!((data, filler, unread), (72, 0, 2808));
     // Every other cylinder of the input, which gw's track lines name as
     // their own, half as far in.
-    let (img, stepped) = (dir.join("a.img"), dir.join("stepped.scp"));
+    let (img, stepped) = (dir.join("ibm_1440.img"), dir.join("stepped.scp"));
     let args = [
         "convert",
         "--format=ibm.1440",
