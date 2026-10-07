@@ -9,8 +9,8 @@ use crate::progress::{Progress, Status};
 use crate::theme::{self, Palette};
 use crate::track::{Data, Facts, Header, Id, Sector, Source, Spin};
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, emath::GuiRounding,
-    vec2,
+    self, Align2, Color32, FontId, Galley, Pos2, Rect, RichText, Sense, Shape, Stroke,
+    emath::GuiRounding, plugin::TypedPluginHandle, vec2,
 };
 use std::f64::consts::TAU;
 use std::sync::Arc;
@@ -223,8 +223,10 @@ pub(crate) const TITLE: f32 = 20.0;
 /// the same 13-point type.
 const TITLE_BAR: f32 = 28.0;
 const TITLE_SIZE: f32 = 13.0;
-/// Room for a line of legend under the disks, until it is measured.
-const LEGEND: f32 = 22.0;
+/// The legend: the room above it and after each entry, and the least
+/// width it wraps at, under narrow disks.
+const LEGEND_GAP: f32 = 6.0;
+const LEGEND_WIDTH: f32 = 240.0;
 const SIDE_GAP: f32 = 32.0;
 /// How long the last track reported takes to fade in or out, in seconds.
 const RING_FADE: f32 = 0.12;
@@ -235,8 +237,10 @@ const LEAST: f32 = 48.0;
 const FIT_RIM: f64 = 0.05;
 const FIT_INNER: f64 = 0.30;
 const FIT_HOLE: f64 = 0.22;
-/// Tracks this many pixels apart or more are a whole number of pixels
-/// apart; fitted ones this many lines apart or more have a line between them.
+/// Fitted tracks WHOLE pixels apart or more are a whole number of pixels
+/// apart, from a whole pixel, and SEPARATE lines apart or more have a line
+/// between them; tracks to scale SEPARATE pixels apart or more are a whole
+/// number of pixels apart.
 const WHOLE: f64 = 2.0;
 const SEPARATE: f64 = 4.0;
 /// How close, in revolutions, one sector starts to where another ends for
@@ -342,49 +346,142 @@ impl Look {
     }
 }
 
-/// How the disks fit the room `ui` has left: how many cylinders and sides
-/// they show, each disk's width at most, the room their legend takes, and
-/// the most height they can use. None with no cylinders to show.
-struct Fit {
+/// How the disks lie in the room `ui` has left, and what they show: how
+/// many cylinders and sides, and whether the disk holds them; each disk's
+/// picture and its diameter on whole pixels, its lines' width, and the
+/// width of them all with the gaps between; their legend, laid out under
+/// them; and the most height they can use, as wide as the room lets them,
+/// with the legend's height then.
+#[derive(Clone)]
+struct Room {
     span: u32,
     sides: u32,
-    legend: f32,
-    most: f32,
-    /// Each disk as drawn: its picture, its diameter on whole pixels, and
-    /// the width of them all with the gaps between.
+    fits: bool,
+    drawn: Arc<Drawn>,
     geometry: Geometry,
+    line: f64,
     diameter: f32,
     width: f32,
+    legend: Legend,
+    most: f32,
+    widest_legend: f32,
 }
 
-impl Fit {
-    fn of(ui: &egui::Ui, map: &Map) -> Option<Fit> {
+/// What a room was laid out for: the pass, the ui and the room it had
+/// left, and what of the map it shows.
+#[derive(Clone, PartialEq)]
+struct RoomKey {
+    pass: u64,
+    ui: egui::Id,
+    rect: Rect,
+    revision: u64,
+    disk: (u32, u32),
+    media: Media,
+    shows: Shows,
+    current: Option<(u32, u32)>,
+    verifying: bool,
+}
+
+impl Room {
+    /// The disks' room in what `ui` has left for `map`, laid out once a pass.
+    /// None with no cylinders to show.
+    fn of(ui: &egui::Ui, map: &Map) -> Option<Room> {
+        let ctx = ui.ctx();
+        let kept = ctx.plugin_or_default::<Kept>();
+        let key = RoomKey {
+            pass: ctx.cumulative_pass_nr(),
+            ui: ui.id(),
+            rect: ui.available_rect_before_wrap(),
+            revision: map.progress.revision,
+            disk: map.disk,
+            media: map.media,
+            shows: map.shows,
+            current: map.current,
+            verifying: map.verifying,
+        };
+        if let Some((_, room)) = kept.lock().room.as_ref().filter(|(k, _)| *k == key) {
+            return Some(room.clone());
+        }
+        let room = Room::lay(ui, map, &kept)?;
+        let mut kept = kept.lock();
+        // The most height the disks can use changes with their legend's:
+        // the pass again, the drawer as tall as that, not a frame late.
+        if kept.widest.is_some_and(|h| h != room.widest_legend) {
+            ctx.request_discard("the disks' legend");
+            if !ctx.will_discard() {
+                ctx.request_repaint();
+            }
+        }
+        kept.widest = Some(room.widest_legend);
+        kept.room = Some((key, room.clone()));
+        Some(room)
+    }
+
+    fn lay(ui: &egui::Ui, map: &Map, kept: &TypedPluginHandle<Kept>) -> Option<Room> {
         let progress = map.progress;
         let span = span(progress, map.disk);
-        let sides = sides(progress, map.disk);
         if span == 0 {
             return None;
         }
+        let sides = sides(progress, map.disk);
+        let fits = map.media.holds().is_none_or(|n| span <= n);
+        let p = theme::palette(ui);
+        let drawn = Drawn::kept(kept, map, span, sides, fits, p);
         let ppp = ui.ctx().pixels_per_point();
+        let line = f64::from(ppp).round().max(1.0);
         let room = ui.available_size();
-        let legend = ui.data(|d| d.get_temp(legend_id(ui))).unwrap_or(LEGEND);
         let n = sides as f32;
         let across = (room.x - SIDE_GAP * (n - 1.0)) / n;
-        // The legend's room, and the space between it and the disks.
-        let under = ui.spacing().item_spacing.y + legend;
+        // The space between the disks and their legend.
+        let gap = ui.spacing().item_spacing.y;
+        // The legend is as wide as the disks, and at least LEGEND_WIDTH.
+        let wide = |g: &Geometry| {
+            let disks = n * (g.pixels as f32 / ppp) + SIDE_GAP * (n - 1.0);
+            disks.max(LEGEND_WIDTH).min(room.x)
+        };
+        let fit = |legend: f32| {
+            let diameter = across.min(room.y - TITLE - gap - legend).max(LEAST);
+            Geometry::new(map.media, span, f64::from(diameter * ppp))
+        };
+        let holds = map
+            .media
+            .holds()
+            .filter(|_| !fits)
+            .map(|n| format!("{span} cylinders: a {} disk holds {n}.", map.media.name()));
+        // The legend's height, which its entries' widths decide, wraps more
+        // the narrower the disks; the disks are narrower the taller it is,
+        // where the room's height limits them. From the widest, until the
+        // two agree.
         let widest = Geometry::new(map.media, span, f64::from(across.max(LEAST) * ppp));
-        let most = TITLE + widest.pixels as f32 / ppp + under;
-        let diameter = across.min(room.y - TITLE - under).max(LEAST);
-        let geometry = Geometry::new(map.media, span, f64::from(diameter * ppp));
+        let mut look = Look::of(p, map.media);
+        let mut legend = Legend::of(ui, map, &drawn, &look, holds.clone());
+        let widest_legend = legend.flow(ui, wide(&widest));
+        let most = TITLE + widest.pixels as f32 / ppp + gap + widest_legend;
+        let (mut height, mut geometry) = (widest_legend, fit(widest_legend));
+        for _ in 0..8 {
+            let next = legend.flow(ui, wide(&geometry));
+            if next <= height {
+                break;
+            }
+            (height, geometry) = (next, fit(next));
+        }
+        // Its colours as the tracks show them at that size.
+        look.covered = geometry.covered(line);
+        legend = Legend::of(ui, map, &drawn, &look, holds);
+        legend.flow(ui, wide(&geometry));
         let diameter = geometry.pixels as f32 / ppp;
-        Some(Fit {
+        Some(Room {
             span,
             sides,
-            legend,
-            most,
+            fits,
+            drawn,
             geometry,
+            line,
             diameter,
             width: n * diameter + SIDE_GAP * (n - 1.0),
+            legend,
+            most,
+            widest_legend,
         })
     }
 }
@@ -401,49 +498,36 @@ pub(crate) struct Place {
 /// Where the disks would lie in the room `ui` has left, as `show` draws
 /// them: for the image view to lie where they do.
 pub(crate) fn place(ui: &egui::Ui, map: &Map) -> Option<Place> {
-    Fit::of(ui, map).map(|f| Place {
-        sides: f.sides,
-        diameter: f.diameter,
-        width: f.width,
+    Room::of(ui, map).map(|r| Place {
+        sides: r.sides,
+        diameter: r.diameter,
+        width: r.width,
     })
-}
-
-/// Where the disks' legend keeps its height as measured.
-fn legend_id(ui: &egui::Ui) -> egui::Id {
-    ui.id().with("disk legend")
 }
 
 /// The most height the disks can use in the room `ui` has left, their
 /// legend under them: as wide as the room lets them.
 pub fn most(ui: &egui::Ui, map: &Map) -> Option<f32> {
-    Fit::of(ui, map).map(|f| f.most)
+    Room::of(ui, map).map(|r| r.most)
 }
 
 /// Draws the disks side by side in the room the drawer gives them, with
-/// their legend under them, and gives their response and the most height
-/// they can use: as wide as the room lets them.
-pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
+/// their legend under them: as wide as the room lets them.
+pub fn show(ui: &mut egui::Ui, map: &Map) {
+    let Some(room) = Room::of(ui, map) else {
+        return;
+    };
     let progress = map.progress;
-    let Fit {
-        span,
-        sides,
-        legend,
-        most,
-        geometry,
-        diameter,
-        width,
-        ..
-    } = Fit::of(ui, map)?;
     let p = theme::palette(ui);
     let ppp = ui.ctx().pixels_per_point();
     let mut look = Look::of(p, map.media);
-    look.covered = geometry.covered(f64::from(ppp).round().max(1.0));
-    let room = ui.available_size();
-    let legend_id = legend_id(ui);
-    let (rect, response) = ui.allocate_exact_size(vec2(room.x, TITLE + diameter), Sense::click());
+    look.covered = room.geometry.covered(room.line);
+    let (diameter, sides) = (room.diameter, room.sides);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), TITLE + diameter), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Disk map"));
     let painter = ui.painter_at(rect.expand(2.0));
-    let left = rect.center().x - width / 2.0;
+    let left = rect.center().x - room.width / 2.0;
     let disks: Vec<Disk> = (0..sides)
         .map(|head| {
             let side = if map.swapped && sides == 2 {
@@ -457,11 +541,11 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
             Disk {
                 side,
                 head,
-                span,
+                span: room.span,
                 rect: picture,
                 centre: picture.center(),
                 scale: 1.0 / ppp,
-                geometry,
+                geometry: room.geometry,
             }
         })
         .collect();
@@ -475,24 +559,14 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
             p.dim,
         );
     }
-    let fits = map.media.holds().is_none_or(|n| span <= n);
-    let drawn = Drawn::of(map, span, sides, fits, p);
     let kept = ui.ctx().plugin_or_default::<Kept>();
     {
         let mut kept = kept.lock();
         (kept.shown, kept.viewport) = (true, ui.ctx().viewport_id());
         for d in &disks {
             let head = d.head as usize;
-            kept.drawn[head] = true;
-            d.draw(
-                ui,
-                &painter,
-                map,
-                &look,
-                &drawn,
-                fits,
-                &mut kept.pictures[head],
-            );
+            kept.seen[head] = true;
+            d.draw(ui, &painter, map, &room, &look, &mut kept.pictures[head]);
         }
     }
     let pointer = response.hover_pos();
@@ -502,7 +576,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
             .find(|d| (at - d.centre).length() <= diameter / 2.0)?;
         Some((d, d.track_at(at)?))
     });
-    if let Some((d, (cyl, share))) = hovered.filter(|_| fits) {
+    if let Some((d, (cyl, share))) = hovered.filter(|_| room.fits) {
         let key = (cyl, d.side);
         let found = progress.facts.get(&key);
         let least = d.line_at(pointer.unwrap_or_default());
@@ -529,29 +603,11 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
     if let Some(d) = over_title {
         response
             .clone()
-            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head, span));
+            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head, room.span));
     }
     inspector(ui.ctx(), map);
     let top = ui.cursor().top();
-    let under = Rect::from_min_size(
-        egui::pos2(left, top + 6.0),
-        vec2(width.max(240.0).min(room.x), ui.available_height().max(0.0)),
-    );
-    let drawn = ui.scope_builder(egui::UiBuilder::new().max_rect(under), |ui| {
-        match map.media.holds().filter(|_| !fits) {
-            Some(n) => {
-                let text = format!("{span} cylinders: a {} disk holds {n}.", map.media.name());
-                ui.label(RichText::new(text).color(p.bad));
-            }
-            None => legend_rows(ui, map, &look, &drawn),
-        }
-    });
-    let height = drawn.response.rect.bottom() - top;
-    if (height - legend).abs() > 0.5 {
-        ui.data_mut(|d| d.insert_temp(legend_id, height));
-        ui.ctx().request_repaint();
-    }
-    Some((response, most))
+    room.legend.draw(ui, egui::pos2(left, top));
 }
 
 /// A disk as drawn, in pixels from its centre.
@@ -692,22 +748,21 @@ impl Disk {
         Some((cyl as u32, share_at(f64::from(v.x), f64::from(v.y))))
     }
 
-    /// Draws the disk: its picture, kept in `slot`, painted again where what
-    /// it shows has changed and at its size once that holds; the index's mark
-    /// at the top; and round the last track gw reported, a ring.
-    #[allow(clippy::too_many_arguments)]
+    /// Draws the disk in `room`: its picture, kept in `slot`, painted again
+    /// where what it shows has changed and at its size once that holds; the
+    /// index's mark at the top; and round the last track gw reported, a ring.
     fn draw(
         &self,
         ui: &egui::Ui,
         painter: &egui::Painter,
         map: &Map,
+        room: &Room,
         look: &Look,
-        drawn: &Drawn,
-        fits: bool,
         slot: &mut Option<Picture>,
     ) {
         let ctx = ui.ctx();
         let p = theme::palette(ui);
+        let (drawn, fits) = (&*room.drawn, room.fits);
         let key = Key {
             media: map.media,
             shows: drawn.shows,
@@ -716,7 +771,7 @@ impl Disk {
             head: self.head,
             geometry: self.geometry,
             palette: p,
-            line: f64::from(ctx.pixels_per_point()).round().max(1.0),
+            line: room.line,
             fits,
             pure: drawn.pure,
         };
@@ -937,7 +992,49 @@ struct Drawn {
     statuses: Vec<Color32>,
 }
 
+/// What a count of what the disk view draws was of: the job's revision,
+/// the tracks gw was to work on, how many it spans and what it shows.
+#[derive(Clone, PartialEq)]
+struct DrawnKey {
+    revision: u64,
+    cyls: Vec<u32>,
+    heads: Vec<u32>,
+    span: u32,
+    sides: u32,
+    shows: Shows,
+    fits: bool,
+    palette: &'static Palette,
+}
+
 impl Drawn {
+    /// Drawn::of, kept in `kept` until what it is of changes.
+    fn kept(
+        kept: &TypedPluginHandle<Kept>,
+        map: &Map,
+        span: u32,
+        sides: u32,
+        fits: bool,
+        p: &'static Palette,
+    ) -> Arc<Drawn> {
+        let progress = map.progress;
+        let key = DrawnKey {
+            revision: progress.revision,
+            cyls: progress.cyls.clone(),
+            heads: progress.heads.clone(),
+            span,
+            sides,
+            shows: map.shows,
+            fits,
+            palette: p,
+        };
+        if let Some((_, drawn)) = kept.lock().counted.as_ref().filter(|(k, _)| *k == key) {
+            return drawn.clone();
+        }
+        let drawn = Arc::new(Drawn::of(map, span, sides, fits, p));
+        kept.lock().counted = Some((key, drawn.clone()));
+        drawn
+    }
+
     /// What the disk view draws of `map`'s tracks: `span` cylinders on
     /// `sides` sides, if the disk holds them.
     fn of(map: &Map, span: u32, sides: u32, fits: bool, p: &Palette) -> Drawn {
@@ -1019,9 +1116,15 @@ struct Kept {
     pictures: [Option<Picture>; 2],
     /// The pictures drawn this pass, and whether the view was, in which
     /// viewport.
-    drawn: [bool; 2],
+    seen: [bool; 2],
     shown: bool,
     viewport: egui::ViewportId,
+    /// The room last laid out, and what the view draws, as the legend
+    /// counts it, for what each was of; and the legend's height at the
+    /// disks' widest, last laid out.
+    room: Option<(RoomKey, Room)>,
+    counted: Option<(DrawnKey, Arc<Drawn>)>,
+    widest: Option<f32>,
 }
 
 impl egui::Plugin for Kept {
@@ -1034,8 +1137,8 @@ impl egui::Plugin for Kept {
         if ctx.viewport_id() != self.viewport {
             return;
         }
-        for (picture, drawn) in self.pictures.iter_mut().zip(&mut self.drawn) {
-            if !std::mem::take(drawn) {
+        for (picture, seen) in self.pictures.iter_mut().zip(&mut self.seen) {
+            if !std::mem::take(seen) {
                 *picture = None;
             }
         }
@@ -1792,7 +1895,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     };
     if let Some(s) = under(&f.sectors, share, least).map(|i| &f.sectors[i]) {
         ui.separator();
-        sector_tip(ui, s, true);
+        sector_tip(ui, s);
         if s.bytes.len() > 64 {
             ui.weak(format!("Click for all {} bytes", s.bytes.len()));
         }
@@ -2244,8 +2347,8 @@ fn sector_lines(s: &Sector) -> Vec<(String, Tone)> {
     lines
 }
 
-/// A sector: what is said of it, and with `preview`, its data's first rows.
-fn sector_tip(ui: &mut egui::Ui, s: &Sector, preview: bool) {
+/// A sector: what is said of it, and its data's first rows.
+fn sector_tip(ui: &mut egui::Ui, s: &Sector) {
     for (text, tone) in sector_lines(s) {
         match tone {
             Tone::Strong => ui.strong(text),
@@ -2253,25 +2356,74 @@ fn sector_tip(ui: &mut egui::Ui, s: &Sector, preview: bool) {
             Tone::Weak => ui.weak(text),
         };
     }
-    if preview && !s.bytes.is_empty() {
+    if !s.bytes.is_empty() {
         let rows = RichText::new(dump(&s.bytes, 4, 0)).monospace().small();
         ui.add(egui::Label::new(rows).extend());
     }
 }
 
-/// The key to what the disk shows, `drawn`: in the Sectors view, the
-/// sectors drawn by how they decoded, with how many, their ID fields, the
-/// lines where two meet and where none was found, and the tracks read as
-/// flux and not decoded; in the Flux view, its shading. Where no track
-/// shows more than gw's line, each status as the grid's legend counts it.
-/// Then the tracks not known, the index's mark, the tracks to do and the
-/// last reported, and the sectors missing or the retries.
-fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look, drawn: &Drawn) {
-    let p = theme::palette(ui);
-    let progress = map.progress;
-    // Rows as tall as their text, not a field.
-    ui.spacing_mut().interact_size.y = ui.text_style_height(&egui::TextStyle::Small).max(10.0);
-    ui.horizontal_wrapped(|ui| {
+/// The disks' legend, laid out: its entries, each where it lies from the
+/// legend's top left, and its height, the room above it with it; or to
+/// scale, in place of the entries, why the disk holds none of the tracks.
+#[derive(Clone)]
+struct Legend {
+    entries: Vec<Entry>,
+    at: Vec<egui::Vec2>,
+    holds: Option<(String, Option<Arc<Galley>>)>,
+    /// Its rows' height, its text's and its marks', and its own.
+    row: f32,
+    height: f32,
+}
+
+/// A legend entry: a word before its mark, as the flux scale's "Less", its
+/// mark and its text, kept on one line, and what it says on a hover.
+#[derive(Clone)]
+struct Entry {
+    lead: Option<Arc<Galley>>,
+    mark: Option<Mark>,
+    text: Arc<Galley>,
+    tip: Option<String>,
+    width: f32,
+}
+
+impl Legend {
+    /// The key to what the disk shows, `drawn`: in the Sectors view, the
+    /// sectors drawn by how they decoded, with how many, their ID fields, the
+    /// lines where two meet and where none was found, and the tracks read as
+    /// flux and not decoded; in the Flux view, its shading. Where no track
+    /// shows more than gw's line, each status as the grid's legend counts it.
+    /// Then the tracks not known, the index's mark, the tracks to do and the
+    /// last reported, and the sectors missing or the retries. With `holds`,
+    /// why there are none.
+    fn of(ui: &egui::Ui, map: &Map, drawn: &Drawn, look: &Look, holds: Option<String>) -> Legend {
+        let mut legend = Legend {
+            entries: Vec::new(),
+            at: Vec::new(),
+            holds: holds.map(|text| (text, None)),
+            row: 0.0,
+            height: 0.0,
+        };
+        if legend.holds.is_some() {
+            return legend;
+        }
+        let p = theme::palette(ui);
+        let progress = map.progress;
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let (strong, weak) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
+        let galley = |text: String, colour| ui.painter().layout_no_wrap(text, font.clone(), colour);
+        let gap = ui.spacing().item_spacing.x;
+        let entry = |mark: Option<Mark>, text: String, tip: Option<&str>| {
+            let text = galley(text, if mark.is_some() { strong } else { weak });
+            let marked = mark.map_or(0.0, |m| m.width() + gap);
+            Entry {
+                lead: None,
+                mark,
+                width: marked + text.size().x,
+                text,
+                tip: tip.map(str::to_owned),
+            }
+        };
+        let entries = &mut legend.entries;
         match drawn.shows {
             Shows::Sectors if drawn.pure => {
                 let statuses = diskmap::entries(&drawn.statuses, progress, map.verifying, p);
@@ -2280,7 +2432,7 @@ fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look, drawn: &Drawn) {
                         true => Mark::Hole(look.seen(colour), p.line_strong),
                         false => Mark::Swatch(look.seen(colour)),
                     };
-                    key(ui, mark, &text).on_hover_text(tip);
+                    entries.push(entry(Some(mark), text, Some(tip)));
                 }
             }
             Shows::Sectors => {
@@ -2293,53 +2445,56 @@ fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look, drawn: &Drawn) {
                     _ => Mark::Swatch(data),
                 };
                 for ((mark, name, tip), n) in [
-                    (Mark::Swatch(look.seen(look.good)), "Good", ""),
+                    (Mark::Swatch(look.seen(look.good)), "Good", None),
                     (
                         Mark::Swatch(look.seen(look.empty)),
                         "Empty",
-                        "Every byte the same",
+                        Some("Every byte the same"),
                     ),
-                    (Mark::Swatch(look.seen(look.bad)), "Bad", "A CRC that fails"),
+                    (
+                        Mark::Swatch(look.seen(look.bad)),
+                        "Bad",
+                        Some("A CRC that fails"),
+                    ),
                     (
                         incomplete,
                         "Incomplete",
-                        "A header with no data, or data with no header",
+                        Some("A header with no data, or data with no header"),
                     ),
                 ]
                 .into_iter()
                 .zip(drawn.sectors)
                 {
                     if n > 0 {
-                        let entry = key(ui, mark, &format!("{name} {n}"));
-                        if !tip.is_empty() {
-                            entry.on_hover_text(tip);
-                        }
+                        entries.push(entry(Some(mark), format!("{name} {n}"), tip));
                     }
                 }
                 if drawn.id_fields {
-                    key(ui, Mark::Swatch(look.seen(look.id(look.good))), "ID field");
+                    let mark = Mark::Swatch(look.seen(look.id(look.good)));
+                    entries.push(entry(Some(mark), "ID field".into(), None));
                 }
                 if drawn.meet {
-                    key(
-                        ui,
-                        Mark::Line(look.seen(look.good), look.body),
-                        "Sectors meet",
-                    );
+                    let mark = Mark::Line(look.seen(look.good), look.body);
+                    entries.push(entry(Some(mark), "Sectors meet".into(), None));
                 }
                 if drawn.gaps {
-                    key(ui, Mark::Swatch(look.seen(look.gap)), "No sector found");
+                    let mark = Mark::Swatch(look.seen(look.gap));
+                    entries.push(entry(Some(mark), "No sector found".into(), None));
                 }
                 if drawn.flux > 0 {
-                    let text = format!("Flux {}", drawn.flux);
-                    key(ui, Mark::Swatch(look.seen(look.flux)), &text)
-                        .on_hover_text("Read as flux, not decoded");
+                    let mark = Mark::Swatch(look.seen(look.flux));
+                    let tip = Some("Read as flux, not decoded");
+                    entries.push(entry(Some(mark), format!("Flux {}", drawn.flux), tip));
                 }
             }
             Shows::Flux => {
                 let shades = [0.0, 0.5, 1.0, 1.5, 2.0].map(|d| look.seen(look.flux_at(d)));
-                ui.label(RichText::new("Less").small());
-                key(ui, Mark::Shades(shades), "More flux")
-                    .on_hover_text("Against the track's average");
+                let tip = Some("Against the track's average");
+                let mut scale = entry(Some(Mark::Shades(shades)), "More flux".into(), tip);
+                let less = galley("Less".into(), strong);
+                scale.width += less.size().x + gap;
+                scale.lead = Some(less);
+                entries.push(scale);
             }
         }
         if drawn.unknown > 0 {
@@ -2347,26 +2502,148 @@ fn legend_rows(ui: &mut egui::Ui, map: &Map, look: &Look, drawn: &Drawn) {
                 Shows::Sectors => "No sector places reported",
                 Shows::Flux => "No flux reported",
             };
-            let text = format!("Not known {}", drawn.unknown);
-            key(ui, Mark::Swatch(look.seen(look.unknown)), &text).on_hover_text(tip);
+            let mark = Mark::Swatch(look.seen(look.unknown));
+            entries.push(entry(
+                Some(mark),
+                format!("Not known {}", drawn.unknown),
+                Some(tip),
+            ));
         }
-        key(ui, Mark::Index(look.index), "Index");
+        entries.push(entry(Some(Mark::Index(look.index)), "Index".into(), None));
         if drawn.to_do > 0 {
-            let text = format!("To do {}", drawn.to_do);
-            key(ui, Mark::Swatch(look.seen(look.to_do)), &text);
+            let mark = Mark::Swatch(look.seen(look.to_do));
+            entries.push(entry(Some(mark), format!("To do {}", drawn.to_do), None));
         }
         if map.current.is_some() {
-            key(ui, Mark::Ring(look.last), "Last reported");
+            entries.push(entry(
+                Some(Mark::Ring(look.last)),
+                "Last reported".into(),
+                None,
+            ));
         }
         let retries = progress.tally().retries;
         if drawn.pure && retries > 0 {
-            ui.label(RichText::new(diskmap::retry_text(retries)).small().weak());
+            entries.push(entry(None, diskmap::retry_text(retries), None));
         } else if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
-            let text = format!("{} missing", drawn.missing);
-            ui.label(RichText::new(text).small().weak())
-                .on_hover_text("In the format, not found");
+            let tip = Some("In the format, not found");
+            entries.push(entry(None, format!("{} missing", drawn.missing), tip));
         }
-    });
+        legend
+    }
+
+    /// Lays the legend out `width` wide, each entry after the last, or where
+    /// it would not fit, on the next row; and gives its height.
+    fn flow(&mut self, ui: &egui::Ui, width: f32) -> f32 {
+        if let Some((text, galley)) = &mut self.holds {
+            let p = theme::palette(ui);
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let laid = ui.painter().layout(text.clone(), font, p.bad, width);
+            self.height = LEGEND_GAP + laid.size().y;
+            *galley = Some(laid);
+            return self.height;
+        }
+        let spacing = ui.spacing().item_spacing;
+        let texts = self
+            .entries
+            .iter()
+            .flat_map(|e| e.lead.iter().chain([&e.text]));
+        let small = ui.text_style_height(&egui::TextStyle::Small);
+        let row = texts.fold(small.max(10.0), |row, t| row.max(t.size().y));
+        self.row = row;
+        let (mut x, mut y) = (0.0, 0.0);
+        self.at.clear();
+        for e in &self.entries {
+            if x > 0.0 && x + e.width > width {
+                (x, y) = (0.0, y + row + spacing.y);
+            }
+            self.at.push(vec2(x, y));
+            // Room after a marked entry, as between a legend's keys.
+            let after = if e.mark.is_some() { LEGEND_GAP } else { 0.0 };
+            x += e.width + spacing.x + after;
+        }
+        self.height = match self.entries.is_empty() {
+            true => 0.0,
+            false => LEGEND_GAP + y + row,
+        };
+        self.height
+    }
+
+    /// Draws the legend as laid out, from `at`, the room above it first.
+    fn draw(&self, ui: &mut egui::Ui, at: Pos2) {
+        let top = at + vec2(0.0, LEGEND_GAP);
+        let id = ui.id().with("disk legend");
+        let mut bounds = Rect::from_min_size(at, vec2(0.0, self.height));
+        // Each piece of text where it lies, a label to a hover, with its tip.
+        let said =
+            |ui: &egui::Ui, galley: &Arc<Galley>, rect: Rect, id: egui::Id, tip: Option<&str>| {
+                ui.painter()
+                    .galley(rect.min, galley.clone(), Color32::PLACEHOLDER);
+                let response = ui.interact(rect, id, Sense::hover());
+                let (kind, text) = (egui::WidgetType::Label, galley.text());
+                response.widget_info(|| egui::WidgetInfo::labeled(kind, true, text));
+                if let Some(tip) = tip {
+                    response.on_hover_text(tip);
+                }
+            };
+        if let Some((_, Some(galley))) = &self.holds {
+            let rect = Rect::from_min_size(top, galley.size());
+            said(ui, galley, rect, id, None);
+            bounds = bounds.union(rect);
+        }
+        let (row, gap) = (self.row, ui.spacing().item_spacing.x);
+        for (i, (e, &offset)) in self.entries.iter().zip(&self.at).enumerate() {
+            let rect = Rect::from_min_size(top + offset, vec2(e.width, row));
+            bounds = bounds.union(rect);
+            let middle = rect.center().y;
+            let mut x = rect.left();
+            if let Some(lead) = &e.lead {
+                let at = egui::pos2(x, middle - lead.size().y / 2.0);
+                let lead_rect = Rect::from_min_size(at, lead.size());
+                said(ui, lead, lead_rect, id.with((i, "lead")), None);
+                x = lead_rect.right() + gap;
+            }
+            // The entry answers a hover over its mark and its text.
+            let from = x;
+            if let Some(mark) = e.mark {
+                let at = egui::pos2(x, middle - 5.0);
+                mark.paint(
+                    ui.painter(),
+                    Rect::from_min_size(at, vec2(mark.width(), 10.0)),
+                );
+                x += mark.width() + gap;
+            }
+            match e.mark {
+                Some(_) => {
+                    let at = egui::pos2(x, middle - e.text.size().y / 2.0);
+                    ui.painter()
+                        .galley(at, e.text.clone(), Color32::PLACEHOLDER);
+                }
+                // A note, as a label in a row of them lays its text out:
+                // from the row's start, after as much room as lies before it.
+                None => {
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        e.text.text().to_owned(),
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        ui.visuals().weak_text_color(),
+                    );
+                    job.first_row_min_height = row;
+                    job.sections[0].leading_space = offset.x;
+                    job.sections[0].format.valign = ui.text_valign();
+                    let laid = ui.fonts_mut(|f| f.layout_job(job));
+                    let start = egui::pos2(top.x, rect.top());
+                    ui.painter().galley(start, laid, Color32::PLACEHOLDER);
+                }
+            }
+            let whole = Rect::from_x_y_ranges(from..=x + e.text.size().x, rect.y_range());
+            let response = ui.interact(whole, id.with(i), Sense::hover());
+            let (kind, text) = (egui::WidgetType::Label, e.text.text());
+            response.widget_info(|| egui::WidgetInfo::labeled(kind, true, text));
+            if let Some(tip) = &e.tip {
+                response.on_hover_text(tip);
+            }
+        }
+        ui.advance_cursor_after_rect(bounds);
+    }
 }
 
 /// How a sector decoded, as the legend lists them: good, empty, bad, or
@@ -2410,6 +2687,7 @@ fn meets(begins: &[f64], ends: &[f64]) -> Vec<f64> {
 }
 
 /// How a legend entry shows what it names.
+#[derive(Clone, Copy)]
 pub(crate) enum Mark {
     /// A square of the colour.
     Swatch(Color32),
@@ -2429,18 +2707,89 @@ pub(crate) enum Mark {
     Frame(Color32),
 }
 
-/// A legend entry: its mark and its text, kept on one line.
+impl Mark {
+    /// Its width; its height is 10 points.
+    fn width(self) -> f32 {
+        match self {
+            Mark::Shades(_) => 40.0,
+            _ => 10.0,
+        }
+    }
+
+    /// Paints it in `square`.
+    fn paint(self, painter: &egui::Painter, square: Rect) {
+        match self {
+            Mark::Swatch(colour) => {
+                painter.rect_filled(square, 2.0, colour);
+            }
+            Mark::Shades(colours) => {
+                let step = square.width() / colours.len() as f32;
+                for (i, colour) in colours.into_iter().enumerate() {
+                    let x = square.left() + step * i as f32;
+                    let part = Rect::from_min_size(egui::pos2(x, square.top()), vec2(step, 10.0));
+                    painter.rect_filled(part, 0.0, colour);
+                }
+            }
+            Mark::Split(first, then) => {
+                let (left, right) = square.split_left_right_at_fraction(0.5);
+                let round = |west: u8, east: u8| egui::CornerRadius {
+                    nw: west,
+                    sw: west,
+                    ne: east,
+                    se: east,
+                };
+                painter.rect_filled(left, round(2, 0), first);
+                painter.rect_filled(right, round(0, 2), then);
+            }
+            Mark::Hole(fill, edge) => {
+                let edge = Stroke::new(1.0, edge);
+                painter.rect(square, 2.0, fill, edge, egui::StrokeKind::Inside);
+            }
+            Mark::Line(fill, colour) => {
+                painter.rect_filled(square, 2.0, fill);
+                let x = square.center().x;
+                let stroke = Stroke::new(1.5, colour);
+                painter.line_segment(
+                    [egui::pos2(x, square.top()), egui::pos2(x, square.bottom())],
+                    stroke,
+                );
+            }
+            Mark::Index(colour) => {
+                let (t, c) = (square.top() + 1.0, square.center().x);
+                let points = vec![
+                    egui::pos2(c - 5.0, t),
+                    egui::pos2(c + 5.0, t),
+                    egui::pos2(c, t + 7.0),
+                ];
+                painter.add(Shape::convex_polygon(points, colour, Stroke::NONE));
+            }
+            Mark::Ring(colour) => {
+                painter.circle_stroke(square.center(), 4.0, Stroke::new(1.5, colour));
+            }
+            Mark::Frame(colour) => {
+                let frame = Rect::from_center_size(square.center(), vec2(8.0, 8.0));
+                painter.rect_stroke(
+                    frame,
+                    0.0,
+                    Stroke::new(1.5, colour),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+}
+
+/// A legend entry in a wrapping row: its mark and its text, kept on one line.
 pub(crate) fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font, ui.visuals().text_color());
-    let wide = match mark {
-        Mark::Shades(_) => 40.0,
-        _ => 10.0,
-    };
     let gap = ui.spacing().item_spacing.x;
-    let size = vec2(wide + gap + galley.size().x, galley.size().y.max(10.0));
+    let size = vec2(
+        mark.width() + gap + galley.size().x,
+        galley.size().y.max(10.0),
+    );
     if ui.available_width() < size.x {
         ui.end_row();
     }
@@ -2448,73 +2797,15 @@ pub(crate) fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let square = Rect::from_min_size(
         egui::pos2(rect.left(), rect.center().y - 5.0),
-        vec2(wide, 10.0),
+        vec2(mark.width(), 10.0),
     );
-    let painter = ui.painter();
-    match mark {
-        Mark::Swatch(colour) => {
-            painter.rect_filled(square, 2.0, colour);
-        }
-        Mark::Shades(colours) => {
-            let step = wide / colours.len() as f32;
-            for (i, colour) in colours.into_iter().enumerate() {
-                let x = square.left() + step * i as f32;
-                let part = Rect::from_min_size(egui::pos2(x, square.top()), vec2(step, 10.0));
-                painter.rect_filled(part, 0.0, colour);
-            }
-        }
-        Mark::Split(first, then) => {
-            let (left, right) = square.split_left_right_at_fraction(0.5);
-            let round = |west: u8, east: u8| egui::CornerRadius {
-                nw: west,
-                sw: west,
-                ne: east,
-                se: east,
-            };
-            painter.rect_filled(left, round(2, 0), first);
-            painter.rect_filled(right, round(0, 2), then);
-        }
-        Mark::Hole(fill, edge) => {
-            let edge = Stroke::new(1.0, edge);
-            painter.rect(square, 2.0, fill, edge, egui::StrokeKind::Inside);
-        }
-        Mark::Line(fill, colour) => {
-            painter.rect_filled(square, 2.0, fill);
-            let x = square.center().x;
-            let stroke = Stroke::new(1.5, colour);
-            painter.line_segment(
-                [egui::pos2(x, square.top()), egui::pos2(x, square.bottom())],
-                stroke,
-            );
-        }
-        Mark::Index(colour) => {
-            let (t, c) = (square.top() + 1.0, square.center().x);
-            let points = vec![
-                egui::pos2(c - 5.0, t),
-                egui::pos2(c + 5.0, t),
-                egui::pos2(c, t + 7.0),
-            ];
-            painter.add(Shape::convex_polygon(points, colour, Stroke::NONE));
-        }
-        Mark::Ring(colour) => {
-            painter.circle_stroke(square.center(), 4.0, Stroke::new(1.5, colour));
-        }
-        Mark::Frame(colour) => {
-            let frame = Rect::from_center_size(square.center(), vec2(8.0, 8.0));
-            painter.rect_stroke(
-                frame,
-                0.0,
-                Stroke::new(1.5, colour),
-                egui::StrokeKind::Inside,
-            );
-        }
-    }
+    mark.paint(ui.painter(), square);
     let at = egui::pos2(
         square.right() + gap,
         rect.center().y - galley.size().y / 2.0,
     );
     ui.painter().galley(at, galley, ui.visuals().text_color());
-    ui.add_space(6.0);
+    ui.add_space(LEGEND_GAP);
     response
 }
 

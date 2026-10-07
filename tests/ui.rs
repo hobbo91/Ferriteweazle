@@ -4255,6 +4255,51 @@ fn analyse_paints_its_disks_at_a_new_size_once_that_holds() {
 }
 
 #[test]
+fn a_legend_gaining_a_row_makes_the_drawer_taller_at_once_the_disks_as_they_were() {
+    // Narrow enough that the last reported track's entry takes a second row.
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut job = Job::replay("read", WORKBENCH);
+    job.ended = None;
+    let builder = Harness::builder().with_size(egui::vec2(720.0, 780.0));
+    let mut w = start(builder, settings, Some(job));
+    w.run_steps(6);
+    let (map, good) = (
+        w.get_by_label("Disk map").rect(),
+        w.get_by_label("Good 1760").rect(),
+    );
+    app_mut(&mut w).disk.as_mut().unwrap().progress.current = Some((41, 0));
+    w.step();
+    let last = w.get_by_label("Last reported").rect();
+    assert!(
+        last.top() > w.get_by_label("Good 1760").rect().top(),
+        "a row more"
+    );
+    // In the same frame, the drawer a row taller, the disks as they were.
+    let now = w.get_by_label("Disk map").rect();
+    let row = last.top() - w.get_by_label("Good 1760").rect().top();
+    assert_eq!(now.size(), map.size());
+    assert_eq!(now.top(), map.top() - row, "{now:?} after {map:?}");
+    assert_eq!(w.get_by_label("Good 1760").rect().top(), good.top() - row);
+}
+
+#[test]
+fn a_disk_to_scale_that_holds_fewer_tracks_than_the_job_says_so_in_place_of_its_legend() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        media: Media::FiveQuarter48,
+        ..chosen()
+    };
+    let builder = Harness::builder().with_size(egui::vec2(1240.0, 780.0));
+    let w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    let said = w.get_by_label("80 cylinders: a 5¼-inch, 48 TPI disk holds 45.");
+    assert!(said.rect().top() > w.get_by_label("Disk map").rect().bottom());
+    assert!(w.query_by_label("Index").is_none(), "no legend");
+}
+
+#[test]
 fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged() {
     // Taller than two disks side by side need.
     let size = egui::vec2(1100.0, 1500.0);
