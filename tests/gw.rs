@@ -14,7 +14,7 @@ use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
 use ferriteweazle::progress::Status;
 use ferriteweazle::schema::{Port, Schema};
-use ferriteweazle::service::{Load, Service};
+use ferriteweazle::service::{ImageAsk, Load, Service};
 use ferriteweazle::tools::{Origin, Tools};
 use ferriteweazle::track::{Facts, Source};
 use ferriteweazle::{App, Drawer, Page, Settings};
@@ -976,7 +976,6 @@ fn converted(job: &Job) -> image::Job<'_> {
     image::Job {
         progress: &job.progress,
         running: false,
-        converts: true,
     }
 }
 
@@ -1159,10 +1158,14 @@ fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks
     std::fs::write(&adf, &bytes).unwrap();
     let mut service = Service::start(&tools, Box::new(|| {}));
     let mut opened = |args: &[&str], file: &Path| {
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let ask = ImageAsk {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            path: path(file),
+            diskdefs: String::new(),
+        };
         wait("the image", || {
             service.poll();
-            match service.image(&args, &path(file)) {
+            match service.image(&ask) {
                 Load::Ready(p) => Some(Ok(p.0.clone())),
                 Load::Failed(e) => Some(Err(e.clone())),
                 Load::Waiting(_) => None,
@@ -1188,11 +1191,12 @@ fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks
     // As another format lays it out: past the file's end, gw's zeros.
     let wide = opened(&["write", "--format=ibm.1440", &path(&adf)], &adf).unwrap();
     assert_eq!(states(&wide)["PastEnd"], (1_474_560 - 901_120) / 512);
-    // A file longer than its format lays out: only what gw reads comes over.
+    // A file longer than its format lays out: the rest is gw's to leave, and
+    // only what gw reads comes over.
     let big = dir.join("Big.img");
     std::fs::write(&big, vec![0x5a; 1_474_560]).unwrap();
     let long = opened(&["write", "--format=amiga.amigados", &path(&big)], &big).unwrap();
-    assert_eq!(long.size, Some(1_474_560));
+    assert_eq!((long.size, long.unread()), (Some(1_474_560), Some(573_440)));
     assert_eq!(long.content.as_ref().map(Vec::len), Some(901_120));
     // A conversion's input, its output not made.
     let input = opened(&["convert", &path(&adf), &path(&scp)], &adf).unwrap();

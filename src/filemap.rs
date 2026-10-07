@@ -236,7 +236,6 @@ fn job<'a>(map: &Map<'a>) -> Option<image::Job<'a>> {
     map.progress.map(|progress| image::Job {
         progress,
         running: map.running,
-        converts: map.converts,
     })
 }
 
@@ -262,6 +261,9 @@ fn header_parts(map: &Map) -> (String, String) {
     let size = image
         .bytes()
         .map(|b| format!("{} bytes", surface::grouped(b)));
+    let unread = image
+        .unread()
+        .map(|n| format!("{} past the layout", surface::grouped(n)));
     let state = match image.role {
         Role::Made if image.written.is_some() => "Written by gw",
         Role::Made if map.running => "Being made: gw writes it when it finishes",
@@ -269,7 +271,7 @@ fn header_parts(map: &Map) -> (String, String) {
         Role::Source if map.progress.is_none() => "As gw reads it",
         Role::Source => "As gw read it",
     };
-    let rest: String = [size, Some(state.to_owned())]
+    let rest: String = [size, unread, Some(state.to_owned())]
         .into_iter()
         .flatten()
         .map(|part| format!(" · {part}"))
@@ -813,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_lie_where_the_disks_do_in_a_column_for_each_side() {
+    fn the_rows_lie_where_the_disks_do_in_a_column_under_each() {
         // Disks 300 points across in a room 1,000 wide and 500 tall.
         let room = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 500.0));
         let grid = Grid::new(&layout(Some(300.0)), room, 2.0);
@@ -1132,7 +1134,8 @@ mod tests {
         };
         let size = vec2(700.0, 400.0);
         let (texts, _) = view(&map, size, None, 3);
-        let rest = " · 901,120 bytes · Being made: gw writes it when it finishes";
+        // 40 cylinders: those gw writes at least, holding data past none of them.
+        let rest = " · 450,560 bytes · Being made: gw writes it when it finishes";
         let (line, at) = texts
             .iter()
             .find(|(t, _)| t.ends_with(rest))

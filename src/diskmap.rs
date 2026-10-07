@@ -195,8 +195,7 @@ pub fn show(
             };
             let colour = shade(ui, egui::Id::new(("square", key)), to, p.bg);
             if taken(key) || colour != p.bg {
-                let status = progress.tracks.get(&key).map(|t| t.status);
-                let edge = edge(status == Some(Status::Skipped), p);
+                let edge = edge(status(progress, key) == Some(Status::Skipped), p);
                 painter.rect(square(head, cyl), radius, colour, edge, StrokeKind::Inside);
             }
             if taken(key) {
@@ -226,6 +225,9 @@ pub fn show(
                     if t.retries > 0 {
                         ui.weak(retry_text(t.retries));
                     }
+                }
+                None if status(progress, (cyl, head)) == Some(Status::Skipped) => {
+                    ui.label("Not in the image.");
                 }
                 None => {
                     ui.weak("Greaseweazle Tools has not reported this track.");
@@ -349,13 +351,10 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
 }
 
 /// A track's colour, by its sectors once gw has mapped them; `None` until gw
-/// reports the track.
+/// reports the track. One gw's image does not hold is skipped.
 pub(crate) fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
     let Some(sectors) = progress.sector_map.get(&key) else {
-        return progress
-            .tracks
-            .get(&key)
-            .map(|t| status_colour(t.status, p));
+        return status(progress, key).map(|s| status_colour(s, p));
     };
     let good = sectors.contains(&Some(true));
     let bad = sectors.contains(&Some(false));
@@ -365,6 +364,14 @@ pub(crate) fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<
         (false, true) => p.bad,
         (true, true) => p.partial,
     })
+}
+
+/// A track's status as gw's line gives it, or skipped where gw's image does
+/// not hold it, which gw gives no line.
+fn status(progress: &Progress, key: (u32, u32)) -> Option<Status> {
+    let line = progress.tracks.get(&key).map(|t| t.status);
+    let absent = progress.facts.get(&key).is_some_and(|f| f.absent);
+    line.or(absent.then_some(Status::Skipped))
 }
 
 /// The rows of gw's sector map missing on a track that has others, such as
@@ -509,5 +516,19 @@ mod tests {
         assert_eq!(place_text("elsewhere"), "elsewhere", "kept as gw put it");
         assert_eq!(retry_text(1), "1 retry");
         assert_eq!(retry_text(3), "3 retries");
+    }
+
+    #[test]
+    fn a_track_gws_image_does_not_hold_is_skipped() {
+        let mut progress = Progress::default();
+        progress.feed("Converting c=0-1:h=0 -> c=0-1:h=0");
+        progress.report(r#"{"c":1,"h":0,"absent":true}"#);
+        assert_eq!(status(&progress, (1, 0)), Some(Status::Skipped));
+        assert_eq!(status(&progress, (0, 0)), None, "not yet reported");
+        let p = &theme::DARK;
+        assert_eq!(
+            fill(&progress, (1, 0), p),
+            Some(status_colour(Status::Skipped, p))
+        );
     }
 }

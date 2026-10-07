@@ -69,20 +69,30 @@ impl TryFrom<Value> for Preview {
     }
 }
 
-/// A `routes` event's tracks.
+/// A `routes` event's tracks; leaving out one that gw's track lists move
+/// to a cylinder before the first, such as with h0.off=-1, as no image
+/// holds it.
 pub fn routes(v: &Value) -> Option<Vec<Route>> {
-    v["tracks"]
+    let routes = v["tracks"].as_array()?.iter().map(|t| {
+        let n: Option<Vec<i64>> = (0..6).map(|i| t.get(i)?.as_i64()).collect();
+        let n: Vec<u32> = n?
+            .into_iter()
+            .map(u32::try_from)
+            .collect::<Result<_, _>>()
+            .ok()?;
+        Some(Route {
+            own: (n[0], n[1]),
+            from: (n[2], n[3]),
+            to: (n[4], n[5]),
+        })
+    });
+    // Whole numbers, or none of it.
+    let all: Vec<Option<Route>> = routes.collect();
+    let whole = v["tracks"]
         .as_array()?
         .iter()
-        .map(|t| {
-            let n = |i: usize| Some(t.get(i)?.as_u64()? as u32);
-            Some(Route {
-                own: (n(0)?, n(1)?),
-                from: (n(2)?, n(3)?),
-                to: (n(4)?, n(5)?),
-            })
-        })
-        .collect()
+        .all(|t| (0..6).all(|i| t.get(i).is_some_and(Value::is_i64)));
+    whole.then(|| all.into_iter().flatten().collect())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,8 +157,6 @@ pub enum State {
 pub struct Job<'a> {
     pub progress: &'a Progress,
     pub running: bool,
-    /// The job converts, rather than reads or writes.
-    pub converts: bool,
 }
 
 impl Job<'_> {
@@ -243,11 +251,13 @@ impl Image {
                     .insert((c as u32, h as u32), Held { has, bytes });
             }
             Some("written") => {
-                let tracks = v["tracks"].as_array().map(|ts| {
+                // Each track's range, or none where one is not whole numbers.
+                let tracks = v["tracks"].as_array().and_then(|ts| {
                     ts.iter()
-                        .filter_map(|t| {
+                        .map(|t| {
                             let n = |i: usize| t.get(i)?.as_u64();
-                            Some(((n(0)? as u32, n(1)? as u32), n(2)?, n(3)?))
+                            let key = (u32::try_from(n(0)?).ok()?, u32::try_from(n(1)?).ok()?);
+                            Some((key, n(2)?, n(3)?))
                         })
                         .collect()
                 });
@@ -257,16 +267,48 @@ impl Image {
         }
     }
 
+    /// How much of a source's file lies past every track gw lays out in it,
+    /// which gw does not read; none where the file ends within them.
+    pub fn unread(&self) -> Option<u64> {
+        let laid: u64 = self.layout.as_ref()?.tracks.iter().map(track_len).sum();
+        let size = self.size.filter(|_| self.role == Role::Source)?;
+        size.checked_sub(laid).filter(|&n| n > 0)
+    }
+
     /// The file's size: a source's, a made image's as written, else as gw
-    /// will write it if it holds every track.
+    /// would write it from what it holds so far.
     pub fn bytes(&self) -> Option<u64> {
         match self.role {
             Role::Source => self.size,
             Role::Made => self.written.as_ref().map(|w| w.size).or_else(|| {
                 let layout = self.layout.as_ref()?;
-                Some(layout.tracks.iter().map(track_len).sum())
+                let kept = self.kept();
+                let tracks = layout
+                    .tracks
+                    .iter()
+                    .filter(|t| kept.is_none_or(|k| t.key.0 <= k));
+                Some(tracks.map(track_len).sum())
             }),
         }
+    }
+
+    /// The last cylinder gw would put in a made image not yet written, as
+    /// it does: those up to the least the file has, and past them, up to
+    /// the last in which a track holds a sector. None where it puts them all.
+    fn kept(&self) -> Option<u32> {
+        let least = self.layout.as_ref()?.min_cyls?;
+        if self.role != Role::Made || self.written.is_some() {
+            return None;
+        }
+        let holding = self
+            .tracks
+            .iter()
+            .filter(|(_, held)| held.has.contains(&true));
+        Some(
+            holding
+                .map(|(&(cyl, _), _)| cyl)
+                .fold(least.saturating_sub(1), u32::max),
+        )
     }
 
     /// Each track of the file in turn, where it lies, with what each of its
@@ -278,10 +320,15 @@ impl Image {
         let written = self.written.as_ref().map(|w| w.tracks.as_ref());
         let starts: Vec<(usize, u64)> = match written {
             Some(Some(ranges)) => {
-                let at = |key| layout.tracks.iter().position(|t| t.key == key);
+                // Each where gw wrote it, as long as the layout has it.
+                let at = |key, start, end: u64| {
+                    let i = layout.tracks.iter().position(|t| t.key == key)?;
+                    (end.checked_sub(start) == Some(track_len(&layout.tracks[i])))
+                        .then_some((i, start))
+                };
                 ranges
                     .iter()
-                    .map(|&(key, start, _)| Some((at(key)?, start)))
+                    .map(|&(key, start, end)| at(key, start, end))
                     .collect::<Option<_>>()?
             }
             Some(None) => return None,
@@ -296,29 +343,29 @@ impl Image {
                     .collect()
             }
         };
-        let unwritten = self.role == Role::Made && self.written.is_none();
+        let kept = self.kept();
         Some(
             starts
                 .into_iter()
                 .map(|(i, start)| {
                     let laid = &layout.tracks[i];
+                    let to_do = job.is_some_and(|j| j.running && j.planned(Role::Made, laid.key));
                     let mut at = start;
                     let parts = laid
                         .sectors
                         .iter()
                         .map(|p| {
-                            let state = self.state(laid.key, p, at, job);
+                            let state = self.state(laid.key, p, at, to_do);
                             at += p.len;
                             (p.clone(), at - p.len, state)
                         })
                         .collect();
-                    let past = layout.min_cyls.is_some_and(|m| laid.key.0 >= m);
                     Placed {
                         key: laid.key,
                         start,
                         len: track_len(laid),
                         parts,
-                        kept: !(unwritten && past),
+                        kept: kept.is_none_or(|k| laid.key.0 <= k),
                     }
                 })
                 .collect(),
@@ -326,18 +373,18 @@ impl Image {
     }
 
     /// What a part holds: a made image's, as gw put its track in, or as far
-    /// as the job has gone; a source's, as its file holds it, whatever a
-    /// job does with it: gw's zeros past the file's end, gw's filler, or
-    /// its data.
-    fn state(&self, key: (u32, u32), part: &Part, at: u64, job: Option<&Job>) -> State {
+    /// as the job has gone, `to_do` where gw is yet to put it in; a
+    /// source's, as its file holds it, whatever a job does with it: gw's
+    /// zeros where it lies past the file's end, gw's filler, or its data.
+    fn state(&self, key: (u32, u32), part: &Part, at: u64, to_do: bool) -> State {
         match self.role {
             Role::Made => match self.tracks.get(&key) {
                 Some(held) if held.has.get(part.index) == Some(&true) => State::Data,
                 Some(_) => State::Filler,
-                None if job.is_some_and(|j| j.running && j.planned(Role::Made, key)) => State::ToDo,
+                None if to_do => State::ToDo,
                 None => State::Unread,
             },
-            Role::Source if self.size.is_some_and(|size| at + part.len > size) => State::PastEnd,
+            Role::Source if self.size.is_some_and(|size| at >= size) => State::PastEnd,
             Role::Source if self.holds_filler(part, at) => State::Filler,
             Role::Source => State::Data,
         }
@@ -474,11 +521,7 @@ mod tests {
     }
 
     fn job(progress: &Progress, running: bool) -> Job<'_> {
-        Job {
-            progress,
-            running,
-            converts: false,
-        }
+        Job { progress, running }
     }
 
     #[test]
@@ -579,7 +622,6 @@ mod tests {
         let running = Job {
             progress: &progress,
             running: true,
-            converts: true,
         };
         assert_eq!(running.current(Role::Source), Some((1, 0)));
         assert_eq!(running.current(Role::Made), Some((0, 0)));
@@ -615,7 +657,8 @@ mod tests {
                 .collect()
         };
         use State::*;
-        assert_eq!(states(None), [Data, Filler, Data, PastEnd], "before a job");
+        // The last part starts in the file, 1,800 bytes long: its data, then gw's zeros.
+        assert_eq!(states(None), [Data, Filler, Data, Data], "before a job");
         let mut progress = Progress::default();
         progress.feed("Writing c=0-1:h=0");
         progress.feed("T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)");
@@ -623,8 +666,76 @@ mod tests {
         let written = job(&progress, false);
         assert_eq!(
             states(Some(&written)),
-            [Data, Filler, Data, PastEnd],
+            [Data, Filler, Data, Data],
             "as the file holds them, whatever the job does"
         );
+    }
+
+    #[test]
+    fn a_track_moved_before_the_first_cylinder_lies_in_no_image() {
+        let v = serde_json::json!({"tracks": [[0, 0, -1, 0, 0, 0], [1, 0, 0, 0, 1, 0]]});
+        let kept = routes(&v).unwrap();
+        assert_eq!(
+            kept,
+            [Route {
+                own: (1, 0),
+                from: (0, 0),
+                to: (1, 0)
+            }]
+        );
+        let v = serde_json::json!({"tracks": [[0, 0, 0.5, 0, 0, 0]]});
+        assert_eq!(routes(&v), None, "not whole numbers");
+    }
+
+    #[test]
+    fn a_file_written_otherwise_than_laid_out_is_not_placed() {
+        let mut image = made();
+        let short = serde_json::json!({"event": "written", "size": 2047,
+            "tracks": [[0, 0, 0, 1024], [1, 0, 1024, 2047]]});
+        image.take(&short);
+        assert_eq!(image.placed(None), None, "a track a byte short");
+        let odd = serde_json::json!({"event": "written", "size": 2048,
+            "tracks": [[0, 0, 0, 1024], [1, 0, "1024", 2048]]});
+        image.take(&odd);
+        assert_eq!(image.placed(None), None);
+        assert_eq!(image.bytes(), Some(2048), "as written");
+    }
+
+    #[test]
+    fn a_made_image_holds_cylinders_past_its_least_up_to_the_last_with_a_sector() {
+        let mut image = made();
+        image.layout.as_mut().unwrap().min_cyls = Some(1);
+        let kept = |image: &Image| -> Vec<bool> {
+            image.placed(None).unwrap().iter().map(|t| t.kept).collect()
+        };
+        assert_eq!(
+            (kept(&image), image.bytes()),
+            (vec![true, false], Some(1024))
+        );
+        let held = |c, has: [bool; 2]| serde_json::json!({"event": "track", "c": c, "h": 0, "has": has, "bytes": ""});
+        image.take(&held(1, [false, false]));
+        assert_eq!(
+            kept(&image),
+            [true, false],
+            "a track of no sector holds no data"
+        );
+        image.take(&held(1, [false, true]));
+        assert_eq!(
+            (kept(&image), image.bytes()),
+            (vec![true, true], Some(2048))
+        );
+    }
+
+    #[test]
+    fn a_source_longer_than_its_layout_has_bytes_gw_does_not_read() {
+        let mut source = made();
+        source.role = Role::Source;
+        source.size = Some(2048 + 300);
+        assert_eq!(source.unread(), Some(300));
+        source.size = Some(2048);
+        assert_eq!(source.unread(), None);
+        source.size = Some(1500);
+        assert_eq!(source.unread(), None, "it ends within them");
+        assert_eq!(made().unread(), None, "a made image's is gw's own");
     }
 }

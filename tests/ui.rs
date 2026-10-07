@@ -3,8 +3,9 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, SCRATCHED, Window, app, app_mut, damaged_read, greaseweazle,
-    held, image_part, line, on_disk, run_button, scratched_adf, squares,
+    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN,
+    Window, app, app_mut, damaged_read, greaseweazle, held, image_part, line, on_disk, run_button,
+    scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -2327,10 +2328,6 @@ fn detects_tracks_fade_in_as_it_reads_them() {
     );
 }
 
-/// Detect of a flux image gw made of an AmigaDOS disk: the three tracks it
-/// read, each reported as read, then as AmigaDOS decodes it.
-const DETECTED: &str = include_str!("data/detect-amiga.log");
-
 #[test]
 fn detects_tracks_open_as_the_format_it_found_decodes_them() {
     let mut job = Job::replay(DETECT, DETECTED);
@@ -2362,6 +2359,31 @@ fn detects_tracks_open_as_the_format_it_found_decodes_them() {
     w.drop_at(at);
     w.run();
     w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 0, side 0"));
+}
+
+#[test]
+fn a_detect_that_finds_no_format_shows_the_flux_it_read_whatever_the_pages_format() {
+    // The three tracks Detect read, and no format that reads them all.
+    let read: String = DETECTED
+        .lines()
+        .take(7)
+        .map(|l| l.to_owned() + "\n")
+        .collect();
+    let failed = read
+        + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n"
+        + "** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full.";
+    let mut job = Job::replay(DETECT, &failed);
+    job.page = "read".into();
+    assert_eq!(job.format, None);
+    // The page has a format of its own.
+    let mut w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Disk map");
+    let facts = &app(&w).disk.as_ref().unwrap().progress.facts;
+    assert!(facts.len() == 3 && facts.values().all(|f| f.flux.is_some()));
 }
 
 #[test]
@@ -4114,15 +4136,6 @@ fn revolutions_ends_halfway_along_disk_format_at_the_default_size() {
     );
 }
 
-/// A real disk read: the Workbench 3.1 Install disk in a real drive, with the
-/// bridge's reports on its tracks.
-const WORKBENCH: &str = include_str!("data/read-workbench.log");
-/// A track of a real Akai S950 disk's HFE image, as the bridge reports it.
-const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
-/// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
-/// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
-const TRACK_0: f32 = 39.5 / 42.9;
-
 #[test]
 fn analyse_is_greyed_with_the_status_panes_line_until_it_has_a_disk_to_show() {
     let mut w = window(chosen());
@@ -4518,6 +4531,22 @@ fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged()
     w.drop_at(edge - egui::vec2(0.0, 300.0));
     w.run();
     assert_eq!(drawer(&w), before);
+    // Down, it is shorter, as far as it goes.
+    w.hover_at(edge);
+    w.run();
+    w.drag_at(edge);
+    w.run();
+    w.hover_at(edge + egui::vec2(0.0, 100.0));
+    w.run();
+    w.drop_at(edge + egui::vec2(0.0, 100.0));
+    w.run();
+    let shorter = drawer(&w);
+    let down = shorter.top() - before.top();
+    assert!(
+        (95.0..=105.0).contains(&down),
+        "{shorter:?} from {before:?}"
+    );
+    assert_eq!(shorter.bottom(), size.y);
 }
 
 #[test]
@@ -4610,9 +4639,6 @@ fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_
     assert!(rows.starts_with("0000  ") && rows.lines().last().unwrap().starts_with("03F0  "));
 }
 
-/// The Workbench disk written from its ADF, each track verified.
-const WRITTEN: &str = include_str!("data/write-workbench.log");
-
 /// Analyse open on `page`, showing the image.
 fn image_open(page: &str) -> Settings {
     Settings {
@@ -4621,6 +4647,22 @@ fn image_open(page: &str) -> Settings {
         analysis: Analysis::Image,
         ..chosen()
     }
+}
+
+#[test]
+fn image_analysis_stays_chosen_while_gw_opens_a_jobs_image() {
+    let mut started = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    started.ended = None;
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("read"), Some(started));
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label("gw is opening the image.");
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    assert!(
+        w.query_by_label("Disk map").is_none(),
+        "not the disk meanwhile"
+    );
 }
 
 #[test]
@@ -4680,8 +4722,8 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
     w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
     w.get_by_label("Data 1705");
     w.get_by_label("Filler 55");
-    // Here the file's 160 tracks run down a column for each side of the
-    // disk, 80 rows each of 11 sectors.
+    // Here the file's 160 tracks run down two columns where the disks lie,
+    // its first half and its second, 80 rows each of 11 sectors.
     let at = image_part(&w, 80, 11);
     w.hover_at(at(0, 0));
     w.run();
@@ -4801,6 +4843,42 @@ fn before_a_write_image_analysis_shows_the_file_it_is_to_take_its_tracks_from() 
     w.get_by_label("Sector 3 · 512 bytes");
     w.get_by_label("31E00–31FFF · cylinder 18, side 0");
     w.get_by_label("gw's filler, in the file");
+}
+
+#[test]
+fn analyse_stays_open_while_gw_opens_the_pages_image_again() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, None);
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    // Its format changed, say: gw opens it again.
+    app_mut(&mut w).hold_image();
+    w.run();
+    assert_eq!(app(&w).settings.drawer, Some(Drawer::Analyse));
+    w.get_by_label("gw is opening the file.");
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    // Shut, it says why it cannot open yet.
+    analyse.click();
+    w.run_steps(30); // past the drawer's slide
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    w.get_by_label("gw is opening the file.");
 }
 
 #[test]

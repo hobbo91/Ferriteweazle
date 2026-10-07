@@ -8,8 +8,9 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, SCRATCHED, Window, app_mut, damaged_read, greaseweazle, held,
-    image_part, on_disk, run_button, scratched_adf,
+    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN,
+    Window, app_mut, damaged_read, greaseweazle, held, image_part, on_disk, run_button,
+    scratched_adf,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
@@ -432,24 +433,10 @@ fn screens() {
     }
 }
 
-/// A real disk read: the Workbench 3.1 Install disk in a real drive, read
-/// with gw's own revolutions for its format, the bridge's reports and all.
-const WORKBENCH: &str = include_str!("data/read-workbench.log");
-/// The Workbench disk written back from its ADF in a real drive: each track
-/// as gw writes it, then as gw's verify read it back.
-const WRITTEN: &str = include_str!("data/write-workbench.log");
 /// A real Akai S950 disk's HFE image as flux, a scratch cut into side 1,
 /// cylinders 10 to 70, converted to sectors.
 const AKAI: &str = include_str!("data/convert-akai.log");
-/// Detect of a flux image gw made of an AmigaDOS disk.
-const DETECTED: &str = include_str!("data/detect-amiga.log");
-/// Its track 0.0 as the bridge reports it, its sectors' data and all.
-const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
-/// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
-/// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
-const TRACK_0: f32 = 39.5 / 42.9;
 
-/// The Akai conversion, its track 0.0 with its data.
 /// The Convert page's input in these pictures.
 const INPUT: &str = "/Users/you/Floppies/Disk07.scp";
 
@@ -463,6 +450,7 @@ fn converted(log: &str) -> Job {
     job
 }
 
+/// The Akai conversion, its track 0.0 with its sectors' data.
 fn akai_job() -> Job {
     let mut job = converted(AKAI);
     let line = AKAI_TRACK.trim().strip_prefix("@ferriteweazle track ");
@@ -782,7 +770,7 @@ fn images() {
 
 /// The analyses' tabs in the Classic palettes, each chosen.
 #[test]
-#[ignore]
+#[ignore = "writes pictures for people to look at"]
 fn analysis_tabs() {
     for (name, choice) in [("classic", Choice::Classic), ("blue", Choice::Blue)] {
         for (view, analysis) in [("disk", Analysis::Disk), ("image", Analysis::Image)] {

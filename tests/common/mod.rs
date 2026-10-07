@@ -15,6 +15,21 @@ pub const DAMAGED: &str = include_str!("../data/convert-damaged.log");
 /// 62, converted to an ADF: real flux, gw's decode of it, and gw's filler in
 /// place of the 55 sectors that did not decode.
 pub const SCRATCHED: &str = include_str!("../data/convert-workbench-scratched.log");
+/// A real disk read: the Workbench 3.1 Install disk in a real drive, read
+/// with gw's own revolutions for its format, the bridge's reports and all.
+pub const WORKBENCH: &str = include_str!("../data/read-workbench.log");
+/// The Workbench disk written back from its ADF in a real drive: each track
+/// as gw writes it, then as gw's verify read it back.
+pub const WRITTEN: &str = include_str!("../data/write-workbench.log");
+/// Detect of a flux image gw made of an AmigaDOS disk: the three tracks it
+/// read, each reported as read, then as AmigaDOS decodes it.
+pub const DETECTED: &str = include_str!("../data/detect-amiga.log");
+/// A track of a real Akai S950 disk's HFE image, as the bridge reports it,
+/// its sectors' data made up.
+pub const AKAI_TRACK: &str = include_str!("../data/report-akai.txt");
+/// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
+/// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
+pub const TRACK_0: f32 = 39.5 / 42.9;
 
 /// Gives track `key` of the image `job` makes made-up bytes, as the bridge
 /// reports the bytes gw holds: gw's filler where gw lacks a sector, else

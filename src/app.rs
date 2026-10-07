@@ -10,7 +10,7 @@ use crate::lines::Lines;
 use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
-use crate::service::{Load, Repaint, Service};
+use crate::service::{ImageAsk, Load, Repaint, Service};
 use crate::surface::{self, ANALYSES, Analysis, MEDIA, Media, SHOWS, Shows};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Origin, Tools};
@@ -83,6 +83,8 @@ const NO_DEVICE: &str = "Connect a Greaseweazle.";
 const FROM_SOURCE: &str = "Needs a copy installed from a release.";
 /// Why Detect greys for a gw with no Python the bridge can run in.
 const STANDALONE_DETECT: &str = "Standalone Greaseweazle Tools cannot run Detect.";
+/// While gw opens the image a write or a conversion is to take its tracks from.
+const OPENING: &str = "gw is opening the file.";
 /// Why Restart and Update grey when no gw is found.
 const NOT_FOUND: &str = "Unable to load Greaseweazle Tools.";
 /// When no gw is found, built in, installed or chosen.
@@ -234,7 +236,8 @@ pub enum Drawer {
     Cli,
     /// gw's output from every job of the session.
     Log,
-    /// The disk job's disk, each side as the round disk it is.
+    /// The disk job's disk, each side as the round disk it is, and the image
+    /// it makes or takes its tracks from; before a job, that image.
     Analyse,
 }
 
@@ -746,6 +749,12 @@ impl App {
     /// tracks from, whatever its page names: for tests and pictures.
     pub fn pin_image(&mut self, image: crate::image::Image) {
         self.service.pin_image(image);
+    }
+
+    /// Has gw take for ever to open the image a write or a conversion is to
+    /// take its tracks from: for tests.
+    pub fn hold_image(&mut self) {
+        self.service.hold_image();
     }
 
     /// gw's command line, once gw has described it.
@@ -2657,8 +2666,9 @@ impl App {
         (format, disk.unwrap_or_default(), blank)
     }
 
-    /// The drawers under the page and the status pane: the command line and
-    /// the log. A drawer slides open and shut; going from one to the other does not.
+    /// The drawers under the page and the status pane: the command line, the
+    /// log and Analyse. A drawer slides open and shut; going from one to the
+    /// other does not.
     fn drawers(&mut self, ui: &mut Ui, page: &str) {
         let p = theme::palette(ui);
         let frame = Frame::new().fill(p.bg).inner_margin(Margin {
@@ -2770,10 +2780,14 @@ impl App {
         if job.is_some_and(|j| shows(j, page, format.as_deref(), &blank)) {
             return Ok(());
         }
-        if let Some((args, path)) = self.preview_args(page) {
-            let load = self.service.image(&args, &path);
-            if load.ready().is_some_and(|p| p.0.layout.is_some()) {
-                return Ok(());
+        if let Some(ask) = self.preview_args(page) {
+            // While gw opens the file, as when its options change, the
+            // drawer stays as it is.
+            match self.service.image(&ask) {
+                Load::Ready(p) if p.0.layout.is_some() => return Ok(()),
+                Load::Waiting(_) if self.settings.drawer == Some(Drawer::Analyse) => return Ok(()),
+                Load::Waiting(_) => return Err(OPENING),
+                _ => {}
             }
         }
         match DISK_COMMANDS.contains(&page) {
@@ -2798,9 +2812,11 @@ impl App {
     }
 
     /// What gw needs to open the page's image, `page_image`, as its job
-    /// will: the command with its format, definitions and files, and the
-    /// image's path. None for flux, which gw keeps as tracks.
-    fn preview_args(&self, page: &str) -> Option<(Vec<String>, String)> {
+    /// will: the command with its format, definitions and files; for a
+    /// conversion's output, a name of the same type, which is all gw takes
+    /// from it before opening the input. None for flux, which gw keeps as
+    /// tracks.
+    fn preview_args(&self, page: &str) -> Option<ImageAsk> {
         let path = self.page_image(page)?;
         if filemap::holds_tracks(&path) {
             return None;
@@ -2808,10 +2824,15 @@ impl App {
         let cmd = self.schema.as_ref()?.command(page)?;
         let values = self.values_for(cmd);
         let mut with = Values::default();
-        for dest in ["diskdefs", "format", "file", "in_file", "out_file"] {
+        for dest in ["diskdefs", "format", "file", "in_file"] {
             with.set(dest, values.get(dest));
         }
-        Some((command::argv(cmd, &with), path))
+        with.set("out_file", of_type(values.get("out_file")));
+        Some(ImageAsk {
+            args: command::argv(cmd, &with),
+            path,
+            diskdefs: values.get("diskdefs").to_owned(),
+        })
     }
 
     /// The Analyse drawer: the disk job's disk, each side as the round disk
@@ -2835,22 +2856,21 @@ impl App {
             j.running() || named.is_none() || took == named.as_deref()
         });
         let preview = self.preview_args(page).filter(|_| !owns);
-        if let Some((args, path)) = &preview {
-            self.service.image(args, path);
+        if let Some(ask) = &preview {
+            self.service.image(ask);
         }
         let job = self.disk.as_ref().filter(|_| shown);
         let opened = preview
             .as_ref()
-            .and_then(|(args, path)| self.service.known_image(args, path).zip(Some(path)));
-        let previewed = opened.map(|(p, _)| &p.0).filter(|i| i.layout.is_some());
+            .and_then(|ask| self.service.known_image(ask));
+        let previewed = opened.map(|p| &p.0).filter(|i| i.layout.is_some());
         // Why the page's own image does not show where a job's might.
-        let unshown = match (&named, opened) {
+        let unshown = || match (&named, opened) {
             (Some(path), _) if filemap::holds_tracks(path) => filemap::not_mapped(path),
-            (_, Some((p, _))) => filemap::not_mapped(p.0.file.as_deref().unwrap_or(&p.0.kind)),
-            _ => preview
-                .as_ref()
-                .and_then(|(args, path)| self.service.image_error(args, path))
-                .unwrap_or("gw is opening the file.")
+            (_, Some(p)) => filemap::not_mapped(p.0.file.as_deref().unwrap_or(&p.0.kind)),
+            _ => (preview.as_ref())
+                .and_then(|ask| self.service.image_error(ask))
+                .unwrap_or(OPENING)
                 .to_owned(),
         };
         let begun =
@@ -2865,13 +2885,22 @@ impl App {
         let image = match (job.filter(|_| owns), previewed) {
             (Some(j), _) => filemap::shown(&j.progress),
             (None, Some(image)) => Ok(image),
-            (None, None) if job.is_some() => Err(unshown),
-            (None, None) => return,
+            (None, None) => Err(unshown()),
+        };
+        // A job gw has yet to open its image for.
+        let opening = job.filter(|_| owns).is_some_and(|j| {
+            j.running() && j.progress.made.is_none() && j.progress.source.is_none()
+        });
+        let image = match image {
+            Err(_) if opening => Err("gw is opening the image.".to_owned()),
+            image => image,
         };
         let analysis = &mut self.settings.analysis;
         let showing = match (job, &image) {
             (None, _) => Analysis::Image,
             (Some(_), Ok(_)) => *analysis,
+            // As chosen, until gw says what it is.
+            (Some(_), Err(_)) if opening => *analysis,
             (Some(_), Err(_)) => Analysis::Disk,
         };
         let (media, shows) = (&mut self.settings.media, &mut self.settings.shows);
@@ -2946,16 +2975,23 @@ impl App {
         // view to the other leaves the drawer as it is.
         let most = surface::most(ui, &map);
         let place = surface::place(ui, &map);
-        if let (Analysis::Image, Ok(image)) = (showing, image) {
-            let map = filemap::Map {
-                progress: job.filter(|_| owns).map(|j| &j.progress),
-                image,
-                running: running && owns,
-                converts: command == "convert",
-            };
-            filemap::show(ui, &map, place);
-        } else {
-            surface::show(ui, &map);
+        match (showing, image) {
+            (Analysis::Image, Ok(image)) => {
+                let map = filemap::Map {
+                    progress: job.filter(|_| owns).map(|j| &j.progress),
+                    image,
+                    running: running && owns,
+                    converts: command == "convert",
+                };
+                filemap::show(ui, &map, place);
+            }
+            // Nothing gw has opened yet: why.
+            (Analysis::Image, Err(why)) if job.is_none() || opening => {
+                ui.label(RichText::new(why).weak());
+            }
+            _ => {
+                surface::show(ui, &map);
+            }
         }
         if let Some(most) = most {
             self.analyse_most = Some(above + most);
@@ -4415,14 +4451,15 @@ const NO_DISK_JOB: &str = "No disk job running";
 
 /// Whether the status pane shows disk job `job` on `page`, whose format is
 /// `format` and empty map `blank`. A running job shows on every page. A
-/// finished one shows on its own page until that page takes other tracks, or
-/// for Detect another format.
+/// finished one shows on its own page until that page takes other tracks,
+/// or for Detect another format; one that found none, with the flux it
+/// read, whatever the page's.
 fn shows(job: &Job, page: &str, format: Option<&str>, blank: &Progress) -> bool {
     let preview = (&blank.cyls, &blank.heads);
     job.running()
         || job.page == page
             && match job.command.as_str() {
-                DETECT => job.format.as_deref() == format,
+                DETECT => job.format.is_none() || job.format.as_deref() == format,
                 _ => job.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
             }
 }
@@ -4438,6 +4475,23 @@ fn undrawn(args: &[String]) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// A name of the same image type as `file`, its `::` options and all: what
+/// gw takes from a conversion's output name before it opens the input.
+fn of_type(file: &str) -> String {
+    let (name, options) = file
+        .split_once("::")
+        .map_or((file, None), |(n, o)| (n, Some(o)));
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy());
+    let mut out = match ext {
+        Some(ext) => format!("out.{ext}"),
+        None => name.to_owned(),
+    };
+    if let Some(options) = options {
+        out = out + "::" + options;
+    }
+    out
 }
 
 /// What the status pane says before any disk job, for this page.
@@ -4510,8 +4564,8 @@ const DRAWERS: [(Drawer, &str, &str, &str); 3] = [
     (
         Drawer::Analyse,
         "Analyse",
-        "Show disk analysis.",
-        "Hide disk analysis.",
+        "Show disk and image analysis.",
+        "Hide disk and image analysis.",
     ),
 ];
 
