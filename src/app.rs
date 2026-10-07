@@ -2969,6 +2969,7 @@ impl App {
             media: *media,
             shows: *shows,
             current: job.and_then(|j| j.progress.current).filter(|_| running),
+            running,
         };
         let above = ui.cursor().top() - top;
         // As tall as the disks can use, whichever shows: going from one

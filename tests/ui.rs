@@ -2389,6 +2389,55 @@ fn a_detect_that_finds_no_format_shows_the_flux_it_read_whatever_the_pages_forma
 }
 
 #[test]
+fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
+    // A write, its disks' flux shown, the drawer pulled down to its least.
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        drawer: Some(Drawer::Analyse),
+        shows: Shows::Flux,
+        ..chosen()
+    };
+    // As gw writes now: each track's line, then once written, its report.
+    let mut lines: Vec<&str> = Vec::new();
+    let mut held = None;
+    for line in WRITTEN.lines() {
+        if line.contains(r#""source":"written""#) {
+            held = Some(line);
+            continue;
+        }
+        lines.push(line);
+        if line.contains(": Writing Track") {
+            lines.extend(held.take());
+        }
+    }
+    let running = |n: usize| {
+        let mut job = Job::replay("write", &lines[..n].join("\n"));
+        job.ended = None;
+        job
+    };
+    let mut w = start(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(running(40)),
+    );
+    w.run_steps(4);
+    let id = egui::Id::new("analyse");
+    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
+    state.outer_rect.min.y = state.outer_rect.max.y - 240.0;
+    w.ctx.data_mut(|d| d.insert_persisted(id, state));
+    w.run_steps(4);
+    let disks = |w: &Window| w.get_by_label("Disk map").rect().size();
+    let first = disks(&w);
+    // A track gw is writing is known by its line alone until written.
+    for n in 40..120 {
+        app_mut(&mut w).disk = Some(running(n));
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        assert_eq!(disks(&w), first, "after {n} lines");
+    }
+}
+
+#[test]
 fn the_disks_legend_counts_tracks_to_do_as_tracks() {
     let reached = WORKBENCH
         .split_inclusive('\n')

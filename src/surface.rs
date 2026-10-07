@@ -168,6 +168,8 @@ pub struct Map<'a> {
     pub shows: Shows,
     /// The last track gw reported, while it works.
     pub current: Option<(u32, u32)>,
+    /// gw works on the disk: its legend's counts change as it goes.
+    pub running: bool,
 }
 
 /// The cylinders the disk view spans for `progress` on a disk of `disk`'s.
@@ -223,10 +225,8 @@ pub(crate) const TITLE: f32 = 20.0;
 /// the same 13-point type.
 const TITLE_BAR: f32 = 28.0;
 const TITLE_SIZE: f32 = 13.0;
-/// The legend: the room above it and after each entry, and the least
-/// width it wraps at, under narrow disks.
+/// The legend: the room above it and after each entry.
 const LEGEND_GAP: f32 = 6.0;
-const LEGEND_WIDTH: f32 = 240.0;
 const SIDE_GAP: f32 = 32.0;
 /// How long the last track reported takes to fade in or out, in seconds.
 const RING_FADE: f32 = 0.12;
@@ -434,41 +434,38 @@ impl Room {
         let across = (room.x - SIDE_GAP * (n - 1.0)) / n;
         // The space between the disks and their legend.
         let gap = ui.spacing().item_spacing.y;
-        // The legend is as wide as the disks, and at least LEGEND_WIDTH.
-        let wide = |g: &Geometry| {
-            let disks = n * (g.pixels as f32 / ppp) + SIDE_GAP * (n - 1.0);
-            disks.max(LEGEND_WIDTH).min(room.x)
-        };
-        let fit = |legend: f32| {
-            let diameter = across.min(room.y - TITLE - gap - legend).max(LEAST);
-            Geometry::new(map.media, span, f64::from(diameter * ppp))
-        };
         let holds = map
             .media
             .holds()
             .filter(|_| !fits)
             .map(|n| format!("{span} cylinders: a {} disk holds {n}.", map.media.name()));
-        // The legend's height, which its entries' widths decide, wraps more
-        // the narrower the disks; the disks are narrower the taller it is,
-        // where the room's height limits them. From the widest, until the
-        // two agree.
-        let widest = Geometry::new(map.media, span, f64::from(across.max(LEAST) * ppp));
+        // The legend runs across the room under the disks, whatever their
+        // size, so its height sets theirs and never the other way round.
+        // While gw works its counts change: the room it has taken it keeps.
         let mut look = Look::of(p, map.media);
         let mut legend = Legend::of(ui, map, &drawn, &look, holds.clone());
-        let widest_legend = legend.flow(ui, wide(&widest));
-        let most = TITLE + widest.pixels as f32 / ppp + gap + widest_legend;
-        let (mut height, mut geometry) = (widest_legend, fit(widest_legend));
-        for _ in 0..8 {
-            let next = legend.flow(ui, wide(&geometry));
-            if next <= height {
-                break;
+        let mut height = legend.flow(ui, room.x);
+        {
+            let mut kept = kept.lock();
+            match map.running {
+                true => {
+                    let taken = kept.floor.filter(|&(width, _)| width == room.x);
+                    height = height.max(taken.map_or(0.0, |(_, h)| h));
+                    kept.floor = Some((room.x, height));
+                }
+                false => kept.floor = None,
             }
-            (height, geometry) = (next, fit(next));
         }
+        let widest = Geometry::new(map.media, span, f64::from(across.max(LEAST) * ppp));
+        let most = TITLE + widest.pixels as f32 / ppp + gap + height;
+        let diameter = across.min(room.y - TITLE - gap - height).max(LEAST);
+        let geometry = Geometry::new(map.media, span, f64::from(diameter * ppp));
         // Its colours as the tracks show them at that size.
         look.covered = geometry.covered(line);
         legend = Legend::of(ui, map, &drawn, &look, holds);
-        legend.flow(ui, wide(&geometry));
+        legend.flow(ui, room.x);
+        legend.height = height;
+        let widest_legend = height;
         let diameter = geometry.pixels as f32 / ppp;
         Some(Room {
             span,
@@ -607,7 +604,9 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
     }
     inspector(ui.ctx(), map);
     let top = ui.cursor().top();
-    room.legend.draw(ui, egui::pos2(left, top));
+    // From the disks' left edge; wider than they are, centred on them.
+    let x = left.min(rect.center().x - room.legend.width / 2.0);
+    room.legend.draw(ui, egui::pos2(x.max(rect.left()), top));
 }
 
 /// A disk as drawn, in pixels from its centre.
@@ -1125,6 +1124,9 @@ struct Kept {
     room: Option<(RoomKey, Room)>,
     counted: Option<(DrawnKey, Arc<Drawn>)>,
     widest: Option<f32>,
+    /// While gw works, the room's width and the height its legend has
+    /// taken there, which it keeps: changing counts do not resize the disks.
+    floor: Option<(f32, f32)>,
 }
 
 impl egui::Plugin for Kept {
@@ -2370,9 +2372,11 @@ struct Legend {
     entries: Vec<Entry>,
     at: Vec<egui::Vec2>,
     holds: Option<(String, Option<Arc<Galley>>)>,
-    /// Its rows' height, its text's and its marks', and its own.
+    /// Its rows' height, its text's and its marks', and its own; the widest
+    /// of its rows.
     row: f32,
     height: f32,
+    width: f32,
 }
 
 /// A legend entry: a word before its mark, as the flux scale's "Less", its
@@ -2402,6 +2406,7 @@ impl Legend {
             holds: holds.map(|text| (text, None)),
             row: 0.0,
             height: 0.0,
+            width: 0.0,
         };
         if legend.holds.is_some() {
             return legend;
@@ -2544,6 +2549,7 @@ impl Legend {
             let font = egui::TextStyle::Body.resolve(ui.style());
             let laid = ui.painter().layout(text.clone(), font, p.bad, width);
             self.height = LEGEND_GAP + laid.size().y;
+            self.width = laid.size().x;
             *galley = Some(laid);
             return self.height;
         }
@@ -2557,11 +2563,13 @@ impl Legend {
         self.row = row;
         let (mut x, mut y) = (0.0, 0.0);
         self.at.clear();
+        self.width = 0.0;
         for e in &self.entries {
             if x > 0.0 && x + e.width > width {
                 (x, y) = (0.0, y + row + spacing.y);
             }
             self.at.push(vec2(x, y));
+            self.width = self.width.max(x + e.width);
             // Room after a marked entry, as between a legend's keys.
             let after = if e.mark.is_some() { LEGEND_GAP } else { 0.0 };
             x += e.width + spacing.x + after;
@@ -3198,6 +3206,7 @@ mod tests {
             media: Media::Fit,
             shows,
             current: None,
+            running: false,
         }
     }
 
