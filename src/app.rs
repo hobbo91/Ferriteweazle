@@ -5301,7 +5301,7 @@ fn text_width(ui: &Ui, text: &str, font: &FontId) -> f32 {
 
 /// `text`, or where it is wider than `width` in `font`, its two ends about
 /// an ellipsis, so that texts differing at either end stay apart.
-fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
+pub(crate) fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
     let whole = text_width(ui, text, font);
     if whole <= width {
         return text.into();

@@ -115,21 +115,21 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         .max(ROW_LEAST);
     let (area, _) = ui.allocate_exact_size(vec2(room.x, TITLE + height), Sense::hover());
     let picture = Rect::from_min_max(egui::pos2(area.left(), area.top() + TITLE), area.max);
-    let parts = placed.iter().map(|t| t.parts.len()).max().unwrap_or(1);
-    let layout = Layout {
+    let plan = Plan {
         tracks: placed.len(),
         sides,
-        parts,
+        parts: placed.iter().map(|t| t.parts.len()).max().unwrap_or(1),
         column: disks.map(|d| d.diameter),
         label,
     };
-    let grid = Grid::new(&layout, picture, ppp);
+    let grid = Grid::new(&plan, picture, ppp);
     let layers = flow(ui, grid, picture.min);
     let rows: Vec<Rect> = (0..placed.len()).map(|i| grid.row(i)).collect();
     let bounds = rows.iter().fold(Rect::NOTHING, |b, r| b.union(*r));
     let response = ui.interact(bounds, ui.id().with("image map"), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Image map"));
-    // The file's name, size and state over the rows, as the sides' names are over the disks.
+    // The file's name, size and state over the rows, as the sides' names
+    // are over the disks.
     let title = Rect::from_min_size(
         egui::pos2(grid.origin.x, area.top()),
         vec2(area.right() - grid.origin.x, TITLE),
@@ -138,7 +138,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         egui::UiBuilder::new()
             .max_rect(title)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        |ui| ui.label(RichText::new(header(map)).small().color(p.dim)),
+        |ui| title_label(ui, map, title.width(), p),
     );
     // Rows flowing from a taller layout are cut at the box; marks round
     // them may reach a little past it.
@@ -235,6 +235,13 @@ fn job<'a>(map: &Map<'a>) -> Option<image::Job<'a>> {
 
 /// The line over the rows: the file, its size, and where gw is with it.
 fn header(map: &Map) -> String {
+    let (name, rest) = header_parts(map);
+    name + &rest
+}
+
+/// The line over the rows in two: the file's name, and after it its size
+/// and where gw is with it.
+fn header_parts(map: &Map) -> (String, String) {
     let image = map.image;
     let name = image
         .file
@@ -255,11 +262,28 @@ fn header(map: &Map) -> String {
         Role::Source if map.progress.is_none() => "As gw reads it",
         Role::Source => "As gw read it",
     };
-    let parts: Vec<String> = [Some(name), size, Some(state.to_owned())]
+    let rest: String = [size, Some(state.to_owned())]
         .into_iter()
         .flatten()
+        .map(|part| format!(" · {part}"))
         .collect();
-    parts.join(" · ")
+    (name, rest)
+}
+
+/// The line over the rows on one line `width` wide: a name too long for
+/// it, with the rest after it, cut in the middle, as the status pane cuts
+/// one, and whole on hover.
+fn title_label(ui: &mut egui::Ui, map: &Map, width: f32, p: &Palette) {
+    let (name, rest) = header_parts(map);
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(rest.clone(), small.clone(), Color32::PLACEHOLDER);
+    let cut = crate::app::cut_middle(ui, &name, &small, width - galley.size().x);
+    let label = ui.label(RichText::new(format!("{cut}{rest}")).small().color(p.dim));
+    if cut != name.as_str() {
+        label.on_hover_text(name);
+    }
 }
 
 /// How many sides an image's tracks are on, with no disks to go by.
@@ -287,7 +311,7 @@ fn offset_ink(ui: &egui::Ui, font: &FontId) -> f32 {
 /// What the rows are laid out for: how many tracks, the sides of the disk
 /// and its tracks' parts at most, the disks' diameter where they are drawn,
 /// and the width of a column's offsets with their gap.
-struct Layout {
+struct Plan {
     tracks: usize,
     sides: usize,
     parts: usize,
@@ -315,25 +339,25 @@ struct Grid {
 }
 
 impl Grid {
-    fn new(layout: &Layout, room: Rect, ppp: f32) -> Grid {
-        let tracks = layout.tracks.max(1);
+    fn new(plan: &Plan, room: Rect, ppp: f32) -> Grid {
+        let tracks = plan.tracks.max(1);
         let height = room.height();
         let fits = (height / ROW_LEAST).floor().max(1.0) as usize;
-        let columns = tracks.div_ceil(fits).max(layout.sides).min(tracks);
+        let columns = tracks.div_ceil(fits).max(plan.sides).min(tracks);
         let rows = tracks.div_ceil(columns);
         let row = ((height / rows as f32).min(ROW_MOST) * ppp)
             .floor()
             .max(1.0)
             / ppp;
         let n = columns as f32;
-        let between = COLUMN_GAP + layout.label;
-        let least = COLUMN_LEAST.max(layout.parts as f32 * PART_LEAST / ppp);
-        let room_width = room.width() - layout.label;
+        let between = COLUMN_GAP + plan.label;
+        let least = COLUMN_LEAST.max(plan.parts as f32 * PART_LEAST / ppp);
+        let room_width = room.width() - plan.label;
         let shared = (room_width - (n - 1.0) * between) / n;
-        let wide = layout.column.unwrap_or(shared).max(least);
+        let wide = plan.column.unwrap_or(shared).max(least);
         let width = (n * wide + (n - 1.0) * between).min(room_width);
         let column = ((width - (n - 1.0) * between) / n).max(1.0);
-        let left = (room.center().x - width / 2.0).max(room.left() + layout.label);
+        let left = (room.center().x - width / 2.0).max(room.left() + plan.label);
         let spare = height - row * rows as f32;
         let top = room.top() + (spare / 2.0 * ppp).floor() / ppp;
         Grid {
@@ -642,21 +666,7 @@ fn legend_rows(
                 &format!("{name} {n}"),
             );
             if state == State::Filler {
-                let filler = map.image.layout.as_ref().and_then(|l| l.fillers.first());
-                let text: String = filler
-                    .map(|f| {
-                        f.iter()
-                            .take(16)
-                            .map(|&b| {
-                                if (32..127).contains(&b) {
-                                    b as char
-                                } else {
-                                    '.'
-                                }
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let text = fillers(map.image, placed);
                 entry.on_hover_text(match map.image.role {
                     Role::Made => format!("gw's {text} in place of a sector it could not read"),
                     Role::Source => format!("gw's {text}: gw takes it as the sector's data"),
@@ -676,13 +686,59 @@ fn legend_rows(
     });
 }
 
+/// The fillers the image's parts of gw's filler hold, in turn, each as its
+/// bytes repeat.
+fn fillers(image: &Image, placed: &[Placed]) -> String {
+    let mut held: Vec<usize> = Vec::new();
+    for (part, _, state) in placed.iter().flat_map(|t| &t.parts) {
+        if *state == State::Filler && !held.contains(&part.filler) {
+            held.push(part.filler);
+        }
+    }
+    let all = image.layout.as_ref().map_or(&[][..], |l| &l.fillers[..]);
+    let texts: Vec<String> = held
+        .iter()
+        .filter_map(|&i| all.get(i))
+        .map(|f| filler_text(f))
+        .collect();
+    texts.join(" or ")
+}
+
+/// A filler's bytes as they repeat, as ASCII where all of them print, else
+/// in hex: the bytes that repeat and how many times, up to 16 of them; with
+/// no such repeat, its first 16 and how many there are.
+fn filler_text(bytes: &[u8]) -> String {
+    let shown = |b: &[u8]| -> String {
+        match b.iter().all(|c| (32..127).contains(c)) {
+            true => b.iter().map(|&c| c as char).collect(),
+            false => {
+                let hex: Vec<String> = b.iter().map(|c| format!("{c:02X}")).collect();
+                hex.join(" ")
+            }
+        }
+    };
+    let len = bytes.len();
+    let repeats = (1..=len.min(16))
+        .find(|&n| len.is_multiple_of(n) && bytes.chunks(n).all(|c| c == &bytes[..n]));
+    match repeats {
+        Some(n) if n < len => format!("{} × {}", shown(&bytes[..n]), len / n),
+        Some(_) => shown(bytes),
+        None if len == 0 => "no bytes".to_owned(),
+        None => format!(
+            "{}… of {} bytes",
+            shown(&bytes[..16]),
+            surface::grouped(len as u64)
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// 160 tracks of 11 parts on two sides, offsets 48 points wide.
-    fn layout(column: Option<f32>) -> Layout {
-        Layout {
+    fn layout(column: Option<f32>) -> Plan {
+        Plan {
             tracks: 160,
             sides: 2,
             parts: 11,
@@ -724,7 +780,7 @@ mod tests {
         let wide = Grid::new(&layout(Some(400.0)), room, 2.0);
         assert_eq!(wide.column, (1000.0 - 48.0 - 3.0 * between) / 4.0);
         // Rows a whole number of pixels, and no taller than the most.
-        let few = Layout {
+        let few = Plan {
             tracks: 10,
             ..layout(None)
         };
@@ -741,6 +797,162 @@ mod tests {
         assert_eq!(hex_digits(0x10001), 5);
         assert_eq!(hex_digits(901_120), 5);
         assert_eq!(hex_digits(1_638_400), 6);
+    }
+
+    #[test]
+    fn a_fillers_bytes_are_said_as_they_repeat() {
+        let adf = b"-=[BAD SECTOR]=-".repeat(32);
+        assert_eq!(filler_text(&adf), "-=[BAD SECTOR]=- × 32");
+        assert_eq!(filler_text(&[0; 512]), "00 × 512");
+        assert_eq!(filler_text(&[0xE5, 0x00].repeat(128)), "E5 00 × 128");
+        assert_eq!(filler_text(b"-=[BAD SECTOR]=-"), "-=[BAD SECTOR]=-");
+        let odd: Vec<u8> = (0..40).collect();
+        assert_eq!(
+            filler_text(&odd),
+            "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F… of 40 bytes"
+        );
+    }
+
+    #[test]
+    fn the_legends_filler_names_each_filler_the_parts_hold() {
+        // Sectors of two sizes, gw's filler for each; the second filler
+        // held by no part of gw's filler.
+        let hex = |b: &[u8]| -> String { b.iter().map(|b| format!("{b:02x}")).collect() };
+        let bad = b"-=[BAD SECTOR]=-";
+        let open = serde_json::json!({
+            "event": "open", "role": "made", "file": "Disk.img", "type": "IMG",
+            "layout": {"tracks": [
+                {"c": 0, "h": 0, "sectors": [{"i": 0, "id": null, "len": 512, "fill": 0}]},
+                {"c": 1, "h": 0, "sectors": [{"i": 0, "id": null, "len": 1024, "fill": 1}]},
+                {"c": 2, "h": 0, "sectors": [{"i": 0, "id": null, "len": 256, "fill": 2}]}],
+                "fillers": [hex(&bad.repeat(32)), hex(&[0xE5; 1024]), hex(&bad.repeat(16))],
+                "min_cyls": null}
+        });
+        let mut image = Image::parse(&open).unwrap();
+        for (c, has) in [(0, false), (1, false), (2, true)] {
+            image.take(&serde_json::json!({"event": "track", "c": c, "h": 0, "has": [has]}));
+        }
+        let placed = image.placed(None).unwrap();
+        assert_eq!(
+            fillers(&image, &placed),
+            "-=[BAD SECTOR]=- × 32 or E5 × 1024"
+        );
+    }
+
+    /// An image gw makes, `tracks` tracks of 11 sectors on `sides` sides as
+    /// gw lays out an ADF, past cylinder `least` written only up to the last
+    /// holding data; its first 20 tracks read.
+    fn made(tracks: u32, sides: u32, least: u32) -> Image {
+        let sector = |i: usize| serde_json::json!({"i": i, "id": null, "len": 512, "fill": 0});
+        let laid: Vec<serde_json::Value> = (0..tracks)
+            .map(|t| {
+                let sectors: Vec<_> = (0..11).map(sector).collect();
+                serde_json::json!({"c": t / sides, "h": t % sides, "sectors": sectors})
+            })
+            .collect();
+        let filler: String = b"-=[BAD SECTOR]=-"
+            .repeat(32)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let open = serde_json::json!({
+            "event": "open", "role": "made", "file": "Disk.adf", "type": "ADF",
+            "layout": {"tracks": laid, "fillers": [filler], "min_cyls": least}
+        });
+        let mut image = Image::parse(&open).unwrap();
+        for t in 0..20 {
+            let mut has = vec![true; 11];
+            has[3] = t % 5 != 0;
+            let read =
+                serde_json::json!({"event": "track", "c": t / sides, "h": t % sides, "has": has});
+            image.take(&read);
+        }
+        image
+    }
+
+    /// A read of `image`'s cylinders and sides, gw last at `current`.
+    fn reading(image: &Image, current: (u32, u32)) -> Progress {
+        let mut progress = Progress::default();
+        let last = image.layout.as_ref().unwrap().tracks.last().unwrap().key;
+        progress.feed(&format!("Reading c=0-{}:h=0-{} revs=2", last.0, last.1));
+        progress.current = Some(current);
+        progress
+    }
+
+    /// The image view of `map` in a drawer's room `size`, the disks
+    /// `disks` across, for `frames` frames a 60th of a second apart: the
+    /// texts the last drew, and where, and whether any of its last five
+    /// asked for more.
+    fn view(
+        map: &Map,
+        size: egui::Vec2,
+        disks: Option<Place>,
+        frames: usize,
+    ) -> (Vec<(String, Rect)>, bool) {
+        let ctx = egui::Context::default();
+        let mut busy = Vec::new();
+        let mut texts = Vec::new();
+        for frame in 0..frames {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1200.0))),
+                time: Some(frame as f64 / 60.0),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let room = Rect::from_min_size(Pos2::ZERO, size);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                    show(ui, map, disks)
+                });
+            });
+            out.textures_delta.clear();
+            let root = &out.viewport_output[&egui::ViewportId::ROOT];
+            busy.push(root.repaint_delay.is_zero());
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_owned(), t.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        (texts, busy.iter().rev().take(5).any(|&b| b))
+    }
+
+    #[test]
+    fn a_name_too_long_for_the_line_over_the_rows_is_cut_in_the_middle() {
+        let mut image = made(160, 2, 40);
+        let name = format!("{}Disk 1.adf", "Workbench 3.1 Install ".repeat(6));
+        image.file = Some(format!("/Users/you/Floppies/{name}"));
+        let progress = reading(&image, (5, 0));
+        let map = Map {
+            progress: Some(&progress),
+            image: &image,
+            running: true,
+            converts: false,
+        };
+        let size = vec2(700.0, 400.0);
+        let (texts, _) = view(&map, size, None, 3);
+        let rest = " · 901,120 bytes · Being made: gw writes it when it finishes";
+        let (line, at) = texts
+            .iter()
+            .find(|(t, _)| t.ends_with(rest))
+            .expect("the line over the rows");
+        let ends = line.starts_with("Workbench 3.1") && line.contains("Disk 1.adf · ");
+        assert!(ends && line.contains('…'), "{line}");
+        assert!(at.right() <= size.x, "{at:?}");
+        // A name that fits is whole.
+        let mut short = image.clone();
+        short.file = Some("/Users/you/Floppies/Workbench.adf".into());
+        let map = Map {
+            image: &short,
+            ..map
+        };
+        let (texts, _) = view(&map, size, None, 3);
+        let whole = format!("Workbench.adf{rest}");
+        assert!(texts.iter().any(|(t, _)| *t == whole));
     }
 
     #[test]
