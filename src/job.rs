@@ -11,9 +11,11 @@ use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-// Line prefixes for gw's questions and the bridge's result. Must match bridge.py.
+// Line prefixes for gw's questions, the bridge's result and its reports on
+// tracks. Must match bridge.py.
 const ASK: &str = "@ferriteweazle ask ";
 const RESULT: &str = "@ferriteweazle result ";
+const TRACK: &str = "@ferriteweazle track ";
 
 /// The bridge's own command that finds a disk's format.
 pub const DETECT: &str = "detect";
@@ -287,6 +289,8 @@ impl Job {
                 .map(String::from)
                 .collect();
             self.step = result["step"].as_u64().map_or(1, |s| s.max(1) as u32);
+        } else if let Some(report) = line.strip_prefix(TRACK) {
+            self.progress.report(report);
         } else {
             // With no --format, gw names the image type's own or the one it finds in the file.
             if self.format.is_none() {

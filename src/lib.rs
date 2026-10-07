@@ -21,6 +21,7 @@ pub mod service;
 pub mod standalone;
 pub mod theme;
 pub mod tools;
+pub mod track;
 mod udev;
 pub mod update;
 

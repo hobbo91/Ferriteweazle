@@ -15,7 +15,9 @@ use ferriteweazle::progress::Status;
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::service::{Load, Service};
 use ferriteweazle::tools::{Origin, Tools};
+use ferriteweazle::track::{Facts, Source};
 use ferriteweazle::{App, Drawer, Page, Settings};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -634,6 +636,141 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     assert!(p.tracks.values().all(|t| t.status == Status::Good));
     assert_eq!(p.total, Some((720, 720)));
     assert_eq!(p.sector_map.len(), 80);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A format of each of gw 1.23's codec families, with an image type that holds it.
+const FORMATS: [(&str, &str); 16] = [
+    ("ibm.1440", ".img"),
+    ("ibm.dmf", ".img"),
+    ("ibm.360", ".img"),
+    ("ibm.1200", ".img"),
+    ("amiga.amigados", ".adf"),
+    ("commodore.1541", ".d64"),
+    ("mac.800", ".img"),
+    ("apple2.appledos.140", ".do"),
+    ("hp.mmfm.9885", ".img"),
+    ("northstar.fm.ss", ".nsi"),
+    ("micropolis.100tpi.ss", ".img"),
+    ("datageneral.2f", ".img"),
+    ("dec.rx02", ".img"),
+    ("atarist.720", ".st"),
+    ("akai.800", ".img"),
+    ("acorn.dfs.ss", ".ssd"),
+];
+
+#[test]
+fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("writes");
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    for (format, ext) in FORMATS {
+        let image = dir.join(format!("{}{ext}", format.replace('.', "_")));
+        let out = std::process::Command::new(&tools.python)
+            .arg(data.join("drive.py"))
+            .arg(&bridge)
+            .arg(format)
+            .arg(&image)
+            .arg("--tracks=c=0-3")
+            .output()
+            .expect("python runs");
+        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        assert!(text.contains("All tracks verified"), "{format}: {text}");
+        let (mut written, mut verified) = (BTreeMap::new(), BTreeMap::new());
+        for line in text
+            .lines()
+            .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        {
+            let (key, facts) = Facts::parse(line).expect("a report");
+            match facts.source {
+                Some(Source::Written) => written.insert(key, facts),
+                Some(Source::Verify) => verified.insert(key, facts),
+                other => panic!("{format}: a report on {other:?}"),
+            };
+        }
+        assert!(!written.is_empty(), "{format}: {text}");
+        assert_eq!(
+            written.keys().collect::<Vec<_>>(),
+            verified.keys().collect::<Vec<_>>(),
+            "{format}"
+        );
+        for (key, w) in &written {
+            let v = &verified[key];
+            assert!(!w.sectors.is_empty(), "{format} {key:?}: no sectors");
+            assert!(
+                w.missing.is_empty() && v.missing.is_empty(),
+                "{format} {key:?}"
+            );
+            assert_eq!(w.sectors.len(), v.sectors.len(), "{format} {key:?}");
+            for (a, b) in w.sectors.iter().zip(&v.sectors) {
+                assert_eq!((a.id, &a.bytes), (b.id, &b.bytes), "{format} {key:?}");
+                let (a, b) = (a.at.expect("a place"), b.at.expect("a place"));
+                // Within a ten-thousandth of a revolution, a few bit cells:
+                // the verify read starts where it falls, and its PLL locks on.
+                for (x, y) in a.iter().zip(&b) {
+                    assert!((x - y).abs() < 1e-4, "{format} {key:?}: {a:?} then {b:?}");
+                }
+            }
+            assert!(
+                w.flux.is_some() && v.flux.is_some(),
+                "{format} {key:?}: flux"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_flux_image_written_as_it_is_is_reported_as_gw_writes_it_one_revolution_from_the_index() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("flux-write");
+    let (img, scp) = (dir.join("a.img"), dir.join("a.scp"));
+    std::fs::write(
+        &img,
+        (0..368_640u32)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // gw's own flux of the image, two revolutions a track.
+    run(
+        &tools,
+        &["convert", "--format=ibm.360", &path(&img), &path(&scp)],
+    );
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .arg(data.join("drive.py"))
+        .arg(&bridge)
+        .arg("")
+        .arg(&scp)
+        .arg("--tracks=c=0-1")
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    // Raw flux has no format to verify it by.
+    assert!(text.contains("No tracks verified"), "{text}");
+    let reports: Vec<_> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        .map(|l| Facts::parse(l).expect("a report"))
+        .collect();
+    assert_eq!(reports.len(), 4, "{text}");
+    for (key, facts) in reports {
+        assert_eq!(facts.source, Some(Source::Image), "{key:?}");
+        assert!(
+            facts.sectors.is_empty() && facts.summary.is_none(),
+            "{key:?}"
+        );
+        let spin = facts.flux.expect("its flux");
+        assert_eq!(spin.revs.len(), 1, "{key:?}: the revolution gw writes");
+        assert!(
+            (spin.revs[0] - 0.2).abs() < 1e-3,
+            "{key:?}: {:?}",
+            spin.revs
+        );
+    }
     std::fs::remove_dir_all(dir).ok();
 }
 

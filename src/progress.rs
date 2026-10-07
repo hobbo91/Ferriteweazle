@@ -3,9 +3,14 @@
 //! Unrecognised lines are left to the log, so a gw that rewords its output
 //! loses the map, never the job.
 
+use crate::track::Facts;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The last revision given any Progress.
+static REVISION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// Every sector found, or written and verified.
     Good,
@@ -41,6 +46,9 @@ pub struct Progress {
     pub tracks: BTreeMap<(u32, u32), Track>,
     /// Sector by sector, from the map gw prints when it has finished.
     pub sector_map: BTreeMap<(u32, u32), Vec<Option<bool>>>,
+    /// What the bridge reports of each track gw read, converted or wrote:
+    /// where its sectors lie and how they decoded, and how its flux fell.
+    pub facts: BTreeMap<(u32, u32), Facts>,
     /// Sectors found and expected over the whole disk.
     pub total: Option<(u32, u32)>,
     /// The track being worked on.
@@ -55,6 +63,10 @@ pub struct Progress {
     pub raw: bool,
     /// A write gw verifies: it goes on from a track only once that verified.
     pub verifies: bool,
+    /// Changes with each change to what is known, and is never the same for
+    /// two Progresses that have changed: what the disk view has drawn is
+    /// known by it.
+    pub revision: u64,
     /// The read pass under way after the first, and the most there may be.
     pub pass: Option<(u32, u32)>,
     /// The cylinders of gw's sector map, those it read. A conversion's
@@ -99,6 +111,7 @@ impl Progress {
     }
 
     pub fn feed(&mut self, line: &str) {
+        self.touch();
         let line = line.trim_end();
         match self.block {
             Block::Output => {}
@@ -186,6 +199,20 @@ impl Progress {
         }
     }
 
+    /// Takes the bridge's report on a track, which replaces any before it:
+    /// a retry or a later pass reports all it has found so far.
+    pub fn report(&mut self, json: &str) {
+        if let Some((key, mut facts)) = Facts::parse(json) {
+            self.touch();
+            facts.revision = self.revision;
+            self.facts.insert(key, facts);
+        }
+    }
+
+    fn touch(&mut self) {
+        self.revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
+    }
+
     /// Adds a line to the error's message, which ends where a list begins.
     fn add_to_error(&mut self, line: &str) {
         if LISTS.contains(&line) {
@@ -202,11 +229,13 @@ impl Progress {
     /// The job has ended.
     pub fn finish(&mut self) {
         self.current = None;
+        self.touch();
     }
 
     /// Marks the announced tracks gw has not reported as skipped: a write or
     /// conversion passes over those its input lacks without a word.
     pub fn skip_unreported(&mut self) {
+        self.touch();
         for &cyl in &self.cyls {
             for &head in &self.heads {
                 self.tracks.entry((cyl, head)).or_insert_with(|| Track {
