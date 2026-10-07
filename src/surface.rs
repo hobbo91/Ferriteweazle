@@ -276,8 +276,8 @@ pub(crate) struct Look {
     /// The palette's strongest colour, furthest from the disk's: round what
     /// the pointer is over, and toward it, ID fields and the most flux.
     pub(crate) ink: Color32,
-    /// How much of the disk the tracks cover, to scale: the rest is erased.
-    pub(crate) covered: f32,
+    /// How much of the disk the tracks cover: see Geometry::covered.
+    covered: f32,
 }
 
 impl Look {
@@ -425,8 +425,9 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
         ..
     } = Fit::of(ui, map)?;
     let p = theme::palette(ui);
-    let look = Look::of(p, map.media);
     let ppp = ui.ctx().pixels_per_point();
+    let mut look = Look::of(p, map.media);
+    look.covered = geometry.covered(f64::from(ppp).round().max(1.0));
     let room = ui.available_size();
     let legend_id = legend_id(ui);
     let (rect, response) = ui.allocate_exact_size(vec2(room.x, TITLE + diameter), Sense::click());
@@ -545,6 +546,20 @@ struct Geometry {
 }
 
 impl Geometry {
+    /// Whether fitted tracks have a line `line` pixels wide between them:
+    /// where they are SEPARATE lines apart or more.
+    fn separate(&self, line: f64) -> bool {
+        self.width == self.pitch && self.pitch >= SEPARATE * line
+    }
+
+    /// How much of the disk the tracks cover, with lines `line` pixels wide:
+    /// to scale, the width recorded of each track's room, the rest erased;
+    /// fitted, all of it but any line.
+    fn covered(&self, line: f64) -> f32 {
+        let line = if self.separate(line) { line } else { 0.0 };
+        ((self.width - line) / self.pitch) as f32
+    }
+
     /// A disk at most `room` pixels across for `span` tracks, which are
     /// drawn alike: fitted, a whole number of pixels wide from a whole
     /// pixel where they are WHOLE or more; to scale, a whole number of
@@ -698,8 +713,8 @@ impl Disk {
             for &cyl in &changed {
                 rows[cyl] = row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
             }
-            let ppp = ui.ctx().pixels_per_point();
-            let canvas = Canvas::new(self, look, &rows, ppp);
+            let line = f64::from(ui.ctx().pixels_per_point()).round().max(1.0);
+            let canvas = Canvas::new(self, look, &rows, line);
             let only = same.then(|| {
                 let mut dirty = vec![false; rows.len()];
                 changed.iter().for_each(|&c| dirty[c] = true);
@@ -860,18 +875,18 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
 /// track's average; else one colour all round.
 fn row(ring: Ring, look: &Look) -> Row {
     let mut row = match ring {
-        Ring::Bare => Row::new(rgb(look.body)),
-        Ring::ToDo => Row::new(rgb(look.to_do)),
-        Ring::Unknown => Row::new(rgb(look.unknown)),
-        Ring::Flux => Row::new(rgb(look.flux)),
-        Ring::Status(colour) => Row::new(rgb(colour)),
-        Ring::Spin(spin) => Row::pieces(spin.relative().iter().map(|&d| rgb(look.flux_at(d)))),
+        Ring::Bare => Row::new(look.body),
+        Ring::ToDo => Row::new(look.to_do),
+        Ring::Unknown => Row::new(look.unknown),
+        Ring::Flux => Row::new(look.flux),
+        Ring::Status(colour) => Row::new(colour),
+        Ring::Spin(spin) => Row::pieces(spin.relative().iter().map(|&d| look.flux_at(d))),
         Ring::Sectors(f) => {
             let background = match f.flux {
                 Some(_) => look.gap,
                 None => look.body,
             };
-            let mut row = Row::new(rgb(background));
+            let mut row = Row::new(background);
             for s in &f.sectors {
                 row.sector(s, look);
             }
@@ -1039,9 +1054,9 @@ struct Canvas<'a> {
 }
 
 impl<'a> Canvas<'a> {
-    fn new(disk: &Disk, look: &Look, rows: &'a [Row], ppp: f32) -> Canvas<'a> {
+    /// `disk`'s picture of `rows`, its lines `line` pixels wide.
+    fn new(disk: &Disk, look: &Look, rows: &'a [Row], line: f64) -> Canvas<'a> {
         let g = disk.geometry;
-        let line = f64::from(ppp).round().max(1.0);
         Canvas {
             pixels: g.pixels,
             centre: g.pixels as f64 / 2.0,
@@ -1049,7 +1064,7 @@ impl<'a> Canvas<'a> {
             outer: g.outer[disk.head as usize],
             rows,
             line,
-            separate: g.width == g.pitch && g.pitch >= SEPARATE * line,
+            separate: g.separate(line),
             body: rgb(look.body),
             hub: rgb(look.hub),
             rim: rgb(look.rim),
@@ -1093,90 +1108,164 @@ impl<'a> Canvas<'a> {
         last >= 0.0 && dirty.iter().take(last as usize + 1).skip(first).any(|&d| d)
     }
 
-    /// A pixel of the picture, premultiplied: the disk under it, its share
-    /// of each track and each line, and its rim and hub.
+    /// A pixel of the picture, premultiplied: what of the disk its area
+    /// covers, by its share of each: the rim, the hub, each track, and the
+    /// bare disk, the lines between fitted tracks with it.
     fn pixel(&self, x: usize, y: usize) -> Color32 {
         let g = &self.geometry;
         let (dx, dy, r) = self.offset(x, y);
-        let (near, far) = (r - 0.5, r + 0.5);
-        let cover = (g.edge - near).clamp(0.0, 1.0) * (far - g.hole).clamp(0.0, 1.0);
-        if cover <= 0.0 {
+        let across = Shadow::of(dx, dy, r);
+        if r - across.half >= g.edge || r + across.half <= g.hole {
             return Color32::TRANSPARENT;
         }
-        let mut colour = self.disk(dx, dy, r);
-        if let Some(hub) = g.hub {
-            colour = mix(colour, self.hub, (hub - near).clamp(0.0, 1.0));
-        }
-        let rim = (far.min(g.edge) - near.max(g.edge - self.line)).max(0.0);
-        colour = mix(colour, self.rim, rim);
-        let [r, g, b] = colour.map(|c| (c * cover).round().clamp(0.0, 255.0) as u8);
-        Color32::from_rgba_premultiplied(r, g, b, (cover * 255.0).round() as u8)
+        let within = |a: f64, b: f64| across.within(a - r, b - r);
+        // Most pixels lie wholly on the disk, clear of its rim and hub.
+        let (near, far) = (r - across.half, r + across.half);
+        let disk = match near >= g.hole && far <= g.edge {
+            true => 1.0,
+            false => within(g.hole, g.edge),
+        };
+        let rim = match far <= g.edge - self.line {
+            true => 0.0,
+            false => within(g.edge - self.line, g.edge),
+        };
+        let hub = match g.hub {
+            Some(hub) if near < hub => within(g.hole, hub),
+            _ => 0.0,
+        };
+        let (tracks, taken) = self.tracks(dx, dy, r, across);
+        let bare = (disk - rim - hub - taken).max(0.0);
+        let colour = [0, 1, 2]
+            .map(|k| tracks[k] + self.body[k] * bare + self.rim[k] * rim + self.hub[k] * hub);
+        let [red, green, blue] = colour.map(|c| c.round().clamp(0.0, 255.0) as u8);
+        Color32::from_rgba_premultiplied(red, green, blue, (disk * 255.0).round() as u8)
     }
 
-    /// The disk across the pixel `r` pixels from the centre: each track's
-    /// share of it, by how much of its reach across the radius each takes,
-    /// the rest bare; then fitted, the lines between tracks.
-    fn disk(&self, dx: f64, dy: f64, r: f64) -> [f64; 3] {
+    /// The tracks under the pixel `dx`, `dy` from the centre, `r` pixels
+    /// out, its shadow across them `across`: each track's colour, as much as
+    /// the pixel's area its width covers, a fitted track's line inside its
+    /// outer edge taken from it; and how much they cover together.
+    fn tracks(&self, dx: f64, dy: f64, r: f64, across: Shadow) -> ([f64; 3], f64) {
         let g = &self.geometry;
-        let (near, far) = (r - 0.5, r + 0.5);
         let mut colour = [0.0; 3];
         let mut taken = 0.0;
+        let (near, far) = (r - across.half, r + across.half);
         let first = ((self.outer - far) / g.pitch).floor().max(0.0) as usize;
         let last = ((self.outer - near) / g.pitch).floor();
-        if last >= 0.0 && first < self.rows.len() {
-            let last = (last as usize).min(self.rows.len() - 1);
-            let share = share_at(dx, dy);
-            let width = (1.0 / (TAU * r.max(0.5))).min(1.0);
-            for cyl in first..=last {
-                let middle = self.outer - (cyl as f64 + 0.5) * g.pitch;
-                let (outer, inner) = (middle + g.width / 2.0, middle - g.width / 2.0);
-                let part = (far.min(outer) - near.max(inner)).max(0.0);
-                if part > 0.0 {
-                    let c = self.rows[cyl].sample(share, width, self.line * width, self.body);
-                    (0..3).for_each(|i| colour[i] += c[i] * part);
-                    taken += part;
-                }
+        if last < 0.0 || first >= self.rows.len() {
+            return (colour, taken);
+        }
+        let last = (last as usize).min(self.rows.len() - 1);
+        let share = share_at(dx, dy);
+        // A pixel's length round the track there, as a share of a revolution.
+        let pixel = (1.0 / (TAU * r.max(0.5))).min(1.0);
+        let along = across.scaled(pixel);
+        for cyl in first..=last {
+            let edge = self.outer - cyl as f64 * g.pitch;
+            let middle = edge - g.pitch / 2.0;
+            let half = g.width / 2.0;
+            let mut part = across.within(middle - half - r, middle + half - r);
+            if self.separate {
+                part -= across.within(edge - self.line - r, edge - r);
+            }
+            if part > 0.0 {
+                let c = self.rows[cyl].sample(share, along, self.line * pixel, self.body);
+                (0..3).for_each(|k| colour[k] += c[k] * part);
+                taken += part;
             }
         }
-        let bare = (1.0 - taken).max(0.0);
-        (0..3).for_each(|i| colour[i] += self.body[i] * bare);
-        if self.separate && taken > 0.0 {
-            // A line in the disk's colour inside each track's outer edge.
-            let span = self.rows.len() as f64;
-            let from = ((self.outer - far - self.line) / g.pitch).ceil().max(0.0);
-            let to = ((self.outer - near) / g.pitch).floor().min(span);
-            let mut cover = 0.0;
-            let mut k = from;
-            while k <= to {
-                let b = self.outer - k * g.pitch;
-                cover += (far.min(b) - near.max(b - self.line)).max(0.0);
-                k += 1.0;
-            }
-            colour = mix(colour, self.body, cover.min(1.0));
+        (colour, taken)
+    }
+}
+
+/// How a pixel's area lies along a line through its middle at an angle to
+/// its sides: the share of it within a distance either side, a square's
+/// shadow on the line. A trapezoid, `half` long either side, its top `flat`
+/// long: square to the line, a box; on the diagonal, a triangle.
+#[derive(Debug, Clone, Copy)]
+struct Shadow {
+    half: f64,
+    flat: f64,
+}
+
+impl Shadow {
+    /// A pixel's shadow on the line from the disk's centre through its
+    /// middle, `dx`, `dy` from it and `r` out; across that line, the same.
+    fn of(dx: f64, dy: f64, r: f64) -> Shadow {
+        let (c, s) = match r > 0.0 {
+            true => (dx.abs() / r, dy.abs() / r),
+            false => (1.0, 0.0),
+        };
+        Shadow {
+            half: (c + s) / 2.0,
+            flat: (c - s).abs() / 2.0,
         }
-        colour
+    }
+
+    /// A pixel square to the line, `width` long on it.
+    #[cfg(test)]
+    fn square(width: f64) -> Shadow {
+        Shadow {
+            half: width / 2.0,
+            flat: width / 2.0,
+        }
+    }
+
+    /// The same shadow `scale` times as long.
+    fn scaled(self, scale: f64) -> Shadow {
+        Shadow {
+            half: self.half * scale,
+            flat: self.flat * scale,
+        }
+    }
+
+    /// The share of the pixel less than `t` past its middle.
+    fn below(self, t: f64) -> f64 {
+        let (half, flat) = (self.half, self.flat);
+        if t <= -half {
+            return 0.0;
+        }
+        if t >= half {
+            return 1.0;
+        }
+        let (ramp, height) = (half - flat, 1.0 / (half + flat));
+        if t < -flat {
+            height * (t + half).powi(2) / (2.0 * ramp)
+        } else if t <= flat {
+            height * (ramp / 2.0 + t + flat)
+        } else {
+            1.0 - height * (half - t).powi(2) / (2.0 * ramp)
+        }
+    }
+
+    /// The share of the pixel from `a` to `b` past its middle.
+    fn within(self, a: f64, b: f64) -> f64 {
+        match b > a {
+            true => self.below(b) - self.below(a),
+            false => 0.0,
+        }
     }
 }
 
 /// A track round a revolution, from the index: the pieces it is made of,
-/// each from its start to the next one's, the last to 1, with their running
-/// sums for averaging any part; and where two sectors meet.
+/// each from its start to the next one's, the last to 1; where two sectors
+/// meet; and the sectors too short to see.
 #[derive(Clone, Default)]
 struct Row {
+    /// Where each piece starts; none where all are as long as each other.
     starts: Vec<f64>,
-    colours: Vec<[f64; 3]>,
-    sums: Vec<[f64; 3]>,
-    /// Where sectors start and end, and where two meet.
-    begins: Vec<f64>,
-    ends: Vec<f64>,
+    colours: Vec<Color32>,
+    /// Where each sector starts and ends, while the row is laid out; then
+    /// where two meet.
+    edges: Vec<(f64, f64)>,
     meets: Vec<f64>,
     /// Each sector's middle, length and colour, the shortest first: where
-    /// one is shorter than a line, it is drawn a line wide.
-    slivers: Vec<(f64, f64, [f64; 3])>,
+    /// one is shorter than a line, it is drawn a line long.
+    slivers: Vec<(f64, f64, Color32)>,
 }
 
 impl Row {
-    fn new(colour: [f64; 3]) -> Row {
+    fn new(colour: Color32) -> Row {
         Row {
             starts: vec![0.0],
             colours: vec![colour],
@@ -1184,16 +1273,41 @@ impl Row {
         }
     }
 
-    /// Equal pieces round the revolution, one per colour.
-    fn pieces(colours: impl ExactSizeIterator<Item = [f64; 3]>) -> Row {
-        let n = colours.len();
-        if n == 0 {
-            return Row::new([0.0; 3]);
+    /// Pieces all as long as each other round the revolution, one per colour.
+    fn pieces(colours: impl Iterator<Item = Color32>) -> Row {
+        let colours: Vec<Color32> = colours.collect();
+        if colours.is_empty() {
+            return Row::new(Color32::BLACK);
         }
         Row {
-            starts: (0..n).map(|i| i as f64 / n as f64).collect(),
-            colours: colours.collect(),
+            colours,
             ..Row::default()
+        }
+    }
+
+    /// The piece share `t` of a revolution lies in, from 0 to 1.
+    fn piece(&self, t: f64) -> usize {
+        let n = self.colours.len();
+        let i = match self.starts.is_empty() {
+            true => ((t * n as f64) as usize).min(n - 1),
+            false => self.starts.partition_point(|&s| s <= t).saturating_sub(1),
+        };
+        // An equal piece's start, worked out again, may lie a hair past `t`.
+        match i > 0 && self.bounds(i).0 > t {
+            true => i - 1,
+            false => i,
+        }
+    }
+
+    /// Where piece `i` starts and ends.
+    fn bounds(&self, i: usize) -> (f64, f64) {
+        let n = self.colours.len();
+        match self.starts.is_empty() {
+            true => (i as f64 / n as f64, (i + 1) as f64 / n as f64),
+            false => (
+                self.starts[i],
+                self.starts.get(i + 1).copied().unwrap_or(1.0),
+            ),
         }
     }
 
@@ -1212,7 +1326,7 @@ impl Row {
     /// `colour` over the row from share `from` to `to` of a revolution,
     /// which may run on past 1, over the index, but no further round than
     /// `from`.
-    fn lay(&mut self, from: f64, to: f64, colour: [f64; 3]) {
+    fn lay(&mut self, from: f64, to: f64, colour: Color32) {
         let length = (to - from).min(1.0);
         let from = from.rem_euclid(1.0);
         let to = from + length;
@@ -1235,10 +1349,10 @@ impl Row {
             return;
         };
         let colour = look.status(s);
-        self.lay(start, end, rgb(colour));
+        self.lay(start, end, colour);
         if s.header != Header::None {
             let header_end = s.header_end.map_or(data, f64::from).min(data);
-            self.lay(start, header_end, rgb(look.id(colour)));
+            self.lay(start, header_end, look.id(colour));
         }
         // A header alone is all ID field.
         let whole = match (s.header, s.data) {
@@ -1246,81 +1360,160 @@ impl Row {
             _ => colour,
         };
         let middle = ((start + end) / 2.0).rem_euclid(1.0);
-        self.slivers.push((middle, end - start, rgb(whole)));
-        self.begins.push(start.rem_euclid(1.0));
-        self.ends.push(end.rem_euclid(1.0));
+        self.slivers.push((middle, end - start, whole));
+        self.edges
+            .push((start.rem_euclid(1.0), end.rem_euclid(1.0)));
     }
 
-    /// Makes the running sums, and finds where two sectors meet, once the
-    /// row is drawn.
+    /// Finds where two sectors meet, and puts the sectors in order of
+    /// length, once the row is laid out.
     fn finish(&mut self) {
-        let mut sum = [0.0; 3];
-        self.sums = Vec::with_capacity(self.starts.len() + 1);
-        self.sums.push(sum);
-        for (i, c) in self.colours.iter().enumerate() {
-            let to = self.starts.get(i + 1).copied().unwrap_or(1.0);
-            let width = to - self.starts[i];
-            (0..3).for_each(|k| sum[k] += c[k] * width);
-            self.sums.push(sum);
-        }
-        self.meets = meets(&self.begins, &self.ends);
+        let (begins, ends): (Vec<f64>, Vec<f64>) =
+            std::mem::take(&mut self.edges).into_iter().unzip();
+        self.meets = meets(&begins, &ends);
         self.slivers.sort_by(|a, b| a.1.total_cmp(&b.1));
     }
 
-    /// The colour's integral from the index to share `t`, which may lie in
-    /// the revolution before or after.
-    fn integral(&self, t: f64) -> [f64; 3] {
-        let turns = t.floor();
-        let t = t - turns;
-        let total = self.sums[self.sums.len() - 1];
-        let i = self.starts.partition_point(|&s| s <= t).saturating_sub(1);
-        let (sum, colour) = (self.sums[i], self.colours[i]);
-        let into = t - self.starts[i];
-        [0, 1, 2].map(|k| sum[k] + colour[k] * into + total[k] * turns)
+    /// The row as a pixel's area covers it, `along` the pixel's shadow round
+    /// the track, centred on `share`: with a line `line` long in `colour`
+    /// where two sectors meet, and over any sector shorter than that, a line
+    /// in its colour, the longest on top.
+    fn sample(&self, share: f64, along: Shadow, line: f64, colour: [f64; 3]) -> [f64; 3] {
+        let short = &self.slivers[..self.slivers.partition_point(|s| s.1 < line)];
+        if self.colours.len() == 1 && self.meets.is_empty() && short.is_empty() {
+            return rgb(self.colours[0]);
+        }
+        let half = line / 2.0;
+        let reach = along.half + half;
+        let lined =
+            near(&self.meets, share, reach) || short.iter().any(|s| apart(s.0, share) < reach);
+        match lined {
+            false => self.pieces_under(share, along),
+            true => self.lined(share, along, half, short, colour),
+        }
     }
 
-    /// The row's colour across `width` of a revolution centred on `share`,
-    /// with a line `line` wide in `colour` where two sectors meet, and over
-    /// any sector shorter than that, a line in its colour, each by its share
-    /// of the width.
-    fn sample(&self, share: f64, width: f64, line: f64, colour: [f64; 3]) -> [f64; 3] {
-        let (a, b) = (share - width / 2.0, share + width / 2.0);
-        let (from, to) = (self.integral(a), self.integral(b));
-        let c = [0, 1, 2].map(|k| (to[k] - from[k]) / width);
-        let c = mix(c, colour, covered(&self.meets, a, b, line));
-        let short = self.slivers.iter().take_while(|s| s.1 < line);
-        short.fold(c, |c, &(middle, _, colour)| {
-            mix(c, colour, covered(&[middle], a, b, line))
-        })
+    /// The pieces' colours as the pixel's area covers them.
+    fn pieces_under(&self, share: f64, along: Shadow) -> [f64; 3] {
+        let (lo, hi) = (share - along.half, share + along.half);
+        // Most pixels lie within a piece.
+        if lo >= 0.0 && hi < 1.0 {
+            let i = self.piece(lo);
+            if self.bounds(i).1 >= hi {
+                return rgb(self.colours[i]);
+            }
+        }
+        let mut c = [0.0; 3];
+        let mut turn = lo.floor();
+        while turn < hi {
+            let (a, b) = ((lo - turn).max(0.0), (hi - turn).min(1.0));
+            let mut i = self.piece(a);
+            loop {
+                let (start, end) = self.bounds(i);
+                let (u, v) = (start.max(a), end.min(b));
+                let m = along.within(u + turn - share, v + turn - share);
+                let p = rgb(self.colours[i]);
+                (0..3).for_each(|k| c[k] += p[k] * m);
+                i += 1;
+                if end >= b || i == self.colours.len() {
+                    break;
+                }
+            }
+            turn += 1.0;
+        }
+        c
+    }
+
+    /// The colours as the pixel's area covers them where lines lie over the
+    /// pieces: between each edge and the next, what shows on top there.
+    fn lined(
+        &self,
+        share: f64,
+        along: Shadow,
+        half: f64,
+        short: &[(f64, f64, Color32)],
+        colour: [f64; 3],
+    ) -> [f64; 3] {
+        let (lo, hi) = (share - along.half, share + along.half);
+        let mut edges = vec![lo, hi];
+        let mut turn = lo.floor();
+        while turn < hi {
+            let (a, b) = ((lo - turn).max(0.0), (hi - turn).min(1.0));
+            let mut i = self.piece(a);
+            loop {
+                let (start, end) = self.bounds(i);
+                edges.push(start + turn);
+                i += 1;
+                if end >= b || i == self.colours.len() {
+                    break;
+                }
+            }
+            turn += 1.0;
+        }
+        for turn in [-1.0, 0.0, 1.0] {
+            let (from, to) = (lo - half - turn, hi + half - turn);
+            let first = self.meets.partition_point(|&x| x < from);
+            let meets = self.meets[first..].iter().take_while(|&&x| x <= to);
+            let lines = meets.chain(short.iter().map(|s| &s.0));
+            for x in lines.filter(|&&x| (from..=to).contains(&x)) {
+                edges.extend([x - half + turn, x + half + turn]);
+            }
+        }
+        edges.retain(|&t| (lo..=hi).contains(&t));
+        edges.sort_by(f64::total_cmp);
+        let mut c = [0.0; 3];
+        for pair in edges.windows(2) {
+            let (u, v) = (pair[0], pair[1]);
+            let m = along.within(u - share, v - share);
+            if m > 0.0 {
+                let p = self.shown((u + v) / 2.0, half, short, colour);
+                (0..3).for_each(|k| c[k] += p[k] * m);
+            }
+        }
+        c
+    }
+
+    /// What shows at share `t`: the longest of the sectors too short to see
+    /// whose line lies there, else a line where two meet, else the piece.
+    fn shown(
+        &self,
+        t: f64,
+        half: f64,
+        short: &[(f64, f64, Color32)],
+        colour: [f64; 3],
+    ) -> [f64; 3] {
+        if let Some(s) = short.iter().rev().find(|s| apart(s.0, t) <= half) {
+            return rgb(s.2);
+        }
+        if self.meets.iter().any(|&m| apart(m, t) <= half) {
+            return colour;
+        }
+        rgb(self.colours[self.piece(t.rem_euclid(1.0))])
     }
 }
 
-/// How much of the span from `a` to `b` of a revolution lines `line` wide,
-/// centred on `lines`, cover, round the index if need be.
-fn covered(lines: &[f64], a: f64, b: f64, line: f64) -> f64 {
-    let half = line / 2.0;
-    let mut cover = 0.0;
-    for turn in [-1.0, 0.0, 1.0] {
-        let (lo, hi) = (a - half - turn, b + half - turn);
-        if hi < 0.0 || lo > 1.0 {
-            continue;
-        }
-        let first = lines.partition_point(|&x| x < lo);
-        for &x in lines[first..].iter().take_while(|&&x| x <= hi) {
-            let x = x + turn;
-            cover += ((x + half).min(b) - (x - half).max(a)).max(0.0);
-        }
-    }
-    (cover / (b - a)).min(1.0)
+/// How far apart two shares of a revolution are, round the shorter way.
+fn apart(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(1.0);
+    d.min(1.0 - d)
+}
+
+/// Whether any of `xs`, in order from 0 to 1, lies within `reach` of
+/// `share`, round the index if need be.
+fn near(xs: &[f64], share: f64, reach: f64) -> bool {
+    let (lo, hi) = (share - reach, share + reach);
+    let turns: &[f64] = match lo >= 0.0 && hi <= 1.0 {
+        true => &[0.0],
+        false => &[-1.0, 0.0, 1.0],
+    };
+    turns.iter().any(|turn| {
+        let i = xs.partition_point(|&x| x < lo - turn);
+        xs.get(i).is_some_and(|&x| x <= hi - turn)
+    })
 }
 
 fn rgb(c: Color32) -> [f64; 3] {
     [c.r(), c.g(), c.b()].map(f64::from)
-}
-
-/// `b` laid over `a` at `alpha`.
-fn mix(a: [f64; 3], b: [f64; 3], alpha: f64) -> [f64; 3] {
-    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * alpha)
 }
 
 /// What a track's facts are of.
@@ -2002,10 +2195,6 @@ fn meet(sectors: &[Sector]) -> bool {
 /// Where, of sectors that start at `begins` and end at `ends` round a
 /// track, one starts where another ends, as EXACT and MEET tell.
 fn meets(begins: &[f64], ends: &[f64]) -> Vec<f64> {
-    let apart = |a: f64, b: f64| {
-        let d = (a - b).rem_euclid(1.0);
-        d.min(1.0 - d)
-    };
     let within = |near: f64| {
         let starts = begins.iter().copied();
         starts.filter(move |&b| ends.iter().any(|&e| apart(b, e) < near))
@@ -2267,12 +2456,17 @@ mod tests {
 
     fn row_of(sectors: &[Sector]) -> Row {
         let look = Look::of(&theme::DARK, Media::Fit);
-        let mut row = Row::new(rgb(look.gap));
+        let mut row = Row::new(look.gap);
         for s in sectors {
             row.sector(s, &look);
         }
         row.finish();
         row
+    }
+
+    /// `b` laid over `a` at `alpha`.
+    fn mix(a: [f64; 3], b: [f64; 3], alpha: f64) -> [f64; 3] {
+        [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * alpha)
     }
 
     fn near(a: [f64; 3], b: [f64; 3]) -> bool {
@@ -2288,20 +2482,26 @@ mod tests {
         // An ID field to 0.25 + 1/64, then the sector, its data from
         // 0.25 + 1/32, to 0.5.
         let row = row_of(&[sector([0.25, 0.28125, 0.5], Some(0.265625))]);
-        assert!(near(row.sample(0.2578125, w, w, line), id));
-        assert!(near(row.sample(0.2734375, w, w, line), good));
-        assert!(near(row.sample(0.375, w, w, line), good));
-        assert!(near(row.sample(0.75, w, w, line), gap));
+        assert!(near(row.sample(0.2578125, Shadow::square(w), w, line), id));
+        assert!(near(
+            row.sample(0.2734375, Shadow::square(w), w, line),
+            good
+        ));
+        assert!(near(row.sample(0.375, Shadow::square(w), w, line), good));
+        assert!(near(row.sample(0.75, Shadow::square(w), w, line), gap));
         // Pixels straddling the ID field's end and the sector's: half each.
-        let edge = row.sample(0.265625, w, w, line);
+        let edge = row.sample(0.265625, Shadow::square(w), w, line);
         assert!(near(edge, mix(id, good, 0.5)), "{edge:?}");
-        let edge = row.sample(0.5, w, w, line);
+        let edge = row.sample(0.5, Shadow::square(w), w, line);
         assert!(near(edge, mix(good, gap, 0.5)), "{edge:?}");
         // Over the index, the row wraps.
         let over = row_of(&[sector([0.9, 0.9, 1.1], None)]);
-        assert!(near(over.sample(0.05, w, w, line), good));
-        assert!(near(over.sample(0.15, w, w, line), gap));
-        assert!(near(over.sample(0.0, 0.02, 0.0, line), good));
+        assert!(near(over.sample(0.05, Shadow::square(w), w, line), good));
+        assert!(near(over.sample(0.15, Shadow::square(w), w, line), gap));
+        assert!(near(
+            over.sample(0.0, Shadow::square(0.02), 0.0, line),
+            good
+        ));
     }
 
     #[test]
@@ -2314,10 +2514,13 @@ mod tests {
             sector([0.5, 0.5, 0.625], None),
         ]);
         assert_eq!(row.meets, [0.25]);
-        assert!(near(row.sample(0.25, w, w, line), line), "where two meet");
+        assert!(
+            near(row.sample(0.25, Shadow::square(w), w, line), line),
+            "where two meet"
+        );
         // Where a sector starts after a gap, no line.
         let look = Look::of(&theme::DARK, Media::Fit);
-        let edge = row.sample(0.5, w, w, line);
+        let edge = row.sample(0.5, Shadow::square(w), w, line);
         assert!(
             near(edge, mix(rgb(look.gap), rgb(look.good), 0.5)),
             "{edge:?}"
@@ -2347,8 +2550,14 @@ mod tests {
         };
         let row = row_of(std::slice::from_ref(&mark));
         let middle = 0.5 + w / 16.0;
-        assert!(near(row.sample(middle, w, w, line), rgb(look.alone)));
-        assert!(near(row.sample(middle + w, w, w, line), rgb(look.gap)));
+        assert!(near(
+            row.sample(middle, Shadow::square(w), w, line),
+            rgb(look.alone)
+        ));
+        assert!(near(
+            row.sample(middle + w, Shadow::square(w), w, line),
+            rgb(look.gap)
+        ));
         // Half a line either side of its middle, the pointer finds it.
         assert!(holds(&mark, middle + 0.4 * w, w));
         assert!(!holds(&mark, middle + 0.6 * w, w));
@@ -2365,9 +2574,12 @@ mod tests {
         let (gap, good) = (rgb(look.gap), rgb(look.good));
         let row = row_of(&[sector([1.0, 1.0, 1.05], None)]);
         let w = 1.0 / 1024.0;
-        assert!(near(row.sample(0.025, w, w, [9.0; 3]), good));
+        assert!(near(
+            row.sample(0.025, Shadow::square(w), w, [9.0; 3]),
+            good
+        ));
         assert!(
-            near(row.sample(0.5, w, w, [9.0; 3]), gap),
+            near(row.sample(0.5, Shadow::square(w), w, [9.0; 3]), gap),
             "not round the track"
         );
         assert!(holds(&sector([1.0, 1.0, 1.05], None), 0.025, w));
@@ -2385,7 +2597,7 @@ mod tests {
         let sectors = [sector([0.1, 0.1, 0.3], None), bad];
         let row = row_of(&sectors);
         assert!(near(
-            row.sample(0.2995, w / 4.0, w, [9.0; 3]),
+            row.sample(0.2995, Shadow::square(w / 4.0), w, [9.0; 3]),
             rgb(look.bad)
         ));
         assert_eq!(under(&sectors, 0.2995, w), Some(1));
@@ -2403,7 +2615,7 @@ mod tests {
         let row = row_of(&marks);
         let middle = 0.5 + w / 8.0;
         assert!(near(
-            row.sample(middle, w / 4.0, w, [9.0; 3]),
+            row.sample(middle, Shadow::square(w / 4.0), w, [9.0; 3]),
             rgb(look.alone)
         ));
         assert_eq!(under(&marks, middle, w), Some(0));
@@ -2438,7 +2650,7 @@ mod tests {
             geometry,
             ..disk(0, Media::Fit)
         };
-        let mut row = Row::new(rgb(look.good));
+        let mut row = Row::new(look.good);
         row.finish();
         let rows = vec![row; span as usize];
         let canvas = Canvas::new(&d, &look, &rows, 1.0);
@@ -2612,6 +2824,174 @@ mod tests {
         let (line, encodings) = sums(&progress, 0, 1);
         assert_eq!(line, "Incomplete 2 · 2 missing");
         assert_eq!(encodings, ["IBM MFM"]);
+    }
+
+    /// The pixel at `x`, `y` of `canvas`'s picture as the mean of `n` by `n`
+    /// points over it, premultiplied: each the colour of what lies there,
+    /// the rim, the hub, a fitted track's line, its row's piece there or a
+    /// line where two sectors meet, else the bare disk; outside the disk,
+    /// nothing.
+    fn supersampled(canvas: &Canvas, x: usize, y: usize, n: usize) -> [f64; 4] {
+        let g = &canvas.geometry;
+        let mut sum = [0.0; 4];
+        for (i, j) in (0..n).flat_map(|i| (0..n).map(move |j| (i, j))) {
+            let along = |p: usize, k: usize| p as f64 + (k as f64 + 0.5) / n as f64;
+            let (dx, dy) = (along(x, i) - canvas.centre, along(y, j) - canvas.centre);
+            let r = (dx * dx + dy * dy).sqrt();
+            if r < g.hole || r > g.edge {
+                continue;
+            }
+            let cyl = ((canvas.outer - r) / g.pitch).floor();
+            let edge = canvas.outer - cyl * g.pitch;
+            let middle = edge - g.pitch / 2.0;
+            let on_track = cyl >= 0.0
+                && (cyl as usize) < canvas.rows.len()
+                && (r - middle).abs() <= g.width / 2.0;
+            let colour = if r >= g.edge - canvas.line {
+                canvas.rim
+            } else if g.hub.is_some_and(|hub| r < hub) {
+                canvas.hub
+            } else if !on_track || (canvas.separate && r > edge - canvas.line) {
+                canvas.body
+            } else {
+                let row = &canvas.rows[cyl as usize];
+                let share = share_at(dx, dy);
+                let half = canvas.line / 2.0 / (TAU * r);
+                match row.meets.iter().any(|&m| apart(m, share) <= half) {
+                    true => canvas.body,
+                    false => rgb(row.colours[row.piece(share)]),
+                }
+            };
+            (0..3).for_each(|k| sum[k] += colour[k]);
+            sum[3] += 255.0;
+        }
+        sum.map(|v| v / (n * n) as f64)
+    }
+
+    /// The most a pixel of `canvas`'s picture differs from the mean of the
+    /// points over it, of those `at` gives, in levels.
+    fn worst(canvas: &Canvas, at: impl Iterator<Item = (usize, usize)>) -> f64 {
+        let mut image = egui::ColorImage::filled([canvas.pixels; 2], Color32::TRANSPARENT);
+        canvas.paint(&mut image, None);
+        let mut worst: f64 = 0.0;
+        for (x, y) in at {
+            let got = image.pixels[y * canvas.pixels + x].to_array();
+            let want = supersampled(canvas, x, y, 128);
+            for k in 0..4 {
+                worst = worst.max((f64::from(got[k]) - want[k]).abs());
+            }
+        }
+        worst
+    }
+
+    /// The pixels from the centre out along `degrees` from the right, and
+    /// the same mirrored: through the disk.
+    fn across(pixels: usize, degrees: f64) -> impl Iterator<Item = (usize, usize)> {
+        let (c, (sin, cos)) = (pixels as f64 / 2.0, degrees.to_radians().sin_cos());
+        (0..pixels / 2).flat_map(move |k| {
+            let (dx, dy) = (k as f64 * cos, k as f64 * sin);
+            [(c + dx, c + dy), (c - dx - 1.0, c - dy - 1.0)].map(|(x, y)| (x as usize, y as usize))
+        })
+    }
+
+    #[test]
+    fn a_pixel_off_the_axes_is_what_its_area_covers() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        // Each track another colour, so that one laid over its neighbour's
+        // share of a pixel shows.
+        let colours = [look.good, look.bad, look.flux, look.alone];
+        let rows: Vec<Row> = (0..20)
+            .map(|c| {
+                let mut row = Row::new(colours[c % 4]);
+                row.finish();
+                row
+            })
+            .collect();
+        for (media, room) in [(Media::Fit, 400.0), (Media::ThreeHalf, 300.0)] {
+            let geometry = Geometry::new(media, 20, room);
+            let d = Disk {
+                span: 20,
+                geometry,
+                ..disk(0, media)
+            };
+            let canvas = Canvas::new(&d, &look, &rows, 1.0);
+            assert_eq!(
+                canvas.separate,
+                media == Media::Fit,
+                "lines between fitted ones"
+            );
+            for degrees in [45.0, 30.0, 0.0] {
+                let worst = worst(&canvas, across(geometry.pixels, degrees));
+                assert!(worst <= 2.0, "{media:?} at {degrees}°: {worst} levels off");
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_where_sectors_meet_is_what_its_area_covers_off_the_axes() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        // Two sectors meeting at 0.375 of a revolution, down the diagonal
+        // to the lower right, and one ending a little after the other.
+        let bad = Sector {
+            data: Data::Bad,
+            ..sector([0.375, 0.375, 0.5], None)
+        };
+        let row = row_of(&[sector([0.25, 0.25, 0.375], None), bad]);
+        assert_eq!(row.meets, [0.375]);
+        let span = 4;
+        let geometry = Geometry::new(Media::Fit, span, 400.0);
+        let d = Disk {
+            span,
+            geometry,
+            ..disk(0, Media::Fit)
+        };
+        let rows = vec![row; span as usize];
+        let canvas = Canvas::new(&d, &look, &rows, 1.0);
+        // Away from the tracks' edges, whose corners with the line a pixel
+        // takes as each alone.
+        let clear = |&(x, y): &(usize, usize)| {
+            let c = canvas.centre;
+            let r = (x as f64 + 0.5 - c).hypot(y as f64 + 0.5 - c);
+            (0..=span).all(|k| {
+                let edge = canvas.outer - f64::from(k) * geometry.pitch;
+                (r - edge).abs() > 1.0 && (r - edge + canvas.line).abs() > 1.0
+            })
+        };
+        let n = geometry.pixels;
+        let near: Vec<(usize, usize)> = (n / 2..n)
+            .flat_map(|x| [(x, x), (x + 1, x), (x, x + 1)])
+            .filter(|&(x, y)| x < n && y < n)
+            .filter(clear)
+            .collect();
+        assert!(near.len() > 20, "{} pixels", near.len());
+        let worst = worst(&canvas, near.into_iter());
+        assert!(worst <= 2.0, "{worst} levels off");
+    }
+
+    #[test]
+    fn a_pixels_shadow_is_a_box_on_the_axes_and_a_triangle_on_the_diagonals() {
+        let square = Shadow::of(3.0, 0.0, 3.0);
+        assert_eq!((square.below(0.0), square.within(-0.25, 0.25)), (0.5, 0.5));
+        let diagonal = Shadow::of(2.0, 2.0, 8f64.sqrt());
+        assert!((diagonal.half - 0.5f64.sqrt()).abs() < 1e-12 && diagonal.flat < 1e-12);
+        // A band a pixel wide down the diagonal covers all but its corners.
+        let band = diagonal.within(-0.5, 0.5);
+        assert!((band - (1.0 - (0.5f64.sqrt() - 0.5).powi(2) * 2.0)).abs() < 1e-12);
+        for shadow in [square, diagonal, Shadow::of(3.0, 1.0, 10f64.sqrt())] {
+            assert_eq!(shadow.within(-1.0, 1.0), 1.0);
+            let half = shadow.within(-1.0, 0.0);
+            assert!((half - 0.5).abs() < 1e-12, "{shadow:?}: {half}");
+        }
+    }
+
+    #[test]
+    fn fitted_tracks_with_lines_between_cover_all_but_the_lines() {
+        let g = Geometry::new(Media::Fit, 20, 400.0);
+        assert!(g.separate(1.0) && !g.separate(g.pitch));
+        assert_eq!(g.covered(1.0), ((g.pitch - 1.0) / g.pitch) as f32);
+        assert_eq!(g.covered(g.pitch), 1.0, "too narrow for lines");
+        let scale = Geometry::new(Media::ThreeHalf, 80, 858.0);
+        assert!((scale.covered(1.0) - (0.115 / 0.1875) as f32).abs() < 1e-6);
     }
 
     #[test]
