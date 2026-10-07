@@ -2118,6 +2118,58 @@ fn a_double_click_in_the_log_selects_a_word_a_triple_its_line_and_escape_neither
 }
 
 #[test]
+fn a_parts_window_shuts_once_the_image_or_what_the_part_holds_is_another() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let open = |w: &mut Window, image| {
+        app_mut(w).pin_image(image);
+        w.run();
+    };
+    let window = |w: &Window| {
+        w.query_by_role_and_label(Role::Label, "Sector 3 · cylinder 18, side 0")
+            .is_some()
+    };
+    let mut w = start(Harness::builder().with_size(DEFAULT), settings, None);
+    open(&mut w, scratched_adf());
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    let opened = |w: &mut Window| {
+        let at = image_part(w, 80, 11)(36, 3);
+        w.drag_at(at);
+        w.run();
+        w.drop_at(at);
+        w.run();
+        assert!(window(w));
+    };
+    opened(&mut w);
+    // The file as gw opens it again: the window stays.
+    open(&mut w, scratched_adf());
+    assert!(window(&w));
+    // Another file holding the same: it showed that file's bytes as the
+    // first's.
+    let mut other = scratched_adf();
+    other.file = Some("/Users/you/Floppies/Other.adf".into());
+    open(&mut w, other);
+    assert!(!window(&w));
+    // The file, written over since: what the part holds is another's.
+    open(&mut w, scratched_adf());
+    opened(&mut w);
+    let mut since = scratched_adf();
+    let content = since.content.as_mut().unwrap();
+    content[0x31E00] = 0;
+    open(&mut w, since);
+    assert!(!window(&w));
+}
+
+#[test]
 fn clear_empties_the_log() {
     let mut w = window(Settings {
         drawer: Some(Drawer::Log),

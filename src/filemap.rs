@@ -202,6 +202,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
                 key: track.key,
                 part: k,
                 at: *at,
+                held: held(map, track, k),
             };
             ui.data_mut(|d| d.insert_temp(opened_id(), opened));
         }
@@ -522,12 +523,38 @@ fn sector_name(part: &Part) -> String {
 }
 
 /// The part a click opened a window on: its track, by key, its place in
-/// the track, and where it lies in the file.
-#[derive(Clone, Copy, PartialEq)]
+/// the track, and where it lies in the file; and what it held then.
+#[derive(Clone, PartialEq)]
 struct Opened {
     key: (u32, u32),
     part: usize,
     at: u64,
+    held: Held,
+}
+
+/// What a part holds: the image it is part of, by what the job does with
+/// it, its file and gw's type for it; and the part's state and bytes. The
+/// window on a part shuts once these are another's, as for another file
+/// or job, or the part holds other bytes.
+#[derive(Clone, PartialEq)]
+struct Held {
+    role: Role,
+    file: Option<String>,
+    kind: String,
+    state: State,
+    bytes: Option<Vec<u8>>,
+}
+
+/// What `track`'s part `k` of `map`'s image holds.
+fn held(map: &Map, track: &Placed, k: usize) -> Held {
+    let image = map.image;
+    Held {
+        role: image.role,
+        file: image.file.clone(),
+        kind: image.kind.clone(),
+        state: track.parts[k].2,
+        bytes: image.part_bytes(track, k),
+    }
 }
 
 fn opened_id() -> egui::Id {
@@ -543,16 +570,18 @@ fn window(ctx: &egui::Context, map: &Map, placed: &[Placed], digits: usize) {
     let found = placed
         .iter()
         .find(|t| t.key == opened.key)
-        .and_then(|t| Some((t, t.parts.get(opened.part)?)))
-        .filter(|(_, (_, at, _))| *at == opened.at);
-    let Some((track, (part, at, state))) = found else {
+        .filter(|t| t.parts.get(opened.part).is_some_and(|p| p.1 == opened.at))
+        .map(|t| (t, held(map, t, opened.part)))
+        .filter(|(_, now)| *now == opened.held);
+    let Some((track, now)) = found else {
         ctx.data_mut(|d| d.remove::<Opened>(opened_id()));
         return;
     };
+    let (part, at, state) = &track.parts[opened.part];
     let (cyl, side) = track.key;
     let title = format!("{} · cylinder {cyl}, side {side}", id_text(part));
     let lines = said(map, track, part, *at, *state, digits);
-    let bytes = map.image.part_bytes(track, opened.part).unwrap_or_default();
+    let bytes = now.bytes.unwrap_or_default();
     let shown = Shown {
         title: &title,
         lines: &lines,
