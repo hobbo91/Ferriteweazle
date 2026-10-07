@@ -9,6 +9,7 @@ use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
+use crate::surface::{self, MEDIA, Media, SHOWS, Shows};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Origin, Tools};
 use crate::udev;
@@ -150,6 +151,9 @@ const FADE_WAIT: u32 = 8;
 const LOG_LINE: f32 = 18.0;
 /// The drawer's height, margins included: the command line's, and the log's at first.
 const DRAWER: f32 = 124.0;
+/// The Analyse drawer's least height, margins included: it opens as tall as
+/// the page lets it, for the disks.
+const ANALYSE: f32 = 240.0;
 /// A job's rows above the map, each on one line. The map's budget counts
 /// them with no job too, so its squares keep their size as a job starts.
 const JOB_ROWS: f32 = 97.0;
@@ -160,7 +164,7 @@ const DRAWER_TIME: f32 = 0.2;
 /// How long a dismissed banner takes to go, in seconds: it fades out, and the
 /// page closes up over it.
 const BANNER_TIME: f32 = 0.25;
-/// How far past its least height the log must be dragged to shut, in points.
+/// How far past its least height the log or Analyse must be dragged to shut, in points.
 const LOG_BUMP: f32 = 40.0;
 /// The status pane's strip for its scroll bar, taken from its right margin.
 const STATUS_BAR: i8 = 10;
@@ -180,11 +184,15 @@ impl Default for Page {
     }
 }
 
-/// The choices made in the window; the drive, device, gw and theme are kept between runs.
+/// The choices made in the window; the drive, device, gw, theme and how
+/// Analyse draws the disk are kept between runs.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
     pub theme: theme::Choice,
+    /// How the Analyse drawer draws the disk, and what its tracks show.
+    pub media: Media,
+    pub shows: Shows,
     /// A Python or `gw` to use instead of the one found automatically.
     pub tools: Option<PathBuf>,
     /// Empty for gw's own choice.
@@ -222,6 +230,8 @@ pub enum Drawer {
     Cli,
     /// gw's output from every job of the session.
     Log,
+    /// The disk job's disk, each side as the round disk it is.
+    Analyse,
 }
 
 enum Dialog {
@@ -397,6 +407,8 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
+    /// How Analyse draws the disk, as last kept in analyse_file().
+    kept_analyse: (Media, Shows),
     /// Classic in the accent it opened in or was last given while the app
     /// runs: Blue otherwise, or Classic itself (teal).
     classic: theme::Choice,
@@ -440,6 +452,10 @@ pub struct App {
     framed: Option<Theme>,
     /// The drawer open when the drawers were last drawn.
     drawn: Option<Drawer>,
+    /// The most height Analyse's content could use when last drawn, and the
+    /// most its drawer was let be.
+    analyse_most: Option<f32>,
+    analyse_cap: Option<f32>,
     /// gw's udev rule, where a Linux package ships it.
     pub udev_rule: Option<PathBuf>,
     install: RuleInstall,
@@ -457,12 +473,15 @@ impl App {
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
         let theme = kept_theme(&theme_file());
+        let (media, shows) = kept_analyse(&analyse_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
             tools: tools.clone(),
             theme,
+            media,
+            shows,
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
@@ -471,6 +490,7 @@ impl App {
         app.kept_device = (kind, port);
         app.kept_tools = tools;
         app.kept_theme = theme;
+        app.kept_analyse = (media, shows);
         app.copy = Install::this();
         app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
         app.dismissed = kept_dismissed(&dismissed_file()).map(|tag| (tag, f64::NEG_INFINITY));
@@ -531,6 +551,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             kept_theme: theme::Choice::System,
+            kept_analyse: (Media::Fit, Shows::Sectors),
             classic,
             delays: None,
             found_note: None,
@@ -552,6 +573,8 @@ impl App {
             desktop_theme: None,
             framed: None,
             drawn: None,
+            analyse_most: None,
+            analyse_cap: None,
             udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
             #[cfg(target_os = "macos")]
@@ -745,6 +768,11 @@ impl App {
         if self.live && self.settings.theme != self.kept_theme {
             self.kept_theme = self.settings.theme;
             keep_theme(&theme_file(), self.kept_theme);
+        }
+        let analyse = (self.settings.media, self.settings.shows);
+        if self.live && analyse != self.kept_analyse {
+            self.kept_analyse = analyse;
+            keep_analyse(&analyse_file(), analyse);
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -1945,7 +1973,11 @@ impl App {
     fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command) {
         let p = theme::palette(ui);
         let why = self.why_not(schema, cmd);
+        let nothing = self.analysed(&cmd.name).err();
         ui.horizontal(|ui| {
+            // The run button gives way to the drawers' buttons on a narrow page.
+            let gap = ui.spacing().item_spacing.x + 6.0;
+            let wide = (ui.available_width() - 3.0 * (gap + DRAWER_BUTTON.x)).clamp(RUN_LEAST, RUN);
             // The job this page started, or its format being found.
             let here = self.running().filter(|j| {
                 j.command == cmd.name
@@ -1958,7 +1990,8 @@ impl App {
                     } else {
                         "Stop"
                     };
-                    let stop = ui.add_enabled(!job.stopping(), big_button(label, p.bad, p));
+                    let stop = big_button(label, p.bad, p).min_size(vec2(wide, RUN_HEIGHT));
+                    let stop = ui.add_enabled(!job.stopping(), stop);
                     let tip = match self.runs_motor(job) {
                         true => "Stop Greaseweazle Tools and the drive's motor.",
                         false => "Stop Greaseweazle Tools.",
@@ -1999,7 +2032,8 @@ impl App {
                         _ if sets => "Set delays",
                         _ => run_label(&cmd.name),
                     };
-                    let run = ui.add_enabled(why.is_none(), big_button(label, p.accent, p));
+                    let run = big_button(label, p.accent, p).min_size(vec2(wide, RUN_HEIGHT));
+                    let run = ui.add_enabled(why.is_none(), run);
                     match &why {
                         Some(why) => {
                             run.on_disabled_hover_text(why);
@@ -2027,7 +2061,7 @@ impl App {
                 let open = self.settings.drawer == Some(drawer);
                 let button = egui::Button::new(text)
                     .selected(open)
-                    .min_size(vec2(70.0, 40.0))
+                    .min_size(DRAWER_BUTTON)
                     .corner_radius(8);
                 if ui
                     .add(button)
@@ -2036,6 +2070,24 @@ impl App {
                 {
                     self.settings.drawer = (!open).then_some(drawer);
                 }
+            }
+            ui.add_space(6.0);
+            let open = self.settings.drawer == Some(Drawer::Analyse);
+            let button = egui::Button::new("Analyse")
+                .selected(open)
+                .min_size(DRAWER_BUTTON)
+                .corner_radius(8);
+            let tip = match open {
+                true => "Hide disk analysis.",
+                false => "Show disk analysis.",
+            };
+            if ui
+                .add_enabled(nothing.is_none(), button)
+                .on_hover_text(tip)
+                .on_disabled_hover_text(nothing.unwrap_or_default())
+                .clicked()
+            {
+                self.settings.drawer = (!open).then_some(Drawer::Analyse);
             }
         });
     }
@@ -2402,17 +2454,10 @@ impl App {
         let (format, disk, blank) = self.blank_map(page);
         let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
         let swapped = tracks.is_some_and(form::swapped);
-        // A running job shows on every page. A finished one shows on its own page
-        // until that page takes other tracks, or for Detect another format.
-        let preview = (&blank.cyls, &blank.heads);
-        let shown = self.disk.as_ref().filter(|j| {
-            j.running()
-                || j.page == page
-                    && match j.command.as_str() {
-                        DETECT => j.format == format,
-                        _ => j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
-                    }
-        });
+        let shown = self
+            .disk
+            .as_ref()
+            .filter(|j| shows(j, page, format.as_deref(), &blank));
         let top = ui.cursor().top();
         // The map's height above a drawer at its least height and below a job's rows, even
         // with no job, so its squares keep one size; and the room below those rows. Rows
@@ -2435,7 +2480,7 @@ impl App {
         let Some(job) = shown else {
             // Only the pages that work on a disk's tracks have a map of their own.
             if !DISK_COMMANDS.contains(&page) {
-                ui.label(RichText::new("No disk job running").weak());
+                ui.label(RichText::new(NO_DISK_JOB).weak());
                 return;
             }
             ui.label(RichText::new(idle_status(page)).weak());
@@ -2524,6 +2569,8 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
+            // Analyse shows the disk below, in full.
+            _ if self.settings.drawer == Some(Drawer::Analyse) => {}
             true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
                 let verifying = job.running() && job.progress.verifies;
@@ -2602,10 +2649,19 @@ impl App {
             top: 12,
             bottom: FOOT,
         });
+        // Analyse shuts once there is no disk job to show.
+        if self.settings.drawer == Some(Drawer::Analyse) && self.analysed(page).is_err() {
+            self.settings.drawer = None;
+        }
         let open = self.settings.drawer;
         let switched = self.drawn.is_some() && open.is_some() && self.drawn != open;
         self.drawn = open;
-        for (drawer, id) in [(Drawer::Cli, "cli"), (Drawer::Log, "log")] {
+        let drawers = [
+            (Drawer::Cli, "cli"),
+            (Drawer::Log, "log"),
+            (Drawer::Analyse, "analyse"),
+        ];
+        for (drawer, id) in drawers {
             // egui's Panel keys its slide by this id. Setting it here first
             // makes it take DRAWER_TIME, or none from one drawer to the
             // other: the Panel's own call this frame then sees no time pass.
@@ -2643,17 +2699,121 @@ impl App {
         if let Some(why) = unsaved {
             self.notices.insert(page.to_owned(), why);
         }
-        // Dragged below its least height, the log holds there until pulled
-        // LOG_BUMP further; a double-click on its edge shuts it at once.
+        // As tall as the page lets it, or the disks can use; drag its edge for less.
+        let least = ANALYSE.min(tallest);
+        let most = self
+            .analyse_most
+            .map_or(tallest, |m| (m + frame.total_margin().sum().y).ceil())
+            .clamp(least, tallest);
+        // At its most, it stays at its most as that changes: the window's
+        // size, and the disks' room, measured as they are drawn.
+        let id = Id::new("analyse");
+        if let Some(was) = self.analyse_cap.replace(most)
+            && let Some(mut state) = egui::PanelState::load(ui.ctx(), id)
+            && (state.size().y - was).abs() < 1.0
+            && (most - was).abs() >= 1.0
+        {
+            state.outer_rect.min.y = state.outer_rect.max.y - most;
+            ui.ctx().data_mut(|d| d.insert_persisted(id, state));
+        }
+        let mut analyse = open == Some(Drawer::Analyse);
+        egui::Panel::bottom(id)
+            .frame(frame)
+            .resizable(true)
+            .drag_to_open(false)
+            .default_size(most)
+            .size_range(least..=most)
+            .show_collapsible(ui, &mut analyse, |ui| self.analyse(ui, page));
+        // Dragged below its least height, the log or Analyse holds there until
+        // pulled LOG_BUMP further; a double-click on its edge shuts it at once.
         let (pointer, double) = ui.input(|i| {
             let double = i
                 .pointer
                 .button_double_clicked(egui::PointerButton::Primary);
             (i.pointer.interact_pos(), double)
         });
-        let past = pointer.map_or(f32::INFINITY, |p| p.y - (bottom - DRAWER));
-        if open == Some(Drawer::Log) && !log && (double || past > LOG_BUMP) {
+        let past = |least: f32| pointer.map_or(f32::INFINITY, |p| p.y - (bottom - least));
+        let shut = match open {
+            Some(Drawer::Log) => !log && (double || past(DRAWER) > LOG_BUMP),
+            Some(Drawer::Analyse) => !analyse && (double || past(least) > LOG_BUMP),
+            _ => false,
+        };
+        if shut {
             self.settings.drawer = None;
+        }
+    }
+
+    /// Whether Analyse has a disk job to show on `page`, or the status pane's
+    /// line for the page where it has none.
+    fn analysed(&mut self, page: &str) -> Result<(), &'static str> {
+        let (format, _, blank) = self.blank_map(page);
+        let job = self.disk.as_ref();
+        match job.filter(|j| shows(j, page, format.as_deref(), &blank)) {
+            Some(_) => Ok(()),
+            None if DISK_COMMANDS.contains(&page) => Err(idle_status(page)),
+            None => Err(NO_DISK_JOB),
+        }
+    }
+
+    /// The Analyse drawer: the disk job's disk, each side as the round disk
+    /// it is, and the disk's size to draw it at.
+    fn analyse(&mut self, ui: &mut Ui, page: &str) {
+        let p = theme::palette(ui);
+        let top = ui.cursor().top();
+        // Its box down to the drawer's foot, however short what is in it.
+        ui.set_min_height(ui.max_rect().height());
+        let (format, disk, blank) = self.blank_map(page);
+        let job = self.disk.as_ref();
+        let Some(job) = job.filter(|j| shows(j, page, format.as_deref(), &blank)) else {
+            return;
+        };
+        let begun = !(job.progress.cyls.is_empty() && job.progress.tracks.is_empty());
+        let progress = if begun { &job.progress } else { &blank };
+        let span = surface::span(progress, disk);
+        let (media, shows) = (&mut self.settings.media, &mut self.settings.shows);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Disk analysis").strong());
+            right(ui, |ui| {
+                egui::ComboBox::from_id_salt("disk size")
+                    .selected_text(media.name())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for (size, name, _) in MEDIA {
+                            // No more tracks than the disk holds.
+                            let over = size.holds().filter(|&n| span > n);
+                            let why = over.map(|n| format!("{span} cylinders: it holds {n}."));
+                            ui.add_enabled_ui(over.is_none(), |ui| {
+                                ui.selectable_value(media, size, name)
+                            })
+                            .inner
+                            .on_disabled_hover_text(why.unwrap_or_default());
+                        }
+                    });
+                ui.add_space(8.0);
+                for (view, name, _) in SHOWS.into_iter().rev() {
+                    ui.selectable_value(shows, view, name);
+                }
+            });
+        });
+        if let Some(note) = undrawn(&job.args) {
+            ui.add(egui::Label::new(RichText::new(note).small().color(p.partial)).wrap());
+        }
+        ui.add_space(6.0);
+        // The sides as the job took them, whatever its page says now.
+        let tracks = job.args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        let map = surface::Map {
+            progress,
+            command: &job.command,
+            disk,
+            swapped: tracks.is_some_and(form::swapped),
+            verifying: begun && job.running() && job.progress.verifies,
+            media: *media,
+            shows: *shows,
+            current: job.progress.current.filter(|_| job.running()),
+        };
+        let above = ui.cursor().top() - top;
+        if let Some((_, most)) = surface::show(ui, &map) {
+            self.analyse_most = Some(above + most);
         }
     }
 
@@ -4105,6 +4265,36 @@ fn installing(update: &Update) -> bool {
     matches!(update, Update::Installing(..))
 }
 
+/// The status pane's line on a page that works on no disk, with no disk job.
+const NO_DISK_JOB: &str = "No disk job running";
+
+/// Whether the status pane shows disk job `job` on `page`, whose format is
+/// `format` and empty map `blank`. A running job shows on every page. A
+/// finished one shows on its own page until that page takes other tracks, or
+/// for Detect another format.
+fn shows(job: &Job, page: &str, format: Option<&str>, blank: &Progress) -> bool {
+    let preview = (&blank.cyls, &blank.heads);
+    job.running()
+        || job.page == page
+            && match job.command.as_str() {
+                DETECT => job.format.as_deref() == format,
+                _ => job.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
+            }
+}
+
+/// Why Analyse draws nothing of the tracks a job with `args` takes: gw does
+/// not read or write them round from the disk's index, so the bridge
+/// reports none of them.
+fn undrawn(args: &[String]) -> Option<&'static str> {
+    if args.iter().any(|a| a == "--reverse") {
+        Some("Not drawn: --reverse runs each track backwards.")
+    } else if args.iter().any(|a| a.starts_with("--fake-index")) {
+        Some("Not drawn: with --fake-index, tracks do not start at the index.")
+    } else {
+        None
+    }
+}
+
 /// What the status pane says before any disk job, for this page.
 fn idle_status(page: &str) -> &'static str {
     match page {
@@ -4147,12 +4337,19 @@ fn repaint(ctx: &egui::Context) -> Repaint {
     Box::new(move || ctx.request_repaint())
 }
 
+/// The run button's width, the least it gives way to on a narrow page, and
+/// its height; and the CLI, Log and Analyse buttons' size beside it.
+const RUN: f32 = 170.0;
+const RUN_LEAST: f32 = 120.0;
+const RUN_HEIGHT: f32 = 40.0;
+const DRAWER_BUTTON: egui::Vec2 = egui::vec2(70.0, RUN_HEIGHT);
+
 fn big_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
     egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(15.0))
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(8)
-        .min_size(vec2(170.0, 40.0))
+        .min_size(vec2(RUN, RUN_HEIGHT))
 }
 
 /// Every dialog button's height.
@@ -4808,6 +5005,38 @@ fn kept_theme(file: &Path) -> theme::Choice {
 fn keep_theme(file: &Path, choice: theme::Choice) {
     let word = theme::CHOICES.iter().find(|c| c.0 == choice).map(|c| c.3);
     keep(file, word.filter(|w| !w.is_empty()).map(String::from));
+}
+
+/// Where how Analyse draws the disk is kept between runs, a word a line;
+/// the defaults keep no file.
+fn analyse_file() -> PathBuf {
+    crate::data_folder().join("analyse.txt")
+}
+
+fn kept_analyse(file: &Path) -> (Media, Shows) {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let mut words = text.lines().map(str::trim);
+    let (media, shows) = (words.next(), words.next());
+    (
+        MEDIA
+            .iter()
+            .find(|m| Some(m.2) == media)
+            .map_or(Media::Fit, |m| m.0),
+        SHOWS
+            .iter()
+            .find(|v| Some(v.2) == shows)
+            .map_or(Shows::Sectors, |v| v.0),
+    )
+}
+
+fn keep_analyse(file: &Path, (media, shows): (Media, Shows)) {
+    let media_word = MEDIA.iter().find(|m| m.0 == media).map_or("", |m| m.2);
+    let shows_word = SHOWS.iter().find(|v| v.0 == shows).map_or("", |v| v.2);
+    let changed = (media, shows) != (Media::Fit, Shows::Sectors);
+    keep(
+        file,
+        changed.then(|| format!("{media_word}\n{shows_word}\n")),
+    );
 }
 
 /// Where the drive identifier is kept between runs.
@@ -5534,6 +5763,27 @@ mod tests {
         assert!(!file.exists(), "System is the default");
         std::fs::write(&file, "purple").unwrap();
         assert_eq!(kept_theme(&file), theme::Choice::System);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn how_analyse_draws_the_disk_is_kept_and_the_defaults_keep_no_file() {
+        let dir =
+            std::env::temp_dir().join(format!("ferriteweazle-analyse-{}", std::process::id()));
+        let file = dir.join("analyse.txt");
+        let defaults = (Media::Fit, Shows::Sectors);
+        assert_eq!(kept_analyse(&file), defaults);
+        for (media, ..) in MEDIA {
+            for (shows, ..) in SHOWS {
+                keep_analyse(&file, (media, shows));
+                assert_eq!(kept_analyse(&file), (media, shows));
+            }
+        }
+        keep_analyse(&file, defaults);
+        assert!(!file.exists(), "the defaults");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "round\nsquare\n").unwrap();
+        assert_eq!(kept_analyse(&file), defaults);
         std::fs::remove_dir_all(&dir).ok();
     }
 

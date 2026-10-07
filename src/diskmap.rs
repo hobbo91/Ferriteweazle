@@ -352,7 +352,10 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
 /// reports the track.
 fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
     let Some(sectors) = progress.sector_map.get(&key) else {
-        return progress.tracks.get(&key).map(|t| colour(t.status, p));
+        return progress
+            .tracks
+            .get(&key)
+            .map(|t| status_colour(t.status, p));
     };
     let good = sectors.contains(&Some(true));
     let bad = sectors.contains(&Some(false));
@@ -384,7 +387,8 @@ fn side_name(head: u32) -> &'static str {
     }
 }
 
-fn colour(status: Status, p: &Palette) -> Color32 {
+/// A track's colour on the map for its status.
+pub(crate) fn status_colour(status: Status, p: &Palette) -> Color32 {
     match status {
         Status::Good => p.good,
         Status::Partial => p.partial,
@@ -402,6 +406,18 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
         true => Stroke::new(1.0, p.line_strong),
         false => Stroke::NONE,
     }
+}
+
+/// The legend of the tracks `progress` takes, as the map would show them.
+pub(crate) fn legend_for(ui: &mut egui::Ui, progress: &Progress, verifying: bool) {
+    let p = theme::palette(ui);
+    let (cyls, heads) = progress.layout();
+    let shown: Vec<Color32> = cyls
+        .iter()
+        .flat_map(|&c| heads.iter().map(move |&h| (c, h)))
+        .filter_map(|key| fill(progress, key, p))
+        .collect();
+    legend(ui, &shown, progress, verifying, p);
 }
 
 /// Each colour on the map with its track count, then the retries. `verifying`: a
@@ -436,7 +452,7 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
                 "Outside the format, or not in the input.",
             ),
         ] {
-            let swatch = colour(status, p);
+            let swatch = status_colour(status, p);
             let tracks = shown.iter().filter(|&&c| c == swatch).count();
             if tracks == 0 {
                 continue;
@@ -461,7 +477,7 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
 
 /// Where gw read or wrote the track, from gw's `Drive 10.1` or `Image 10.1`:
 /// the cylinder and head a step, a swap or an offset took it to.
-fn place_text(place: &str) -> String {
+pub(crate) fn place_text(place: &str) -> String {
     let parts = place
         .split_once(' ')
         .and_then(|(what, at)| Some((what, at.split_once('.')?)));
@@ -471,7 +487,7 @@ fn place_text(place: &str) -> String {
     }
 }
 
-fn retry_text(n: u32) -> String {
+pub(crate) fn retry_text(n: u32) -> String {
     match n {
         1 => "1 retry".into(),
         n => format!("{n} retries"),

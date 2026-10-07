@@ -87,3 +87,17 @@ pub fn squares(w: &Window) -> impl Iterator<Item = &egui::epaint::RectShape> {
             _ => None,
         })
 }
+
+/// A point on head 0's disk, the first of the two side by side in the disk
+/// map, each under its side's name, 20 points tall, 32 points apart:
+/// `share` of the way from its centre to its edge, at `degrees` from the
+/// right, anticlockwise.
+pub fn on_disk(w: &Window, share: f32, degrees: f32) -> egui::Pos2 {
+    let map = w.get_by_label("Disk map").rect();
+    let diameter = map.height() - 20.0;
+    let left = map.center().x - (2.0 * diameter + 32.0) / 2.0;
+    let radius = diameter / 2.0;
+    let centre = egui::pos2(left + radius, map.top() + 20.0 + radius);
+    let a = degrees.to_radians();
+    centre + share * radius * egui::vec2(a.cos(), -a.sin())
+}

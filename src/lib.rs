@@ -19,6 +19,7 @@ pub mod progress;
 pub mod schema;
 pub mod service;
 pub mod standalone;
+mod surface;
 pub mod theme;
 pub mod tools;
 pub mod track;
@@ -28,6 +29,7 @@ pub mod update;
 pub use app::{
     ABOUT_SIZE, App, Drawer, Page, SMALLEST, Settings, WINDOW, about, about_image, opening_size,
 };
+pub use surface::{Media, Shows};
 
 use std::ffi::OsString;
 use std::path::PathBuf;

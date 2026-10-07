@@ -7,14 +7,16 @@
 
 mod common;
 
-use common::{DAMAGED, DEFAULT, FOUND, REFUSED, Window, damaged_read, greaseweazle, run_button};
+use common::{
+    DAMAGED, DEFAULT, FOUND, REFUSED, Window, damaged_read, greaseweazle, on_disk, run_button,
+};
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, Outcome};
 use ferriteweazle::schema::Port;
-use ferriteweazle::{App, Page, Settings};
+use ferriteweazle::{App, Drawer, Media, Page, Settings, Shows};
 use std::time::Duration;
 
 /// What gw info prints, as info.py formats it.
@@ -425,6 +427,174 @@ fn screens() {
             w.state_mut().as_mut().unwrap().offer_update("v1.3.4");
         });
         about(theme);
+    }
+}
+
+/// A real disk read: the Workbench 3.1 Install disk in a real drive, read
+/// with gw's own revolutions for its format, the bridge's reports and all.
+const WORKBENCH: &str = include_str!("data/read-workbench.log");
+/// The Workbench disk written back from its ADF in a real drive: each track
+/// as gw writes it, then as gw's verify read it back.
+const WRITTEN: &str = include_str!("data/write-workbench.log");
+/// The Workbench disk's flux with a scratch cut into side 0, cylinders 18 to
+/// 62, converted: real flux, and gw's decode of it.
+const SCRATCHED: &str = include_str!("data/convert-workbench-scratched.log");
+/// A real Akai S950 disk's HFE image as flux, a scratch cut into side 1,
+/// cylinders 10 to 70, converted to sectors.
+const AKAI: &str = include_str!("data/convert-akai.log");
+/// Its track 0.0 as the bridge reports it, its sectors' data and all.
+const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
+/// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
+/// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
+const TRACK_0: f32 = 39.5 / 42.9;
+
+/// The Akai conversion, its track 0.0 with its data.
+fn akai_job() -> Job {
+    let mut job = Job::replay("convert", AKAI);
+    let line = AKAI_TRACK.trim().strip_prefix("@ferriteweazle track ");
+    job.progress.report(line.expect("a track report"));
+    job
+}
+
+fn workbench() -> Job {
+    let mut job = Job::replay("read", WORKBENCH);
+    job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Workbench.adf".into());
+    job
+}
+
+/// The Analyse drawer over real disks, at the window's first size, its
+/// smallest, and the size the other pictures have.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn analyse() {
+    let open = |page: &str, theme, media| Settings {
+        drawer: Some(Drawer::Analyse),
+        media,
+        ..settings(page, theme)
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        let read = open("read", theme, Media::Fit);
+        render_sized(
+            "analyse-read",
+            DEFAULT,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let read = open("read", theme, Media::Fit);
+        render("analyse-read-wide", theme, read, Some(workbench()), |_| {});
+        let read = open("read", theme, Media::Fit);
+        let small = ferriteweazle::SMALLEST;
+        render_sized(
+            "analyse-smallest",
+            small,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let read = open("read", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-read-3.5",
+            DEFAULT,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let convert = open("convert", theme, Media::Fit);
+        render_sized(
+            "analyse-akai",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |_| {},
+        );
+        for (name, media, shows) in [
+            ("analyse-scratched", Media::Fit, Shows::Sectors),
+            ("analyse-scratched-flux", Media::Fit, Shows::Flux),
+            ("analyse-scratched-3.5", Media::ThreeHalf, Shows::Sectors),
+        ] {
+            let scratched = Job::replay("convert", SCRATCHED);
+            let convert = Settings {
+                shows,
+                ..open("convert", theme, media)
+            };
+            render(name, theme, convert, Some(scratched), |_| {});
+        }
+        let akai = Settings {
+            shows: Shows::Flux,
+            ..open("convert", theme, Media::Fit)
+        };
+        render_sized(
+            "analyse-akai-flux",
+            DEFAULT,
+            theme,
+            akai,
+            Some(akai_job()),
+            |_| {},
+        );
+        let write = open("write", theme, Media::ThreeHalf);
+        let written = Job::replay("write", WRITTEN);
+        render_sized(
+            "analyse-write",
+            DEFAULT,
+            theme,
+            write,
+            Some(written),
+            |_| {},
+        );
+        // The read as it reaches track 41.0, ringed.
+        let reached = WORKBENCH
+            .split_inclusive('\n')
+            .take_while(|l| !l.starts_with("T41.1"))
+            .collect::<String>();
+        let mut running = Job::replay("read", &reached);
+        running.ended = None;
+        running.progress.current = Some((41, 0));
+        let read = open("read", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-running",
+            DEFAULT,
+            theme,
+            read,
+            Some(running),
+            |_| {},
+        );
+        let convert = open("convert", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-hover",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |w| {
+                w.run_steps(4);
+                w.hover_at(on_disk(w, TRACK_0, 60.0));
+            },
+        );
+        let convert = open("convert", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-sector",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |w| {
+                w.run_steps(4);
+                let at = on_disk(w, TRACK_0, -20.0);
+                w.drag_at(at);
+                w.run_steps(2);
+                w.drop_at(at);
+            },
+        );
+        let idle = settings("read", theme);
+        render_sized("analyse-greyed", DEFAULT, theme, idle, None, |w| {
+            let button = w.get_by_role_and_label(Role::Button, "Analyse").rect();
+            w.hover_at(button.center());
+        });
     }
 }
 

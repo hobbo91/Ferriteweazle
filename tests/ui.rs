@@ -4,7 +4,7 @@ mod common;
 
 use common::{
     DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
-    run_button, squares,
+    on_disk, run_button, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -16,7 +16,8 @@ use ferriteweazle::job::{DETECT, Job, LOG_LINES, Outcome};
 use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::theme::{self, Choice};
-use ferriteweazle::{App, Drawer, Page, Settings};
+use ferriteweazle::track::{Facts, Id};
+use ferriteweazle::{App, Drawer, Media, Page, Settings, Shows};
 
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
@@ -243,6 +244,7 @@ fn settings_the_run_bars_buttons_and_a_drawers_box_end_on_one_line() {
         run_button(&w, "Read disk"),
         w.get_by_label("CLI"),
         w.get_by_label("Log"),
+        w.get_by_label("Analyse"),
     ];
     for button in buttons {
         assert_eq!(button.rect().bottom(), foot);
@@ -1022,6 +1024,13 @@ fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
         image_type.width() > 150.0,
         "the fields are squeezed: {image_type:?}"
     );
+    // The run button gives way to the drawers' buttons.
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse").rect();
+    assert!(
+        analyse.right() < status.left(),
+        "the run bar runs under the status pane: {analyse:?}, {status:?}"
+    );
+    assert!(run_button(&w, "Read disk").rect().width() >= 120.0);
 }
 
 #[test]
@@ -3865,4 +3874,224 @@ fn revolutions_ends_halfway_along_disk_format_at_the_default_size() {
         (revs.right() - format.center().x).abs() < 0.5,
         "{revs:?} under {format:?}"
     );
+}
+
+/// A real disk read: the Workbench 3.1 Install disk in a real drive, with the
+/// bridge's reports on its tracks.
+const WORKBENCH: &str = include_str!("data/read-workbench.log");
+/// A track of a real Akai S950 disk's HFE image, as the bridge reports it.
+const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
+/// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
+/// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
+const TRACK_0: f32 = 39.5 / 42.9;
+
+#[test]
+fn analyse_is_greyed_with_the_status_panes_line_until_it_has_a_disk_to_show() {
+    let mut w = window(chosen());
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No disk read yet").count(),
+        2,
+        "the status pane's line, and the button's"
+    );
+}
+
+#[test]
+fn analyse_shows_the_disk_under_the_page_and_the_status_pane_leaves_out_its_grid() {
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_max_steps(8);
+    let mut w = build(builder, chosen(), Some(Job::replay("read", WORKBENCH)));
+    assert!(squares(&w).count() > 0, "the grid, with no drawer open");
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert_eq!(app(&w).settings.drawer, Some(Drawer::Analyse));
+    let map = w.get_by_label("Disk map").rect();
+    let status = w.get_by_label("Disk status").rect();
+    assert!(map.left() < status.left() && map.right() > status.left());
+    assert!(
+        map.top() > status.bottom(),
+        "under the page and the status pane"
+    );
+    assert_eq!(squares(&w).count(), 0, "no grid while the disk shows below");
+    w.get_by_label("Side 0");
+    w.get_by_label("Side 1");
+    let size = w
+        .get_all_by_role(Role::ComboBox)
+        .find(|c| c.value().is_some_and(|v| v == "Fit"))
+        .expect("the disk's size");
+    size.click();
+    w.run();
+    // gw's Amiga format has 80 cylinders: a 3½-inch disk holds them, a
+    // 48 TPI one, by ECMA-70, 45.
+    let disabled = |w: &Window, name: &str| w.get_by_label(name).accesskit_node().is_disabled();
+    assert!(disabled(&w, "5¼-inch, 48 TPI"));
+    assert!(!disabled(&w, "3½-inch, 135 TPI"));
+    w.get_by_label("3½-inch, 135 TPI").click();
+    w.run();
+    assert_eq!(app(&w).settings.media, Media::ThreeHalf);
+    w.get_by_label("Flux").click();
+    w.run();
+    assert_eq!(app(&w).settings.shows, Shows::Flux);
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert!(w.query_by_label("Disk map").is_none());
+    assert!(squares(&w).count() > 0, "the grid is back");
+}
+
+#[test]
+fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged() {
+    // Taller than two disks side by side need.
+    let size = egui::vec2(1100.0, 1500.0);
+    let builder = Harness::builder().with_size(size).with_max_steps(64);
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    // Its box, not the window's.
+    let drawer = |w: &Window| {
+        let map = w.get_by_label("Disk map").rect();
+        let found = w.output().shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.rect.contains_rect(map) && r.rect.left() > 0.0 => {
+                Some(r.rect)
+            }
+            _ => None,
+        });
+        found.expect("the drawer's box")
+    };
+    let before = drawer(&w);
+    assert_eq!(before.bottom(), size.y, "down to the window's foot");
+    let edge = egui::pos2(before.center().x, before.top() + 1.0);
+    w.hover_at(edge);
+    w.run();
+    w.drag_at(edge);
+    w.run();
+    for up in [100.0, 200.0, 300.0] {
+        w.hover_at(edge - egui::vec2(0.0, up));
+        w.run();
+        let now = drawer(&w);
+        assert_eq!((now.top(), now.bottom()), (before.top(), size.y), "{up} up");
+    }
+    w.drop_at(edge - egui::vec2(0.0, 300.0));
+    w.run();
+    assert_eq!(drawer(&w), before);
+}
+
+#[test]
+fn analyse_shuts_on_a_page_it_has_no_disk_for() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_max_steps(8);
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    w.get_by_label("Disk map");
+    app_mut(&mut w).settings.page = Page::Command("write".into());
+    w.run();
+    assert_eq!(app(&w).settings.drawer, None, "no disk written yet");
+}
+
+#[test]
+fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_its_data() {
+    let line = AKAI_TRACK
+        .trim()
+        .strip_prefix("@ferriteweazle track ")
+        .unwrap();
+    let (_, facts) = Facts::parse(line).unwrap();
+    let first = &facts.sectors[0];
+    assert_eq!(first.id, Id::Ibm([0, 0, 7, 3]));
+    let [start, _, end] = first.at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress
+        .feed("T0.0: IBM MFM (10/10 sectors) from Raw Flux (157042 flux in 401.41ms)");
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // Track 0 is the outermost, and the track runs clockwise from the top.
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.get_by_label("Cylinder 0 · side 0");
+    w.get_by_label("From the image");
+    w.get_by_label("Sector C0 H0 R7 N3 · 1024 bytes");
+    w.get_by_label("Header OK · Data OK · Mark FB");
+    // A click shows its data in full.
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    // Its title in the window's title bar.
+    w.get_by_role_and_label(Role::Label, "C0 H0 R7 N3 · cylinder 0, side 0");
+    // Its text, to select and copy.
+    let said = |text: &'static str| {
+        move |n: &egui_kittest::kittest::AccessKitNode| {
+            n.role() == Role::MultilineTextInput && n.value().is_some_and(|v| v.contains(text))
+        }
+    };
+    let lines = w.get_by(said("Sector C0 H0 R7 N3 · 1024 bytes"));
+    assert!(
+        lines
+            .value()
+            .unwrap()
+            .contains("Header OK · Data OK · Mark FB")
+    );
+    let rows = w.get_by(said("03F0  ")).value().unwrap_or_default();
+    assert!(rows.contains("0000  "), "the dump runs from its first byte");
+    // A right-click on it selects it all, then copies it: nothing to cut or
+    // paste in what was read. Its first rows show; the rest scroll.
+    let top = w.get_by(said("03F0  ")).rect().left_top() + egui::vec2(40.0, 8.0);
+    let right_click = |w: &mut Window| {
+        for pressed in [true, false] {
+            w.event(egui::Event::PointerButton {
+                pos: top,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        w.run();
+    };
+    w.hover_at(top);
+    right_click(&mut w);
+    assert!(w.get_by_label("Copy").accesskit_node().is_disabled());
+    assert!(w.query_by_label("Cut").is_none() && w.query_by_label("Paste").is_none());
+    w.get_by_label("Select All").click();
+    w.run();
+    w.hover_at(top);
+    right_click(&mut w);
+    w.get_by_label("Copy").click();
+    w.step();
+    let commands = w
+        .output()
+        .viewport_output
+        .values()
+        .flat_map(|v| &v.commands);
+    let copy = egui::ViewportCommand::RequestCopy;
+    assert!(
+        commands.into_iter().any(|c| *c == copy),
+        "the system copies"
+    );
+    w.event(egui::Event::Copy);
+    w.step();
+    let copied = w
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        });
+    assert_eq!(copied.as_deref(), Some(rows.as_str()), "all of it");
 }

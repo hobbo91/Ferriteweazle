@@ -385,6 +385,16 @@ pub fn text_box(ui: &mut Ui, edit: TextEdit<'_>) -> egui::Response {
 
 /// `text_box`, with the box under `id`.
 pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Response {
+    menu_box(ui, id, edit, true)
+}
+
+/// Adds a box of text to read, not change: selectable, with Copy and Select
+/// All on a right click.
+pub fn read_only_box(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Response {
+    menu_box(ui, id, edit, false)
+}
+
+fn menu_box(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>, editable: bool) -> egui::Response {
     let ctx = ui.ctx().clone();
     let selection = || {
         egui::text_edit::TextEditState::load(&ctx, id)
@@ -397,21 +407,27 @@ pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Res
         .input(|i| i.pointer.secondary_pressed())
         .then(selection)
         .flatten();
-    let response = ui.add(edit.id(id));
+    let output = edit.id(id).show(ui);
     if let Some(range) = kept
         && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
     {
         state.cursor.set_char_range(Some(range));
         state.store(&ctx, id);
     }
+    let length = output.galley.text().chars().count();
+    let response = output.response.response;
     // A paste goes in at the cursor or over the selection.
     response.context_menu(|ui| {
         let selected = selection().is_some();
-        for (name, can, command) in [
+        let items = [
             ("Cut", selected, ViewportCommand::RequestCut),
             ("Copy", selected, ViewportCommand::RequestCopy),
             ("Paste", true, ViewportCommand::RequestPaste),
-        ] {
+        ];
+        let shown = items
+            .into_iter()
+            .filter(|&(name, ..)| editable || name == "Copy");
+        for (name, can, command) in shown {
             let item = ui.add_enabled(can, egui::Button::new(name));
             if item.on_disabled_hover_text("Nothing selected.").clicked() {
                 // Back in the box for the cut or paste the next frame brings.
@@ -419,6 +435,18 @@ pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Res
                 ui.ctx().send_viewport_cmd(command);
                 ui.close();
             }
+        }
+        if !editable && ui.button("Select All").clicked() {
+            if let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id) {
+                let all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(length),
+                );
+                state.cursor.set_char_range(Some(all));
+                state.store(&ctx, id);
+            }
+            ui.memory_mut(|m| m.request_focus(id));
+            ui.close();
         }
     });
     response
