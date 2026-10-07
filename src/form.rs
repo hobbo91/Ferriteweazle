@@ -250,6 +250,16 @@ const CUSTOM_NAME: &str = "Custom disk definitions";
 /// no format.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 
+/// What a flux image of extension `ext`, such as `.scp`, holds of each
+/// track: flux as read, or bitcells. None for other types.
+pub fn track_holds(ext: &str) -> Option<&'static str> {
+    match ext {
+        _ if RAW_FLUX.contains(&ext) => Some("flux"),
+        _ if FLUX.contains(&ext) => Some("bitcells"),
+        _ => None,
+    }
+}
+
 /// Flux as read, which has no bitrate: gw makes HFE of it only at a set one.
 const RAW_FLUX: &[&str] = &[".scp", ".raw", ".a2r"];
 

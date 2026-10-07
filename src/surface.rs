@@ -51,6 +51,21 @@ pub const SHOWS: [(Shows, &str, &str); 2] = [
     (Shows::Flux, "Flux", "flux"),
 ];
 
+/// What the drawer analyses: the disk, or the image the job makes or takes
+/// its tracks from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Analysis {
+    #[default]
+    Disk,
+    Image,
+}
+
+/// Each: its name, and the word analyse.txt keeps.
+pub const ANALYSES: [(Analysis, &str, &str); 2] = [
+    (Analysis::Disk, "Disk analysis", "disk"),
+    (Analysis::Image, "Image analysis", "image"),
+];
+
 /// A disk's measurements in millimetres, as its ECMA standard gives them.
 struct Size {
     /// The disk's radius, and its metal hub's or its centre hole's.
@@ -160,7 +175,7 @@ pub fn span(progress: &Progress, disk: (u32, u32)) -> u32 {
 }
 
 /// Room for a side's name above its disk.
-const TITLE: f32 = 20.0;
+pub(crate) const TITLE: f32 = 20.0;
 /// The sector window's title bar, as tall as a macOS window's, its title in
 /// the same 13-point type.
 const TITLE_BAR: f32 = 28.0;
@@ -168,6 +183,8 @@ const TITLE_SIZE: f32 = 13.0;
 /// Room for a line of legend under the disks, until it is measured.
 const LEGEND: f32 = 22.0;
 const SIDE_GAP: f32 = 32.0;
+/// How long the last track reported takes to fade in or out, in seconds.
+const RING_FADE: f32 = 0.12;
 /// The smallest a disk is drawn, in points.
 const LEAST: f32 = 48.0;
 /// Fitted, the rim round the tracks, room for the index's mark; how far in
@@ -192,32 +209,32 @@ const MEET: f64 = 0.003;
 const REPAINT: f64 = 0.1;
 
 /// The disk's colours, from the window's palette.
-struct Look {
+pub(crate) struct Look {
     /// The disk's surface, erased between tracks; and a 3½-inch disk's hub.
-    body: Color32,
-    hub: Color32,
-    rim: Color32,
+    pub(crate) body: Color32,
+    pub(crate) hub: Color32,
+    pub(crate) rim: Color32,
     /// Where no sector was found on a track gw read.
-    gap: Color32,
+    pub(crate) gap: Color32,
     /// A track gw is to work on and has not reported.
-    pending: Color32,
-    good: Color32,
-    empty: Color32,
-    bad: Color32,
+    pub(crate) pending: Color32,
+    pub(crate) good: Color32,
+    pub(crate) empty: Color32,
+    pub(crate) bad: Color32,
     /// A header with no data after it, or data with no header.
-    alone: Color32,
-    flux: Color32,
-    last: Color32,
-    index: Color32,
+    pub(crate) alone: Color32,
+    pub(crate) flux: Color32,
+    pub(crate) last: Color32,
+    pub(crate) index: Color32,
     /// The palette's strongest colour, furthest from the disk's: round what
     /// the pointer is over, and toward it, ID fields and the most flux.
-    ink: Color32,
+    pub(crate) ink: Color32,
     /// How much of the disk the tracks cover, to scale: the rest is erased.
-    covered: f32,
+    pub(crate) covered: f32,
 }
 
 impl Look {
-    fn of(p: &Palette, media: Media) -> Look {
+    pub(crate) fn of(p: &Palette, media: Media) -> Look {
         let body = theme::lerp(p.card, p.line, 0.5);
         Look {
             body,
@@ -266,37 +283,108 @@ impl Look {
     }
 }
 
+/// How the disks fit the room `ui` has left: how many cylinders and sides
+/// they show, each disk's width at most, the room their legend takes, and
+/// the most height they can use. None with no cylinders to show.
+struct Fit {
+    span: u32,
+    sides: u32,
+    legend: f32,
+    most: f32,
+    /// Each disk as drawn: its picture, its diameter on whole pixels, and
+    /// the width of them all with the gaps between.
+    geometry: Geometry,
+    diameter: f32,
+    width: f32,
+}
+
+impl Fit {
+    fn of(ui: &egui::Ui, map: &Map) -> Option<Fit> {
+        let progress = map.progress;
+        let (_, heads) = progress.layout();
+        let span = span(progress, map.disk);
+        let sides = map
+            .disk
+            .1
+            .max(heads.last().map_or(0, |h| h + 1))
+            .clamp(1, 2);
+        if span == 0 {
+            return None;
+        }
+        let ppp = ui.ctx().pixels_per_point();
+        let room = ui.available_size();
+        let legend = ui.data(|d| d.get_temp(legend_id(ui))).unwrap_or(LEGEND);
+        let n = sides as f32;
+        let across = (room.x - SIDE_GAP * (n - 1.0)) / n;
+        // The legend's room, and the space between it and the disks.
+        let under = ui.spacing().item_spacing.y + legend;
+        let widest = Geometry::new(map.media, span, f64::from(across.max(LEAST) * ppp));
+        let most = TITLE + widest.pixels as f32 / ppp + under;
+        let diameter = across.min(room.y - TITLE - under).max(LEAST);
+        let geometry = Geometry::new(map.media, span, f64::from(diameter * ppp));
+        let diameter = geometry.pixels as f32 / ppp;
+        Some(Fit {
+            span,
+            sides,
+            legend,
+            most,
+            geometry,
+            diameter,
+            width: n * diameter + SIDE_GAP * (n - 1.0),
+        })
+    }
+}
+
+/// Where the disks lie in the room left, centred: how many sides, each
+/// disk's diameter, and the width of them all with the gaps between.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Place {
+    pub sides: u32,
+    pub diameter: f32,
+    pub width: f32,
+}
+
+/// Where the disks would lie in the room `ui` has left, as `show` draws
+/// them: for the image view to lie where they do.
+pub(crate) fn place(ui: &egui::Ui, map: &Map) -> Option<Place> {
+    Fit::of(ui, map).map(|f| Place {
+        sides: f.sides,
+        diameter: f.diameter,
+        width: f.width,
+    })
+}
+
+/// Where the disks' legend keeps its height as measured.
+fn legend_id(ui: &egui::Ui) -> egui::Id {
+    ui.id().with("disk legend")
+}
+
+/// The most height the disks can use in the room `ui` has left, their
+/// legend under them: as wide as the room lets them.
+pub fn most(ui: &egui::Ui, map: &Map) -> Option<f32> {
+    Fit::of(ui, map).map(|f| f.most)
+}
+
 /// Draws the disks side by side in the room the drawer gives them, with
 /// their legend under them, and gives their response and the most height
 /// they can use: as wide as the room lets them.
 pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
     let progress = map.progress;
-    let (_, heads) = progress.layout();
-    let span = span(progress, map.disk);
-    let sides = map
-        .disk
-        .1
-        .max(heads.last().map_or(0, |h| h + 1))
-        .clamp(1, 2);
-    if span == 0 {
-        return None;
-    }
+    let Fit {
+        span,
+        sides,
+        legend,
+        most,
+        geometry,
+        diameter,
+        width,
+        ..
+    } = Fit::of(ui, map)?;
     let p = theme::palette(ui);
     let look = Look::of(p, map.media);
     let ppp = ui.ctx().pixels_per_point();
     let room = ui.available_size();
-    let legend_id = ui.id().with("disk legend");
-    let legend = ui.data(|d| d.get_temp(legend_id)).unwrap_or(LEGEND);
-    let n = sides as f32;
-    let across = (room.x - SIDE_GAP * (n - 1.0)) / n;
-    // The legend's room, and the space between it and the disks.
-    let under = ui.spacing().item_spacing.y + legend;
-    let widest = Geometry::new(map.media, span, f64::from(across.max(LEAST) * ppp));
-    let most = TITLE + widest.pixels as f32 / ppp + under;
-    let diameter = across.min(room.y - TITLE - under).max(LEAST);
-    let geometry = Geometry::new(map.media, span, f64::from(diameter * ppp));
-    let diameter = geometry.pixels as f32 / ppp;
-    let width = n * diameter + SIDE_GAP * (n - 1.0);
+    let legend_id = legend_id(ui);
     let (rect, response) = ui.allocate_exact_size(vec2(room.x, TITLE + diameter), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Disk map"));
     let painter = ui.painter_at(rect.expand(2.0));
@@ -372,7 +460,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
             .clone()
             .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head));
     }
-    inspector(ui.ctx(), map, rect);
+    inspector(ui.ctx(), map);
     let top = ui.cursor().top();
     let under = Rect::from_min_size(
         egui::pos2(left, top + 6.0),
@@ -596,8 +684,25 @@ impl Disk {
         }
         drop(picture);
         self.index_mark(painter, look);
-        if let Some((cyl, _)) = map.current.filter(|&(_, s)| fits && s == self.side) {
-            self.outline(painter, cyl, Stroke::new(1.5, look.last));
+        // The last track reported, ringed. Going from side to side, it fades
+        // out on one as it fades in on the other, from the report on.
+        let ctx = painter.ctx();
+        let id = egui::Id::new("last reported").with(self.side);
+        let reported = map.current.filter(|&(_, s)| fits && s == self.side);
+        if let Some((cyl, _)) = reported {
+            ctx.data_mut(|d| d.insert_temp(id, cyl));
+        }
+        let shown = ctx.animate_bool_with_time(id.with("shown"), reported.is_some(), RING_FADE);
+        let cyl = reported
+            .map(|r| r.0)
+            .or_else(|| ctx.data(|d| d.get_temp::<u32>(id)));
+        if let Some(cyl) = cyl.filter(|_| shown > 0.0) {
+            let eased = shown * shown * (3.0 - 2.0 * shown);
+            self.outline(
+                painter,
+                cyl,
+                Stroke::new(1.5, look.last.gamma_multiply(eased)),
+            );
         }
     }
 
@@ -1172,7 +1277,7 @@ fn spin_tip(ui: &mut egui::Ui, f: &Facts, spin: &Spin, from: Origin) {
 }
 
 /// `n` with its thousands apart.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -1222,11 +1327,11 @@ fn inspected() -> egui::Id {
     egui::Id::new("disk sector")
 }
 
-/// The window a click on a sector opens, over the disks `over`: all gw
-/// decoded of it, and its data in full.
-fn inspector(ctx: &egui::Context, map: &Map, over: Rect) {
-    type Shown = ((u32, u32), usize, u64);
-    let Some((key, index, revision)) = ctx.data(|d| d.get_temp::<Shown>(inspected())) else {
+/// The window a click on a sector opens: all gw decoded of it, and its
+/// data in full.
+fn inspector(ctx: &egui::Context, map: &Map) {
+    type Inspected = ((u32, u32), usize, u64);
+    let Some((key, index, revision)) = ctx.data(|d| d.get_temp::<Inspected>(inspected())) else {
         return;
     };
     // Gone once the track is reported again, or another job's shows.
@@ -1236,33 +1341,61 @@ fn inspector(ctx: &egui::Context, map: &Map, over: Rect) {
         .get(&key)
         .filter(|f| f.revision == revision);
     let Some(s) = facts.and_then(|f| f.sectors.get(index)) else {
-        ctx.data_mut(|d| d.remove::<Shown>(inspected()));
+        ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
         return;
     };
-    let mut open = true;
     let (cyl, side) = key;
     let title = format!("{} · cylinder {cyl}, side {side}", id_text(&s.id));
+    let id = egui::Id::new("disk sector window");
+    let shown = Shown {
+        title: &title,
+        lines: &sector_lines(s),
+        bytes: &s.bytes,
+        base: 0,
+    };
+    if !sector_window(ctx, id, &shown) {
+        ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
+    }
+}
+
+/// What a sector window shows: its title, what is said of the sector, and
+/// its data, the first byte numbered `base`.
+pub(crate) struct Shown<'a> {
+    pub title: &'a str,
+    pub lines: &'a [(String, Tone)],
+    pub bytes: &'a [u8],
+    pub base: usize,
+}
+
+/// A sector's window, first in the middle of the app's: a title bar as tall
+/// as a macOS window's, what is said of the sector, and its data in full.
+/// Whether it is still open.
+pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) -> bool {
+    let mut open = true;
+    let title = shown.title;
     let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
-    egui::Window::new(&title)
-        .id(egui::Id::new("disk sector window"))
+    egui::Window::new(title)
+        .id(id)
         .title_bar(false)
         .frame(frame)
         .resizable(false)
-        .pivot(Align2::CENTER_BOTTOM)
-        .default_pos(over.center_top() - vec2(0.0, 8.0))
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
             let p = theme::palette(ui);
             let font = FontId::proportional(TITLE_SIZE);
-            let galley = ui.painter().layout_no_wrap(title.clone(), font, p.strong);
+            let galley = ui
+                .painter()
+                .layout_no_wrap(title.to_owned(), font, p.strong);
             // The title's room, between a button's each side, so it centres.
             let least = galley.size().x + 2.0 * TITLE_BAR + 2.0;
             let (bar, _) = ui.allocate_exact_size(vec2(least, TITLE_BAR), Sense::hover());
             let margin = egui::Margin::symmetric(12, 10);
             egui::Frame::new()
                 .inner_margin(margin)
-                .show(ui, |ui| sector_text(ui, s, p));
+                .show(ui, |ui| sector_text(ui, shown, p));
             let bar = Rect::from_min_size(bar.min, vec2(ui.min_rect().width(), TITLE_BAR));
-            let named = RichText::new(&title).size(TITLE_SIZE).color(p.strong);
+            let named = RichText::new(title).size(TITLE_SIZE).color(p.strong);
             ui.put(bar.shrink2(vec2(TITLE_BAR, 0.0)), egui::Label::new(named));
             let line = Stroke::new(1.0, p.line);
             ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, line);
@@ -1289,15 +1422,13 @@ fn inspector(ctx: &egui::Context, map: &Map, over: Rect) {
                 open = false;
             }
         });
-    if !open {
-        ctx.data_mut(|d| d.remove::<Shown>(inspected()));
-    }
+    open
 }
 
 /// The sector window's text, to select and copy: what is said of the
 /// sector, then its data, which scrolls.
-fn sector_text(ui: &mut egui::Ui, s: &Sector, p: &Palette) {
-    let lines = sector_lines(s);
+fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
+    let lines = shown.lines;
     let text = lines
         .iter()
         .map(|(line, _)| line.as_str())
@@ -1335,7 +1466,7 @@ fn sector_text(ui: &mut egui::Ui, s: &Sector, p: &Palette) {
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let said_width = layouter(ui, &text.as_str(), 0.0).size().x;
-    let dumped = dump(&s.bytes, usize::MAX);
+    let dumped = dump(shown.bytes, usize::MAX, shown.base);
     let rows: Vec<&str> = dumped.lines().collect();
     let mono = FontId::monospace(12.0);
     let advance = ui.fonts_mut(|f| f.glyph_width(&mono, '0'));
@@ -1367,9 +1498,12 @@ fn sector_text(ui: &mut egui::Ui, s: &Sector, p: &Palette) {
     lines.show(ui, ui.id().with("bytes"), area);
 }
 
-/// Up to `rows` rows of 16 bytes: the offset, the bytes in hex, then as
-/// ASCII, others as dots.
-fn dump(bytes: &[u8], rows: usize) -> String {
+/// Up to `rows` rows of 16 bytes: the offset, from `base`, the bytes in hex,
+/// then as ASCII, others as dots.
+fn dump(bytes: &[u8], rows: usize, base: usize) -> String {
+    // As many hex digits as the last offset needs, and at least four.
+    let last = base + bytes.len().saturating_sub(1);
+    let digits = (usize::BITS - last.leading_zeros()).div_ceil(4).max(4) as usize;
     let lines = bytes.chunks(16).take(rows).enumerate().map(|(row, chunk)| {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
         let text: String = chunk
@@ -1382,7 +1516,11 @@ fn dump(bytes: &[u8], rows: usize) -> String {
                 }
             })
             .collect();
-        format!("{:04X}  {:<47}  {text}", row * 16, hex.join(" "))
+        format!(
+            "{:0digits$X}  {:<47}  {text}",
+            base + row * 16,
+            hex.join(" ")
+        )
     });
     lines.collect::<Vec<_>>().join("\n")
 }
@@ -1406,7 +1544,7 @@ fn drawn(s: &Sector, least: f64) -> Option<(f64, f64)> {
     Some((middle - least / 2.0, middle + least / 2.0))
 }
 
-fn id_text(id: &Id) -> String {
+pub(crate) fn id_text(id: &Id) -> String {
     match id {
         Id::Ibm([c, h, r, n]) => format!("C{c} H{h} R{r} N{n}"),
         Id::Number(n) => format!("Sector {n}"),
@@ -1423,7 +1561,7 @@ fn short_id(id: &Id) -> String {
 
 /// How strongly a line of what is said of a sector shows.
 #[derive(Clone, Copy)]
-enum Tone {
+pub(crate) enum Tone {
     Strong,
     Plain,
     Weak,
@@ -1502,7 +1640,7 @@ fn sector_tip(ui: &mut egui::Ui, s: &Sector, preview: bool) {
         };
     }
     if preview && !s.bytes.is_empty() {
-        let rows = RichText::new(dump(&s.bytes, 4)).monospace().small();
+        let rows = RichText::new(dump(&s.bytes, 4, 0)).monospace().small();
         ui.add(egui::Label::new(rows).extend());
     }
 }
@@ -1645,7 +1783,7 @@ fn meets(begins: &[f64], ends: &[f64]) -> Vec<f64> {
 }
 
 /// How a legend entry shows what it names.
-enum Mark {
+pub(crate) enum Mark {
     /// A square of the colour.
     Swatch(Color32),
     /// The colours side by side, as a scale.
@@ -1656,10 +1794,12 @@ enum Mark {
     Index(Color32),
     /// A ring, as round the last track reported.
     Ring(Color32),
+    /// A frame, as round the image's track last reported.
+    Frame(Color32),
 }
 
 /// A legend entry: its mark and its text, kept on one line.
-fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
+pub(crate) fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
     let font = egui::TextStyle::Small.resolve(ui.style());
     let galley = ui
         .painter()
@@ -1674,6 +1814,7 @@ fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
         ui.end_row();
     }
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let square = Rect::from_min_size(
         egui::pos2(rect.left(), rect.center().y - 5.0),
         vec2(wide, 10.0),
@@ -1711,6 +1852,15 @@ fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
         }
         Mark::Ring(colour) => {
             painter.circle_stroke(square.center(), 4.0, Stroke::new(1.5, colour));
+        }
+        Mark::Frame(colour) => {
+            let frame = Rect::from_center_size(square.center(), vec2(8.0, 8.0));
+            painter.rect_stroke(
+                frame,
+                0.0,
+                Stroke::new(1.5, colour),
+                egui::StrokeKind::Inside,
+            );
         }
     }
     let at = egui::pos2(

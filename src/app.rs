@@ -3,6 +3,7 @@
 use crate::command::{self, Values};
 use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
+use crate::filemap;
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
 use crate::lines::Lines;
@@ -10,7 +11,7 @@ use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{Load, Repaint, Service};
-use crate::surface::{self, MEDIA, Media, SHOWS, Shows};
+use crate::surface::{self, ANALYSES, Analysis, MEDIA, Media, SHOWS, Shows};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Origin, Tools};
 use crate::udev;
@@ -191,9 +192,11 @@ impl Default for Page {
 pub struct Settings {
     pub page: Page,
     pub theme: theme::Choice,
-    /// How the Analyse drawer draws the disk, and what its tracks show.
+    /// How the Analyse drawer draws the disk, and what its tracks show;
+    /// and whether it analyses the disk or the job's image.
     pub media: Media,
     pub shows: Shows,
+    pub analysis: Analysis,
     /// A Python or `gw` to use instead of the one found automatically.
     pub tools: Option<PathBuf>,
     /// Empty for gw's own choice.
@@ -409,7 +412,7 @@ pub struct App {
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
     /// How Analyse draws the disk, as last kept in analyse_file().
-    kept_analyse: (Media, Shows),
+    kept_analyse: (Media, Shows, Analysis),
     /// Classic in the accent it opened in or was last given while the app
     /// runs: Blue otherwise, or Classic itself (teal).
     classic: theme::Choice,
@@ -474,7 +477,7 @@ impl App {
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
         let theme = kept_theme(&theme_file());
-        let (media, shows) = kept_analyse(&analyse_file());
+        let (media, shows, analysis) = kept_analyse(&analyse_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
@@ -483,6 +486,7 @@ impl App {
             theme,
             media,
             shows,
+            analysis,
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
@@ -491,7 +495,7 @@ impl App {
         app.kept_device = (kind, port);
         app.kept_tools = tools;
         app.kept_theme = theme;
-        app.kept_analyse = (media, shows);
+        app.kept_analyse = (media, shows, analysis);
         app.copy = Install::this();
         app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
         app.dismissed = kept_dismissed(&dismissed_file()).map(|tag| (tag, f64::NEG_INFINITY));
@@ -552,7 +556,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             kept_theme: theme::Choice::System,
-            kept_analyse: (Media::Fit, Shows::Sectors),
+            kept_analyse: (Media::Fit, Shows::Sectors, Analysis::Disk),
             classic,
             delays: None,
             found_note: None,
@@ -738,6 +742,12 @@ impl App {
         self.service.pin_ports(ports);
     }
 
+    /// Shows `image` as the one any write or conversion is to take its
+    /// tracks from, whatever its page names: for tests and pictures.
+    pub fn pin_image(&mut self, image: crate::image::Image) {
+        self.service.pin_image(image);
+    }
+
     /// gw's command line, once gw has described it.
     pub fn schema(&self) -> Option<&Schema> {
         self.schema.as_deref()
@@ -770,7 +780,11 @@ impl App {
             self.kept_theme = self.settings.theme;
             keep_theme(&theme_file(), self.kept_theme);
         }
-        let analyse = (self.settings.media, self.settings.shows);
+        let analyse = (
+            self.settings.media,
+            self.settings.shows,
+            self.settings.analysis,
+        );
         if self.live && analyse != self.kept_analyse {
             self.kept_analyse = analyse;
             keep_analyse(&analyse_file(), analyse);
@@ -2747,36 +2761,144 @@ impl App {
         }
     }
 
-    /// Whether Analyse has a disk job to show on `page`, or the status pane's
-    /// line for the page where it has none.
+    /// Whether Analyse has a disk job to show on `page`, or before one an
+    /// image it is to take its tracks from; else the status pane's line for
+    /// the page.
     fn analysed(&mut self, page: &str) -> Result<(), &'static str> {
         let (format, _, blank) = self.blank_map(page);
         let job = self.disk.as_ref();
-        match job.filter(|j| shows(j, page, format.as_deref(), &blank)) {
-            Some(_) => Ok(()),
-            None if DISK_COMMANDS.contains(&page) => Err(idle_status(page)),
-            None => Err(NO_DISK_JOB),
+        if job.is_some_and(|j| shows(j, page, format.as_deref(), &blank)) {
+            return Ok(());
+        }
+        if let Some((args, path)) = self.preview_args(page) {
+            let load = self.service.image(&args, &path);
+            if load.ready().is_some_and(|p| p.0.layout.is_some()) {
+                return Ok(());
+            }
+        }
+        match DISK_COMMANDS.contains(&page) {
+            true => Err(idle_status(page)),
+            false => Err(NO_DISK_JOB),
         }
     }
 
+    /// The image file a write or a conversion on `page` is to take its
+    /// tracks from, as gw is to be given it. None for other pages, or with
+    /// none named.
+    fn page_image(&self, page: &str) -> Option<String> {
+        let cmd = self.schema.as_ref()?.command(page)?;
+        let dest = match page {
+            "write" => "file",
+            "convert" => "in_file",
+            _ => return None,
+        };
+        let values = self.values_for(cmd);
+        let path = image_path(values.get(dest));
+        (!path.is_empty()).then(|| path.to_owned())
+    }
+
+    /// What gw needs to open the page's image, `page_image`, as its job
+    /// will: the command with its format, definitions and files, and the
+    /// image's path. None for flux, which gw keeps as tracks.
+    fn preview_args(&self, page: &str) -> Option<(Vec<String>, String)> {
+        let path = self.page_image(page)?;
+        if filemap::holds_tracks(&path) {
+            return None;
+        }
+        let cmd = self.schema.as_ref()?.command(page)?;
+        let values = self.values_for(cmd);
+        let mut with = Values::default();
+        for dest in ["diskdefs", "format", "file", "in_file", "out_file"] {
+            with.set(dest, values.get(dest));
+        }
+        Some((command::argv(cmd, &with), path))
+    }
+
     /// The Analyse drawer: the disk job's disk, each side as the round disk
-    /// it is, and the disk's size to draw it at.
+    /// it is, and the disk's size to draw it at; or the image the job makes
+    /// or takes its tracks from, which before a job it is to take them from.
     fn analyse(&mut self, ui: &mut Ui, page: &str) {
         let p = theme::palette(ui);
         let top = ui.cursor().top();
         // Its box down to the drawer's foot, however short what is in it.
         ui.set_min_height(ui.max_rect().height());
         let (format, disk, blank) = self.blank_map(page);
-        let job = self.disk.as_ref();
-        let Some(job) = job.filter(|j| shows(j, page, format.as_deref(), &blank)) else {
-            return;
+        let shown = self
+            .disk
+            .as_ref()
+            .is_some_and(|j| shows(j, page, format.as_deref(), &blank));
+        let named = self.page_image(page);
+        // The job's image is the page's while it runs, or if it took the
+        // file the page names; else the page's own shows, as before a job.
+        let owns = self.disk.as_ref().filter(|_| shown).is_some_and(|j| {
+            let took = j.progress.source.as_ref().and_then(|s| s.file.as_deref());
+            j.running() || named.is_none() || took == named.as_deref()
+        });
+        let preview = self.preview_args(page).filter(|_| !owns);
+        if let Some((args, path)) = &preview {
+            self.service.image(args, path);
+        }
+        let job = self.disk.as_ref().filter(|_| shown);
+        let opened = preview
+            .as_ref()
+            .and_then(|(args, path)| self.service.known_image(args, path).zip(Some(path)));
+        let previewed = opened.map(|(p, _)| &p.0).filter(|i| i.layout.is_some());
+        // Why the page's own image does not show where a job's might.
+        let unshown = match (&named, opened) {
+            (Some(path), _) if filemap::holds_tracks(path) => filemap::not_mapped(path),
+            (_, Some((p, _))) => filemap::not_mapped(p.0.file.as_deref().unwrap_or(&p.0.kind)),
+            _ => preview
+                .as_ref()
+                .and_then(|(args, path)| self.service.image_error(args, path))
+                .unwrap_or("gw is opening the file.")
+                .to_owned(),
         };
-        let begun = !(job.progress.cyls.is_empty() && job.progress.tracks.is_empty());
-        let progress = if begun { &job.progress } else { &blank };
+        let begun =
+            job.is_some_and(|j| !(j.progress.cyls.is_empty() && j.progress.tracks.is_empty()));
+        let progress = match job {
+            Some(j) if begun => &j.progress,
+            _ => &blank,
+        };
         let span = surface::span(progress, disk);
+        // The image the job makes or takes its tracks from, where gw lays it
+        // out; before a job, the one it is to take them from.
+        let image = match (job.filter(|_| owns), previewed) {
+            (Some(j), _) => filemap::shown(&j.progress),
+            (None, Some(image)) => Ok(image),
+            (None, None) if job.is_some() => Err(unshown),
+            (None, None) => return,
+        };
+        let analysis = &mut self.settings.analysis;
+        let showing = match (job, &image) {
+            (None, _) => Analysis::Image,
+            (Some(_), Ok(_)) => *analysis,
+            (Some(_), Err(_)) => Analysis::Disk,
+        };
         let (media, shows) = (&mut self.settings.media, &mut self.settings.shows);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Disk analysis").strong());
+            for (view, name, _) in ANALYSES {
+                let why = match view {
+                    Analysis::Disk => job.is_none().then(|| idle_status(page).to_owned()),
+                    Analysis::Image => image.as_ref().err().cloned(),
+                };
+                // A chosen one's name in the selection's colour, as every
+                // selectable's is; the other's as a heading's.
+                let selected = showing == view;
+                let colour = match selected {
+                    true => ui.visuals().selection.stroke.color,
+                    false => ui.visuals().strong_text_color(),
+                };
+                let chosen = egui::Button::selectable(selected, RichText::new(name).color(colour));
+                let chosen = ui
+                    .add_enabled(why.is_none(), chosen)
+                    .on_disabled_hover_text(why.unwrap_or_default());
+                if chosen.clicked() {
+                    *analysis = view;
+                }
+            }
+            if showing == Analysis::Image {
+                return;
+            }
             right(ui, |ui| {
                 egui::ComboBox::from_id_salt("disk size")
                     .selected_text(media.name())
@@ -2799,24 +2921,42 @@ impl App {
                 }
             });
         });
-        if let Some(note) = undrawn(&job.args) {
+        let args = job.map_or(&[][..], |j| &j.args[..]);
+        if let Some(note) = undrawn(args).filter(|_| showing == Analysis::Disk) {
             ui.add(egui::Label::new(RichText::new(note).small().color(p.partial)).wrap());
         }
         ui.add_space(6.0);
         // The sides as the job took them, whatever its page says now.
-        let tracks = job.args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        let tracks = args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        let command = job.map_or(page, |j| j.command.as_str());
+        let running = job.is_some_and(Job::running);
         let map = surface::Map {
             progress,
-            command: &job.command,
+            command,
             disk,
             swapped: tracks.is_some_and(form::swapped),
-            verifying: begun && job.running() && job.progress.verifies,
+            verifying: begun && running && job.is_some_and(|j| j.progress.verifies),
             media: *media,
             shows: *shows,
-            current: job.progress.current.filter(|_| job.running()),
+            current: job.and_then(|j| j.progress.current).filter(|_| running),
         };
         let above = ui.cursor().top() - top;
-        if let Some((_, most)) = surface::show(ui, &map) {
+        // As tall as the disks can use, whichever shows: going from one
+        // view to the other leaves the drawer as it is.
+        let most = surface::most(ui, &map);
+        let place = surface::place(ui, &map);
+        if let (Analysis::Image, Ok(image)) = (showing, image) {
+            let map = filemap::Map {
+                progress: job.filter(|_| owns).map(|j| &j.progress),
+                image,
+                running: running && owns,
+                converts: command == "convert",
+            };
+            filemap::show(ui, &map, place);
+        } else {
+            surface::show(ui, &map);
+        }
+        if let Some(most) = most {
             self.analyse_most = Some(above + most);
         }
     }
@@ -5043,10 +5183,10 @@ fn analyse_file() -> PathBuf {
     crate::data_folder().join("analyse.txt")
 }
 
-fn kept_analyse(file: &Path) -> (Media, Shows) {
+fn kept_analyse(file: &Path) -> (Media, Shows, Analysis) {
     let text = std::fs::read_to_string(file).unwrap_or_default();
     let mut words = text.lines().map(str::trim);
-    let (media, shows) = (words.next(), words.next());
+    let (media, shows, analysis) = (words.next(), words.next(), words.next());
     (
         MEDIA
             .iter()
@@ -5056,16 +5196,24 @@ fn kept_analyse(file: &Path) -> (Media, Shows) {
             .iter()
             .find(|v| Some(v.2) == shows)
             .map_or(Shows::Sectors, |v| v.0),
+        ANALYSES
+            .iter()
+            .find(|a| Some(a.2) == analysis)
+            .map_or(Analysis::Disk, |a| a.0),
     )
 }
 
-fn keep_analyse(file: &Path, (media, shows): (Media, Shows)) {
+fn keep_analyse(file: &Path, (media, shows, analysis): (Media, Shows, Analysis)) {
     let media_word = MEDIA.iter().find(|m| m.0 == media).map_or("", |m| m.2);
     let shows_word = SHOWS.iter().find(|v| v.0 == shows).map_or("", |v| v.2);
-    let changed = (media, shows) != (Media::Fit, Shows::Sectors);
+    let analysis_word = ANALYSES
+        .iter()
+        .find(|a| a.0 == analysis)
+        .map_or("", |a| a.2);
+    let changed = (media, shows, analysis) != (Media::Fit, Shows::Sectors, Analysis::Disk);
     keep(
         file,
-        changed.then(|| format!("{media_word}\n{shows_word}\n")),
+        changed.then(|| format!("{media_word}\n{shows_word}\n{analysis_word}\n")),
     );
 }
 
@@ -5801,12 +5949,14 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferriteweazle-analyse-{}", std::process::id()));
         let file = dir.join("analyse.txt");
-        let defaults = (Media::Fit, Shows::Sectors);
+        let defaults = (Media::Fit, Shows::Sectors, Analysis::Disk);
         assert_eq!(kept_analyse(&file), defaults);
         for (media, ..) in MEDIA {
             for (shows, ..) in SHOWS {
-                keep_analyse(&file, (media, shows));
-                assert_eq!(kept_analyse(&file), (media, shows));
+                for (analysis, ..) in ANALYSES {
+                    keep_analyse(&file, (media, shows, analysis));
+                    assert_eq!(kept_analyse(&file), (media, shows, analysis));
+                }
             }
         }
         keep_analyse(&file, defaults);

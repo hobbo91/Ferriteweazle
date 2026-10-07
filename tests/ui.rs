@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
-    on_disk, run_button, squares,
+    DAMAGED, DEFAULT, FOUND, REFUSED, SCRATCHED, Window, app, app_mut, damaged_read, greaseweazle,
+    held, image_part, line, on_disk, run_button, scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -17,7 +17,7 @@ use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::theme::{self, Choice};
 use ferriteweazle::track::{Facts, Id};
-use ferriteweazle::{App, Drawer, Media, Page, Settings, Shows};
+use ferriteweazle::{Analysis, App, Drawer, Media, Page, Settings, Shows};
 
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
@@ -4088,6 +4088,262 @@ fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_
     let rows = copied(&w).expect("the bytes are copied");
     assert_eq!(rows.lines().count(), 64, "1024 bytes, 16 a row");
     assert!(rows.starts_with("0000  ") && rows.lines().last().unwrap().starts_with("03F0  "));
+}
+
+/// The Workbench disk written from its ADF, each track verified.
+const WRITTEN: &str = include_str!("data/write-workbench.log");
+
+/// Analyse open on `page`, showing the image.
+fn image_open(page: &str) -> Settings {
+    Settings {
+        page: Page::Command(page.into()),
+        drawer: Some(Drawer::Analyse),
+        analysis: Analysis::Image,
+        ..chosen()
+    }
+}
+
+#[test]
+fn image_analysis_is_greyed_with_why_until_gw_reports_an_image_it_lays_out() {
+    let why = |job: Job| {
+        let mut w = build(
+            Harness::builder().with_size(DEFAULT),
+            image_open("read"),
+            Some(job),
+        );
+        let chip = w.get_by_role_and_label(Role::Button, "Image analysis");
+        assert!(chip.accesskit_node().is_disabled());
+        chip.hover();
+        w.run();
+        // The disk shows meanwhile, though the image was chosen last.
+        w.get_by_label("Disk map");
+        w
+    };
+    // A read the bridge reported no image of.
+    why(Job::replay("read", &damaged_read())).get_by_label("No image reported.");
+    // A read to flux, and to bitcells.
+    for (file, kind, said) in [
+        (
+            "Disk.scp",
+            "SCP",
+            "Not mapped: .scp holds flux, not sectors.",
+        ),
+        (
+            "Disk.hfe",
+            "HFE",
+            "Not mapped: .hfe holds bitcells, not sectors.",
+        ),
+    ] {
+        let mut job = Job::replay("read", WORKBENCH);
+        let open = format!(
+            r#"{{"event":"open","role":"made","file":"{file}","type":"{kind}","layout":null}}"#
+        );
+        job.progress.image(&open);
+        why(job).get_by_label(said);
+    }
+}
+
+#[test]
+fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_there() {
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut job = Job::replay("convert", SCRATCHED);
+    held(&mut job, (18, 0));
+    held(&mut job, (24, 1));
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_role_and_label(Role::Button, "Image analysis")
+        .click();
+    w.run();
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    w.get_by_label("Data 1705");
+    w.get_by_label("Filler 55");
+    // Here the file's 160 tracks run down a column for each side of the
+    // disk, 80 rows each of 11 sectors.
+    let at = image_part(&w, 80, 11);
+    w.hover_at(at(0, 0));
+    w.run();
+    w.get_by_label("Sector 0 · 512 bytes");
+    w.get_by_label("00000–001FF · cylinder 0, side 0");
+    w.get_by_label("Data from the input");
+    // The scratch took sector 3 of cylinder 18's side 0, gw's 37th track.
+    let lost = at(36, 3);
+    w.hover_at(lost);
+    w.run();
+    w.get_by_label("Sector 3 · 512 bytes");
+    w.get_by_label("31E00–31FFF · cylinder 18, side 0");
+    w.get_by_label("gw's filler: the sector did not read");
+    // A click shows the filler as the file holds it, numbered from where it lies.
+    w.drag_at(lost);
+    w.run();
+    w.drop_at(lost);
+    w.run();
+    w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 18, side 0");
+    w.get_by_label("31E00  2D 3D 5B 42 41 44 20 53 45 43 54 4F 52 5D 3D 2D  -=[BAD SECTOR]=-");
+    // Its window in the middle of the app's.
+    let id = egui::Id::new("image part window");
+    let window = w
+        .ctx
+        .memory(|m| m.area_rect(id))
+        .expect("the sector's window");
+    let middle = w.ctx.content_rect().center();
+    assert!(
+        (window.center() - middle).length() < 1.0,
+        "{window:?}, {middle:?}"
+    );
+    // Shut, a sector's data, as gw put it in the file: from the track's
+    // 1,536th byte.
+    w.get_by_role_and_label(Role::Button, "Close").click();
+    w.run();
+    let kept = at(49, 3);
+    w.hover_at(kept);
+    w.run();
+    w.drag_at(kept);
+    w.run();
+    w.drop_at(kept);
+    w.run();
+    w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 24, side 1");
+    w.get_by_label_contains("43C00  1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D");
+}
+
+#[test]
+fn image_analysis_says_where_gw_is_with_the_file_and_counts_what_its_sectors_hold() {
+    let shown = |page: &str, job: Job| {
+        let builder = Harness::builder().with_size(DEFAULT);
+        let mut w = start(builder, image_open(page), Some(job));
+        w.run_steps(4);
+        w
+    };
+    // A read as it reaches track 41.0: 83 tracks of 11 sectors read.
+    let reached = WORKBENCH
+        .split_inclusive('\n')
+        .take_while(|l| !l.starts_with("T41.1"))
+        .collect::<String>();
+    let mut running = Job::replay("read", &reached);
+    running.ended = None;
+    running.progress.current = Some((41, 0));
+    let w = shown("read", running);
+    w.get_by_label("Workbench.adf · 901,120 bytes · Being made: gw writes it when it finishes");
+    w.get_by_label("Data 913");
+    w.get_by_label("To do 847");
+    // The track gw last reported marked, as the disk view rings it.
+    w.get_by_label("Last reported");
+    let w = shown("read", Job::replay("read", WORKBENCH));
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    w.get_by_label("Data 1760");
+    // A write's: the file it takes its tracks from.
+    let w = shown("write", Job::replay("write", WRITTEN));
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw read it");
+    w.get_by_label("Data 1760");
+}
+
+#[test]
+fn before_a_write_image_analysis_shows_the_file_it_is_to_take_its_tracks_from() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, None);
+    // As gw opens it: the scratched disk's ADF.
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    // Analyse has the image to show with no disk written.
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    w.get_by_label("Data 1705");
+    w.get_by_label("Filler 55");
+    let disk = w.get_by_role_and_label(Role::Button, "Disk analysis");
+    assert!(disk.accesskit_node().is_disabled());
+    disk.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No disk written yet").count(),
+        2,
+        "the status pane's line, and the tab's"
+    );
+    // The scratch's first lost sector, gw's filler in the file, which gw
+    // would write as the sector's data.
+    let at = image_part(&w, 80, 11);
+    w.hover_at(at(36, 3));
+    w.run();
+    w.get_by_label("Sector 3 · 512 bytes");
+    w.get_by_label("31E00–31FFF · cylinder 18, side 0");
+    w.get_by_label("gw's filler, in the file");
+}
+
+#[test]
+fn after_a_write_image_analysis_shows_the_file_the_page_names_next() {
+    // The write took Workbench.adf; the page now names another file.
+    let mut settings = image_open("write");
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Other.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, Some(Job::replay("write", WRITTEN)));
+    let mut next = scratched_adf();
+    next.file = Some("/Users/you/Floppies/Other.adf".into());
+    app_mut(&mut w).pin_image(next);
+    w.run();
+    w.get_by_label("Other.adf · 901,120 bytes · As gw reads it");
+    w.get_by_label("Filler 55");
+    // The disk is still the one the write left.
+    w.get_by_role_and_label(Role::Button, "Disk analysis")
+        .click();
+    w.run();
+    w.get_by_label("Disk map");
+    // Named again, the written file shows as the write took it.
+    set(
+        &mut app_mut(&mut w).settings,
+        "write",
+        "file",
+        "Workbench.adf",
+    );
+    w.get_by_role_and_label(Role::Button, "Image analysis")
+        .click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw read it");
+    w.get_by_label("Data 1760");
+}
+
+#[test]
+fn going_from_disk_to_image_analysis_leaves_the_drawer_as_tall_as_it_was() {
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let top = |w: &Window| {
+        w.get_by_role_and_label(Role::Button, "Disk analysis")
+            .rect()
+            .top()
+    };
+    let disks = top(&w);
+    w.get_by_label("Disk map");
+    w.get_by_role_and_label(Role::Button, "Image analysis")
+        .click();
+    w.run();
+    w.get_by_label("Image map");
+    assert_eq!(top(&w), disks, "the drawer as tall as for the disks");
+    w.get_by_role_and_label(Role::Button, "Disk analysis")
+        .click();
+    w.run();
+    assert_eq!(top(&w), disks);
 }
 
 /// A right-click at `at`.

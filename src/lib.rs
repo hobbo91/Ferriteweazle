@@ -8,6 +8,7 @@ mod app;
 pub mod command;
 pub mod device;
 mod diskmap;
+mod filemap;
 pub mod form;
 pub mod image;
 pub mod job;
@@ -31,7 +32,7 @@ pub mod update;
 pub use app::{
     ABOUT_SIZE, App, Drawer, Page, SMALLEST, Settings, WINDOW, about, about_image, opening_size,
 };
-pub use surface::{Media, Shows};
+pub use surface::{Analysis, Media, Shows};
 
 use std::ffi::OsString;
 use std::path::PathBuf;

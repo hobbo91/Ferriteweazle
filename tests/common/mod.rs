@@ -11,6 +11,85 @@ pub type Window = Harness<'static, Option<App>>;
 
 pub const DAMAGED: &str = include_str!("../data/convert-damaged.log");
 
+/// The Workbench disk's flux with a scratch cut into side 0, cylinders 18 to
+/// 62, converted to an ADF: real flux, gw's decode of it, and gw's filler in
+/// place of the 55 sectors that did not decode.
+pub const SCRATCHED: &str = include_str!("../data/convert-workbench-scratched.log");
+
+/// Gives track `key` of the image `job` makes made-up bytes, as the bridge
+/// reports the bytes gw holds: gw's filler where gw lacks a sector, else
+/// byte i of the track i % 251. The recordings keep no disk's data.
+pub fn held(job: &mut ferriteweazle::job::Job, key: (u32, u32)) {
+    let made = job.progress.made.as_ref().expect("the image's report");
+    let layout = made.layout.as_ref().expect("laid out");
+    let laid = layout.tracks.iter().find(|t| t.key == key).unwrap();
+    let has = made.tracks[&key].has.clone();
+    let mut bytes = Vec::new();
+    for part in &laid.sectors {
+        let at = bytes.len();
+        match has[part.index] {
+            true => bytes.extend((at..at + part.len as usize).map(|i| (i % 251) as u8)),
+            false => bytes.extend(&layout.fillers[part.filler]),
+        }
+    }
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let has = serde_json::to_string(&has).unwrap();
+    let (c, h) = key;
+    let line = format!(r#"{{"event":"track","c":{c},"h":{h},"has":{has},"bytes":"{hex}"}}"#);
+    job.progress.image(&line);
+}
+
+/// Where in the image map sector `sector` of track `track` lies, the file in
+/// two columns of `rows` rows of `parts` sectors each: the second column's
+/// rows after its offsets, five hex digits in 11-point type, and the gaps
+/// either side of them.
+pub fn image_part(
+    w: &Window,
+    rows: usize,
+    parts: usize,
+) -> impl Fn(usize, usize) -> egui::Pos2 + use<> {
+    let map = w.get_by_label("Image map").rect();
+    let font = egui::FontId::monospace(11.0);
+    let glyph = w.ctx.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let between = 12.0 + 5.0 * glyph + 8.0;
+    let column = (map.width() - between) / 2.0;
+    let row = map.height() / rows as f32;
+    assert!((4.0..=12.0).contains(&row), "{row}");
+    move |track, sector| {
+        let left = map.left() + (track / rows) as f32 * (column + between);
+        let x = left + column * (sector as f32 + 0.5) / parts as f32;
+        egui::pos2(x, map.top() + ((track % rows) as f32 + 0.5) * row)
+    }
+}
+
+/// The ADF that conversion made, as a write would take its tracks from it:
+/// laid out as gw laid it out, gw's filler where gw put it, and in place of
+/// the disk's data, which the recordings do not keep, byte i of the file
+/// i % 251.
+pub fn scratched_adf() -> ferriteweazle::image::Image {
+    use ferriteweazle::image::Role;
+    let job = ferriteweazle::job::Job::replay("convert", SCRATCHED);
+    let mut image = job.progress.made.clone().expect("the image's report");
+    let layout = image.layout.clone().expect("laid out");
+    let mut content = Vec::new();
+    for laid in &layout.tracks {
+        let has = &image.tracks[&laid.key].has;
+        for part in &laid.sectors {
+            let at = content.len();
+            match has[part.index] {
+                true => content.extend((at..at + part.len as usize).map(|i| (i % 251) as u8)),
+                false => content.extend(&layout.fillers[part.filler]),
+            }
+        }
+    }
+    image.role = Role::Source;
+    image.size = Some(content.len() as u64);
+    image.content = Some(content);
+    image.tracks.clear();
+    image.written = None;
+    image
+}
+
 /// DAMAGED as a read would print it: a read loads no .scp to warn about.
 pub fn damaged_read() -> String {
     DAMAGED.replace("SCP: WARNING: Bad image checksum\n", "")

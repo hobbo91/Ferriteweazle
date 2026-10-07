@@ -8,7 +8,8 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, Window, damaged_read, greaseweazle, on_disk, run_button,
+    DAMAGED, DEFAULT, FOUND, REFUSED, SCRATCHED, Window, app_mut, damaged_read, greaseweazle, held,
+    image_part, on_disk, run_button, scratched_adf,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
@@ -16,7 +17,8 @@ use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::{self, Output};
 use ferriteweazle::job::{Job, Outcome};
 use ferriteweazle::schema::Port;
-use ferriteweazle::{App, Drawer, Media, Page, Settings, Shows};
+use ferriteweazle::theme::Choice;
+use ferriteweazle::{Analysis, App, Drawer, Media, Page, Settings, Shows};
 use std::time::Duration;
 
 /// What gw info prints, as info.py formats it.
@@ -100,7 +102,7 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
     read.set("format", "ibm.1440");
     read.set("revs", "2");
     let convert = s.values.entry("convert".into()).or_default();
-    convert.set("in_file", "/Users/you/Floppies/Disk07.scp");
+    convert.set("in_file", INPUT);
     convert.set("format", "ibm.1440");
     s.outputs.insert(
         "convert/out_file".into(),
@@ -436,9 +438,6 @@ const WORKBENCH: &str = include_str!("data/read-workbench.log");
 /// The Workbench disk written back from its ADF in a real drive: each track
 /// as gw writes it, then as gw's verify read it back.
 const WRITTEN: &str = include_str!("data/write-workbench.log");
-/// The Workbench disk's flux with a scratch cut into side 0, cylinders 18 to
-/// 62, converted: real flux, and gw's decode of it.
-const SCRATCHED: &str = include_str!("data/convert-workbench-scratched.log");
 /// A real Akai S950 disk's HFE image as flux, a scratch cut into side 1,
 /// cylinders 10 to 70, converted to sectors.
 const AKAI: &str = include_str!("data/convert-akai.log");
@@ -449,8 +448,21 @@ const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
 const TRACK_0: f32 = 39.5 / 42.9;
 
 /// The Akai conversion, its track 0.0 with its data.
+/// The Convert page's input in these pictures.
+const INPUT: &str = "/Users/you/Floppies/Disk07.scp";
+
+/// A conversion's recording replayed as though run from the Convert page
+/// these pictures show: its input, as gw named it, the page's.
+fn converted(log: &str) -> Job {
+    let mut job = Job::replay("convert", log);
+    if let Some(source) = job.progress.source.as_mut() {
+        source.file = Some(INPUT.into());
+    }
+    job
+}
+
 fn akai_job() -> Job {
-    let mut job = Job::replay("convert", AKAI);
+    let mut job = converted(AKAI);
     let line = AKAI_TRACK.trim().strip_prefix("@ferriteweazle track ");
     job.progress.report(line.expect("a track report"));
     job
@@ -517,7 +529,7 @@ fn analyse() {
             ("analyse-scratched-flux", Media::Fit, Shows::Flux),
             ("analyse-scratched-3.5", Media::ThreeHalf, Shows::Sectors),
         ] {
-            let scratched = Job::replay("convert", SCRATCHED);
+            let scratched = converted(SCRATCHED);
             let convert = Settings {
                 shows,
                 ..open("convert", theme, media)
@@ -606,6 +618,170 @@ fn analyse() {
             let button = w.get_by_role_and_label(Role::Button, "Analyse").rect();
             w.hover_at(button.center());
         });
+    }
+}
+
+/// The Analyse drawer's image view: the file gw makes of a disk, or writes
+/// one from, as gw lays it out.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn images() {
+    let open = |page: &str, theme| Settings {
+        drawer: Some(Drawer::Analyse),
+        analysis: Analysis::Image,
+        ..settings(page, theme)
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        render_sized(
+            "image-read",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(workbench()),
+            |_| {},
+        );
+        let scratched = converted(SCRATCHED);
+        render(
+            "image-scratched",
+            theme,
+            open("convert", theme),
+            Some(scratched),
+            |_| {},
+        );
+        render_sized(
+            "image-akai",
+            DEFAULT,
+            theme,
+            open("convert", theme),
+            Some(akai_job()),
+            |_| {},
+        );
+        let written = Job::replay("write", WRITTEN);
+        render_sized(
+            "image-write",
+            DEFAULT,
+            theme,
+            open("write", theme),
+            Some(written),
+            |_| {},
+        );
+        // The read as it reaches track 41.0.
+        let reached = WORKBENCH
+            .split_inclusive('\n')
+            .take_while(|l| !l.starts_with("T41.1"))
+            .collect::<String>();
+        let mut running = Job::replay("read", &reached);
+        running.ended = None;
+        running.progress.current = Some((41, 0));
+        render_sized(
+            "image-running",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(running),
+            |_| {},
+        );
+        // Over the scratch's first lost sector, then a click on it.
+        for (name, click) in [("image-hover", false), ("image-part", true)] {
+            let mut scratched = converted(SCRATCHED);
+            held(&mut scratched, (18, 0));
+            render(
+                name,
+                theme,
+                open("convert", theme),
+                Some(scratched),
+                move |w| {
+                    w.run_steps(4);
+                    // Track 36 of two columns of 80 rows, its sector 3 of 11.
+                    let at = image_part(w, 80, 11)(36, 3);
+                    w.hover_at(at);
+                    if click {
+                        w.drag_at(at);
+                        w.run_steps(2);
+                        w.drop_at(at);
+                    }
+                },
+            );
+        }
+        // A shorter window: the file in more columns, where the disks lie.
+        render_sized(
+            "image-small",
+            egui::vec2(1240.0, 560.0),
+            theme,
+            open("convert", theme),
+            Some(converted(SCRATCHED)),
+            |_| {},
+        );
+        // A write as it reaches track 41.0: the file as it is, gw's place in
+        // it marked.
+        let reached = WRITTEN
+            .split_inclusive('\n')
+            .take_while(|l| !l.starts_with("T41.1"))
+            .collect::<String>();
+        let mut writing = Job::replay("write", &reached);
+        writing.ended = None;
+        writing.progress.current = Some((41, 0));
+        render_sized(
+            "image-writing",
+            DEFAULT,
+            theme,
+            open("write", theme),
+            Some(writing),
+            |_| {},
+        );
+        // Before a write: the file it is to take its tracks from, as gw
+        // reads it, gw's filler where the file holds it.
+        let mut before = settings("write", theme);
+        let write = before.values.entry("write".into()).or_default();
+        write.set("file", "/Users/you/Floppies/Workbench.adf");
+        render_sized("image-before", DEFAULT, theme, before, None, |w| {
+            app_mut(w).pin_image(scratched_adf());
+            w.run_steps(2);
+            w.get_by_role_and_label(Role::Button, "Analyse").click();
+            w.run_steps(30);
+        });
+        // A read to flux: nothing laid out to show.
+        let mut flux = workbench();
+        let line = r#"{"event":"open","role":"made","file":"Disk.scp","type":"SCP","layout":null}"#;
+        flux.progress.image(line);
+        render_sized(
+            "image-flux",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(flux),
+            |w| {
+                w.run_steps(4);
+                let chip = w
+                    .get_by_role_and_label(Role::Button, "Image analysis")
+                    .rect();
+                w.hover_at(chip.center());
+            },
+        );
+    }
+}
+
+/// The analyses' tabs in the Classic palettes, each chosen.
+#[test]
+#[ignore]
+fn analysis_tabs() {
+    for (name, choice) in [("classic", Choice::Classic), ("blue", Choice::Blue)] {
+        for (view, analysis) in [("disk", Analysis::Disk), ("image", Analysis::Image)] {
+            let settings = Settings {
+                theme: choice,
+                drawer: Some(Drawer::Analyse),
+                analysis,
+                ..settings("convert", egui::Theme::Light)
+            };
+            render_sized(
+                &format!("tabs-{name}-{view}"),
+                DEFAULT,
+                egui::Theme::Light,
+                settings,
+                Some(converted(SCRATCHED)),
+                |_| {},
+            );
+        }
     }
 }
 
