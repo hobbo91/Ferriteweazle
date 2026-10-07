@@ -5,7 +5,7 @@ and report_images.
 Modes: serve (one JSON request per stdin line, one reply per stdout line),
 run ARGS (`gw ARGS`; stdin takes 'answer TEXT', anything else stops it),
 detect ARGS, latest [REPO], update TAG BUNDLED DIR and fetch TAG NAME DIR."""
-import argparse, bisect, builtins, contextlib, copy, functools, importlib, io, itertools, json, math, os, queue, re, signal, struct, sys, threading, typing, _thread
+import argparse, bisect, builtins, collections, contextlib, copy, functools, importlib, io, itertools, json, math, os, queue, re, signal, struct, sys, threading, typing, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
@@ -16,6 +16,11 @@ IMAGE = '@ferriteweazle image '
 # The equal parts of a revolution a track's report counts its flux in: a
 # quarter of a degree each.
 BINS = 1440
+
+# A track's report counts its flux's intervals up to INTERVAL_TOP long, in
+# bins of whole sample ticks as near INTERVAL_BIN wide as the ticks allow.
+INTERVAL_TOP = 20e-6
+INTERVAL_BIN = 50e-9
 
 # Tests point these at a server of their own.
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
@@ -1261,15 +1266,20 @@ def report(cyl, head, track, dat, source=None, absent=False):
     disk view to make sense of: the flux of `track` and the sectors decoded
     into `dat`, and for a write, where they come from: the image's flux as gw
     writes it, the master track gw writes, or the track read back to verify
-    it; or that gw's image holds no such track. A report that fails is left
-    out, as gw must go on."""
+    it; or that gw's image holds no such track. Whether the flux's
+    revolutions are the disk's turns under a head: raw flux gw read, from
+    the drive or a flux image, not flux gw made, as of its master track or
+    an image's bitcells. A report that fails is left out, as gw must go on."""
     from greaseweazle.codec import codec
+    from greaseweazle.flux import Flux
     with contextlib.suppress(Exception):
         out = {'c': cyl, 'h': head}
         if source:
             out['source'] = source
         if absent:
             out['absent'] = True
+        if source in (None, 'verify') and isinstance(track, Flux):
+            out['turned'] = True
         # A codec's track is an image's sectors, whose flux gw has yet to make.
         if track is not None and not isinstance(track, codec.Codec):
             with contextlib.suppress(Exception):
@@ -1290,6 +1300,8 @@ def report_flux(flux):
     of no length, or a read that runs two revolutions past one."""
     times = list(itertools.accumulate(flux.list))
     bins, passes, revs = [0] * BINS, [], []
+    # Each read's first value, which runs from where the read starts.
+    firsts = [bisect.bisect_right(times, start) for start, _, _ in reads(flux, 0.0)]
     for start, pulses, end in reads(flux, times[-1] if times else 0.0):
         if not pulses:
             continue  # no index to place it by
@@ -1320,7 +1332,30 @@ def report_flux(flux):
         revs += turns
     period = sum(revs) / len(revs) if revs else flux.ticks_per_rev
     return {'freq': flux.sample_freq, 'period': period, 'revs': revs, 'passes': passes,
-            'bins': bins}
+            'bins': bins, 'intervals': intervals(flux, firsts)}
+
+
+def intervals(flux, firsts):
+    """How far apart the flux transitions of `flux` are, as gw holds them:
+    its values, but those at `firsts`, which run from where a read starts,
+    counted in bins `width` sample ticks wide, from bin `first`, the first
+    with any, to the last before bin `top`, the first at or past
+    INTERVAL_TOP, and how many are in it or past it."""
+    width = max(1, round(flux.sample_freq * INTERVAL_BIN))
+    # Rounded first: 40 MHz's 20 us is 800.0000000000001 ticks in floats.
+    top = math.ceil(round(flux.sample_freq * INTERVAL_TOP / width, 6))
+    # Each value counted, then each count binned: far fewer bins than values.
+    values = collections.Counter(flux.list)
+    values.subtract(flux.list[i] for i in firsts if i < len(flux.list))
+    counts = collections.Counter()
+    for value, n in values.items():
+        counts[value // width] += n
+    counts = +counts  # none of no count
+    held = [int(b) for b in counts if b < top]
+    first, last = min(held, default=0), max(held, default=-1)
+    return {'width': width, 'first': first, 'top': top,
+            'counts': [counts.get(b, 0) for b in range(first, last + 1)],
+            'longer': sum(n for b, n in counts.items() if b >= top)}
 
 
 def reads(flux, end):
@@ -1426,6 +1461,9 @@ def report_codec(dat):
         out['iam_times'] = [vars(a).get(WHEN) for a in found.iams]
         out['found'] = [ibm_sector(s) for s in found.sectors]
         out['apart'] = getattr(found, APART, [])
+        if timed:
+            out['mode'] = str(inner.mode)
+        out['decodes'] = getattr(found, DECODES, [])
         if decoded:  # its data is that of the sectors found
             out['laid'] = [ibm_sector(s, False) for s in inner.sectors]
     else:
@@ -1456,16 +1494,24 @@ def ibm_sector(s, data=True):
     head, body = vars(s.idam).get(WHEN), vars(s.dam).get(WHEN)
     if head and body:
         sector['times'], sector['turn'] = [head[0], head[1], body[0], body[1]], head[2]
+    if (found := vars(s).get(COPY)) is not None:
+        sector['copy'] = found
     if data and s.dam.data:
         sector['bytes'] = bytes(s.dam.data).hex()
     return sector
 
 
 # Where report_places keeps what it notes: on a decoded track, its sectors'
-# places and the blocks found apart; on a PLL track, when each bit cell
-# starts; on an IBM track's area, the revolution it lies in and where in time.
+# places, the blocks found apart and each decode; on a PLL track, when each
+# bit cell starts; on an IBM track's area, the revolution it lies in, where
+# in time, and the decode it was found in and its place there; on flux, its
+# number, from FLUXES.
 PLACES = 'ferriteweazle_places'
 APART = 'ferriteweazle_apart'
+DECODES = 'ferriteweazle_decodes'
+COPY = 'ferriteweazle_copy'
+FLUX = 'ferriteweazle_flux'
+FLUXES = itertools.count()
 TIMES = 'ferriteweazle_times'
 STARTS = 'ferriteweazle_starts'
 JOINS = 'ferriteweazle_joins'
@@ -1509,6 +1555,47 @@ def indexes(pll):
     return kept
 
 
+def decoded_from(raw, areas, nr, flux):
+    """Decode `nr` of an IBM track, as gw's decoder found `areas` on PLL track
+    `raw` from `flux`: which flux, by number, as gw decodes one flux again
+    with another PLL; each revolution's bit cells, index to index, and those
+    after the last index; and each area in turn, a list: its kind, the
+    revolution it lies in, its place in bit cells from that revolution's
+    index, and what gw read of it. Each area keeps the decode and its place
+    in its list, as COPY."""
+    from greaseweazle.codec.ibm import ibm
+    starts = indexes(raw)
+    out, listed = [], []
+    for x in sorted(areas, key=lambda x: vars(x).get(BASE, 0) + x.start):
+        base = vars(x).get(BASE, 0)
+        rev = max(bisect.bisect_right(starts, base + x.start) - 1, 0)
+        # gw counts an area from the index before it, but for one past a
+        # revolution holding none, from the one before that.
+        at = base - starts[rev]
+        if isinstance(x, ibm.Sector):
+            i, d = x.idam, x.dam
+            area = [1, rev, i.start + at, i.end + at, d.start + at, d.end + at,
+                    int(i.crc == 0), int(d.crc == 0), d.mark, i.c, i.h, i.r, i.n]
+        elif isinstance(x, ibm.IDAM):
+            area = [2, rev, x.start + at, x.end + at, int(x.crc == 0), x.c, x.h, x.r, x.n]
+        elif isinstance(x, ibm.DAM):
+            area = [3, rev, x.start + at, x.end + at, x.mark]
+        elif isinstance(x, ibm.IAM):
+            area = [0, rev, x.start + at, x.end + at]
+        else:
+            continue
+        listed.append(x)
+        out.append(area)
+    if FLUX not in vars(flux):
+        vars(flux)[FLUX] = next(FLUXES)
+    decode = {'flux': vars(flux)[FLUX], 'cells': [b - a for a, b in zip(starts, starts[1:])],
+              'tail': len(raw.bitarray) - starts[-1], 'areas': out}
+    # Only once nothing can fail, so that no area names a decode left out.
+    for i, x in enumerate(listed):
+        vars(x)[COPY] = [nr, i]
+    return decode
+
+
 def report_places():
     """Has gw's decoders note what they find and do not keep. Where each
     sector they add lies, which only IBM tracks keep, in seconds by the clock
@@ -1519,7 +1606,8 @@ def report_places():
     track's areas lie, from the index their revolution starts at, a DEC
     RX02 data block's end by the double-rate track it is decoded from. Also
     an IBM track's headers with no data after them and data with no header,
-    which gw's decoder drops."""
+    which gw's decoder drops, and each decode of it: every area it found in
+    every revolution, which gw keeps one of (decoded_from)."""
     from bitarray import bitarray
     from greaseweazle import track
     # gw's codec module first: it imports the codecs in an order their own
@@ -1637,10 +1725,14 @@ def report_places():
 
     raw_decode = ibm.IBMTrack.decode_raw
 
-    def decode_raw(self, *a, **k):
-        raw_decode(self, *a, **k)
+    def decode_raw(self, raw, pll, flux):
+        raw_decode(self, raw, pll, flux)
+        areas = seen.pop('areas', [])
+        decodes = vars(self).setdefault(DECODES, [])
+        with contextlib.suppress(Exception):
+            decodes.append(decoded_from(raw, areas, len(decodes), flux))
         apart = vars(self).setdefault(APART, [])
-        for x in seen.pop('areas', []):
+        for x in areas:
             if isinstance(x, ibm.IDAM):
                 block = {'id': [x.c, x.h, x.r, x.n], 'start': x.start, 'end': x.end,
                          'header': x.crc == 0}
@@ -1650,6 +1742,8 @@ def report_places():
                 continue
             if (at := vars(x).get(WHEN)):
                 block['times'], block['turn'] = at[:2], at[2]
+            if (found := vars(x).get(COPY)) is not None:
+                block['copy'] = found
             apart.append(block)
 
     track.PLLTrack.__init__, track.PLLTrack.get_all_data = init, get_all_data
