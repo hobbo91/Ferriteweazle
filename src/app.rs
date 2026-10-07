@@ -1851,7 +1851,7 @@ impl App {
                 ..Margin::ZERO
             }))
             .show_separator_line(false)
-            .show(ui, |ui| self.run_bar(ui, &schema, cmd));
+            .show(ui, |ui| self.run_bar(ui, &schema, cmd, width));
         let cannot_detect = self.cannot_detect(name);
         let mut install = false;
         let mut unsaved = None;
@@ -1971,126 +1971,129 @@ impl App {
         });
     }
 
-    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command) {
+    /// The page's run button, and beside it the drawers'.
+    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command, form: f32) {
         let p = theme::palette(ui);
         let why = self.why_not(schema, cmd);
         let nothing = self.analysed(&cmd.name).err();
         ui.horizontal(|ui| {
-            // The run button gives way to the drawers' buttons on a narrow page.
-            let gap = ui.spacing().item_spacing.x + 6.0;
-            let wide = (ui.available_width() - 3.0 * (gap + DRAWER_BUTTON.x)).clamp(RUN_LEAST, RUN);
-            // The job this page started, or its format being found.
-            let here = self.running().filter(|j| {
-                j.command == cmd.name
-                    || (j.command == DETECT && self.detect_for.as_deref() == Some(&cmd.name))
-            });
-            match here {
-                Some(job) => {
-                    let label = if job.stopping() {
-                        "Stopping…"
-                    } else {
-                        "Stop"
-                    };
-                    let stop = big_button(label, p.bad, p).min_size(vec2(wide, RUN_HEIGHT));
-                    let stop = ui.add_enabled(!job.stopping(), stop);
-                    let tip = match self.runs_motor(job) {
-                        true => "Stop Greaseweazle Tools and the drive's motor.",
-                        false => "Stop Greaseweazle Tools.",
-                    };
-                    let warning = flash_warning(job);
-                    let stop = stop.on_hover_ui(|ui| {
-                        ui.label(tip);
-                        if let Some(warning) = warning {
-                            ui.label(warning);
-                        }
-                    });
-                    if stop.clicked() {
-                        self.stop();
-                    }
-                }
-                None => {
-                    let several = cmd.name == "read"
-                        && self
-                            .settings
-                            .outputs
-                            .get(&form::output_key("read", "file"))
-                            .is_some_and(|o| o.first_disk() < o.disks);
-                    let batch = self
-                        .settings
-                        .values
-                        .get(&cmd.name)
-                        .is_some_and(|v| form::batch_input(cmd, v).is_some());
-                    // gw delays shows the drive's delays, after setting any typed.
-                    let sets = cmd.name == "delays"
-                        && self.settings.values.get(&cmd.name).is_some_and(|v| {
-                            let own = |dest: &str| !form::GLOBAL.contains(&dest);
-                            cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
-                        });
-                    let label = match (several, batch, cmd.name.as_str()) {
-                        (true, _, _) => "Read disks",
-                        (_, true, "write") => "Write disks",
-                        (_, true, _) => "Convert images",
-                        _ if sets => "Set delays",
-                        _ => run_label(&cmd.name),
-                    };
-                    let run = big_button(label, p.accent, p).min_size(vec2(wide, RUN_HEIGHT));
-                    let run = ui.add_enabled(why.is_none(), run);
-                    match &why {
-                        Some(why) => {
-                            run.on_disabled_hover_text(why);
-                        }
-                        None if run.clicked() => self.start(ui.ctx(), cmd),
-                        None => {}
-                    }
-                }
-            }
-            for (drawer, text, show, hide) in [
-                (
-                    Drawer::Cli,
-                    "CLI",
-                    "Show command line.",
-                    "Hide command line.",
-                ),
-                (
-                    Drawer::Log,
-                    "Log",
-                    "Show Greaseweazle Tools' output.",
-                    "Hide Greaseweazle Tools' output.",
-                ),
-            ] {
-                ui.add_space(6.0);
-                let open = self.settings.drawer == Some(drawer);
-                let button = egui::Button::new(text)
-                    .selected(open)
-                    .min_size(DRAWER_BUTTON)
-                    .corner_radius(8);
-                if ui
-                    .add(button)
-                    .on_hover_text(if open { hide } else { show })
-                    .clicked()
-                {
-                    self.settings.drawer = (!open).then_some(drawer);
-                }
-            }
-            ui.add_space(6.0);
-            let open = self.settings.drawer == Some(Drawer::Analyse);
-            let button = egui::Button::new("Analyse")
-                .selected(open)
-                .min_size(DRAWER_BUTTON)
-                .corner_radius(8);
-            let tip = match open {
-                true => "Hide disk analysis.",
-                false => "Show disk analysis.",
-            };
-            if ui
-                .add_enabled(nothing.is_none(), button)
-                .on_hover_text(tip)
-                .on_disabled_hover_text(nothing.unwrap_or_default())
-                .clicked()
-            {
-                self.settings.drawer = (!open).then_some(Drawer::Analyse);
-            }
+            // The drawers' buttons, each as wide as the widest name needs.
+            let font = TextStyle::Button.resolve(ui.style());
+            let widest = DRAWERS
+                .iter()
+                .map(|d| {
+                    ui.painter()
+                        .layout_no_wrap(d.1.into(), font.clone(), p.text)
+                        .size()
+                        .x
+                })
+                .fold(0.0, f32::max);
+            // On a narrow page the run button gives way to them, then their
+            // room either side of their names, so that the row ends within
+            // the form.
+            let row = form.min(ui.available_width());
+            let n = DRAWERS.len() as f32;
+            let between = ui.spacing().item_spacing.x;
+            let [tight, roomy] = SEGMENT_PAD.map(|pad| widest + 2.0 * pad);
+            let room = row - RUN_LEAST - APART - (n - 1.0) * between;
+            let each = (room / n).clamp(tight, roomy).floor();
+            let rest = n * each + (n - 1.0) * between;
+            let wide = (row - rest - APART).clamp(RUN_LEAST, RUN);
+            self.run_button(ui, cmd, why.as_deref(), wide);
+            ui.add_space(APART - between);
+            self.drawer_buttons(ui, each, nothing);
         });
+    }
+
+    /// The page's run button, `wide` points wide: Stop while its job runs.
+    fn run_button(&mut self, ui: &mut Ui, cmd: &Command, why: Option<&str>, wide: f32) {
+        let p = theme::palette(ui);
+        // The job this page started, or its format being found.
+        let here = self.running().filter(|j| {
+            j.command == cmd.name
+                || (j.command == DETECT && self.detect_for.as_deref() == Some(&cmd.name))
+        });
+        match here {
+            Some(job) => {
+                let label = if job.stopping() {
+                    "Stopping…"
+                } else {
+                    "Stop"
+                };
+                let stop = big_button(label, p.bad, p).min_size(vec2(wide, RUN_HEIGHT));
+                let stop = ui.add_enabled(!job.stopping(), stop);
+                let tip = match self.runs_motor(job) {
+                    true => "Stop Greaseweazle Tools and the drive's motor.",
+                    false => "Stop Greaseweazle Tools.",
+                };
+                let warning = flash_warning(job);
+                let stop = stop.on_hover_ui(|ui| {
+                    ui.label(tip);
+                    if let Some(warning) = warning {
+                        ui.label(warning);
+                    }
+                });
+                if stop.clicked() {
+                    self.stop();
+                }
+            }
+            None => {
+                let several = cmd.name == "read"
+                    && self
+                        .settings
+                        .outputs
+                        .get(&form::output_key("read", "file"))
+                        .is_some_and(|o| o.first_disk() < o.disks);
+                let batch = self
+                    .settings
+                    .values
+                    .get(&cmd.name)
+                    .is_some_and(|v| form::batch_input(cmd, v).is_some());
+                // gw delays shows the drive's delays, after setting any typed.
+                let sets = cmd.name == "delays"
+                    && self.settings.values.get(&cmd.name).is_some_and(|v| {
+                        let own = |dest: &str| !form::GLOBAL.contains(&dest);
+                        cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
+                    });
+                let label = match (several, batch, cmd.name.as_str()) {
+                    (true, _, _) => "Read disks",
+                    (_, true, "write") => "Write disks",
+                    (_, true, _) => "Convert images",
+                    _ if sets => "Set delays",
+                    _ => run_label(&cmd.name),
+                };
+                let run = big_button(label, p.accent, p).min_size(vec2(wide, RUN_HEIGHT));
+                let run = ui.add_enabled(why.is_none(), run);
+                match why {
+                    Some(why) => {
+                        run.on_disabled_hover_text(why);
+                    }
+                    None if run.clicked() => self.start(ui.ctx(), cmd),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The drawers' buttons, each `each` points wide: each opens its drawer,
+    /// shutting another, or shuts its own. Analyse is greyed, with why, while
+    /// there is no disk to show.
+    fn drawer_buttons(&mut self, ui: &mut Ui, each: f32, nothing: Option<&'static str>) {
+        for &(drawer, text, show, hide) in &DRAWERS {
+            let open = self.settings.drawer == Some(drawer);
+            let button = egui::Button::new(text)
+                .selected(open)
+                .min_size(vec2(each, RUN_HEIGHT))
+                .corner_radius(RUN_RADIUS);
+            let enabled = drawer != Drawer::Analyse || nothing.is_none();
+            let response = ui
+                .add_enabled(enabled, button)
+                .on_hover_text(if open { hide } else { show })
+                .on_disabled_hover_text(nothing.unwrap_or_default());
+            if response.clicked() {
+                self.settings.drawer = (!open).then_some(drawer);
+            }
+        }
     }
 
     /// Why this page cannot run now, if it cannot.
@@ -4343,13 +4346,39 @@ fn repaint(ctx: &egui::Context) -> Repaint {
 const RUN: f32 = 170.0;
 const RUN_LEAST: f32 = 120.0;
 const RUN_HEIGHT: f32 = 40.0;
-const DRAWER_BUTTON: egui::Vec2 = egui::vec2(70.0, RUN_HEIGHT);
+const RUN_RADIUS: u8 = 8;
+/// The drawers' buttons: the room either side of each one's name, at least
+/// and at most, and the room between them and the run button.
+const SEGMENT_PAD: [f32; 2] = [10.0, 16.0];
+const APART: f32 = 16.0;
+/// The drawers in the run bar's order: each one's button, and its tips to
+/// show and hide it.
+const DRAWERS: [(Drawer, &str, &str, &str); 3] = [
+    (
+        Drawer::Cli,
+        "CLI",
+        "Show command line.",
+        "Hide command line.",
+    ),
+    (
+        Drawer::Log,
+        "Log",
+        "Show Greaseweazle Tools' output.",
+        "Hide Greaseweazle Tools' output.",
+    ),
+    (
+        Drawer::Analyse,
+        "Analyse",
+        "Show disk analysis.",
+        "Hide disk analysis.",
+    ),
+];
 
 fn big_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
-    egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(15.0))
+    egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(14.0))
         .fill(fill)
         .stroke(Stroke::NONE)
-        .corner_radius(8)
+        .corner_radius(RUN_RADIUS)
         .min_size(vec2(RUN, RUN_HEIGHT))
 }
 

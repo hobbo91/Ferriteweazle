@@ -1012,6 +1012,25 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 }
 
 #[test]
+fn the_drawers_buttons_are_one_width_8_points_apart_and_16_from_the_run_button() {
+    for size in [DEFAULT, ferriteweazle::SMALLEST] {
+        let w = window_at(size, chosen());
+        let buttons = ["CLI", "Log", "Analyse"]
+            .map(|name| w.get_by_role_and_label(Role::Button, name).rect());
+        for pair in buttons.windows(2) {
+            assert_eq!(pair[0].width(), pair[1].width(), "{size:?}: one width");
+            assert_eq!(pair[1].left() - pair[0].right(), 8.0, "{size:?}");
+        }
+        let run = run_button(&w, "Read disk").rect();
+        assert_eq!(buttons[0].left() - run.right(), 16.0, "{size:?}");
+        assert_eq!(run.height(), buttons[0].height(), "{size:?}");
+        // The form's right edge: where Detect ends, beside its field.
+        let edge = w.get_by_label("Detect").rect().right();
+        assert!(buttons[2].right() <= edge, "{size:?}: within the form");
+    }
+}
+
+#[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
     let w = window_at(ferriteweazle::SMALLEST, chosen());
     let image_type = image_type(&w).rect();
