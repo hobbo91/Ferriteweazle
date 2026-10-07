@@ -364,14 +364,14 @@ def detect(argv):
     p.add_argument('file', nargs='?')
     a = p.parse_args(argv)
     a.tracks.step, a.fmt_cls = 1, None
-    found = []
+    found, seen = [], {}
     if a.file:
         image = util.get_image_class(a.file).from_file(a.file, None, {})
 
         def read(c, h):
             return convert.process_input_track(a, convert.TrackIdentity(a.tracks, c, h), image)
 
-        found.append(probe(read, a.diskdefs))
+        found.append(probe(reporting(read, a, seen), a.diskdefs))
     else:
         usb = util.usb_open(a.device)
         pin2 = a.densel is not None or a.gen_tg43
@@ -380,13 +380,20 @@ def detect(argv):
             if a.densel is not None:
                 usb.set_pin(2, a.densel)
             last = ADAFRUIT_LAST if usb.hw_model == ADAFRUIT_MODEL else 83
-            util.with_drive_selected(lambda: found.append(probe(drive_reader(usb, a), a.diskdefs, last)),
+            read = reporting(drive_reader(usb, a), a, seen)
+            util.with_drive_selected(lambda: found.append(probe(read, a.diskdefs, last)),
                                      usb, util.Drive()(a.drive))
         finally:
             if pin2:
                 usb.set_pin(2, level)
-    ranked, step = found[0]
+    ranked, step, disks = found[0]
     whole = [m.name for m in ranked if m.full]
+    # Each track read, again, as the format found reads it, where gw finds
+    # each sector: noted only now, the ranking done.
+    if whole and round_from_index(a):
+        report_places()
+        for (c, h), track in seen.items():
+            report(c, h, track, decoded_as(disks[whole[0]], (c // step, h), track))
     for m in ranked[:6]:
         fit = f', {m.misfit:.1%} from its layout' if m.full else ', not all'
         print(f'{m.name}: {m.found} of {m.expected} sectors{fit}')
@@ -398,6 +405,31 @@ def detect(argv):
         return 1
     print(f'Format {whole[0]}')
     return 0
+
+
+def reporting(read, a, seen):
+    """`read(c, h)` for probe, made to report each track it reads, as gw's
+    line on it names it, and keep it in `seen` for its report again once
+    the format is found. None of a track an image lacks, nor where tracks do
+    not run round from the index."""
+    def read_reporting(c, h):
+        track = read(c, h)
+        if track is not None:
+            seen[c, h] = track
+            if round_from_index(a):
+                report(c, h, track, None)
+        return track
+    return read_reporting
+
+
+def decoded_as(disk, key, track):
+    """`track` decoded as format `disk` has its track `key`, as probe
+    decodes it to weigh the format; None if that fails."""
+    with quiet(), contextlib.suppress(Exception):
+        t = disk.mk_track(*key)
+        t.decode_flux(track)
+        return t
+    return None
 
 
 def drive_reader(usb, a):
@@ -431,8 +463,9 @@ class Match(typing.NamedTuple):
 
 
 def probe(read, diskdefs, last=83):
-    """Formats ranked by the tracks `read(cyl, head)` returns, and the head
-    step the disk needs. Decoding checks only sector IDs, sizes and data rate,
+    """Formats ranked by the tracks `read(cyl, head)` returns, the head step
+    the disk needs, and the formats tried, by name. Decoding checks only
+    sector IDs, sizes and data rate,
     leaving 22 groups of formats alike in gw 1.23, so rank() weighs where the
     sectors sit, and tracks that tell the leaders apart are read."""
     from greaseweazle.codec import codec
@@ -449,7 +482,7 @@ def probe(read, diskdefs, last=83):
     decoded = {}
     ranked = rank(disks, tracks, decoded)
     if not any(m.full for m in ranked):
-        return ranked, 1
+        return ranked, 1, disks
     # A 40-track disk in an 80-track drive has cylinder 1 at physical 2.
     second = read(2, 0)
     step = stepping(disks[ranked[0].name], second)
@@ -468,7 +501,7 @@ def probe(read, diskdefs, last=83):
             break
         tracks[key] = read(key[0] * step, key[1])
         ranked = rank({m.name: disks[m.name] for m in leaders}, tracks, decoded)
-    return filesystem(ranked, disks, tracks, read, step), step
+    return filesystem(ranked, disks, tracks, read, step), step, disks
 
 
 def stepping(disk, track):

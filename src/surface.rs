@@ -155,8 +155,9 @@ impl Media {
 /// What the disk view draws: a job's progress, and how.
 pub struct Map<'a> {
     pub progress: &'a Progress,
-    /// The job's command, which says what its tracks' facts are of.
-    pub command: &'a str,
+    /// The job takes its tracks from an image, as a conversion does, or
+    /// Detect of a file, not from the drive.
+    pub image: bool,
     /// The disk's cylinders and sides, if known.
     pub disk: (u32, u32),
     /// The heads swap: side 1 is read by head 0.
@@ -1161,13 +1162,13 @@ enum Origin {
 }
 
 impl Origin {
-    fn of(command: &str, source: Option<Source>) -> Origin {
-        match (command, source) {
+    fn of(image: bool, source: Option<Source>) -> Origin {
+        match (image, source) {
             (_, Some(Source::Verify)) => Origin::Verify,
             (_, Some(Source::Written)) => Origin::Written,
             (_, Some(Source::Image)) => Origin::WrittenImage,
-            ("convert", None) => Origin::Image,
-            _ => Origin::Read,
+            (true, None) => Origin::Image,
+            (false, None) => Origin::Read,
         }
     }
 
@@ -1200,7 +1201,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
         }
     }
     let mut notes = Vec::new();
-    if let Some(name) = facts.and_then(|f| Origin::of(map.command, f.source).name()) {
+    if let Some(name) = facts.and_then(|f| Origin::of(map.image, f.source).name()) {
         notes.push(name.to_owned());
     }
     if let Some(place) = track.and_then(|t| t.place.as_deref()) {
@@ -1244,7 +1245,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
             let here = (relative[at] * 100.0).round();
             ui.label(format!("Flux here: {here}% of the track's average"));
         }
-        spin_tip(ui, f, spin, Origin::of(map.command, f.source));
+        spin_tip(ui, f, spin, Origin::of(map.image, f.source));
     }
 }
 

@@ -2930,9 +2930,12 @@ impl App {
         let tracks = args.iter().find_map(|a| a.strip_prefix("--tracks="));
         let command = job.map_or(page, |j| j.command.as_str());
         let running = job.is_some_and(Job::running);
+        // A conversion takes its tracks from an image, as Detect does from
+        // the file it names.
+        let file = args.last().is_some_and(|a| !a.starts_with('-'));
         let map = surface::Map {
             progress,
-            command,
+            image: command == "convert" || (command == DETECT && file),
             disk,
             swapped: tracks.is_some_and(form::swapped),
             verifying: begun && running && job.is_some_and(|j| j.progress.verifies),

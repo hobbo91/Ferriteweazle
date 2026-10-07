@@ -1514,6 +1514,34 @@ fn detection_names_the_format_of_a_flux_image() {
         job.detected
     );
     assert!(!job.detected.iter().any(|f| f.ends_with(".scan")));
+    // Each track it read, as gw's line names it, decoded as the format it
+    // found, and the flux it read.
+    let read = &job.progress.tracks;
+    assert!(read.len() >= 3, "{read:?}");
+    for key in read.keys() {
+        let facts = &job.progress.facts[key];
+        assert_eq!(
+            facts.summary.as_deref(),
+            Some("IBM MFM (5/5 sectors)"),
+            "{key:?}"
+        );
+        assert!(facts.flux.is_some(), "{key:?}");
+        assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
+    }
+    // A codec that keeps no places: gw's decoder noted placing each sector.
+    let job = detect(&tools, &flux_of(&tools, &dir, "amiga.amigados", 901_120));
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("amiga.amigados")
+    );
+    for (key, facts) in &job.progress.facts {
+        assert_eq!(
+            facts.summary.as_deref(),
+            Some("AmigaDOS (11/11 sectors)"),
+            "{key:?}"
+        );
+        assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
+    }
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -1532,6 +1560,14 @@ fn a_blank_image_is_no_format_and_says_so() {
             .is_some_and(|e| e.contains("No format")),
         "{:?}",
         job.progress.error
+    );
+    // The flux of each track it read, and no format's sectors.
+    let facts = &job.progress.facts;
+    assert!(!facts.is_empty());
+    assert!(
+        facts
+            .values()
+            .all(|f| f.flux.is_some() && f.summary.is_none())
     );
     std::fs::remove_dir_all(dir).ok();
 }

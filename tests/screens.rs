@@ -15,7 +15,7 @@ use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::{self, Output};
-use ferriteweazle::job::{Job, Outcome};
+use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::schema::Port;
 use ferriteweazle::theme::Choice;
 use ferriteweazle::{Analysis, App, Drawer, Media, Page, Settings, Shows};
@@ -441,6 +441,8 @@ const WRITTEN: &str = include_str!("data/write-workbench.log");
 /// A real Akai S950 disk's HFE image as flux, a scratch cut into side 1,
 /// cylinders 10 to 70, converted to sectors.
 const AKAI: &str = include_str!("data/convert-akai.log");
+/// Detect of a flux image gw made of an AmigaDOS disk.
+const DETECTED: &str = include_str!("data/detect-amiga.log");
 /// Its track 0.0 as the bridge reports it, its sectors' data and all.
 const AKAI_TRACK: &str = include_str!("data/report-akai.txt");
 /// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
@@ -618,6 +620,23 @@ fn analyse() {
             let button = w.get_by_role_and_label(Role::Button, "Analyse").rect();
             w.hover_at(button.center());
         });
+        // Detect: the tracks it read, as the format it found decodes them.
+        let mut detected = Job::replay(DETECT, DETECTED);
+        detected.page = "read".into();
+        let mut found = settings("read", theme);
+        let read = found.values.entry("read".into()).or_default();
+        read.set("format", "amiga.amigados");
+        render_sized(
+            "analyse-detect",
+            DEFAULT,
+            theme,
+            found,
+            Some(detected),
+            |w| {
+                w.get_by_role_and_label(Role::Button, "Analyse").click();
+                w.run_steps(30);
+            },
+        );
     }
 }
 

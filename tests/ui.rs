@@ -2145,6 +2145,43 @@ fn detects_tracks_fade_in_as_it_reads_them() {
     );
 }
 
+/// Detect of a flux image gw made of an AmigaDOS disk: the three tracks it
+/// read, each reported as read, then as AmigaDOS decodes it.
+const DETECTED: &str = include_str!("data/detect-amiga.log");
+
+#[test]
+fn detects_tracks_open_as_the_format_it_found_decodes_them() {
+    let mut job = Job::replay(DETECT, DETECTED);
+    job.page = "read".into();
+    assert_eq!(job.progress.facts.len(), 3, "each track it read");
+    let facts = &job.progress.facts[&(0, 0)];
+    assert_eq!(facts.summary.as_deref(), Some("AmigaDOS (11/11 sectors)"));
+    let first = &facts.sectors[0];
+    let Id::Number(n) = first.id else {
+        panic!("an AmigaDOS sector")
+    };
+    let [start, _, end] = first.at.expect("a place");
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..chosen()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.get_by_label("Cylinder 0 · side 0");
+    w.get_by_label("AmigaDOS (11/11 sectors)");
+    // Its data's size unknown: the recording keeps none of it.
+    w.get_by_label(&format!("Sector {n}"));
+    // A click opens it, as a read's does.
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 0, side 0"));
+}
+
 #[test]
 fn detects_tracks_give_way_to_the_pages_map_once_another_format_is_chosen() {
     let mut job = Job::replay(DETECT, "T0.0: Raw Flux (500 flux in 400.00ms)");
