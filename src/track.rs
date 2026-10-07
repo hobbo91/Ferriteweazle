@@ -34,20 +34,22 @@ where
     Ok(serde_json::from_value(v).ok())
 }
 
-/// A track's flux, in its sample rate's ticks.
+/// A track's flux, in its sample rate's ticks, as the bridge counted it.
 #[derive(Debug, Deserialize)]
 struct Flux {
     /// Ticks per second.
     freq: f64,
-    /// Ticks between index pulses, the first from the read's start unless it starts at one.
-    index: Vec<f64>,
-    cued: bool,
-    /// Ticks per revolution: the mean of the full ones read, else gw's measure of the drive.
+    /// Ticks per revolution: the mean of those read, else gw's measure of the drive.
     period: f64,
-    /// Ticks the read lasted.
-    end: f64,
-    /// Flux transitions in equal parts of a revolution over the whole read,
-    /// each revolution from its own index to the next; see spin().
+    /// Each revolution read, from index pulse to index pulse.
+    #[serde(default)]
+    revs: Vec<f64>,
+    /// Each pass the reads made round the track: from a share of a
+    /// revolution from the index to another, before 0 or past 1 where it
+    /// runs over the index. Each revolution whole, and what a read took
+    /// before its first pulse or after its last.
+    passes: Vec<[f64; 2]>,
+    /// Flux transitions in equal parts of a revolution, over those passes.
     bins: Vec<u32>,
 }
 
@@ -536,53 +538,32 @@ fn place(p: &Place, per_rev: Option<f64>) -> Option<([f32; 3], bool)> {
     Some((at, after.is_none()))
 }
 
-/// How the disk turned and its flux fell, from the bridge's count of it.
+/// How the disk turned and its flux fell, from the bridge's count of it:
+/// each part's transitions over how often the passes crossed it. None for
+/// a count the bridge does not make.
 fn spin(f: &Flux) -> Option<Spin> {
     let parts = f.bins.len();
-    if parts == 0 || f.period <= 0.0 || f.freq <= 0.0 {
+    // A pass runs from at most a revolution before the index, for under two.
+    let sane =
+        |&[from, to]: &[f64; 2]| from < to && to - from < 2.0 && (-1.0..=1.0).contains(&from);
+    let positive = |x: &f64| *x > 0.0;
+    if parts == 0
+        || ![f.period, f.freq].iter().all(positive)
+        || !f.passes.iter().all(sane)
+        || !f.revs.iter().all(positive)
+    {
         return None;
     }
-    // How often the read passed each part, as the bridge counted: each
-    // revolution from its index pulse to the next; before the first pulse
-    // and after the last, by the length of the revolution beside it.
-    let mut pulses: Vec<f64> = f
-        .index
-        .iter()
-        .scan(0.0, |at, &x| {
-            *at += x;
-            Some(*at)
-        })
-        .collect();
-    if f.cued {
-        pulses.insert(0, 0.0);
-    }
-    let (&first_pulse, &last_pulse) = pulses.first().zip(pulses.last())?;
-    let turns: Vec<f64> = pulses.windows(2).map(|w| w[1] - w[0]).collect();
-    let first = turns.first().copied().unwrap_or(f.period);
-    let last = turns.last().copied().unwrap_or(f.period);
-    // Read before the first pulse and after the last, in revolutions: under
-    // two, or the pulses are not a disk's index.
-    let (lead, tail) = (first_pulse / first, (f.end - last_pulse).max(0.0) / last);
-    let sane = |x: f64| x.is_finite() && (0.0..2.0).contains(&x);
-    if turns.iter().any(|&t| !(t.is_finite() && t > 0.0)) || !sane(lead) || !sane(tail) {
-        return None;
-    }
+    let n = parts as f64;
     let mut cover = vec![0.0; parts];
-    let mut pass = |from: f64, to: f64| {
-        // Shares of a revolution, which may run on past 1.
-        let n = parts as f64;
+    for &[from, to] in &f.passes {
         let mut part = (from * n).floor();
         while part < to * n {
             let covered = (to * n).min(part + 1.0) - (from * n).max(part);
             cover[part.rem_euclid(n) as usize] += covered.max(0.0);
             part += 1.0;
         }
-    };
-    if !f.cued {
-        pass(1.0 - lead, 1.0);
     }
-    turns.iter().for_each(|_| pass(0.0, 1.0));
-    pass(0.0, tail);
     let bins: Vec<f32> = f
         .bins
         .iter()
@@ -597,7 +578,7 @@ fn spin(f: &Flux) -> Option<Spin> {
         .collect();
     Some(Spin {
         period: f.period / f.freq,
-        revs: turns.iter().map(|r| r / f.freq).collect(),
+        revs: f.revs.iter().map(|r| r / f.freq).collect(),
         per_rev: bins.iter().map(|&b| f64::from(b)).sum(),
         bins,
     })
@@ -672,10 +653,9 @@ mod tests {
         // Half a revolution, then the index, then one whole revolution.
         let flux = Flux {
             freq: 1000.0,
-            index: vec![50.0, 100.0],
-            cued: false,
             period: 100.0,
-            end: 150.0,
+            revs: vec![100.0],
+            passes: vec![[0.5, 1.0], [0.0, 1.0]],
             bins: vec![2, 2, 1, 1],
         };
         let spin = spin(&flux).unwrap();
@@ -793,26 +773,30 @@ mod tests {
     }
 
     #[test]
-    fn pulses_that_are_no_disks_index_make_no_revolutions() {
-        let flux = |index: Vec<f64>, cued, end| Flux {
+    fn a_count_the_bridge_does_not_make_shows_no_flux() {
+        let flux = |revs: Vec<f64>, passes: Vec<[f64; 2]>| Flux {
             freq: 1000.0,
-            index,
-            cued,
             period: 100.0,
-            end,
+            revs,
+            passes,
             bins: vec![1; 4],
         };
+        assert!(spin(&flux(vec![100.0], vec![[0.0, 1.0]])).is_some());
         assert!(
-            spin(&flux(vec![0.0, 100.0], true, 100.0)).is_none(),
-            "one of no length"
+            spin(&flux(vec![0.0], vec![[0.0, 1.0]])).is_none(),
+            "a revolution of no length"
         );
         assert!(
-            spin(&flux(vec![1000.0, 100.0], false, 1100.0)).is_none(),
+            spin(&flux(vec![100.0], vec![[-9.0, 1.0]])).is_none(),
             "ten before"
         );
         assert!(
-            spin(&flux(vec![100.0], true, 100_000.0)).is_none(),
-            "a thousand after"
+            spin(&flux(vec![100.0], vec![[0.0, 1e9]])).is_none(),
+            "on and on after"
+        );
+        assert!(
+            spin(&flux(vec![100.0], vec![[0.5, 0.5]])).is_none(),
+            "nowhere"
         );
         let p = Place {
             at: 10.0,
@@ -822,5 +806,72 @@ mod tests {
             cued: false,
         };
         assert_eq!(place(&p, Some(100.0)), None, "no revolution to place it in");
+    }
+
+    /// Bytes no disk holds of its own: gw's filler, one byte over and over,
+    /// or tests/data/scrub.py's count.
+    fn made_up(bytes: &[u8]) -> bool {
+        let filler = b"-=[BAD SECTOR]=-";
+        bytes.windows(2).all(|w| w[0] == w[1])
+            || bytes.chunks(16).all(|c| c == &filler[..c.len()])
+            || bytes.windows(2).all(|w| w[1] == w[0].wrapping_add(1))
+    }
+
+    #[test]
+    fn every_recorded_report_parses_and_holds_no_disks_data() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data");
+        let mut reports = 0;
+        for file in std::fs::read_dir(dir).unwrap() {
+            let path = file.unwrap().path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in text.lines() {
+                let named = |v: &serde_json::Value| -> Vec<String> {
+                    let mut hex = Vec::new();
+                    walk(v, &mut hex);
+                    hex
+                };
+                let (json, kind) = match line.split_once(' ') {
+                    Some(("@ferriteweazle", rest)) => match rest.split_once(' ') {
+                        Some((kind @ ("track" | "image"), json)) => (json, kind),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if kind == "track" {
+                    assert!(Facts::parse(json).is_some(), "{path:?}: {json:.80}");
+                }
+                let v: serde_json::Value = serde_json::from_str(json).unwrap();
+                for h in named(&v) {
+                    let bytes = hex(&h).unwrap_or_else(|| panic!("{path:?}: not hex"));
+                    assert!(
+                        made_up(&bytes),
+                        "{path:?}: a disk's data; see tests/data/scrub.py"
+                    );
+                }
+                reports += 1;
+            }
+        }
+        assert!(reports > 1000, "{reports}");
+
+        /// Every "bytes" string and "data" value in a report.
+        fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Object(m) => {
+                    for (k, x) in m {
+                        match (k.as_str(), x) {
+                            ("bytes", serde_json::Value::String(h)) => out.push(h.clone()),
+                            ("data", serde_json::Value::Object(d)) => {
+                                out.extend(d.values().filter_map(|h| h.as_str().map(str::to_owned)))
+                            }
+                            _ => walk(x, out),
+                        }
+                    }
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
     }
 }

@@ -672,9 +672,21 @@ const FORMATS: [(&str, &str); 23] = [
 /// bytes in `format` (with none, writing `image` as it is): tests/data/drive.py
 /// over the bridge, which must have written to the stand-in.
 fn stand_in_write(tools: &Tools, format: &str, image: &Path, tracks: &str) -> String {
+    stand_in_write_with(tools, format, image, tracks, &[])
+}
+
+/// As stand_in_write, with `env` for drive.py, such as FAIL_AT.
+fn stand_in_write_with(
+    tools: &Tools,
+    format: &str,
+    image: &Path,
+    tracks: &str,
+    env: &[(&str, &str)],
+) -> String {
     let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
     let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
     let out = std::process::Command::new(&tools.python)
+        .envs(env.iter().copied())
         .arg(data.join("drive.py"))
         .arg(&bridge)
         .arg(format)
@@ -770,6 +782,149 @@ fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
             );
         }
     }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_track_is_reported_as_written_only_once_gw_has_written_it() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("write-fails");
+    let image = dir.join("disk.img");
+    let text = stand_in_write_with(&tools, "ibm.1440", &image, "c=0-3", &[("FAIL_AT", "2.0")]);
+    assert!(text.contains("could not write"), "{}", unreported(&text));
+    let sources: Vec<((u32, u32), Option<Source>)> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        .map(|l| {
+            let (key, facts) = Facts::parse(l).expect("a report");
+            (key, facts.source)
+        })
+        .collect();
+    let written = |key| sources.contains(&(key, Some(Source::Written)));
+    assert!(written((1, 1)) && sources.contains(&((1, 1), Some(Source::Verify))));
+    assert!(!written((2, 0)), "the write failed: {sources:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// What the bridge's report_flux, given gw's own Flux, makes of reads gw
+/// joined, of pulses that are no index, and of a hard-sectored disk's holes.
+const FLUX_CASES: &str = r#"
+import json, runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle.flux import Flux
+bridge['joining']()
+# A read from between pulses, of two revolutions and a tenth, then another
+# from between pulses, of one revolution and a tenth: in ticks of 1000 a second.
+a = Flux([50, 100, 100], [10] * 26, 1000, index_cued=False)
+b = Flux([30, 100], [10] * 14, 1000, index_cued=False)
+a.append(b)
+joined = bridge['report_flux'](a)
+# A last pulse of no length, with flux on past it; and a read two revolutions on past its last.
+none = [bridge['report_flux'](Flux([1000, 0], [100] * 15, 1e6, index_cued=False)),
+        bridge['report_flux'](Flux([100, 100], [10] * 50, 1000, index_cued=False))]
+# 16 sector holes a revolution of 1600 ticks, and the index hole between two.
+holes = [50, 50] + [100] * 15
+raw = Flux(holes * 3, [10] * 480, 1000, index_cued=False)
+args = type('Args', (), {'hard_sectors': True})()
+told = bridge['indexed'](raw, args)
+print(json.dumps({'joined': joined, 'none': none, 'index': told.index_list,
+                  'raw': raw.index_list[:3]}))
+"#;
+
+#[test]
+fn reads_gw_joins_are_each_counted_on_their_own_and_pulses_that_are_no_index_count_nothing() {
+    let Some(tools) = tools() else { return };
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let mut python = std::process::Command::new(&tools.python)
+        .args(["-c", FLUX_CASES])
+        .arg(&bridge)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("python runs");
+    // A count that never ends ends the test, not hangs it.
+    let start = Instant::now();
+    while python.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(30) {
+            python.kill().ok();
+            panic!("report_flux did not end");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = python.wait_with_output().unwrap();
+    let said: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    let joined = &said["joined"];
+    // Three revolutions, not the joint between the reads.
+    assert_eq!(
+        joined["revs"],
+        serde_json::json!([100.0, 100.0, 100.0]),
+        "{joined}"
+    );
+    let passes = serde_json::json!([
+        [0.5, 1.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        [0.0, 0.1],
+        [0.7, 1.0],
+        [0.0, 1.0],
+        [0.0, 0.1]
+    ]);
+    assert_eq!(joined["passes"], passes);
+    let counted: u64 = joined["bins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.as_u64().unwrap())
+        .sum();
+    assert_eq!(counted, 40, "every transition of both reads");
+    assert_eq!(said["none"], serde_json::json!([null, null]));
+    // gw's own index, the sector holes left out, and the flux it was given as it was.
+    let index: Vec<f64> = serde_json::from_value(said["index"].clone()).unwrap();
+    assert!(
+        index.iter().skip(1).all(|&t| (t - 1600.0).abs() < 1e-6),
+        "{index:?}"
+    );
+    assert_eq!(said["raw"], serde_json::json!([50, 50, 100]));
+}
+
+#[test]
+fn a_bitcell_image_converts_as_it_would_unreported_and_each_track_reports_its_flux() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("bitcells");
+    let (img, hfe, back) = (dir.join("a.img"), dir.join("a.hfe"), dir.join("back.img"));
+    let bytes: Vec<u8> = (0..368_640u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&img, &bytes).unwrap();
+    let fmt = "--format=ibm.360";
+    run(&tools, &["convert", fmt, &path(&img), &path(&hfe)]);
+    // An HFE's tracks are gw's master tracks, which make their flux when asked.
+    let job = run(&tools, &["convert", fmt, &path(&hfe), &path(&back)]);
+    assert_eq!(std::fs::read(&back).unwrap(), bytes);
+    let facts = &job.progress.facts;
+    assert_eq!(facts.len(), 80);
+    for (key, f) in facts {
+        assert!(f.flux.is_some() && f.sectors.len() == 9, "{key:?}");
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_track_a_conversions_input_lacks_is_reported_absent() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("absent");
+    let (img, scp, back) = (dir.join("a.img"), dir.join("a.scp"), dir.join("back.img"));
+    std::fs::write(&img, vec![0x5a; 368_640]).unwrap();
+    // Flux of cylinders 0 and 1 only.
+    let fmt = "--format=ibm.360";
+    run(
+        &tools,
+        &["convert", fmt, "--tracks=c=0-1", &path(&img), &path(&scp)],
+    );
+    let job = run(&tools, &["convert", fmt, &path(&scp), &path(&back)]);
+    let facts = &job.progress.facts;
+    assert!(!facts[&(1, 1)].absent && facts[&(1, 1)].flux.is_some());
+    assert!(facts[&(2, 0)].absent && facts[&(39, 1)].absent);
+    assert_eq!(facts.values().filter(|f| f.absent).count(), 76);
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -1033,6 +1188,12 @@ fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks
     // As another format lays it out: past the file's end, gw's zeros.
     let wide = opened(&["write", "--format=ibm.1440", &path(&adf)], &adf).unwrap();
     assert_eq!(states(&wide)["PastEnd"], (1_474_560 - 901_120) / 512);
+    // A file longer than its format lays out: only what gw reads comes over.
+    let big = dir.join("Big.img");
+    std::fs::write(&big, vec![0x5a; 1_474_560]).unwrap();
+    let long = opened(&["write", "--format=amiga.amigados", &path(&big)], &big).unwrap();
+    assert_eq!(long.size, Some(1_474_560));
+    assert_eq!(long.content.as_ref().map(Vec::len), Some(901_120));
     // A conversion's input, its output not made.
     let input = opened(&["convert", &path(&adf), &path(&scp)], &adf).unwrap();
     assert!(input.layout.is_some() && !scp.exists());
@@ -1245,6 +1406,10 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
     let log =
         std::fs::read_to_string(dir.join("Game.scp.log")).expect("the log is beside the image");
     assert!(log.contains("Found 720 sectors of 720 (100%)"), "{log}");
+    // The bridge's reports, the disk's bytes and all, are the app's alone.
+    assert!(!job.progress.facts.is_empty(), "reported");
+    assert!(!log.contains("@ferriteweazle"), "{log}");
+    assert!(!job.log.iter().any(|l| l.starts_with("@ferriteweazle")));
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -2650,6 +2815,7 @@ fn detection_reads_the_disk_or_image_as_its_page_would() {
             .args(["-c", FAKE_DRIVE])
             .arg(&bridge)
             .arg(image)
+            .arg(format!("--device={NO_SUCH_PORT}"))
             .arg("--tracks=h0.off=+2:h1.off=+2:hswap")
             .args(options)
             .output()
@@ -2743,7 +2909,8 @@ fn read_in_passes(
         .arg(&bridge)
         .arg(disk)
         .arg(env.to_string())
-        .args(["read", &format!("--format={format}"), "--retries=0"])
+        .args(["read", &format!("--device={NO_SUCH_PORT}")])
+        .args([&format!("--format={format}"), "--retries=0"])
         .args(options)
         .args(["--tracks=c=0-1", &path(image)])
         .output()

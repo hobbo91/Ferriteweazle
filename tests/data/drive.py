@@ -4,11 +4,12 @@ it back from wherever it is when gw verifies. Makes IMAGE first, of random
 bytes in FORMAT; with FORMAT empty, writes IMAGE, a flux image, as it is.
 Prints gw's output, with the bridge's TRACK lines, and STAND_IN once the
 stand-in is in use. gw is given a port that does not exist, so that it could
-not reach a real drive even if it got past the stand-in.
+not reach a real drive even if it got past the stand-in. With FAIL_AT set to
+a track, such as 3.0, writing it fails, as a write-protected disk's does.
 
     python drive.py BRIDGE FORMAT IMAGE [gw write options...]
 """
-import contextlib, io, random, runpy, sys
+import contextlib, io, os, random, runpy, sys
 bridge = runpy.run_path(sys.argv[1])
 fmt, image, options = sys.argv[2], sys.argv[3], sys.argv[4:]
 from greaseweazle.codec import codec
@@ -51,6 +52,8 @@ class Drive:
     def write_track(self, flux_list, cue_at_index=True, terminate_at_index=True,
                     hard_sector_ticks=0):
         assert cue_at_index and not hard_sector_ticks
+        if os.environ.get('FAIL_AT') == '%d.%d' % self.at:
+            raise OSError('the stand-in drive could not write')
         times, t = [], 0.0
         for f in flux_list:
             t += f

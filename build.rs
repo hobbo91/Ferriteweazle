@@ -12,13 +12,17 @@ fn main() {
     }
 }
 
-/// src/bridge.py, zlib-compressed and in base64, for tools.rs: raw, it would
-/// soon pass the 32,767 characters of a Windows command line.
+include!("src/strip.rs");
+
+/// src/bridge.py without its comments and docstrings, zlib-compressed and in
+/// base64, for tools.rs: whole, it would soon pass the 32,767 characters of
+/// a Windows command line.
 fn bridge() {
     const BRIDGE: &str = "src/bridge.py";
     println!("cargo::rerun-if-changed={BRIDGE}");
-    let source = std::fs::read(BRIDGE).expect("src/bridge.py is readable");
-    let packed = miniz_oxide::deflate::compress_to_vec_zlib(&source, 9);
+    println!("cargo::rerun-if-changed=src/strip.rs");
+    let source = std::fs::read_to_string(BRIDGE).expect("src/bridge.py is readable");
+    let packed = miniz_oxide::deflate::compress_to_vec_zlib(strip(&source).as_bytes(), 9);
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("Cargo sets OUT_DIR"));
     std::fs::write(out.join("bridge.b64"), base64(&packed)).expect("OUT_DIR is writable");
 }
