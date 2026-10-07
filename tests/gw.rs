@@ -2061,13 +2061,13 @@ fn a_blank_image_is_no_format_and_says_so() {
     let job = detect(&tools, &flux_of(&tools, &dir, "raw.250", 0));
     assert_eq!(job.outcome(), Some(Outcome::Failed));
     assert!(job.detected.is_empty());
-    assert!(
-        job.progress
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("No format")),
-        "{:?}",
-        job.progress.error
+    // An image's tracks, which gw takes as they are with no format.
+    assert_eq!(
+        job.progress.error.as_deref(),
+        Some(
+            "No format Greaseweazle Tools knows reads this image in full. \
+             Set Disk format to None to use its tracks as they are."
+        )
     );
     // The flux of each track it read, and no format's sectors.
     let facts = &job.progress.facts;

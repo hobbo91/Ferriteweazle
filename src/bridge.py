@@ -14,6 +14,13 @@ TRACK = '@ferriteweazle track '
 IMAGE = '@ferriteweazle image '
 VERIFY = '@ferriteweazle verify '
 
+# Detect's word where no format reads every sector: of a disk, gw reads it
+# as raw flux with no format; of an image, gw takes its tracks as they are.
+UNDETECTED_DISK = ('No format Greaseweazle Tools knows reads this disk in full. '
+                   'Set Disk format to None to read as raw flux (.scp).')
+UNDETECTED_IMAGE = ('No format Greaseweazle Tools knows reads this image in full. '
+                    'Set Disk format to None to use its tracks as they are.')
+
 # The equal parts of a revolution a track's report counts its flux in: a
 # quarter of a degree each.
 BINS = 1440
@@ -402,7 +409,7 @@ def detect(argv):
         print('This is a 40-track disk in an 80-track drive: it needs Step 2.')
     print(RESULT + json.dumps({'formats': whole, 'step': step}), flush=True)
     if not whole:
-        print('** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full. Choose one by hand.')
+        print('** FATAL ERROR:\n' + (UNDETECTED_IMAGE if a.file else UNDETECTED_DISK))
         return 1
     print(f'Format {whole[0]}')
     return 0

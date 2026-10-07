@@ -822,3 +822,47 @@ fn about(theme: egui::Theme) {
     let image = harness.render().expect("the window renders");
     image.save(format!("{dir}/about-{suffix}.png")).unwrap();
 }
+
+/// A Detect on `page` that found no format, with the bridge's `message`.
+fn undetected(page: &str, message: &str) -> Job {
+    let read: String = DETECTED
+        .lines()
+        .take(7)
+        .map(|l| l.to_owned() + "\n")
+        .collect();
+    let log =
+        read + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n** FATAL ERROR:\n" + message;
+    let mut job = Job::replay(DETECT, &log);
+    job.page = page.into();
+    job
+}
+
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn detect_failed() {
+    const DISK: &str = "No format Greaseweazle Tools knows reads this disk in full. \
+                        Set Disk format to None to read as raw flux (.scp).";
+    const IMAGE: &str = "No format Greaseweazle Tools knows reads this image in full. \
+                         Set Disk format to None to use its tracks as they are.";
+    const IPF: &str = "/Users/you/Documents/Ferriteweazle/Images/Lemmings_Disk1.ipf";
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        for (page, message) in [("read", DISK), ("write", IMAGE), ("convert", IMAGE)] {
+            for (size, at) in [("smallest", ferriteweazle::SMALLEST), ("default", DEFAULT)] {
+                let mut s = settings(page, theme);
+                s.values.entry("write".into()).or_default().set("file", IPF);
+                let convert = s.values.entry("convert".into()).or_default();
+                convert.set("in_file", IPF);
+                convert.set("format", "");
+                let job = undetected(page, message);
+                render_sized(
+                    &format!("detect-failed-{page}-{size}"),
+                    at,
+                    theme,
+                    s,
+                    Some(job),
+                    |_| {},
+                );
+            }
+        }
+    }
+}
