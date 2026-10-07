@@ -418,15 +418,45 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
 /// Each colour on the map with its track count, then the retries. `verifying`: a
 /// write gw verifies is running, so its one written track is the one gw checks.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
+    // Rows a line of its text apart where it wraps, not a field's height:
+    // a wrapping row takes its height as it is made.
+    let row = ui.text_style_height(&egui::TextStyle::Small).max(10.0);
+    let spacing = ui.spacing_mut();
+    let kept = (spacing.interact_size.y, spacing.item_spacing.y);
+    (spacing.interact_size.y, spacing.item_spacing.y) = (row, 4.0);
     ui.horizontal_wrapped(|ui| {
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let gap = ui.spacing().item_spacing.x;
         for (swatch, skipped, name, tracks, tip) in entries(shown, progress, verifying, p) {
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            let edge = edge(skipped, p);
-            ui.painter()
-                .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
             // The grid's squares are tracks: its counts need no word for them.
             let text = tracks.map_or(name.to_owned(), |n| format!("{name} {n}"));
-            ui.label(RichText::new(text).small()).on_hover_text(tip);
+            let colour = ui.visuals().text_color();
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text.clone(), font.clone(), colour);
+            // Each entry whole on its row: its swatch and its name never apart.
+            let size = vec2(10.0 + gap + galley.size().x, galley.size().y.max(10.0));
+            let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+            let square = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.center().y - 5.0),
+                vec2(10.0, 10.0),
+            );
+            let edge = edge(skipped, p);
+            ui.painter().rect(
+                square,
+                CornerRadius::same(2),
+                swatch,
+                edge,
+                StrokeKind::Inside,
+            );
+            let at = egui::pos2(
+                square.right() + gap,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            ui.painter().galley(at, galley, colour);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+            response.on_hover_text(tip);
             ui.add_space(6.0);
         }
         let retries = progress.tally().retries;
@@ -434,6 +464,8 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
             ui.label(RichText::new(retry_text(retries)).small().weak());
         }
     });
+    let spacing = ui.spacing_mut();
+    (spacing.interact_size.y, spacing.item_spacing.y) = kept;
 }
 
 /// The legend's entries for tracks shown in `shown` colours, as the map
@@ -458,7 +490,11 @@ pub(crate) fn entries<'a>(
             "Good",
             "Every sector found, or written and verified.",
         ),
-        (Status::Partial, "Short", "Some sectors missing."),
+        (
+            Status::Partial,
+            "Sectors missing",
+            "Some of the track's sectors not read.",
+        ),
         (Status::Bad, "Bad", "No sectors found, or the write failed."),
         (Status::Flux, "Flux", "Read as flux, not decoded."),
         (

@@ -2368,6 +2368,27 @@ fn middle(job: &Job, i: usize) -> f32 {
 }
 
 #[test]
+fn tracks_with_sectors_missing_are_named_so_on_the_grid_and_on_the_disks() {
+    // The scratch cut into side 0, cylinders 18 to 62: 55 sectors not read.
+    let disks = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let w = build(Harness::builder().with_size(DEFAULT), disks, Some(job));
+    w.get_by_label("Sectors missing 45 tracks");
+    w.get_by_label("55 missing");
+    let grid = Settings {
+        drawer: None,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let w = build(Harness::builder().with_size(DEFAULT), grid, Some(job));
+    w.get_by_label_contains("Sectors missing 45");
+    assert!(w.query_by_label_contains("Short").is_none());
+}
+
+#[test]
 fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out() {
     let job = Job::replay("convert", KINDS);
     let (r2, r7) = (middle(&job, 1), middle(&job, 6));

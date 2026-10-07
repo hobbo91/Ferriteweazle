@@ -275,8 +275,12 @@ pub(crate) struct Look {
     pub(crate) body: Color32,
     pub(crate) hub: Color32,
     pub(crate) rim: Color32,
-    /// Where no sector was found on a track gw decoded from flux.
+    /// Where no sector was found on a track gw decoded from flux; on a track
+    /// with sectors missing, or with none found, the grid's colour for it,
+    /// toned toward the disk's.
     pub(crate) gap: Color32,
+    pub(crate) missing_gap: Color32,
+    pub(crate) bad_gap: Color32,
     /// A track gw is to work on and has not reported: in the image view, and
     /// on the disk, a shade off its surface toward the text's colour.
     pub(crate) pending: Color32,
@@ -312,6 +316,8 @@ impl Look {
             hub: theme::lerp(body, p.line_strong, 0.8),
             rim: p.line_strong,
             gap: theme::lerp(body, p.flux, 0.25),
+            missing_gap: theme::lerp(p.partial, body, MISSING_TONE),
+            bad_gap: theme::lerp(p.bad, body, MISSING_TONE),
             pending: p.pending,
             to_do: theme::lerp(body, p.text, 0.12),
             unknown: theme::lerp(body, p.text, 0.35),
@@ -897,8 +903,8 @@ enum Ring<'a> {
     /// its flux.
     Unknown,
     /// Each sector gw found, where it found it; where gw decoded flux and
-    /// found none, the gap's colour.
-    Sectors(&'a Facts),
+    /// found none, the gap's colour, or its shortfall's.
+    Sectors(&'a Facts, Shortfall),
     /// Read as flux, not decoded.
     Flux,
     /// The flux round it, against the track's average.
@@ -952,7 +958,7 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
             }),
         ) => Ring::Spin(spin),
         (Shows::Sectors, Some(f)) if placed || (f.summary.is_some() && f.sectors.is_empty()) => {
-            Ring::Sectors(f)
+            Ring::Sectors(f, Shortfall::of(f))
         }
         (Shows::Sectors, Some(f)) if f.summary.is_none() && f.flux.is_some() => Ring::Flux,
         (_, None) if track.is_some_and(|t| t.status == Status::Skipped) => Ring::Bare,
@@ -972,10 +978,12 @@ fn row(ring: Ring, look: &Look) -> Row {
         Ring::Flux => Row::new(look.flux),
         Ring::Status(colour) => Row::new(colour),
         Ring::Spin(spin) => Row::pieces(spin.relative().iter().map(|&d| look.flux_at(d))),
-        Ring::Sectors(f) => {
-            let background = match f.flux {
-                Some(_) => look.gap,
-                None => look.body,
+        Ring::Sectors(f, shortfall) => {
+            let background = match (f.flux.is_some(), shortfall) {
+                (false, _) => look.body,
+                (true, Shortfall::None) => look.gap,
+                (true, Shortfall::Missing) => look.missing_gap,
+                (true, Shortfall::Bad) => look.bad_gap,
             };
             let mut row = Row::new(background);
             for s in &f.sectors {
@@ -987,6 +995,33 @@ fn row(ring: Ring, look: &Look) -> Row {
     row.finish();
     row
 }
+
+/// What a track lacks of the sectors its format lays out, as the grid
+/// counts it: some, as Sectors missing; all it should have decoded, as Bad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shortfall {
+    None,
+    Missing,
+    Bad,
+}
+
+impl Shortfall {
+    fn of(f: &Facts) -> Shortfall {
+        let decoded =
+            |s: &Sector| matches!(Class::of(s), Class::Good | Class::Empty | Class::Deleted);
+        match (f.missing.is_empty(), f.sectors.iter().any(decoded)) {
+            (true, _) => Shortfall::None,
+            (false, true) => Shortfall::Missing,
+            (false, false) => Shortfall::Bad,
+        }
+    }
+}
+
+/// How far the stretches with no sector found of a track with sectors
+/// missing, or none found, are toned from the grid's colour toward the
+/// disk's: apart from an incomplete sector's, the grid's colour at full
+/// strength.
+const MISSING_TONE: f32 = 0.15;
 
 /// Whether gw announced it would work on `key`.
 fn planned(progress: &Progress, (cyl, head): (u32, u32)) -> bool {
@@ -1005,11 +1040,14 @@ struct Drawn {
     sectors: [usize; Class::ALL.len()],
     headers_alone: bool,
     data_alone: bool,
-    /// ID fields; sectors that meet; and where gw decoded flux, places with
-    /// no sector.
+    /// ID fields; sectors that meet; where gw decoded flux, places with no
+    /// sector on tracks gw found whole; and tracks with sectors missing, or
+    /// none found, so drawn.
     id_fields: bool,
     meet: bool,
     gaps: bool,
+    missing_tracks: usize,
+    bad_tracks: usize,
     /// Tracks read as flux and not decoded, not known, and to do.
     flux: usize,
     unknown: usize,
@@ -1085,7 +1123,7 @@ impl Drawn {
         };
         for (cyl, side) in (0..span).flat_map(|c| (0..sides).map(move |s| (c, s))) {
             match ring(map, (cyl, side), &drawn, fits, p) {
-                Ring::Sectors(f) => {
+                Ring::Sectors(f, shortfall) => {
                     for s in f.sectors.iter().filter(|s| s.at.is_some()) {
                         let class = Class::of(s);
                         drawn.sectors[class as usize] += 1;
@@ -1095,7 +1133,13 @@ impl Drawn {
                         drawn.id_fields |= s.header_end.is_some();
                     }
                     drawn.meet |= meet(&f.sectors);
-                    drawn.gaps |= f.flux.is_some();
+                    if f.flux.is_some() {
+                        match shortfall {
+                            Shortfall::None => drawn.gaps = true,
+                            Shortfall::Missing => drawn.missing_tracks += 1,
+                            Shortfall::Bad => drawn.bad_tracks += 1,
+                        }
+                    }
                 }
                 Ring::Flux => drawn.flux += 1,
                 Ring::Unknown => drawn.unknown += 1,
@@ -2733,6 +2777,24 @@ impl Legend {
                     let mark = Mark::Swatch(look.seen(look.gap));
                     entries.push(entry(Some(mark), "No sector found".into(), None));
                 }
+                for (n, colour, name, tip) in [
+                    (
+                        drawn.missing_tracks,
+                        look.missing_gap,
+                        "Sectors missing",
+                        "Where gw found no sector, on a track with sectors missing",
+                    ),
+                    (drawn.bad_tracks, look.bad_gap, "Bad", "No sectors found"),
+                ] {
+                    if n > 0 {
+                        let text = format!("{name} {}", diskmap::tracks(n));
+                        entries.push(entry(
+                            Some(Mark::Swatch(look.seen(colour))),
+                            text,
+                            Some(tip),
+                        ));
+                    }
+                }
                 if drawn.flux > 0 {
                     let mark = Mark::Swatch(look.seen(look.flux));
                     let tip = Some("Read as flux, not decoded");
@@ -2775,12 +2837,13 @@ impl Legend {
                 None,
             ));
         }
-        let retries = progress.tally().retries;
-        if drawn.pure && retries > 0 {
-            entries.push(entry(None, diskmap::retry_text(retries), None));
-        } else if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
+        if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
             let tip = Some("In the format, not found");
             entries.push(entry(None, format!("{} missing", drawn.missing), tip));
+        }
+        let retries = progress.tally().retries;
+        if retries > 0 {
+            entries.push(entry(None, diskmap::retry_text(retries), None));
         }
         if drawn.shared > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
             let tip = Some("Sectors of one track with the same C, H, R and N");
@@ -3496,7 +3559,7 @@ mod tests {
             Ring::Bare => "bare",
             Ring::ToDo => "to do",
             Ring::Unknown => "not known",
-            Ring::Sectors(_) => "sectors",
+            Ring::Sectors(..) => "sectors",
             Ring::Flux => "flux",
             Ring::Spin(_) => "spin",
             Ring::Status(_) => "status",
@@ -3595,7 +3658,10 @@ mod tests {
         );
         assert_eq!(drawn.sectors, [1, 0, 0, 0, 0, 0]);
         let counted = (drawn.flux, drawn.unknown, drawn.to_do, drawn.gaps);
-        assert_eq!(counted, (1, 2, 1, true), "not in the image: not to do");
+        assert_eq!(counted, (1, 2, 1, false), "not in the image: not to do");
+        // AmigaDOS's sector 0 alone, then none: where gw found no sector, a
+        // track's with sectors missing, then a bad one's.
+        assert_eq!((drawn.missing_tracks, drawn.bad_tracks), (1, 1));
         let (flux, drawn) = rings(&map_of(&progress, Shows::Flux));
         assert_eq!(drawn.shows, Shows::Flux);
         assert_eq!(
