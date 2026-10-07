@@ -4,8 +4,8 @@ mod common;
 
 use common::{
     AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, KINDS, REFUSED, SCRATCHED, SPOILT, TRACK_0,
-    WORKBENCH, WRITTEN, Window, app, app_mut, damaged_read, greaseweazle, held, image_part, line,
-    on_disk, run_button, scratched_adf, squares,
+    WORKBENCH, WRITTEN, Window, app, app_mut, damaged_read, every_entry, greaseweazle, held,
+    image_part, line, on_disk, run_button, scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -2365,6 +2365,171 @@ fn detects_tracks_open_as_the_format_it_found_decodes_them() {
 fn middle(job: &Job, i: usize) -> f32 {
     let [start, _, end] = job.progress.facts[&(0, 0)].sectors[i].at.expect("a place");
     (start + end) / 2.0
+}
+
+/// Where the label `text` lies under the disks, in their legend: a label's
+/// text, or the value a legend's entry holds it in.
+fn in_disks_legend(w: &Window, text: &str) -> egui::Rect {
+    let map = w.get_by_label("Disk map").rect();
+    let named = |n: &egui_kittest::Node<'_>| {
+        let node = n.accesskit_node();
+        node.label().as_deref() == Some(text) || node.value().as_deref() == Some(text)
+    };
+    let mut found = w
+        .get_all_by_role(Role::Label)
+        .filter(|n| named(n) && n.rect().top() >= map.bottom() - 1.0);
+    let r = found
+        .next()
+        .unwrap_or_else(|| panic!("{text} not in the disks' legend"))
+        .rect();
+    assert!(found.next().is_none(), "{text} twice");
+    r
+}
+
+#[test]
+fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smallest_window() {
+    let small = ferriteweazle::SMALLEST;
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = start(
+        Harness::builder().with_size(small),
+        settings,
+        Some(every_entry()),
+    );
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    let id = egui::Id::new("analyse");
+    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
+    state.outer_rect.min.y = state.outer_rect.max.y - 240.0;
+    w.ctx.data_mut(|d| d.insert_persisted(id, state));
+    w.run_steps(4);
+    let drawer = egui::PanelState::load(&w.ctx, id).unwrap().outer_rect;
+    let legend: Vec<(&str, egui::Rect)> = [
+        "Good 1183",
+        "Empty 1062",
+        "Deleted 1062",
+        "Bad data 1062",
+        "Bad header 1062",
+        "Incomplete 2124",
+        "ID field",
+        "Sectors meet",
+        "No sector found",
+        "Sectors missing 118 tracks",
+        "Bad 1 track",
+        "Flux 1 track",
+        "Not known 1 track",
+        "Index",
+        "To do 38 tracks",
+        "Last reported",
+        "1187 missing",
+        "236 share an ID",
+        "1 retry",
+    ]
+    .map(|entry| (entry, in_disks_legend(&w, entry)))
+    .into();
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, small);
+    for (i, (name, r)) in legend.iter().enumerate() {
+        assert!(
+            drawer.contains_rect(*r) && window.contains_rect(*r),
+            "{name} at {r:?}, the drawer {drawer:?}"
+        );
+        for (other, s) in &legend[i + 1..] {
+            assert!(
+                r.intersect(*s).area() <= 0.0,
+                "{name} over {other}: {r:?}, {s:?}"
+            );
+        }
+    }
+    // The disks above it, drawn.
+    let map = w.get_by_label("Disk map").rect();
+    assert!(map.height() > 48.0 && drawer.contains_rect(map), "{map:?}");
+    // The Flux view's, with the same disk.
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.run_steps(4);
+    for entry in [
+        "More flux",
+        "Not known 1 track",
+        "Index",
+        "To do 38 tracks",
+        "Last reported",
+        "1 retry",
+    ] {
+        let r = in_disks_legend(&w, entry);
+        assert!(
+            drawer.contains_rect(r),
+            "{entry} at {r:?}, the drawer {drawer:?}"
+        );
+    }
+}
+
+#[test]
+fn every_entry_of_the_grids_legend_fits_under_its_squares_in_the_smallest_window() {
+    // Every status the grid colours a track with, at once, and a retry.
+    let mut log = vec!["Reading c=0-79:h=0-1 revs=2".to_owned()];
+    let lines = [
+        (
+            100,
+            "IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (
+            20,
+            "IBM MFM (5/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (
+            10,
+            "IBM MFM (0/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (10, "Raw Flux (100000 flux in 400.00ms)"),
+        (10, "Writing Track (Raw Flux)"),
+        (5, "Erasing Track"),
+        (
+            5,
+            "WARNING: Out of range for format 'ibm.1440': Track skipped",
+        ),
+    ];
+    let mut track = 0;
+    for (n, line) in lines {
+        for _ in 0..n {
+            log.push(format!("T{}.{}: {line}", track / 2, track % 2));
+            track += 1;
+        }
+    }
+    log.push(
+        "T0.1: IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms) (Retry #1.1)".into(),
+    );
+    let small = ferriteweazle::SMALLEST;
+    let settings = Settings {
+        drawer: None,
+        ..chosen()
+    };
+    let job = Job::replay("read", &log.join("\n"));
+    let w = build(Harness::builder().with_size(small), settings, Some(job));
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, small);
+    let legend: Vec<(&str, egui::Rect)> = [
+        "Good 100",
+        "Sectors missing 20",
+        "Bad 10",
+        "Flux 10",
+        "Written 10",
+        "Erased 5",
+        "Skipped 5",
+        "1 retry",
+    ]
+    .map(|entry| (entry, w.get_by_label(entry).rect()))
+    .into();
+    let bottom = squares(&w).map(|s| s.rect.bottom()).fold(0.0, f32::max);
+    for (i, (name, r)) in legend.iter().enumerate() {
+        assert!(window.contains_rect(*r), "{name} at {r:?}");
+        assert!(bottom < r.top(), "{name} under a square at {bottom}");
+        for (other, s) in &legend[i + 1..] {
+            assert!(
+                r.intersect(*s).area() <= 0.0,
+                "{name} over {other}: {r:?}, {s:?}"
+            );
+        }
+    }
 }
 
 #[test]

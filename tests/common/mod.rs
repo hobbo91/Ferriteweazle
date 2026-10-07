@@ -202,3 +202,119 @@ pub fn on_disk(w: &Window, share: f32, degrees: f32) -> egui::Pos2 {
     let a = degrees.to_radians();
     centre + share * radius * egui::vec2(a.cos(), -a.sin())
 }
+
+/// A read still running whose disks show every entry their legend has, at
+/// once, on made-up tracks, its counts as wide as a disk's: on 118 tracks
+/// nine sectors of each kind, sectors that meet, an ID repeated, nine
+/// headers and nine data blocks found alone and ten sectors missing; a
+/// track gw read whole; one where it found none; one read as flux alone;
+/// one it named and did not report; a retry; and 38 tracks to do. Its
+/// sectors' data counts up, so no disk's data is in it.
+pub fn every_entry() -> ferriteweazle::job::Job {
+    use serde_json::{Value, json};
+    let mut job = ferriteweazle::job::Job::replay("read", "");
+    job.ended = None;
+    let p = &mut job.progress;
+    p.feed("Reading c=0-79:h=0-1 revs=2");
+    let flux = json!({"freq": 72e6, "period": 14.4e6, "revs": [14.4e6], "passes": [[0.0, 1.0]],
+        "bins": [100, 100, 100, 100],
+        "intervals": {"width": 4, "first": 70, "top": 360, "counts": [5, 10, 5], "longer": 0}});
+    let counting = |from: u8| {
+        (0..128)
+            .map(|i: u8| format!("{:02x}", from.wrapping_add(i)))
+            .collect::<String>()
+    };
+    // 128-byte sectors, end to end, 1400 bit cells each.
+    let sector =
+        |c: u32, h: u32, r: u8, i: u32, header: bool, data: bool, mark: u8, bytes: String| {
+            let start = 500 + i * 1400;
+            json!({"id": [c, h, r, 0], "start": start, "header_end": start + 160,
+            "data_start": start + 400, "end": start + 1400, "header": header, "data": data,
+            "mark": mark, "bytes": bytes})
+        };
+    let laid = |c: u32, h: u32, found: &[u8], all: &[u8]| -> Value {
+        all.iter()
+            .map(|&r| sector(c, h, r, 0, found.contains(&r), false, 251, String::new()))
+            .collect()
+    };
+    let report =
+        |p: &mut ferriteweazle::progress::Progress, c: u32, h: u32, line: &str, codec: Value| {
+            p.feed(&format!(
+                "T{c}.{h}: {line} from Raw Flux (100000 flux in 400.00ms)"
+            ));
+            let r = json!({"c": c, "h": h, "turned": true, "flux": flux.clone(), "codec": codec});
+            p.report(&r.to_string());
+        };
+    for c in 0..61u32 {
+        for h in 0..2u32 {
+            match (c, h) {
+                // Read whole.
+                (0, 0) => {
+                    let found: Vec<Value> = (0..3)
+                        .map(|i| sector(c, h, i as u8 + 1, i, true, true, 251, counting(i as u8)))
+                        .collect();
+                    let codec = json!({"summary": "IBM MFM (3/3 sectors)", "nsec": 3, "good": [0, 1, 2],
+                        "time_per_rev": 0.2, "clock": 2e-6, "found": found,
+                        "laid": laid(c, h, &[1, 2, 3], &[1, 2, 3])});
+                    report(p, c, h, "IBM MFM (3/3 sectors)", codec);
+                }
+                // None found.
+                (0, 1) => {
+                    let codec = json!({"summary": "IBM MFM (0/7 sectors)", "nsec": 7, "good": [],
+                        "time_per_rev": 0.2, "clock": 2e-6, "found": [],
+                        "laid": laid(c, h, &[], &[1, 2, 3, 4, 5, 6, 7])});
+                    report(p, c, h, "IBM MFM (0/7 sectors)", codec);
+                }
+                // Flux alone.
+                (1, 0) => {
+                    p.feed("T1.0: Raw Flux (100000 flux in 400.00ms)");
+                    let r = json!({"c": c, "h": h, "turned": true, "flux": flux.clone()});
+                    p.report(&r.to_string());
+                }
+                // Named, not reported.
+                (1, 1) => {
+                    p.feed("T1.1: IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms)")
+                }
+                _ => {
+                    // Nine of each kind: good, empty, deleted, its data bad, its header bad.
+                    let kinds = [
+                        (true, true, 251),
+                        (true, true, 251),
+                        (true, true, 248),
+                        (true, false, 251),
+                        (false, false, 251),
+                    ];
+                    let mut found = Vec::new();
+                    for (k, &(header, data, mark)) in kinds.iter().enumerate() {
+                        for j in 0..9u32 {
+                            let (i, r) = (k as u32 * 9 + j, (k * 9) as u8 + j as u8 + 1);
+                            let bytes = match k {
+                                1 => "e5".repeat(128),
+                                _ => counting(r),
+                            };
+                            found.push(sector(c, h, r, i, header, data, mark, bytes));
+                        }
+                    }
+                    // R1 again, its header's CRC holding.
+                    found.push(sector(c, h, 1, 45, true, true, 251, counting(99)));
+                    let mut apart = Vec::new();
+                    for j in 0..9u32 {
+                        let at = 500 + (46 + 2 * j) * 1400;
+                        apart.push(json!({"id": [c, h, 50 + j, 0], "header": true, "start": at, "end": at + 160}));
+                        apart.push(json!({"id": null, "header": null, "start": at + 1400, "end": at + 1464, "mark": 251}));
+                    }
+                    let all: Vec<u8> = (1..=45).chain([99]).collect();
+                    let codec = json!({"summary": "IBM MFM (36/46 sectors)", "nsec": 46,
+                        "good": (0..36).collect::<Vec<_>>(), "time_per_rev": 0.2, "clock": 2e-6,
+                        "found": found, "apart": apart,
+                        "laid": laid(c, h, &(1..=36).collect::<Vec<u8>>(), &all)});
+                    report(p, c, h, "IBM MFM (36/46 sectors)", codec);
+                }
+            }
+        }
+    }
+    p.feed("T60.1: IBM MFM (36/46 sectors) from Raw Flux (100000 flux in 400.00ms) (Retry #1.1)");
+    // The track gw is on: its line alone.
+    p.feed("T61.0: IBM MFM (36/46 sectors) from Raw Flux (100000 flux in 400.00ms)");
+    job
+}
