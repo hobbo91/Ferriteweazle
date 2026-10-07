@@ -3,9 +3,9 @@
 mod common;
 
 use common::{
-    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN,
-    Window, app, app_mut, damaged_read, greaseweazle, held, image_part, line, on_disk, run_button,
-    scratched_adf, squares,
+    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, KINDS, REFUSED, SCRATCHED, SPOILT, TRACK_0,
+    WORKBENCH, WRITTEN, Window, app, app_mut, damaged_read, greaseweazle, held, image_part, line,
+    on_disk, run_button, scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -2359,6 +2359,70 @@ fn detects_tracks_open_as_the_format_it_found_decodes_them() {
     w.drop_at(at);
     w.run();
     w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 0, side 0"));
+}
+
+/// The middle of sector `i` of a job's track 0.0, as a share of a revolution.
+fn middle(job: &Job, i: usize) -> f32 {
+    let [start, _, end] = job.progress.facts[&(0, 0)].sectors[i].at.expect("a place");
+    (start + end) / 2.0
+}
+
+#[test]
+fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out() {
+    let job = Job::replay("convert", KINDS);
+    let (r2, r7) = (middle(&job, 1), middle(&job, 6));
+    let settings = Settings {
+        media: Media::ThreeHalf,
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // R1, the R7s and R8 good; R2 deleted; R3 and R4 with data that fails;
+    // R5 and R6 headers with no data; the R7s one ID.
+    for entry in [
+        "Good 4",
+        "Deleted 1",
+        "Bad data 2",
+        "Incomplete 2",
+        "2 share an ID",
+    ] {
+        w.get_by_label(entry);
+    }
+    assert!(w.query_by_label_contains("Bad header").is_none());
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r2));
+    w.run();
+    w.get_by_label("Sector C0 H0 R2 N2 · 512 bytes");
+    w.get_by_label("Header OK · Data OK · Mark F8 (deleted)");
+    // As gw writes an EDSK's track: gap 3, 40 bytes, and 12 of 00.
+    w.get_by_label("772 bytes from the index · 52 bytes after R1");
+    w.get_by_label_contains(", 34 bytes after the ID");
+    w.get_by_label("Order: 1 2 3 4 5 6 7 7 8");
+    w.get_by_label("ID repeated: R7 ×2");
+    w.get_by_label_contains("At ");
+    // Not the disk's turns: nothing of revolutions.
+    assert!(w.query_by_label_contains("revolution").is_none());
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r7));
+    w.run();
+    w.get_by_label_contains("Its ID also at ");
+}
+
+#[test]
+fn a_sectors_tip_says_how_gw_read_it_in_each_revolution_of_the_disk() {
+    let job = Job::replay("convert", SPOILT);
+    let r1 = middle(&job, 0);
+    let settings = Settings {
+        media: Media::ThreeHalf,
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r1));
+    w.run();
+    // gw keeps the good copy; the second revolution spoilt its data.
+    w.get_by_label("Header OK · Data OK · Mark FB");
+    w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
+    // An SCP's 25 ns ticks, two to a bin.
+    w.get_by_label("Flux intervals in µs, bins of 50.0 ns");
 }
 
 #[test]

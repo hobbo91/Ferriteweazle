@@ -27,6 +27,13 @@ pub const DETECTED: &str = include_str!("../data/detect-amiga.log");
 /// A track of a real Akai S950 disk's HFE image, as the bridge reports it,
 /// its sectors' data made up.
 pub const AKAI_TRACK: &str = include_str!("../data/report-akai.txt");
+/// tests/data/edsk.py's image converted as ibm.scan: one track, cylinder 0
+/// head 0, of each kind of sector, as gw lays an EDSK's track out: bitcells,
+/// not flux a drive read.
+pub const KINDS: &str = include_str!("../data/convert-kinds.log");
+/// That track as flux gw made of it, two revolutions, the second spoilt in
+/// R1's data (gw.rs's DAMAGE), converted as ibm.scan.
+pub const SPOILT: &str = include_str!("../data/convert-kinds-spoilt.log");
 /// Track 0's centreline on a 3½-inch disk's side 0, as a share of the way
 /// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
 pub const TRACK_0: f32 = 39.5 / 42.9;

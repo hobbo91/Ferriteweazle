@@ -16,7 +16,7 @@ use ferriteweazle::progress::Status;
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::service::{ImageAsk, Load, Service};
 use ferriteweazle::tools::{Origin, Tools};
-use ferriteweazle::track::{Facts, Source};
+use ferriteweazle::track::{Before, Data, Facts, Header, Id, Seen, Source};
 use ferriteweazle::{App, Drawer, Page, Settings};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -905,6 +905,156 @@ fn a_bitcell_image_converts_as_it_would_unreported_and_each_track_reports_its_fl
     for (key, f) in facts {
         assert!(f.flux.is_some() && f.sectors.len() == 9, "{key:?}");
     }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// tests/data/edsk.py's image, written to `dir`.
+fn kinds(tools: &Tools, dir: &Path) -> PathBuf {
+    let dsk = dir.join("kinds.dsk");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/edsk.py");
+    let made = std::process::Command::new(&tools.python)
+        .arg(script)
+        .arg(&dsk)
+        .status()
+        .expect("python runs");
+    assert!(made.success());
+    dsk
+}
+
+/// Bit cells as gw's FM and MFM decoders count them: 16 to a byte.
+const BYTE: f64 = 16.0;
+
+#[test]
+fn each_kind_of_sector_an_edsk_holds_is_told_apart_where_gw_lays_it_out() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("kinds");
+    let (dsk, imd) = (kinds(&tools, &dir), dir.join("kinds.imd"));
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.scan", &path(&dsk), &path(&imd)],
+    );
+    let f = &job.progress.facts[&(0, 0)];
+    let r = |s: &ferriteweazle::track::Sector| match s.id {
+        Id::Ibm([0, 0, r, 2]) => r,
+        id => panic!("{id:?}"),
+    };
+    let kinds: Vec<(u8, Header, Data, Option<u8>)> = f
+        .sectors
+        .iter()
+        .map(|s| (r(s), s.header, s.data, s.mark))
+        .collect();
+    // As edsk.py lays the track out: its data counts up, so none is empty.
+    let data = |d: Data| matches!(d, Data::Good);
+    assert_eq!(kinds.len(), 9, "{kinds:?}");
+    assert!(kinds[0] == (1, Header::Good, kinds[0].2, Some(0xfb)) && data(kinds[0].2));
+    assert!(kinds[1] == (2, Header::Good, kinds[1].2, Some(0xf8)) && data(kinds[1].2));
+    assert_eq!(kinds[2], (3, Header::Good, Data::Bad, Some(0xfb)));
+    assert_eq!(kinds[3], (4, Header::Good, Data::Bad, Some(0xf8)));
+    assert_eq!(kinds[4], (5, Header::Bad, Data::None, None));
+    assert_eq!(kinds[5], (6, Header::Good, Data::None, None));
+    assert!([6, 7, 8].map(|i| kinds[i].0) == [7, 7, 8]);
+    // Where gw's EDSK reader writes each: 80 bytes of 4E after the index,
+    // 12 of 00 and the index mark, 50 of 4E; then each sector after 12 of
+    // 00, its data 22 of 4E and 12 of 00 after its ID field, and 40 of 4E,
+    // edsk.py's gap 3, after its data. A header that has no data has only
+    // the 22 after it.
+    let layout = |i: usize| {
+        f.sectors[i]
+            .layout
+            .unwrap_or_else(|| panic!("{i}: no layout"))
+    };
+    assert_eq!(layout(0).from_index, (80 + 12 + 4 + 50 + 12) as f64 * BYTE);
+    assert_eq!(layout(0).after, Some((62.0 * BYTE, Before::IndexMark)));
+    for i in [1, 2, 3, 4, 7, 8] {
+        let (cells, _) = layout(i).after.unwrap();
+        assert_eq!(cells, 52.0 * BYTE, "{i}: gap 3 and the 00s");
+    }
+    for i in [5, 6] {
+        let (cells, before) = layout(i).after.unwrap();
+        assert_eq!(cells, 34.0 * BYTE, "{i}: gap 2 and the 00s");
+        assert!(matches!(before, Before::Header(..)), "{i}: {before:?}");
+    }
+    for i in [0, 1, 2, 3, 6, 7, 8] {
+        assert_eq!(layout(i).id_to_data, Some(34.0 * BYTE), "{i}");
+    }
+    // An image's bitcells, not the disk turning: no revolutions to count.
+    assert!(f.sectors.iter().all(|s| s.turns.is_none()));
+    // Its flux is gw's, from 2 µs cells: every interval two, three or four
+    // cells, nothing between.
+    let i = f.flux.as_ref().unwrap().intervals.as_ref().unwrap();
+    let mut long: Vec<(f64, u32)> = (i.counts.iter().enumerate())
+        .filter(|&(_, &n)| n > 0)
+        .map(|(k, &n)| ((i.first as f64 + k as f64) * i.width * 1e6, n))
+        .collect();
+    long.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let at: Vec<f64> = long
+        .iter()
+        .map(|&(us, _)| (us * 1e3).round() / 1e3)
+        .collect();
+    assert!(
+        at.iter().all(|us| [4.0, 6.0, 8.0]
+            .iter()
+            .any(|c| (us - c).abs() < i.width * 1e6)),
+        "{long:?}"
+    );
+    assert_eq!(i.longer, 0);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A track's revolution `rev` of an SCP file, made worse from `ms` in:
+/// `n` flux intervals in turn made one long and the rest too short for
+/// any cell, the revolution as long as it was.
+const DAMAGE: &str = r#"
+import struct, sys
+path, rev, ms, n = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4])
+d = bytearray(open(path, 'rb').read())
+track = struct.unpack_from('<I', d, 16)[0]
+_, count, data = struct.unpack_from('<3I', d, track + 4 + 12 * rev)
+at, t, i = track + data, 0, 0
+while t < ms * 40000:  # 25 ns ticks
+    t += struct.unpack_from('>H', d, at + 2 * i)[0]
+    i += 1
+values = [struct.unpack_from('>H', d, at + 2 * (i + k))[0] for k in range(n)]
+short = 60  # 1.5 us
+made = [sum(values) - short * (n - 1)] + [short] * (n - 1)
+for k, v in enumerate(made):
+    struct.pack_into('>H', d, at + 2 * (i + k), v)
+struct.pack_into('<I', d, 12, sum(d[16:]) & 0xffffffff)
+open(path, 'wb').write(d)
+"#;
+
+#[test]
+fn each_revolution_of_flux_gw_reads_is_counted_and_one_the_disk_spoilt_told_apart() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("turns");
+    let (dsk, scp, imd) = (
+        kinds(&tools, &dir),
+        dir.join("kinds.scp"),
+        dir.join("kinds.imd"),
+    );
+    run(&tools, &["convert", &path(&dsk), &path(&scp)]);
+    // R1's data runs from 6.5 ms to 23 ms after the index: spoilt at 12,
+    // in the second of the two revolutions gw writes.
+    let spoilt = std::process::Command::new(&tools.python)
+        .args(["-c", DAMAGE])
+        .arg(&scp)
+        .args(["1", "12", "10"])
+        .status()
+        .expect("python runs");
+    assert!(spoilt.success());
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.scan", &path(&scp), &path(&imd)],
+    );
+    let f = &job.progress.facts[&(0, 0)];
+    let turns = |i: usize| f.sectors[i].turns.clone().unwrap_or_else(|| panic!("{i}"));
+    // gw keeps the good copy: the sector is good, the revolution was not.
+    assert_eq!(f.sectors[0].data, Data::Good);
+    assert_eq!(turns(0).seen, [Seen::Good, Seen::BadData]);
+    assert_eq!(turns(0).reads, 1);
+    assert_eq!(turns(1).seen, [Seen::Good, Seen::Good]);
+    assert_eq!(turns(2).seen, [Seen::BadData, Seen::BadData]);
+    assert_eq!(turns(4).seen, [Seen::HeaderAlone, Seen::HeaderAlone]);
     std::fs::remove_dir_all(dir).ok();
 }
 
