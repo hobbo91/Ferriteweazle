@@ -4069,6 +4069,191 @@ fn analyse_draws_a_track_not_in_the_image_as_bare_disk_and_says_so() {
     assert!(w.query_by_label_contains("To do").is_none());
 }
 
+/// How many disk pictures the window keeps.
+fn pictures(w: &Window) -> usize {
+    let textures = w.ctx.tex_manager();
+    let textures = textures.read();
+    textures
+        .allocated()
+        .filter(|(_, t)| t.name == "disk")
+        .count()
+}
+
+#[test]
+fn analyse_lets_go_of_its_pictures_and_its_sector_window_when_it_is_not_drawn() {
+    let line = AKAI_TRACK
+        .trim()
+        .strip_prefix("@ferriteweazle track ")
+        .unwrap();
+    let [start, _, end] = Facts::parse(line).unwrap().1.sectors[0].at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert_eq!(pictures(&w), 2, "a side each");
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    let title = "C0 H0 R7 N3 · cylinder 0, side 0";
+    let window = |w: &Window| w.query_by_role_and_label(Role::Label, title).is_some();
+    assert!(window(&w), "the sector's window");
+    // Shut, the window over its button, it lets go of them, and the window
+    // shuts with it.
+    app_mut(&mut w).settings.drawer = None;
+    w.run();
+    assert_eq!(pictures(&w), 0);
+    assert!(!window(&w));
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert_eq!(pictures(&w), 2);
+    assert!(!window(&w), "not back with the drawer");
+    // Showing the image a conversion makes, it lets go of the disks'.
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert_eq!(pictures(&w), 2);
+    w.get_by_role_and_label(Role::Button, "Image analysis")
+        .click();
+    w.run();
+    assert_eq!(pictures(&w), 0);
+}
+
+/// A texture's update: which, and where in it, None for the whole.
+type Update = (egui::TextureId, Option<[usize; 2]>);
+
+/// A renderer that renders nothing, and notes each texture's updates.
+#[derive(Clone, Default)]
+struct Noted(std::sync::Arc<std::sync::Mutex<Vec<Update>>>);
+
+impl TestRenderer for Noted {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        let mut noted = self.0.lock().unwrap();
+        for (&id, deltas) in &delta.set {
+            noted.extend(deltas.iter().map(|d| (id, d.pos)));
+        }
+        delta.clear();
+    }
+
+    fn render(
+        &mut self,
+        _: &egui::Context,
+        _: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        Err("no renderer".into())
+    }
+}
+
+#[test]
+fn analyse_paints_a_track_reported_anew_into_its_picture_in_place() {
+    // The read as gw has read track 41.1, the bridge's report to come.
+    let next = |l: &str| l.starts_with(r#"@ferriteweazle track {"c":41,"h":1,"#);
+    let reached: String = WORKBENCH
+        .split_inclusive('\n')
+        .take_while(|l| !next(l))
+        .collect();
+    let mut running = Job::replay("read", &reached);
+    running.ended = None;
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let noted = Noted::default();
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .renderer(noted.clone());
+    let mut w = start(builder, settings, Some(running));
+    w.run_steps(4);
+    let report = WORKBENCH.lines().find(|l| next(l)).unwrap();
+    let report = report.strip_prefix("@ferriteweazle track ").unwrap();
+    let job = app_mut(&mut w).disk.as_mut().unwrap();
+    job.progress.report(report);
+    noted.0.lock().unwrap().clear();
+    w.step();
+    let disks: Vec<egui::TextureId> = {
+        let textures = w.ctx.tex_manager();
+        let textures = textures.read();
+        let disks = textures.allocated().filter(|(_, t)| t.name == "disk");
+        disks.map(|(&id, _)| id).collect()
+    };
+    let noted = noted.0.lock().unwrap();
+    let painted: Vec<_> = noted.iter().filter(|(id, _)| disks.contains(id)).collect();
+    assert_eq!(painted.len(), 1, "side 1's");
+    assert_eq!(painted[0].1, Some([0, 0]), "into the texture it has");
+}
+
+#[test]
+fn analyse_paints_its_disks_at_a_new_size_once_that_holds() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let noted = Noted::default();
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(64)
+        .renderer(noted.clone());
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    let disks: Vec<egui::TextureId> = {
+        let textures = w.ctx.tex_manager();
+        let textures = textures.read();
+        let disks = textures.allocated().filter(|(_, t)| t.name == "disk");
+        disks.map(|(&id, _)| id).collect()
+    };
+    // Whole pictures painted since the last asked, as disk and size.
+    let whole = |noted: &Noted| {
+        let mut noted = noted.0.lock().unwrap();
+        let n = (noted.iter())
+            .filter(|(id, pos)| disks.contains(id) && pos.is_none())
+            .count();
+        noted.clear();
+        n
+    };
+    // The drawer's edge, along the top of its box.
+    let map = w.get_by_label("Disk map").rect();
+    let drawer = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if r.rect.contains_rect(map) && r.rect.left() > 0.0 => Some(r.rect),
+        _ => None,
+    });
+    let drawer = drawer.expect("the drawer's box");
+    let edge = egui::pos2(drawer.center().x, drawer.top() + 1.0);
+    // A while after the disks were painted.
+    w.run_steps(12);
+    w.hover_at(edge);
+    w.step();
+    w.drag_at(edge);
+    w.step();
+    whole(&noted);
+    // Dragged down a point a frame for a third of a second: painted at the
+    // first new size, then not until the size holds or the drag ends.
+    let mut sizes = Vec::new();
+    for down in 1..=20 {
+        w.hover_at(edge + egui::vec2(0.0, down as f32 * 2.0));
+        w.step();
+        sizes.push(w.get_by_label("Disk map").rect().height());
+    }
+    assert!(
+        sizes.windows(2).filter(|s| s[0] != s[1]).count() > 10,
+        "{sizes:?}"
+    );
+    assert_eq!(whole(&noted), 2, "the first, a disk each");
+    w.drop_at(edge + egui::vec2(0.0, 40.0));
+    w.step();
+    assert_eq!(whole(&noted), 2, "at its size as the drag ends");
+}
+
 #[test]
 fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged() {
     // Taller than two disks side by side need.

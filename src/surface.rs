@@ -13,7 +13,8 @@ use eframe::egui::{
     vec2,
 };
 use std::f64::consts::TAU;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// How the disk is drawn: its tracks fitted to the room, or a disk to scale.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -249,6 +250,15 @@ const MEET: f64 = 0.003;
 /// The least time between paintings of a disk while what it shows changes,
 /// in seconds: a conversion reports tracks faster than they are worth painting.
 const REPAINT: f64 = 0.1;
+/// How long a disk's size must hold, in seconds, for its picture to be
+/// painted at it once it has changed more than once in that time: while the
+/// drawer's edge is dragged or the window resized, the last picture stands
+/// in, scaled.
+const SETTLE: f64 = 0.15;
+/// How far a pixel's area reaches from its middle along any line, in
+/// pixels, at most: half its diagonal, and a margin. A track's colours take
+/// part in the pixels as near its room as this.
+const REACH: f64 = 1.0;
 
 /// The disk's colours, from the window's palette.
 pub(crate) struct Look {
@@ -467,8 +477,23 @@ pub fn show(ui: &mut egui::Ui, map: &Map) -> Option<(egui::Response, f32)> {
     }
     let fits = map.media.holds().is_none_or(|n| span <= n);
     let drawn = Drawn::of(map, span, sides, fits, p);
-    for d in &disks {
-        d.draw(ui, &painter, map, &look, &drawn, fits);
+    let kept = ui.ctx().plugin_or_default::<Kept>();
+    {
+        let mut kept = kept.lock();
+        (kept.shown, kept.viewport) = (true, ui.ctx().viewport_id());
+        for d in &disks {
+            let head = d.head as usize;
+            kept.drawn[head] = true;
+            d.draw(
+                ui,
+                &painter,
+                map,
+                &look,
+                &drawn,
+                fits,
+                &mut kept.pictures[head],
+            );
+        }
     }
     let pointer = response.hover_pos();
     let hovered = pointer.and_then(|at| {
@@ -667,9 +692,10 @@ impl Disk {
         Some((cyl as u32, share_at(f64::from(v.x), f64::from(v.y))))
     }
 
-    /// Draws the disk: its picture, painted again where what it shows has
-    /// changed, the index's mark at the top, and round the last track gw
-    /// reported, a ring.
+    /// Draws the disk: its picture, kept in `slot`, painted again where what
+    /// it shows has changed and at its size once that holds; the index's mark
+    /// at the top; and round the last track gw reported, a ring.
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
         ui: &egui::Ui,
@@ -678,7 +704,9 @@ impl Disk {
         look: &Look,
         drawn: &Drawn,
         fits: bool,
+        slot: &mut Option<Picture>,
     ) {
+        let ctx = ui.ctx();
         let p = theme::palette(ui);
         let key = Key {
             media: map.media,
@@ -688,59 +716,39 @@ impl Disk {
             head: self.head,
             geometry: self.geometry,
             palette: p,
+            line: f64::from(ctx.pixels_per_point()).round().max(1.0),
             fits,
             pure: drawn.pure,
         };
-        let stamps = stamps(map.progress, self.side, self.span, p);
-        let id = egui::Id::new(("disk picture", self.head));
-        let picture = ui.data_mut(|d| d.get_temp_mut_or_default::<Shared>(id).clone());
-        let mut picture = picture.lock().expect("one painter at a time");
-        let now = ui.input(|i| i.time);
-        let same = picture.key == Some(key);
-        let resized = !same && picture.key.is_some_and(|k| k.same_but_size(&key));
-        let changed: Vec<usize> = (0..self.span as usize)
-            .filter(|&c| !same || picture.stamps.get(c) != stamps.get(c))
-            .collect();
-        let early = now - picture.at < REPAINT;
-        if !changed.is_empty() && early && (same || resized) {
-            // Painted moments ago: again once the time is up.
-            let left = REPAINT - (now - picture.at);
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f64(left));
-        } else if !changed.is_empty() {
-            let mut rows = std::mem::take(&mut picture.rows);
-            rows.resize_with(self.span as usize, Row::default);
-            for &cyl in &changed {
-                rows[cyl] = row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
+        let row = |cyl: usize| row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
+        // A pass to be laid out again shows nothing: it paints nothing.
+        if !ctx.will_discard() {
+            let stamps = stamps(map.progress, self.side, self.span, p);
+            let (now, released) = ui.input(|i| (i.time, i.pointer.any_released()));
+            let painted = |stamps| Painted {
+                key,
+                stamps,
+                at: now,
+                asked: (key.geometry, now),
+            };
+            match slot {
+                None => *slot = Some(Picture::new(ctx, self, look, row, painted(stamps))),
+                Some(picture) => match picture.painted.due(&key, &stamps, now, released) {
+                    Due::No => {}
+                    Due::Later(wait) => ctx.request_repaint_after(Duration::from_secs_f64(wait)),
+                    Due::Tracks(changed) => {
+                        picture.paint(self, look, row, &changed, false, painted(stamps))
+                    }
+                    Due::All(changed) => {
+                        picture.paint(self, look, row, &changed, true, painted(stamps))
+                    }
+                },
             }
-            let line = f64::from(ui.ctx().pixels_per_point()).round().max(1.0);
-            let canvas = Canvas::new(self, look, &rows, line);
-            let only = same.then(|| {
-                let mut dirty = vec![false; rows.len()];
-                changed.iter().for_each(|&c| dirty[c] = true);
-                dirty
-            });
-            let size = [self.geometry.pixels; 2];
-            if picture.image.size != size {
-                picture.image = egui::ColorImage::filled(size, Color32::TRANSPARENT);
-            }
-            canvas.paint(&mut picture.image, only.as_deref());
-            let image = picture.image.clone();
-            match &mut picture.texture {
-                Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    let options = egui::TextureOptions::LINEAR;
-                    picture.texture = Some(ui.ctx().load_texture("disk", image, options));
-                }
-            }
-            picture.rows = rows;
-            (picture.key, picture.stamps, picture.at) = (Some(key), stamps, now);
         }
-        if let Some(texture) = &picture.texture {
+        if let Some(picture) = slot {
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(texture.id(), self.rect, uv, Color32::WHITE);
+            painter.image(picture.texture.id(), self.rect, uv, Color32::WHITE);
         }
-        drop(picture);
         self.index_mark(painter, look);
         // The last track reported, ringed. Going from side to side, it fades
         // out on one as it fades in on the other, from the report on.
@@ -983,8 +991,10 @@ struct Key {
     side: u32,
     head: u32,
     geometry: Geometry,
-    /// The palette its colours are from, which a theme changes.
+    /// The palette its colours are from, which a theme changes, and the
+    /// width of its lines, a point in whole pixels.
     palette: &'static Palette,
+    line: f64,
     fits: bool,
     /// See Drawn::pure.
     pure: bool,
@@ -1001,19 +1011,163 @@ impl Key {
     }
 }
 
-/// A disk's picture, kept between frames.
-type Shared = Arc<Mutex<Picture>>;
-
-/// A disk's picture as last painted, its tracks as they were then, and when,
-/// in egui's seconds.
+/// The disk view's pictures, one for each head's disk, kept while the view
+/// draws them: at the end of a pass that does not draw one, it is let go,
+/// and with the view, the sector window shuts.
 #[derive(Default)]
+struct Kept {
+    pictures: [Option<Picture>; 2],
+    /// The pictures drawn this pass, and whether the view was, in which
+    /// viewport.
+    drawn: [bool; 2],
+    shown: bool,
+    viewport: egui::ViewportId,
+}
+
+impl egui::Plugin for Kept {
+    fn debug_name(&self) -> &'static str {
+        "disk view"
+    }
+
+    fn on_end_pass(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx();
+        if ctx.viewport_id() != self.viewport {
+            return;
+        }
+        for (picture, drawn) in self.pictures.iter_mut().zip(&mut self.drawn) {
+            if !std::mem::take(drawn) {
+                *picture = None;
+            }
+        }
+        if !std::mem::take(&mut self.shown) {
+            ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
+        }
+    }
+}
+
+/// A disk's picture as last painted: its tracks' rows then, its pixels, and
+/// the texture that shows them.
 struct Picture {
-    key: Option<Key>,
-    stamps: Vec<Stamp>,
+    painted: Painted,
     rows: Vec<Row>,
-    image: egui::ColorImage,
-    texture: Option<egui::TextureHandle>,
+    image: Arc<egui::ColorImage>,
+    texture: egui::TextureHandle,
+}
+
+impl Picture {
+    /// `disk`'s picture, painted in full, `row` making each track's row.
+    fn new(
+        ctx: &egui::Context,
+        disk: &Disk,
+        look: &Look,
+        row: impl Fn(usize) -> Row,
+        painted: Painted,
+    ) -> Picture {
+        let rows: Vec<Row> = (0..disk.span as usize).map(row).collect();
+        let mut image = egui::ColorImage::filled([disk.geometry.pixels; 2], Color32::TRANSPARENT);
+        Canvas::new(disk, look, &rows, painted.key.line).paint(&mut image, None);
+        let image = Arc::new(image);
+        let options = egui::TextureOptions::LINEAR;
+        let texture = ctx.load_texture("disk", image.clone(), options);
+        Picture {
+            painted,
+            rows,
+            image,
+            texture,
+        }
+    }
+
+    /// Paints the pixels over the tracks `changed` again, their rows made
+    /// again by `row`; with `all`, every pixel, at the disk's size. The
+    /// texture takes them in place where its size holds.
+    fn paint(
+        &mut self,
+        disk: &Disk,
+        look: &Look,
+        row: impl Fn(usize) -> Row,
+        changed: &[usize],
+        all: bool,
+        painted: Painted,
+    ) {
+        self.rows.resize_with(disk.span as usize, Row::default);
+        for &cyl in changed {
+            self.rows[cyl] = row(cyl);
+        }
+        let size = [disk.geometry.pixels; 2];
+        let resized = self.image.size != size;
+        if resized {
+            self.image = Arc::new(egui::ColorImage::filled(size, Color32::TRANSPARENT));
+        }
+        let dirty = (!all).then(|| {
+            let mut dirty = vec![false; self.rows.len()];
+            changed.iter().for_each(|&c| dirty[c] = true);
+            dirty
+        });
+        let canvas = Canvas::new(disk, look, &self.rows, painted.key.line);
+        canvas.paint(Arc::make_mut(&mut self.image), dirty.as_deref());
+        let options = egui::TextureOptions::LINEAR;
+        match resized {
+            true => self.texture.set(self.image.clone(), options),
+            false => self
+                .texture
+                .set_partial([0, 0], self.image.clone(), options),
+        }
+        let asked = self.painted.asked;
+        self.painted = Painted { asked, ..painted };
+    }
+}
+
+/// What a picture was last painted of: its key, its tracks' stamps, and
+/// when, in egui's seconds; and the size last asked of it, and since when.
+#[derive(Clone, PartialEq)]
+struct Painted {
+    key: Key,
+    stamps: Vec<Stamp>,
     at: f64,
+    asked: (Geometry, f64),
+}
+
+/// What of a picture is to be painted.
+#[derive(Debug, PartialEq)]
+enum Due {
+    No,
+    /// Nothing yet: again in so many seconds.
+    Later(f64),
+    /// The pixels over these tracks, their rows made again.
+    Tracks(Vec<usize>),
+    /// Every pixel, at another size or another way, these tracks' rows made
+    /// again.
+    All(Vec<usize>),
+}
+
+impl Painted {
+    /// What is due to be painted of a picture of `key` and `stamps` at `now`:
+    /// the tracks whose stamps have changed, once REPAINT has passed since
+    /// the last painting; and at another size, all of it, at once if the
+    /// size had held for SETTLE, else once the size holds that long or the
+    /// pointer that drags it lets go.
+    fn due(&mut self, key: &Key, stamps: &[Stamp], now: f64, released: bool) -> Due {
+        let same = self.key == *key;
+        let resized = !same && self.key.same_but_size(key);
+        let held = now - self.asked.1 >= SETTLE;
+        if self.asked.0 != key.geometry {
+            self.asked = (key.geometry, now);
+        }
+        let changed: Vec<usize> = (0..stamps.len())
+            .filter(|&c| !(same || resized) || self.stamps.get(c) != stamps.get(c))
+            .collect();
+        if same && changed.is_empty() {
+            Due::No
+        } else if same && now - self.at < REPAINT {
+            Due::Later(REPAINT - (now - self.at))
+        } else if same {
+            Due::Tracks(changed)
+        } else if resized && !held && !released {
+            Due::Later(SETTLE - (now - self.asked.1))
+        } else {
+            Due::All(changed)
+        }
+    }
 }
 
 /// What is known of a track that its ring shows: its status as gw printed
@@ -1071,19 +1225,28 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Paints `image`, or where `only` is given, the pixels over those of its
-    /// tracks: each pixel in a share of the threads there are.
+    /// Paints `image`, or where `only` is given, the pixels as near those of
+    /// its tracks as their colours reach: each row of pixels in a share of
+    /// the threads there are, and of a row, only where it crosses them.
     fn paint(&self, image: &mut egui::ColorImage, only: Option<&[bool]>) {
         let width = self.pixels;
+        let bands = only.map(|dirty| self.bands(dirty));
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
-        let band = width.div_ceil(threads).max(1);
+        let rows = width.div_ceil(threads).max(1);
         std::thread::scope(|scope| {
-            for (i, rows) in image.pixels.chunks_mut(band * width).enumerate() {
+            for (i, chunk) in image.pixels.chunks_mut(rows * width).enumerate() {
+                let bands = bands.as_deref();
                 scope.spawn(move || {
-                    for (j, pixel) in rows.iter_mut().enumerate() {
-                        let (x, y) = (j % width, i * band + j / width);
-                        if only.is_none_or(|dirty| self.over(x, y, dirty)) {
-                            *pixel = self.pixel(x, y);
+                    for (j, line) in chunk.chunks_mut(width).enumerate() {
+                        let y = i * rows + j;
+                        let spans = match bands {
+                            Some(bands) => self.spans(y, bands),
+                            None => vec![(0, width)],
+                        };
+                        for (from, to) in spans {
+                            for (x, pixel) in line.iter_mut().enumerate().take(to).skip(from) {
+                                *pixel = self.pixel(x, y);
+                            }
                         }
                     }
                 });
@@ -1091,21 +1254,54 @@ impl<'a> Canvas<'a> {
         });
     }
 
+    /// The radii, from the inner to the outer, between which the pixels lie
+    /// that the tracks marked in `dirty` take part in: each one's room, REACH
+    /// either side; those that overlap made one.
+    fn bands(&self, dirty: &[bool]) -> Vec<(f64, f64)> {
+        let pitch = self.geometry.pitch;
+        let mut bands: Vec<(f64, f64)> = Vec::new();
+        for cyl in (0..dirty.len()).filter(|&c| dirty[c]) {
+            // Tracks in turn, from the outermost in.
+            let outer = self.outer - cyl as f64 * pitch;
+            let (from, to) = (outer - pitch - REACH, outer + REACH);
+            match bands.last_mut() {
+                Some(last) if to >= last.0 => last.0 = from,
+                _ => bands.push((from, to)),
+            }
+        }
+        bands
+    }
+
+    /// Where along the row of pixels `y` they lie between the radii of
+    /// `bands`, by their middles, and a pixel more either side: from each
+    /// to before each.
+    fn spans(&self, y: usize, bands: &[(f64, f64)]) -> Vec<(usize, usize)> {
+        let dy = (y as f64 + 0.5 - self.centre).abs();
+        let mut spans = Vec::new();
+        for &(inner, outer) in bands.iter().filter(|&&(_, outer)| outer > dy) {
+            let far = (outer * outer - dy * dy).sqrt();
+            let near = match inner > dy {
+                true => (inner * inner - dy * dy).sqrt(),
+                false => 0.0,
+            };
+            // The pixels whose middles lie `near` to `far` from the centre's
+            // column, either side of it.
+            let x = |dx: f64| self.centre - 0.5 + dx;
+            for (a, b) in [(x(-far), x(-near)), (x(near), x(far))] {
+                let from = (a.floor() - 1.0).max(0.0) as usize;
+                let to = ((b.ceil() + 2.0).max(0.0) as usize).min(self.pixels);
+                if to > from {
+                    spans.push((from, to));
+                }
+            }
+        }
+        spans
+    }
+
     /// The pixel's offset from the centre, to its middle, and its distance.
     fn offset(&self, x: usize, y: usize) -> (f64, f64, f64) {
         let (dx, dy) = (x as f64 + 0.5 - self.centre, y as f64 + 0.5 - self.centre);
         (dx, dy, (dx * dx + dy * dy).sqrt())
-    }
-
-    /// Whether the pixel lies over the room of any of the tracks marked in
-    /// `dirty`, or the lines along its edges.
-    fn over(&self, x: usize, y: usize, dirty: &[bool]) -> bool {
-        let (_, _, r) = self.offset(x, y);
-        let pitch = self.geometry.pitch;
-        let reach = 0.5 + self.line;
-        let first = ((self.outer - r - reach) / pitch).floor().max(0.0) as usize;
-        let last = ((self.outer - r + reach) / pitch).floor();
-        last >= 0.0 && dirty.iter().take(last as usize + 1).skip(first).any(|&d| d)
     }
 
     /// A pixel of the picture, premultiplied: what of the disk its area
@@ -1714,6 +1910,10 @@ fn sums(progress: &Progress, side: u32, span: u32) -> (String, Vec<&str>) {
     (sums.join(" · "), encodings)
 }
 
+/// The sector whose data is open: its track, its place among the track's
+/// sectors, and the track's facts' revision.
+type Inspected = ((u32, u32), usize, u64);
+
 /// The id under which the sector whose data is open is kept.
 fn inspected() -> egui::Id {
     egui::Id::new("disk sector")
@@ -1722,7 +1922,6 @@ fn inspected() -> egui::Id {
 /// The window a click on a sector opens: all gw decoded of it, and its
 /// data in full.
 fn inspector(ctx: &egui::Context, map: &Map) {
-    type Inspected = ((u32, u32), usize, u64);
     let Some((key, index, revision)) = ctx.data(|d| d.get_temp::<Inspected>(inspected())) else {
         return;
     };
@@ -2992,6 +3191,137 @@ mod tests {
         assert_eq!(g.covered(g.pitch), 1.0, "too narrow for lines");
         let scale = Geometry::new(Media::ThreeHalf, 80, 858.0);
         assert!((scale.covered(1.0) - (0.115 / 0.1875) as f32).abs() < 1e-6);
+    }
+
+    /// Rows of `span` tracks of sectors end to end, each track's turned
+    /// `turn` further round, every `bad`th's sector 3 bad; and with `flux`,
+    /// flux shaded round each.
+    fn tracks_of(span: u32, turn: f64, bad: u32, flux: bool) -> Vec<Row> {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        (0..span)
+            .map(|c| {
+                if flux {
+                    let shades = (0..1440).map(|i| (i * 7 + c + bad) % 13);
+                    let mut row = Row::pieces(shades.map(|d| look.flux_at(0.5 + d as f32 / 10.0)));
+                    row.finish();
+                    return row;
+                }
+                let skew = f64::from(c) * turn;
+                let sectors: Vec<Sector> = (0..11)
+                    .map(|k| {
+                        let start = (0.04 + skew + f64::from(k) * 0.0872) as f32;
+                        Sector {
+                            data: match c % bad == 0 && k == 3 {
+                                true => Data::Bad,
+                                false => Data::Good,
+                            },
+                            ..sector([start, start + 0.002, start + 0.0872], Some(start + 0.001))
+                        }
+                    })
+                    .collect();
+                row_of(&sectors)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_picture_painted_again_over_a_few_tracks_is_the_picture_painted_whole() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        for (media, room, line, flux) in [
+            (Media::Fit, 700.0, 1.0, false),
+            (Media::Fit, 1400.0, 2.0, false),
+            (Media::Fit, 1050.0, 2.0, true),
+            (Media::ThreeHalf, 1400.0, 2.0, false),
+            (Media::Eight, 900.0, 1.0, false),
+        ] {
+            let span = 77;
+            let geometry = Geometry::new(media, span, room);
+            let d = Disk {
+                span,
+                geometry,
+                ..disk(0, media)
+            };
+            let before = tracks_of(span, 0.0, 7, flux);
+            let mut after = tracks_of(span, 0.013, 3, flux);
+            // Tracks 0, 17 and 18 and the last change; the rest are as they were.
+            let changed = [0usize, 17, 18, span as usize - 1];
+            for c in 0..span as usize {
+                if !changed.contains(&c) {
+                    after[c] = before[c].clone();
+                }
+            }
+            let mut dirty = vec![false; span as usize];
+            changed.iter().for_each(|&c| dirty[c] = true);
+            let size = [geometry.pixels; 2];
+            let mut image = egui::ColorImage::filled(size, Color32::TRANSPARENT);
+            Canvas::new(&d, &look, &before, line).paint(&mut image, None);
+            Canvas::new(&d, &look, &after, line).paint(&mut image, Some(&dirty));
+            let mut whole = egui::ColorImage::filled(size, Color32::TRANSPARENT);
+            Canvas::new(&d, &look, &after, line).paint(&mut whole, None);
+            let differ = (image.pixels.iter().zip(&whole.pixels)).filter(|(a, b)| a != b);
+            assert_eq!(differ.count(), 0, "{media:?} at {room} px");
+        }
+    }
+
+    #[test]
+    fn a_picture_waits_for_its_size_to_hold_while_it_changes() {
+        let key = |room: f64| Key {
+            media: Media::Fit,
+            shows: Shows::Sectors,
+            span: 80,
+            side: 0,
+            head: 0,
+            geometry: Geometry::new(Media::Fit, 80, room),
+            palette: &theme::DARK,
+            line: 2.0,
+            fits: true,
+            pure: false,
+        };
+        let stamps = vec![(None, None, true, None); 80];
+        let painted = |room: f64, at: f64| Painted {
+            key: key(room),
+            stamps: stamps.clone(),
+            at,
+            asked: (key(room).geometry, at),
+        };
+        let all = Due::All(Vec::new());
+        // Painted at 600 pixels a while ago: one change, painted at once.
+        let mut p = painted(600.0, 0.0);
+        assert_eq!(p.due(&key(600.0), &stamps, 1.0, false), Due::No);
+        assert_eq!(p.due(&key(610.0), &stamps, 1.0, false), all);
+        // Then a change after another: the picture waits for the size to hold.
+        p = painted(610.0, 1.0);
+        let wait = p.due(&key(620.0), &stamps, 1.02, false);
+        assert_eq!(wait, Due::Later(SETTLE));
+        assert_eq!(p.due(&key(630.0), &stamps, 1.04, false), Due::Later(SETTLE));
+        assert_eq!(p.due(&key(630.0), &stamps, 1.05 + SETTLE, false), all);
+        // Or for the pointer dragging it to let go.
+        p = painted(630.0, 1.2);
+        assert_eq!(p.due(&key(640.0), &stamps, 1.21, true), all);
+        // Back to the size painted at: nothing to paint.
+        p = painted(640.0, 2.0);
+        assert!(matches!(
+            p.due(&key(650.0), &stamps, 2.01, false),
+            Due::Later(_)
+        ));
+        assert_eq!(p.due(&key(640.0), &stamps, 2.02, false), Due::No);
+        // A track reported anew: painted again over it, once REPAINT is up.
+        let mut reported = stamps.clone();
+        reported[5] = (None, Some(9), true, None);
+        p = painted(640.0, 3.0);
+        assert!(matches!(
+            p.due(&key(640.0), &reported, 3.05, false),
+            Due::Later(_)
+        ));
+        assert_eq!(
+            p.due(&key(640.0), &reported, 3.2, false),
+            Due::Tracks(vec![5])
+        );
+        // Another way: all of it, every row again.
+        let mut light = key(640.0);
+        light.palette = &theme::LIGHT;
+        let every = Due::All((0..80).collect());
+        assert_eq!(p.due(&light, &stamps, 3.2, false), every);
     }
 
     #[test]
