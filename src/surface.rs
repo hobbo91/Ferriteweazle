@@ -3208,31 +3208,52 @@ mod tests {
 
     #[test]
     fn each_ring_shows_only_what_gw_reported_of_its_track() {
-        let flux = serde_json::json!({"freq": 1000, "index": [100, 100], "cued": true,
-            "period": 100, "end": 200, "bins": [1, 1, 1, 1]});
+        // What the bridge's reports become: flux round a track, and
         // AmigaDOS's sector 0, where gw found it or with no place.
-        let amiga = |placed: bool| {
-            let mut codec = serde_json::json!({"summary": "AmigaDOS (1/11 sectors)",
-                "nsec": 11, "good": [0], "data": {"0": "00ff"}});
-            if placed {
-                codec["places"] = serde_json::json!({"0": {"at": 10.0, "data": 12.0,
-                    "end": 20.0, "revs": [100.0, 100.0], "cued": true}});
-            }
-            codec
+        let spin = Spin {
+            period: 0.2,
+            revs: vec![0.2],
+            per_rev: 4.0,
+            bins: vec![1.0; 4],
         };
-        let none = serde_json::json!({"summary": "AmigaDOS (0/11 sectors)", "nsec": 11,
-            "good": []});
+        let amiga = |placed: bool, flux: bool| Facts {
+            summary: Some("AmigaDOS (1/11 sectors)".into()),
+            sectors: vec![Sector {
+                at: placed.then_some([0.1, 0.12, 0.2]),
+                bytes: vec![0, 255],
+                ..sector([0.1, 0.12, 0.2], None)
+            }],
+            missing: (1..11).map(Id::Number).collect(),
+            flux: flux.then(|| spin.clone()),
+            ..Facts::default()
+        };
+        let none = Facts {
+            summary: Some("AmigaDOS (0/11 sectors)".into()),
+            missing: (0..11).map(Id::Number).collect(),
+            flux: Some(spin.clone()),
+            ..Facts::default()
+        };
         let mut progress = Progress::blank((0..8).collect(), vec![0]);
-        for (c, report) in [
-            (0, serde_json::json!({"flux": flux, "codec": amiga(true)})),
-            (1, serde_json::json!({"absent": true})),
-            (2, serde_json::json!({"flux": flux})),
-            (4, serde_json::json!({"flux": flux, "codec": amiga(false)})),
-            (7, serde_json::json!({"flux": flux, "codec": none})),
+        for (c, facts) in [
+            (0, amiga(true, true)),
+            (
+                1,
+                Facts {
+                    absent: true,
+                    ..Facts::default()
+                },
+            ),
+            (
+                2,
+                Facts {
+                    flux: Some(spin.clone()),
+                    ..Facts::default()
+                },
+            ),
+            (4, amiga(false, true)),
+            (7, none),
         ] {
-            let mut report = report;
-            (report["c"], report["h"]) = (c.into(), 0.into());
-            progress.report(&report.to_string());
+            progress.facts.insert((c, 0), facts);
         }
         progress.feed("T3.0: AmigaDOS (10/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
         progress.feed("T6.0: WARNING: Track is outside the format");
@@ -3271,8 +3292,7 @@ mod tests {
         assert_eq!((drawn.unknown, drawn.to_do), (1, 1));
         // With no flux, the sectors show.
         let mut sectors_only = Progress::blank(vec![0], vec![0]);
-        let report = serde_json::json!({"c": 0, "h": 0, "codec": amiga(true)});
-        sectors_only.report(&report.to_string());
+        sectors_only.facts.insert((0, 0), amiga(true, false));
         let (shown, drawn) = rings(&map_of(&sectors_only, Shows::Flux));
         assert_eq!((shown, drawn.shows), (vec!["sectors"], Shows::Sectors));
         // gw's lines alone, or sectors with no place and no flux, as an
@@ -3280,8 +3300,7 @@ mod tests {
         let mut lines = Progress::blank((0..3).collect(), vec![0]);
         lines.feed("T0.0: AmigaDOS (11/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
         lines.feed("T1.0: AmigaDOS (5/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
-        let report = serde_json::json!({"c": 1, "h": 0, "codec": amiga(false)});
-        lines.report(&report.to_string());
+        lines.facts.insert((1, 0), amiga(false, false));
         let (shown, drawn) = rings(&map_of(&lines, Shows::Sectors));
         assert_eq!(shown, ["status", "status", "to do"]);
         assert!(drawn.pure);
