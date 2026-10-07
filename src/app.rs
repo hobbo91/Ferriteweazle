@@ -5,6 +5,7 @@ use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
+use crate::lines::Lines;
 use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
@@ -4864,33 +4865,33 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
                 ui.label(RichText::new(empty).weak());
                 return;
             }
-            let row = ui.text_style_height(&TextStyle::Monospace);
-            // A line gw has not ended yet comes last.
-            let lines = log.len() + usize::from(!tail.is_empty());
+            let plain = ui.visuals().text_color();
+            let line = |i: usize| {
+                // A line gw has not ended yet comes last.
+                let line = log.get(i).map_or(tail, String::as_str);
+                let before = i.checked_sub(1).map(|b| log[b].as_str());
+                let colour = match shown {
+                    Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
+                    _ => log_colour(line, before, p),
+                };
+                (line, colour.unwrap_or(plain))
+            };
+            let lines = Lines {
+                count: log.len() + usize::from(!tail.is_empty()),
+                line: &line,
+                font: TextStyle::Monospace.resolve(ui.style()),
+                gap: ui.spacing().item_spacing.y,
+            };
             theme::solid_bars(ui, p);
-            egui::ScrollArea::both()
+            let area = egui::ScrollArea::both()
                 .id_salt("log")
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
                 .max_height(height)
                 // A drawer's sideways bar fits inside its height: added to
                 // it, the drawer would open that much taller every frame.
-                .min_scrolled_height(if drawer { 0.0 } else { height })
-                .show_rows(ui, row, lines, |ui, rows| {
-                    for i in rows {
-                        let line = log.get(i).map_or(tail, String::as_str);
-                        let before = i.checked_sub(1).map(|b| log[b].as_str());
-                        let colour = match shown {
-                            Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
-                            _ => log_colour(line, before, p),
-                        };
-                        let mut text = RichText::new(line).monospace();
-                        if let Some(colour) = colour {
-                            text = text.color(colour);
-                        }
-                        ui.add(egui::Label::new(text).extend().selectable(true));
-                    }
-                });
+                .min_scrolled_height(if drawer { 0.0 } else { height });
+            lines.show(ui, ui.id().with("log lines"), area);
         });
     });
     (clear, unsaved)

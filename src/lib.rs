@@ -10,6 +10,7 @@ pub mod device;
 mod diskmap;
 pub mod form;
 pub mod job;
+mod lines;
 #[cfg(target_os = "macos")]
 mod menu;
 #[cfg(target_os = "linux")]

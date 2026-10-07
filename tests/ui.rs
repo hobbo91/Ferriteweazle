@@ -3278,10 +3278,10 @@ fn the_greaseweazle_theme_draws_every_scroll_bar_in_its_texts_white() {
     w.hover_at(egui::pos2(0.0, 0.0));
     w.run();
     assert_eq!(handles(&w, 2.0, white), 1);
-    // Dark's are faint: the Log's its lines' grey, the page's its text's at 0.6.
+    // Dark's are faint, the Log's as the page's: its text's colour at 0.6.
     let w = scrolled(Choice::Dark);
-    let (grey, faint) = (theme::DARK.line, theme::DARK.text.gamma_multiply(0.6));
-    assert_eq!((handles(&w, 6.0, grey), handles(&w, 2.0, faint)), (2, 1));
+    let faint = theme::DARK.text.gamma_multiply(0.6);
+    assert_eq!((handles(&w, 6.0, faint), handles(&w, 2.0, faint)), (2, 1));
 }
 
 /// The colour the last frame drew `text` in.
@@ -4046,52 +4046,133 @@ fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_
             .unwrap()
             .contains("Header OK · Data OK · Mark FB")
     );
-    let rows = w.get_by(said("03F0  ")).value().unwrap_or_default();
-    assert!(rows.contains("0000  "), "the dump runs from its first byte");
-    // A right-click on it selects it all, then copies it: nothing to cut or
-    // paste in what was read. Its first rows show; the rest scroll.
-    let top = w.get_by(said("03F0  ")).rect().left_top() + egui::vec2(40.0, 8.0);
-    let right_click = |w: &mut Window| {
-        for pressed in [true, false] {
-            w.event(egui::Event::PointerButton {
-                pos: top,
-                button: egui::PointerButton::Secondary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            });
-        }
-        w.run();
-    };
-    w.hover_at(top);
-    right_click(&mut w);
+    // Its bytes, from the first: a right-click selects them all, then copies
+    // them, those scrolled out of sight too; nothing to cut or paste in what
+    // was read.
+    w.hover_at(
+        w.get_by_role_and_label(Role::Label, "C0 H0 R7 N3 · cylinder 0, side 0")
+            .rect()
+            .center(),
+    );
+    w.run();
+    let first = w.get_by_label_contains("0000  ").rect();
+    w.hover_at(first.center());
+    right_click(&mut w, first.center());
     assert!(w.get_by_label("Copy").accesskit_node().is_disabled());
     assert!(w.query_by_label("Cut").is_none() && w.query_by_label("Paste").is_none());
     w.get_by_label("Select All").click();
     w.run();
-    w.hover_at(top);
-    right_click(&mut w);
+    w.hover_at(first.center());
+    right_click(&mut w, first.center());
     w.get_by_label("Copy").click();
     w.step();
-    let commands = w
-        .output()
-        .viewport_output
-        .values()
-        .flat_map(|v| &v.commands);
-    let copy = egui::ViewportCommand::RequestCopy;
-    assert!(
-        commands.into_iter().any(|c| *c == copy),
-        "the system copies"
-    );
-    w.event(egui::Event::Copy);
-    w.step();
-    let copied = w
-        .output()
+    let rows = copied(&w).expect("the bytes are copied");
+    assert_eq!(rows.lines().count(), 64, "1024 bytes, 16 a row");
+    assert!(rows.starts_with("0000  ") && rows.lines().last().unwrap().starts_with("03F0  "));
+}
+
+/// A right-click at `at`.
+fn right_click(w: &mut Window, at: egui::Pos2) {
+    for pressed in [true, false] {
+        w.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    w.run();
+}
+
+/// What the last frame put on the clipboard, if anything.
+fn copied(w: &Window) -> Option<String> {
+    w.output()
         .platform_output
         .commands
         .iter()
         .find_map(|c| match c {
             egui::OutputCommand::CopyText(text) => Some(text.clone()),
             _ => None,
-        });
-    assert_eq!(copied.as_deref(), Some(rows.as_str()), "all of it");
+        })
+}
+
+/// Drags a selection from `from` to `to` and holds it there for `seconds`, at
+/// 60 frames a second, then lets go and copies it.
+fn select(w: &mut Window, from: egui::Pos2, to: egui::Pos2, seconds: usize) -> String {
+    w.hover_at(from);
+    w.run();
+    w.drag_at(from);
+    w.step();
+    for _ in 0..60 * seconds {
+        w.hover_at(to);
+        w.step();
+    }
+    w.drop_at(to);
+    w.step();
+    w.event(egui::Event::Copy);
+    w.step();
+    copied(w).expect("the selection is copied")
+}
+
+#[test]
+fn a_selection_dragged_past_a_boxs_edge_scrolls_it_on_in_the_sectors_bytes_and_the_log() {
+    // A sector's 64 rows of bytes, which show 24 or so at once.
+    let line = AKAI_TRACK
+        .trim()
+        .strip_prefix("@ferriteweazle track ")
+        .unwrap();
+    let (_, facts) = Facts::parse(line).unwrap();
+    let [start, _, end] = facts.sectors[0].at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress
+        .feed("T0.0: IBM MFM (10/10 sectors) from Raw Flux (157042 flux in 401.41ms)");
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = build(builder, settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    let first = w.get_by_label_contains("0000  ").rect();
+    let row = |n: &egui_kittest::kittest::AccessKitNode| {
+        n.role() == Role::Label && n.value().is_some_and(|l| l.len() == 71 && &l[4..6] == "  ")
+    };
+    let shown = w.get_all_by(row).count();
+    assert!(shown < 64, "{shown} rows show at once");
+    // Below the box, the selection carries on to the last row.
+    let below = egui::pos2(first.left() + 30.0, first.top() + 600.0);
+    let rows = select(&mut w, first.left_top() + egui::vec2(2.0, 4.0), below, 1);
+    assert_eq!(rows.lines().count(), 64, "{rows}");
+
+    // The Log's lines, scrolled to their end: above the box, the selection
+    // carries on to the first, at most 3,000 points a second.
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    };
+    let job = Job::replay("read", &damaged_read().repeat(3));
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = build(builder, settings, Some(job));
+    let log = app(&w).log.lines().to_vec();
+    let last = w.get_by_label(log.last().unwrap()).rect();
+    let above = egui::pos2(last.left() + 30.0, last.top() - 900.0);
+    let lines = select(&mut w, last.right_bottom() - egui::vec2(2.0, 4.0), above, 5);
+    assert_eq!(
+        lines.lines().count(),
+        log.len(),
+        "every line, from the first"
+    );
 }

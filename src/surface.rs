@@ -4,6 +4,7 @@
 
 use crate::diskmap;
 use crate::form;
+use crate::lines::Lines;
 use crate::progress::Progress;
 use crate::theme::{self, Palette};
 use crate::track::{Data, Facts, Header, Id, Sector, Source, Spin};
@@ -1334,24 +1335,13 @@ fn sector_text(ui: &mut egui::Ui, s: &Sector, p: &Palette) {
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let said_width = layouter(ui, &text.as_str(), 0.0).size().x;
-    let rows = dump(&s.bytes, usize::MAX);
+    let dumped = dump(&s.bytes, usize::MAX);
+    let rows: Vec<&str> = dumped.lines().collect();
     let mono = FontId::monospace(12.0);
-    let mut unwrapped = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _: f32| {
-        let job = egui::text::LayoutJob::simple(
-            buffer.as_str().to_owned(),
-            mono.clone(),
-            plain,
-            f32::INFINITY,
-        );
-        ui.fonts_mut(|f| f.layout_job(job))
-    };
-    let rows_width = if rows.is_empty() {
-        0.0
-    } else {
-        unwrapped(ui, &rows.as_str(), 0.0).size().x
-    };
+    let advance = ui.fonts_mut(|f| f.glyph_width(&mono, '0'));
+    let rows_width = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) as f32 * advance;
+    // A text view's bars, as the Log's: beside the rows, not over them.
     theme::solid_bars(ui, p);
-    // As wide as the rows and the bar beside them, or what is said.
     let bar = ui.spacing().scroll.allocated_width();
     ui.set_min_width(said_width.max(rows_width + bar).ceil() + 1.0);
     let mut shown = text.as_str();
@@ -1366,18 +1356,15 @@ fn sector_text(ui: &mut egui::Ui, s: &Sector, p: &Palette) {
         return;
     }
     ui.separator();
-    egui::ScrollArea::vertical()
-        .max_height(360.0)
-        .show(ui, |ui| {
-            let mut shown = rows.as_str();
-            let data = egui::TextEdit::multiline(&mut shown)
-                .layouter(&mut unwrapped)
-                .frame(egui::Frame::NONE)
-                .margin(0)
-                .desired_rows(1)
-                .desired_width(rows_width.ceil() + 1.0);
-            form::read_only_box(ui, ui.id().with("bytes"), data);
-        });
+    let line = |i: usize| (rows[i], plain);
+    let lines = Lines {
+        count: rows.len(),
+        line: &line,
+        font: mono,
+        gap: 0.0,
+    };
+    let area = egui::ScrollArea::vertical().max_height(360.0);
+    lines.show(ui, ui.id().with("bytes"), area);
 }
 
 /// Up to `rows` rows of 16 bytes: the offset, the bytes in hex, then as

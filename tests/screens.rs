@@ -588,6 +588,17 @@ fn analyse() {
                 w.drag_at(at);
                 w.run_steps(2);
                 w.drop_at(at);
+                w.run_steps(4);
+                // Some of its bytes selected, from the first row's into the third.
+                let first = w.get_by_label_contains("0000  ").rect();
+                let from = first.left_top() + egui::vec2(44.0, first.height() / 2.0);
+                w.hover_at(from);
+                w.run_steps(2);
+                w.drag_at(from);
+                w.run_steps(2);
+                w.hover_at(from + egui::vec2(180.0, 2.0 * first.height()));
+                w.run_steps(2);
+                w.drop_at(from + egui::vec2(180.0, 2.0 * first.height()));
             },
         );
         let idle = settings("read", theme);

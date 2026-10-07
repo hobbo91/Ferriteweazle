@@ -86,14 +86,16 @@ fn bars(p: &Palette) -> ScrollStyle {
 }
 
 /// A text view's bars, drawn whenever there is more to see: a floating one
-/// hides until hovered, and a wheel does not scroll sideways.
+/// hides until hovered, and a wheel does not scroll sideways. Their handles
+/// are the floating ones' colour: the text's, faint until the pointer is on
+/// them, whole where the palette has its bars bold.
 pub fn solid_bars(ui: &mut egui::Ui, p: &Palette) {
-    ui.spacing_mut().scroll = ScrollStyle {
-        foreground_color: p.bold_bars,
-        ..ScrollStyle::solid()
-    };
-    // The theme paints an idle handle in the card's colour.
-    ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+    let floating = bars(p);
+    ui.spacing_mut().scroll = ScrollStyle::solid();
+    let w = &mut ui.visuals_mut().widgets;
+    w.inactive.bg_fill = p.text.gamma_multiply(floating.active_handle_opacity);
+    w.hovered.bg_fill = p.text;
+    w.active.bg_fill = p.strong;
 }
 
 pub struct Palette {
