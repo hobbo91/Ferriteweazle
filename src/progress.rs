@@ -68,8 +68,10 @@ pub struct Progress {
     pub warnings: Vec<String>,
     /// A read with --raw: gw keeps the flux of tracks outside the format.
     pub raw: bool,
-    /// A write gw verifies: it goes on from a track only once that verified.
-    pub verifies: bool,
+    /// The tracks a write reads back to verify, as the bridge reports gw
+    /// deciding it of each as it comes to write it: gw goes on from one only
+    /// once it has verified.
+    pub verifies: BTreeSet<(u32, u32)>,
     /// Changes with each change to what is known, and is never the same for
     /// two Progresses that have changed: what the disk view has drawn is
     /// known by it.
@@ -192,6 +194,8 @@ impl Progress {
         } else if line.starts_with("No tracks verified ")
             || line.contains(" tracks *not* verified ")
         {
+            // gw has written every track: its last too.
+            self.passed();
             self.unverified = Some(line.to_owned());
         } else if let Some(rest) = line.strip_prefix("Found ") {
             self.total = found(rest);
@@ -214,6 +218,32 @@ impl Progress {
             facts.revision = self.revision;
             self.facts.insert(key, facts);
         }
+    }
+
+    /// Takes the bridge's word, as gw comes to write a track, on whether gw
+    /// reads it back to verify it.
+    pub fn verify(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return;
+        };
+        let number = |k: &str| v[k].as_u64().and_then(|n| u32::try_from(n).ok());
+        let (Some(c), Some(h)) = (number("c"), number("h")) else {
+            return;
+        };
+        self.touch();
+        match v["verifies"].as_bool() {
+            Some(true) => self.verifies.insert((c, h)),
+            _ => self.verifies.remove(&(c, h)),
+        };
+    }
+
+    /// gw is checking the track it is writing, and that track is the only
+    /// one written and not verified.
+    pub fn verifying(&self) -> bool {
+        let Some(current) = self.current.filter(|c| self.verifies.contains(c)) else {
+            return false;
+        };
+        (self.tracks.iter()).all(|(&k, t)| k == current || t.status != Status::Written)
     }
 
     /// Takes the bridge's report on the job's images: how gw lays one out,
@@ -359,13 +389,18 @@ impl Progress {
         };
     }
 
-    /// gw has gone on to track `key`, so a write that verifies has checked
-    /// the track before.
+    /// gw has gone on to track `key`.
     fn moved_to(&mut self, key: (u32, u32)) {
-        if !self.verifies || self.current == Some(key) {
-            return;
+        if self.current != Some(key) {
+            self.passed();
         }
-        if let Some(t) = self.current.and_then(|c| self.tracks.get_mut(&c))
+    }
+
+    /// gw is done with the track it was on: one gw verifies passed, as gw
+    /// stops at one that fails.
+    fn passed(&mut self) {
+        let checked = self.current.filter(|c| self.verifies.contains(c));
+        if let Some(t) = checked.and_then(|c| self.tracks.get_mut(&c))
             && t.status == Status::Written
         {
             t.status = Status::Good;
@@ -507,6 +542,24 @@ mod tests {
         let mut p = Progress::default();
         log.lines().for_each(|l| p.feed(l));
         p
+    }
+
+    /// A write's log with the bridge's word on each track it verifies, as
+    /// job.rs takes them.
+    fn written(log: &str) -> Progress {
+        let mut p = Progress::default();
+        for line in log.lines() {
+            match line.strip_prefix("@ferriteweazle verify ") {
+                Some(report) => p.verify(report),
+                None => p.feed(line),
+            }
+        }
+        p
+    }
+
+    /// The bridge's line on whether gw verifies track `c`.0.
+    fn verify(c: u32, verifies: bool) -> String {
+        format!(r#"@ferriteweazle verify {{"c":{c},"h":0,"verifies":{verifies}}}"#)
     }
 
     #[test]
@@ -923,27 +976,82 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
     #[test]
     fn a_failed_or_stopped_write_keeps_the_tracks_gw_verified_before_it() {
         use Status::{Bad, Good, Written};
-        let log = "Writing c=0-2:h=0\n\
-            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
-            T1.0: Erasing Track\n\
-            T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
-            T1.0: Writing Track (Verify Failure: Retry #1)";
-        let status = |log: &str, verifies: bool| {
-            let mut p = Progress {
-                verifies,
-                ..Progress::default()
-            };
-            log.lines().for_each(|l| p.feed(l));
+        // With --pre-erase: gw decides on the verify before it erases.
+        let log = |verifies| {
+            [
+                "Writing c=0-2:h=0",
+                &verify(0, verifies),
+                "T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)",
+                &verify(1, verifies),
+                "T1.0: Erasing Track",
+                "T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)",
+                "T1.0: Writing Track (Verify Failure: Retry #1)",
+            ]
+            .join("\n")
+        };
+        let status = |log: &str| {
+            let p = written(log);
             [0, 1, 2].map(|c| p.tracks.get(&(c, 0)).map(|t| t.status))
         };
-        let stopped = status(log, true);
+        let stopped = status(&log(true));
         assert_eq!(stopped, [Some(Good), Some(Written), None]);
-        let failed = format!("{log}\n** FATAL ERROR:\nFailed to verify Track 1.0");
-        assert_eq!(status(&failed, true), [Some(Good), Some(Bad), None]);
-        let lacking = format!("{log}\n** FATAL ERROR:\nT2.0: 3 missing sectors in input image");
-        assert_eq!(status(&lacking, true), [Some(Good), Some(Good), Some(Bad)]);
-        let unchecked = status(log, false);
+        let failed = format!("{}\n** FATAL ERROR:\nFailed to verify Track 1.0", log(true));
+        assert_eq!(status(&failed), [Some(Good), Some(Bad), None]);
+        let lacking = format!(
+            "{}\n** FATAL ERROR:\nT2.0: 3 missing sectors in input image",
+            log(true)
+        );
+        assert_eq!(status(&lacking), [Some(Good), Some(Good), Some(Bad)]);
+        let unchecked = status(&log(false));
         assert_eq!(unchecked, [Some(Written), Some(Written), None]);
+    }
+
+    #[test]
+    fn each_track_gw_verifies_is_good_once_gw_is_done_with_it_and_only_those() {
+        use Status::{Good, Written};
+        // A format whose track 1 gw has no verify for, as a bitcell track.
+        let mut p = written(
+            &[
+                "Writing c=0-2:h=0",
+                &verify(0, true),
+                "T0.0: Writing Track (Flux: 1)",
+            ]
+            .join("\n"),
+        );
+        assert!(p.verifying(), "gw is checking its one written track");
+        for line in [
+            &verify(1, false),
+            "T1.0: Writing Track (Flux: 1)",
+            &verify(2, true),
+            "T2.0: Writing Track (Flux: 1)",
+        ] {
+            match line.strip_prefix("@ferriteweazle verify ") {
+                Some(report) => p.verify(report),
+                None => p.feed(line),
+            }
+        }
+        let status = |p: &Progress| [0, 1, 2].map(|c| p.tracks[&(c, 0)].status);
+        assert_eq!(status(&p), [Good, Written, Written]);
+        assert!(!p.verifying(), "a track gw did not verify is written too");
+        p.feed("2 tracks verified; 1 tracks *not* verified (Reason: Verify unavailable)");
+        assert_eq!(
+            status(&p),
+            [Good, Written, Good],
+            "gw finished: its last passed"
+        );
+        let unverified = written(
+            &[
+                "Writing c=0-1:h=0",
+                &verify(0, false),
+                "T0.0: Writing Track (Flux: 1)",
+                &verify(1, false),
+                "T1.0: Writing Track (Flux: 1)",
+                "No tracks verified (Reason: Verify unavailable)",
+            ]
+            .join("\n"),
+        );
+        assert_eq!(unverified.tracks[&(0, 0)].status, Written);
+        assert_eq!(unverified.tracks[&(1, 0)].status, Written);
     }
 
     #[test]

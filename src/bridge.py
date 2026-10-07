@@ -12,6 +12,7 @@ ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
 TRACK = '@ferriteweazle track '
 IMAGE = '@ferriteweazle image '
+VERIFY = '@ferriteweazle verify '
 
 # The equal parts of a revolution a track's report counts its flux in: a
 # quarter of a degree each.
@@ -248,11 +249,6 @@ def format_info(name, diskdefs=None):
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
-        # gw write verifies a track only if its codec gives what it writes a
-        # verify, as all but bitcells do: one track of each kind shows it.
-        with quiet(), contextlib.suppress(Exception):
-            kinds = {type(t): t for t in tracks}.values()
-            info['verifies'] = all(t.master_track().verify is not None for t in kinds)
     return info
 
 
@@ -880,7 +876,8 @@ def report_tracks(command):
     conversion decoded, and for a write, the flux gw writes as it is, or the
     master track it writes from a format's sectors, then the track as gw's
     verify reads it back. None where the track does not run round from the
-    index."""
+    index. For a write, also whether gw verifies each track, on a VERIFY
+    line as gw comes to write it."""
     if command in ('read', 'convert', 'write'):
         report_places()
     if command == 'read':
@@ -923,7 +920,9 @@ def report_tracks(command):
         convert.open_input_image, convert.process_input_track = open_input_image, process_input_track
     elif command == 'write':
         from greaseweazle.codec import codec
+        from greaseweazle.flux import Flux
         from greaseweazle.tools import write
+        from greaseweazle.track import MasterTrack
         opened, writing = write.open_image, write.write_from_image
         taking = {}
 
@@ -1017,9 +1016,32 @@ def report_tracks(command):
                 if 'track' in taking and round_from_index(taking.get('args')):
                     report(*taking['track'], flux, decoded(flux, self), 'verify')
                 return ok
+            vars(verified)[REPORTS] = True
             return verified
 
+        def writing_out(out):
+            def flux_for_writeout(self, *a, **k):
+                # gw writes this track as it is, made from the image's or its
+                # format's, and verifies it only if it is a master track gw
+                # made with a verify: gw 1.23's own test, on it.
+                with contextlib.suppress(Exception):
+                    if 'track' in taking and (args := taking.get('args')) is not None:
+                        c, h = taking['track']
+                        verifies = (not args.no_verify and isinstance(self, MasterTrack)
+                                    and self.verify is not None)
+                        line = json.dumps({'c': c, 'h': h, 'verifies': verifies}, separators=(',', ':'))
+                        print(VERIFY + line, flush=True)
+                        # Not a codec's but the image's own, as an IPF's or an
+                        # EDSK's track has: what it reads back is reported too.
+                        cls = type(self.verify)
+                        if verifies and not vars(cls.verify_track).get(REPORTS):
+                            cls.verify_track = verifying(cls.verify_track)
+                return out(self, *a, **k)
+            return flux_for_writeout
+
         write.open_image, write.write_from_image = open_image, write_from_image
+        MasterTrack.flux_for_writeout = writing_out(MasterTrack.flux_for_writeout)
+        Flux.flux_for_writeout = writing_out(Flux.flux_for_writeout)
         for cls in codecs():
             if 'master_track' in vars(cls):
                 cls.master_track = mastering(cls.master_track)
@@ -1515,6 +1537,8 @@ FLUXES = itertools.count()
 TIMES = 'ferriteweazle_times'
 STARTS = 'ferriteweazle_starts'
 JOINS = 'ferriteweazle_joins'
+# Marks gw's verify_track as reporting what it reads back.
+REPORTS = 'ferriteweazle_reports'
 BASE = 'ferriteweazle_base'
 WHEN = 'ferriteweazle_when'
 

@@ -535,7 +535,6 @@ impl Service {
             encoding: None,
             sectors: None,
             bytes: None,
-            verifies: false,
             revs: None,
         };
         let key = (String::new(), None, name.to_owned());

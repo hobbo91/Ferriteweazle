@@ -2443,9 +2443,6 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
-                let schema = self.schema.as_deref();
-                job.progress.verifies = command == "write"
-                    && schema.is_some_and(|s| form::verifies(&mut self.service, s, &job.args));
                 self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
@@ -2601,7 +2598,7 @@ impl App {
             _ if self.settings.drawer == Some(Drawer::Analyse) => {}
             true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
-                let verifying = job.running() && job.progress.verifies;
+                let verifying = job.running() && job.progress.verifying();
                 diskmap::show(ui, &job.progress, disk, swapped, verifying, budget, room);
             }
         }
@@ -2967,7 +2964,7 @@ impl App {
             image: command == "convert" || (command == DETECT && file),
             disk,
             swapped: tracks.is_some_and(form::swapped),
-            verifying: begun && running && job.is_some_and(|j| j.progress.verifies),
+            verifying: begun && running && job.is_some_and(|j| j.progress.verifying()),
             media: *media,
             shows: *shows,
             current: job.and_then(|j| j.progress.current).filter(|_| running),
@@ -6352,13 +6349,13 @@ mod tests {
     #[test]
     fn a_verified_write_calls_its_purple_track_verifying_until_it_stops() {
         let mut job = running("write");
-        job.progress.verifies = true;
-        for line in [
-            "Writing c=0-1:h=0",
-            "T0.0: Writing Track (Flux: 1)",
-            "T1.0: Writing Track (Flux: 1)",
-        ] {
-            job.progress.feed(line);
+        job.progress.feed("Writing c=0-1:h=0");
+        for c in 0..2 {
+            // As the bridge reports it, before gw says it writes the track.
+            job.progress
+                .verify(&format!(r#"{{"c":{c},"h":0,"verifies":true}}"#));
+            job.progress
+                .feed(&format!("T{c}.0: Writing Track (Flux: 1)"));
         }
         let mut app = offline();
         app.settings.page = Page::Command("write".into());

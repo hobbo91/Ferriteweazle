@@ -415,8 +415,8 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
     }
 }
 
-/// Each colour on the map with its track count, then the retries. `verifying`: a
-/// write gw verifies is running, so its one written track is the one gw checks.
+/// Each colour on the map with its track count, then the retries. `verifying`:
+/// the one written track is the one gw is writing and checking.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
     // Rows a line of its text apart where it wraps, not a field's height:
     // a wrapping row takes its height as it is made.

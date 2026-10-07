@@ -2271,7 +2271,8 @@ fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
 #[test]
 fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
     let mut job = Job::replay("write", "Writing c=0-1:h=0");
-    job.progress.verifies = true;
+    // As the bridge reports it, before gw says it writes the track.
+    job.progress.verify(r#"{"c":0,"h":0,"verifies":true}"#);
     job.progress.feed("T0.0: Writing Track (Flux: 1)");
     let builder = Harness::builder()
         .with_size(DEFAULT)

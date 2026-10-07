@@ -2532,27 +2532,6 @@ pub fn effective_format(
     }
 }
 
-/// Whether gw verifies each track of a write with these arguments before it
-/// goes on to the next: no --no-verify, and a format whose tracks gw checks,
-/// as gw has already described it.
-pub fn verifies(service: &mut Service, schema: &Schema, args: &[String]) -> bool {
-    let arg = |flag: &str| args.iter().find_map(|a| a.strip_prefix(flag));
-    let (Some(write), Some(file)) = (schema.command("write"), args.last()) else {
-        return false;
-    };
-    if args.iter().any(|a| a == "--no-verify") {
-        return false;
-    }
-    let mut values = Values::default();
-    values.set("file", file);
-    values.set("format", arg("--format=").unwrap_or_default());
-    let Some(format) = effective_format(service, schema, write, &values) else {
-        return false;
-    };
-    let info = service.known_format_info(arg("--diskdefs=").unwrap_or_default(), &format);
-    info.and_then(Load::ready).is_some_and(|i| i.verifies)
-}
-
 /// The format gw takes when none is chosen, in gw's order: the input type's
 /// own, such as an .adf's, else the output type's, else one gw has found in
 /// the input file, such as an .nsi's.
@@ -5790,7 +5769,6 @@ mod tests {
             encoding: Some("IBM MFM".into()),
             sectors: Some(sectors),
             bytes: Some(bytes),
-            verifies: true,
             revs: None,
         };
         let shown = |i| describe(&i).replace('\u{a0}', " ");

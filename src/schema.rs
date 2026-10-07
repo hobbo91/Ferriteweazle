@@ -93,9 +93,6 @@ pub struct FormatInfo {
     pub sectors: Option<(u32, u32)>,
     /// Size of a sector image of the whole disk.
     pub bytes: Option<u64>,
-    /// gw write verifies each track of this format before the next.
-    #[serde(default)]
-    pub verifies: bool,
     /// Revolutions gw read takes per track without --revs: whole ones index to
     /// index, a fraction past one timed.
     #[serde(default)]

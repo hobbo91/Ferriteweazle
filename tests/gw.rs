@@ -12,7 +12,7 @@ use ferriteweazle::form::{self, Output};
 use ferriteweazle::image;
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
-use ferriteweazle::progress::Status;
+use ferriteweazle::progress::{Progress, Status};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::service::{ImageAsk, Load, Service};
 use ferriteweazle::tools::{Origin, Tools};
@@ -672,15 +672,17 @@ const FORMATS: [(&str, &str); 23] = [
 /// bytes in `format` (with none, writing `image` as it is): tests/data/drive.py
 /// over the bridge, which must have written to the stand-in.
 fn stand_in_write(tools: &Tools, format: &str, image: &Path, tracks: &str) -> String {
-    stand_in_write_with(tools, format, image, tracks, &[])
+    stand_in_write_with(tools, format, image, tracks, &[], &[])
 }
 
-/// As stand_in_write, with `env` for drive.py, such as FAIL_AT.
+/// As stand_in_write, with gw write's `options` and `env` for drive.py, such
+/// as FAIL_AT.
 fn stand_in_write_with(
     tools: &Tools,
     format: &str,
     image: &Path,
     tracks: &str,
+    options: &[&str],
     env: &[(&str, &str)],
 ) -> String {
     let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
@@ -692,6 +694,7 @@ fn stand_in_write_with(
         .arg(format)
         .arg(image)
         .arg(format!("--tracks={tracks}"))
+        .args(options)
         .output()
         .expect("python runs");
     let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
@@ -741,6 +744,8 @@ fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
             verified.keys().collect::<Vec<_>>(),
             "{format}"
         );
+        let checked = written.keys().map(|&k| (k, true)).collect();
+        assert_eq!(verifies_said(&text), checked, "{format}");
         // The file as gw lays it out, as the bridge reported it opened.
         let source = text
             .lines()
@@ -790,7 +795,14 @@ fn a_track_is_reported_as_written_only_once_gw_has_written_it() {
     let Some(tools) = tools() else { return };
     let dir = scratch("write-fails");
     let image = dir.join("disk.img");
-    let text = stand_in_write_with(&tools, "ibm.1440", &image, "c=0-3", &[("FAIL_AT", "2.0")]);
+    let text = stand_in_write_with(
+        &tools,
+        "ibm.1440",
+        &image,
+        "c=0-3",
+        &[],
+        &[("FAIL_AT", "2.0")],
+    );
     assert!(text.contains("could not write"), "{}", unreported(&text));
     let sources: Vec<((u32, u32), Option<Source>)> = text
         .lines()
@@ -1116,6 +1128,134 @@ fn a_flux_image_written_as_it_is_is_reported_as_gw_writes_it_one_revolution_from
             (spin.revs[0] - 0.2).abs() < 1e-3,
             "{key:?}: {:?}",
             spin.revs
+        );
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// What the bridge said of each track gw wrote: whether gw verifies it.
+fn verifies_said(text: &str) -> BTreeMap<(u32, u32), bool> {
+    let mut said = BTreeMap::new();
+    for line in text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle verify "))
+    {
+        let v: serde_json::Value = serde_json::from_str(line).expect("a report");
+        let key = (
+            v["c"].as_u64().unwrap() as u32,
+            v["h"].as_u64().unwrap() as u32,
+        );
+        assert!(
+            said.insert(key, v["verifies"] == true).is_none(),
+            "once a track: {line}"
+        );
+    }
+    said
+}
+
+/// The track of gw's `T1.0: Writing Track` line, as it numbers it.
+fn writing(line: &str) -> Option<(u32, u32)> {
+    let (track, text) = line.strip_prefix('T')?.split_once(": ")?;
+    let (c, h) = track.split(' ').next()?.split_once('.')?;
+    text.starts_with("Writing Track")
+        .then_some((c.parse().ok()?, h.parse().ok()?))
+}
+
+#[test]
+fn gw_verifies_a_write_track_by_track_as_the_bridge_says_whatever_the_image() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("verifies");
+    let img = dir.join("a.img");
+    let bytes = (0..368_640u32).map(|i| (i * 7 % 251) as u8);
+    std::fs::write(&img, bytes.collect::<Vec<_>>()).unwrap();
+    // An image of each kind of track gw writes: sectors of a format, its own
+    // tracks with gw's verify (as an IPF's), bitcells (as a DMK's), raw flux
+    // (as a KryoFlux's or an A2R's).
+    let (adf, dsk) = (dir.join("a.adf"), kinds(&tools, &dir));
+    std::fs::write(&adf, vec![0x5a; 901_120]).unwrap();
+    let [imd, scp, hfe] = ["a.imd", "a.scp", "a.hfe"].map(|f| dir.join(f));
+    for made in [&imd, &scp, &hfe] {
+        run(
+            &tools,
+            &["convert", "--format=ibm.360", &path(&img), &path(made)],
+        );
+    }
+    let cases: [(&str, &Path, &[&str], bool); 8] = [
+        ("an ADF, in its type's format", &adf, &[], true),
+        ("an EDSK, its own tracks", &dsk, &[], true),
+        ("an IMD, sectors of its own", &imd, &[], true),
+        ("raw flux", &scp, &[], false),
+        ("an HFE's bitcells", &hfe, &[], false),
+        ("raw flux in a format", &scp, &["--format=ibm.360"], true),
+        (
+            "raw flux in a bitcell format",
+            &scp,
+            &["--format=raw.250"],
+            false,
+        ),
+        ("an IMD with --no-verify", &imd, &["--no-verify"], false),
+    ];
+    for (what, image, options, verifies) in cases {
+        let text = stand_in_write_with(&tools, "", image, "c=0-1", options, &[]);
+        let gw = (
+            text.contains("All tracks verified"),
+            text.contains("No tracks verified"),
+        );
+        assert_eq!(gw, (verifies, !verifies), "{what}: {}", unreported(&text));
+        let said = verifies_said(&text);
+        assert!(said.values().all(|&v| v == verifies), "{what}: {said:?}");
+        // The track as gw's verify read it back, of each track it verifies.
+        let read_back: Vec<_> = (text.lines())
+            .filter_map(|l| Facts::parse(l.strip_prefix("@ferriteweazle track ")?))
+            .filter(|(_, f)| f.source == Some(Source::Verify) && f.flux.is_some())
+            .map(|(key, _)| key)
+            .collect();
+        let checked: Vec<_> = said.iter().filter(|(_, v)| **v).map(|(k, _)| *k).collect();
+        assert_eq!(read_back, checked, "{what}");
+        // Fed as job.rs feeds it: each track good as gw goes on from it.
+        let mut p = Progress::default();
+        for line in text.lines() {
+            if let Some(report) = line.strip_prefix("@ferriteweazle verify ") {
+                p.verify(report);
+            } else if line.starts_with("@ferriteweazle ") {
+                continue;
+            } else if let Some(key) = writing(line) {
+                assert!(
+                    said.contains_key(&key),
+                    "{what}: said before gw wrote {key:?}"
+                );
+                p.feed(line);
+            } else {
+                if line.ends_with(" verified") || line.contains(" verified (Reason") {
+                    // gw's last line on the write: the tracks before its last.
+                    let last = p.current.expect("a track written");
+                    let want = if verifies {
+                        Status::Good
+                    } else {
+                        Status::Written
+                    };
+                    for (key, t) in p.tracks.iter().filter(|(k, _)| **k != last) {
+                        assert_eq!(t.status, want, "{what}: {key:?}");
+                    }
+                    assert_eq!(p.verifying(), verifies, "{what}: its last");
+                }
+                p.feed(line);
+            }
+        }
+        assert_eq!(
+            p.tracks.keys().collect::<Vec<_>>(),
+            said.keys().collect::<Vec<_>>(),
+            "{what}"
+        );
+        let want = if verifies {
+            Status::Good
+        } else {
+            Status::Written
+        };
+        assert!(
+            p.tracks.values().all(|t| t.status == want),
+            "{what}: {:?}",
+            p.tracks
         );
     }
     std::fs::remove_dir_all(dir).ok();
@@ -2858,21 +2998,15 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
 }
 
 #[test]
-fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
+fn a_format_gives_the_revolutions_gw_read_takes_of_each_track() {
     let Some(tools) = tools() else { return };
     let mut service = Service::start(&tools, Box::new(|| {}));
-    let schema = wait("the schema", || {
-        service.poll();
-        service.schema.ready().cloned()
-    });
     let mut info = |name: &str| {
         wait(name, || {
             service.poll();
             service.format_info("", name).ready().cloned()
         })
     };
-    assert!(info("ibm.1440").verifies);
-    assert!(info("amiga.amigados").verifies);
     assert_eq!(
         info("ibm.1440").revs,
         Some(2.0),
@@ -2883,21 +3017,6 @@ fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
         Some(1.1),
         "a timed fraction past one"
     );
-    assert!(!info("raw.250").verifies, "gw cannot check bitcells");
-    let mut verifies = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        form::verifies(&mut service, &schema, &args)
-    };
-    assert!(verifies(&["write", "--format=ibm.1440", "a.img"]));
-    assert!(verifies(&["write", "a.adf"]), "an .adf's own format");
-    assert!(!verifies(&[
-        "write",
-        "--format=ibm.1440",
-        "--no-verify",
-        "a.img"
-    ]));
-    assert!(!verifies(&["write", "--format=raw.250", "a.hfe"]));
-    assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
 }
 
 /// Runs the bridge's (argv[1]) detection with the options after argv[2] on a made-up
