@@ -1611,6 +1611,20 @@ fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks
     // A conversion's input, its output not made.
     let input = opened(&["convert", &path(&adf), &path(&scp)], &adf).unwrap();
     assert!(input.layout.is_some() && !scp.exists());
+    // With no output named, gw's parser wants one; given an SCP's name, as
+    // the page gives gw then, the input opens.
+    let none = opened(&["convert", &path(&adf)], &adf).unwrap_err();
+    assert!(none.contains("out_file"), "{none}");
+    let alone = opened(&["convert", &path(&adf), "out.scp"], &adf).unwrap();
+    assert!(alone.layout.is_some());
+    // An SCP's type names no format, as an ADF's does: an IMG, which names
+    // none of its own, opens only with one.
+    let img = dir.join("Disk.img");
+    std::fs::write(&img, &bytes).unwrap();
+    let unnamed = opened(&["convert", &path(&img), "out.scp"], &img).unwrap_err();
+    assert!(unnamed.contains("requires a disk format"), "{unnamed}");
+    let amiga = opened(&["convert", &path(&img), "out.adf"], &img).unwrap();
+    assert!(amiga.layout.is_some());
     // gw's own words where it cannot.
     let wrong = opened(&["write", "--format=no.such", &path(&adf)], &adf).unwrap_err();
     assert!(wrong.starts_with("Unknown format 'no.such'"), "{wrong}");

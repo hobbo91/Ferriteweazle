@@ -4491,12 +4491,15 @@ fn undrawn(args: &[String]) -> Option<&'static str> {
 }
 
 /// A name of the same image type as `file`: all gw takes from a
-/// conversion's output before it opens the input. Its `::` options gw takes
-/// only as it opens the output.
+/// conversion's output before it opens the input, its type's default format.
+/// Its `::` options gw takes only as it opens the output. With none named
+/// yet, an SCP's, whose type has no default format: gw opens the input as
+/// it would alone.
 fn of_type(file: &str) -> String {
     let name = file.split_once("::").map_or(file, |(n, _)| n);
     match Path::new(name).extension() {
         Some(ext) => format!("out.{}", ext.to_string_lossy()),
+        None if name.is_empty() => "out.scp".to_owned(),
         None => name.to_owned(),
     }
 }
@@ -7753,6 +7756,24 @@ mod tests {
         app.start(&ctx, read);
         assert!(matches!(app.dialog, Some(Dialog::Overwrite { .. })));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_conversions_input_opens_before_its_output_is_named() {
+        let mut app = offline();
+        let convert = |app: &mut App, out: &str| {
+            let values = app.settings.values.entry("convert".into()).or_default();
+            values.set("in_file", "/d/a.adf");
+            values.set("out_file", out);
+            app.preview_args("convert").map(|ask| ask.args)
+        };
+        // None yet: one of a type that names no format, so gw's parser,
+        // which wants an output, opens the input as gw would alone.
+        let args = convert(&mut app, "").unwrap();
+        assert_eq!(args[args.len() - 2..], ["/d/a.adf", "out.scp"]);
+        // Named: one of its type, without the options gw takes as it opens it.
+        let args = convert(&mut app, "/o/b.img::bitrate=250").unwrap();
+        assert_eq!(args.last().map(String::as_str), Some("out.img"));
     }
 
     #[test]
