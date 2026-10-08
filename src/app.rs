@@ -2790,9 +2790,7 @@ impl App {
             match self.service.image(&ask) {
                 Load::Ready(p) if p.0.layout.is_some() => return Ok(()),
                 Load::Ready(p) => {
-                    return Err(filemap::not_mapped(
-                        p.0.file.as_deref().unwrap_or(&p.0.kind),
-                    ));
+                    return Err(filemap::not_laid_out(&p.0));
                 }
                 Load::Failed(e) => return Err(e.clone()),
                 Load::Waiting(_) if self.settings.drawer == Some(Drawer::Analyse) => return Ok(()),
@@ -2872,7 +2870,7 @@ impl App {
         // Why the page's own image does not show where a job's might.
         let unshown = || match (&named, opened) {
             (Some(path), _) if filemap::holds_tracks(path) => filemap::not_mapped(path),
-            (_, Some(p)) => filemap::not_mapped(p.0.file.as_deref().unwrap_or(&p.0.kind)),
+            (_, Some(p)) => filemap::not_laid_out(&p.0),
             _ => match preview.as_ref() {
                 Some(ask) => self.service.image_error(ask).unwrap_or(OPENING).to_owned(),
                 // As the drawer shuts.

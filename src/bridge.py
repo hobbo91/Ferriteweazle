@@ -1391,7 +1391,7 @@ def report_flux(flux):
     from the index: each revolution whole, and what the read took before its
     first pulse or after its last, by the length of the revolution beside
     it; in a read with none, by the others' mean, else by gw's measure of
-    the drive's turn, `drive`. Whether gw scaled its times, `scaled`, as
+    the drive's turn, which `period` then is. Whether gw scaled its times, `scaled`, as
     with --adjust-speed, and whether its pulses are a hard-sectored disk's
     first sector's hole, `holes`, as gw takes it, not its index. None where
     the pulses are not a disk's index: one of no length, or a read that
@@ -1434,8 +1434,6 @@ def report_flux(flux):
         revs += turns
     out = {'freq': flux.sample_freq, 'period': sum(revs) / len(revs) if revs else measure,
            'revs': revs, 'passes': passes, 'bins': bins, 'intervals': intervals(flux, firsts)}
-    if not revs:
-        out['drive'] = True
     if vars(flux).get(SCALED):
         out['scaled'] = True
     if getattr(flux, 'sector_list', None) is not None:

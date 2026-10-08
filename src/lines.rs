@@ -133,11 +133,6 @@ pub struct Pane<'a> {
 }
 
 impl Lines<'_> {
-    /// Shows the lines in `area`, their selection kept under `id`.
-    pub fn show(&self, ui: &mut Ui, id: egui::Id, area: egui::ScrollArea) {
-        self.show_as(ui, id, area, Pane::default());
-    }
-
     /// Shows the lines in `area` in the box `pane` says, their selection
     /// kept under `id`.
     pub fn show_as(&self, ui: &mut Ui, id: egui::Id, area: egui::ScrollArea, pane: Pane) {
@@ -1416,7 +1411,7 @@ mod tests {
                     font: font(),
                     gap: 3.0,
                 };
-                shown.show(ui, id(), ScrollArea::both());
+                shown.show_as(ui, id(), ScrollArea::both(), Pane::default());
             });
             out.textures_delta.clear();
             out
@@ -1474,8 +1469,10 @@ mod tests {
                         };
                         let area = ScrollArea::both().max_height(360.0);
                         match log {
-                            true => theme::terminal(ui, |ui, _| shown.show(ui, id(), area)),
-                            false => shown.show(ui, id(), area),
+                            true => theme::terminal(ui, |ui, _| {
+                                shown.show_as(ui, id(), area, Pane::default())
+                            }),
+                            false => shown.show_as(ui, id(), area, Pane::default()),
                         }
                     });
                     out.textures_delta.clear();
@@ -1707,7 +1704,12 @@ mod tests {
                         font: font(),
                         gap: 0.0,
                     };
-                    shown.show(ui, id(), ScrollArea::vertical().max_height(360.0));
+                    shown.show_as(
+                        ui,
+                        id(),
+                        ScrollArea::vertical().max_height(360.0),
+                        Pane::default(),
+                    );
                 });
                 page.set(output.state.offset);
             });

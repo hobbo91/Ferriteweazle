@@ -39,7 +39,7 @@ where
 }
 
 /// A track's flux, in its sample rate's ticks, as the bridge counted it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct Flux {
     /// Ticks per second.
     freq: f64,
@@ -57,6 +57,12 @@ struct Flux {
     bins: Vec<u32>,
     #[serde(default, deserialize_with = "lenient")]
     intervals: Option<Counted>,
+    /// gw scaled its times, as with --adjust-speed.
+    #[serde(default)]
+    scaled: bool,
+    /// Its index is a hard-sectored disk's first sector hole, as gw takes it.
+    #[serde(default)]
+    holes: bool,
 }
 
 /// How far apart a track's flux transitions are, as the bridge counted
@@ -389,6 +395,10 @@ pub struct Spin {
     /// time the read passed each part.
     pub bins: Vec<f32>,
     pub intervals: Option<Intervals>,
+    /// Its times as gw scaled them, as with --adjust-speed, not the drive's.
+    pub scaled: bool,
+    /// Its index is sector 0's hole, as gw takes a hard-sectored disk's.
+    pub holes: bool,
 }
 
 /// How far apart a track's flux transitions are, as gw holds its flux: how
@@ -467,6 +477,8 @@ pub enum Seen {
     NotFound,
     /// Its data, with no header before it.
     DataAlone,
+    /// Its header, its CRC failing, with no data after it.
+    BadHeaderAlone,
     /// Its header, with no data after it.
     HeaderAlone,
     /// Its header's CRC fails.
@@ -610,7 +622,8 @@ fn turns(decodes: &[Option<Decoded>], copy: Option<[usize; 2]>) -> Option<Turns>
                                 (false, _) => Seen::BadHeader,
                             },
                         ),
-                        Area::Header { .. } => (at, Seen::HeaderAlone),
+                        Area::Header { ok: true, .. } => (at, Seen::HeaderAlone),
+                        Area::Header { .. } => (at, Seen::BadHeaderAlone),
                         Area::Data { .. } => (at + data?, Seen::DataAlone),
                         Area::Mark { .. } => return None,
                     };
@@ -940,6 +953,8 @@ fn spin(f: &Flux) -> Option<Spin> {
         per_rev: bins.iter().map(|&b| f64::from(b)).sum(),
         bins,
         intervals,
+        scaled: f.scaled,
+        holes: f.holes,
     })
 }
 
@@ -1014,6 +1029,7 @@ mod tests {
             passes: vec![[0.5, 1.0], [0.0, 1.0]],
             bins: vec![2, 2, 1, 1],
             intervals: None,
+            ..Flux::default()
         };
         let spin = spin(&flux).unwrap();
         assert_eq!(spin.bins, [2.0, 2.0, 0.5, 0.5]);
@@ -1150,6 +1166,7 @@ mod tests {
             passes,
             bins: vec![1; 4],
             intervals: None,
+            ..Flux::default()
         };
         assert!(spin(&flux(vec![100.0], vec![[0.0, 1.0]])).is_some());
         assert!(
@@ -1179,6 +1196,7 @@ mod tests {
             passes,
             bins: vec![1; 4],
             intervals: None,
+            ..Flux::default()
         };
         let bins = |passes| spin(&flux(passes)).unwrap().bins;
         // From a quarter before the index: its last part, then the first three.
@@ -1263,6 +1281,23 @@ mod tests {
             [Seen::Good, Seen::Good, Seen::HeaderAlone, Seen::NotFound]
         );
         assert_eq!(turns.reads, 2);
+    }
+
+    #[test]
+    fn a_header_found_alone_says_whether_its_crc_held() {
+        let alone = |ok: u8| {
+            let areas =
+                serde_json::json!([whole(0, 1001, 1, 1), [2, 1, 1001, 1161, ok, 0, 0, 1, 2]]);
+            let decodes = serde_json::json!([{"flux": 1, "cells": [100_000, 100_000],
+                "tail": 0, "areas": areas}]);
+            decoded([0, 0], decodes).sectors[0]
+                .turns
+                .clone()
+                .unwrap()
+                .seen
+        };
+        assert_eq!(alone(1), [Seen::Good, Seen::HeaderAlone]);
+        assert_eq!(alone(0), [Seen::Good, Seen::BadHeaderAlone]);
     }
 
     #[test]
@@ -1417,6 +1452,7 @@ mod tests {
                 counts: vec![3, 0, 5],
                 longer: 2,
             }),
+            ..Flux::default()
         };
         let i = spin(&flux).unwrap().intervals.unwrap();
         assert!((i.width - 50e-9).abs() < 1e-15 && (i.top - 20e-6).abs() < 1e-12);

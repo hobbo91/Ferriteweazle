@@ -1182,7 +1182,8 @@ fn each_revolution_of_flux_gw_reads_is_counted_and_one_the_disk_spoilt_told_apar
     assert_eq!(turns(0).reads, 1);
     assert_eq!(turns(1).seen, [Seen::Good, Seen::BadHeader]);
     assert_eq!(turns(2).seen, [Seen::BadData, Seen::BadData]);
-    assert_eq!(turns(4).seen, [Seen::HeaderAlone, Seen::HeaderAlone]);
+    // R5's header, its CRC failing, with no data after it.
+    assert_eq!(turns(4).seen, [Seen::BadHeaderAlone, Seen::BadHeaderAlone]);
     std::fs::remove_dir_all(dir).ok();
 }
 

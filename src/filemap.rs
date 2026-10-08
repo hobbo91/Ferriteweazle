@@ -56,9 +56,17 @@ pub fn shown(progress: &Progress) -> Result<&Image, String> {
     }
 }
 
-/// Why gw's report lays out no part of an image.
-fn not_laid_out(image: &Image) -> String {
-    not_mapped(image.file.as_deref().unwrap_or(&image.kind))
+/// Why gw's report lays out no part of an image: its type, or a file of a
+/// type gw lays out that is not laid out so.
+pub(crate) fn not_laid_out(image: &Image) -> String {
+    let file = image.file.as_deref().unwrap_or(&image.kind);
+    match image.differs {
+        true => {
+            let name = extension(file).unwrap_or_else(|| file.to_owned());
+            format!("Not mapped: the file is not as gw lays out {name}.")
+        }
+        false => not_mapped(file),
+    }
 }
 
 /// Why no part of the image `file` is laid out, gw not laying it out as a
@@ -91,7 +99,10 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     let work = job(map);
     let Some(placed) = map.image.placed(work.as_ref()) else {
         ui.label(RichText::new(header(map)).small().color(p.dim));
-        let text = "Not as laid out: gw wrote the file another way.";
+        let text = match map.image.tracks.values().any(|t| !t.laid) {
+            true => "Not as laid out: gw puts the input's own tracks in it.",
+            false => "Not as laid out: gw wrote the file another way.",
+        };
         ui.label(RichText::new(text).color(p.partial));
         return;
     };
@@ -1218,6 +1229,13 @@ mod tests {
             progress.image(&open(file, kind));
             assert_eq!(shown(&progress).err().as_deref(), Some(said));
         }
+        // A type gw lays out, its file not laid out so.
+        let differs = r#"{"event":"open","role":"source","file":"Disk.adf","type":"ADF","layout":null,"size":900,"differs":true}"#;
+        progress.image(differs);
+        assert_eq!(
+            shown(&progress).err().as_deref(),
+            Some("Not mapped: the file is not as gw lays out .adf.")
+        );
     }
 
     #[test]

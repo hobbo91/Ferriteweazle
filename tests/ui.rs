@@ -4592,7 +4592,7 @@ fn analyse_draws_a_track_not_in_the_image_as_bare_disk_and_says_so() {
     w.hover_at(on_disk(&w, (39.5 - 0.1875) / 42.9, 90.0));
     w.run();
     w.get_by_label("Cylinder 1 · side 0");
-    w.get_by_label("Not in the image.");
+    w.get_by_label("Not in the input, so Greaseweazle Tools passed over it.");
     assert!(w.query_by_label_contains("To do").is_none());
 }
 
@@ -4784,7 +4784,8 @@ fn analyse_paints_its_disks_at_a_new_size_once_that_holds() {
 
 #[test]
 fn a_legend_gaining_a_row_makes_the_drawer_taller_at_once_the_disks_as_they_were() {
-    // Narrow enough that the last reported track's entry takes a second row.
+    // Narrower than the window can be, so that one entry more takes a second
+    // row: how the drawer meets a legend that grows, whatever its width.
     let settings = Settings {
         drawer: Some(Drawer::Analyse),
         ..chosen()

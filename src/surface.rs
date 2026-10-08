@@ -5,7 +5,7 @@
 
 use crate::diskmap;
 use crate::form;
-use crate::lines::Lines;
+use crate::lines::{Lines, Pane};
 use crate::progress::{self, Progress, Status};
 use crate::theme::{self, Palette};
 use crate::track::{
@@ -1083,6 +1083,8 @@ struct Drawn {
     shared: usize,
     /// Each track's colour on the grid, where it shows that.
     statuses: Vec<Color32>,
+    /// A hard-sectored disk's: its index, as gw takes it, sector 0's hole.
+    holes: bool,
 }
 
 /// What a count of what the disk view draws was of: the job's revision,
@@ -1197,6 +1199,7 @@ impl Drawn {
                 Ring::Bare | Ring::Spin(_) => {}
             }
             let facts = progress.facts.get(&(cyl, side)).filter(|_| fits);
+            self.holes |= facts.is_some_and(|f| f.flux.as_ref().is_some_and(|s| s.holes));
             self.missing += facts.map_or(0, |f| f.missing.len());
             self.shared += facts.map_or(0, |f| {
                 let sectors = &f.sectors;
@@ -2028,7 +2031,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
     ui.strong(format!("Cylinder {cyl} · side {side}"));
     match (facts.and_then(|f| f.summary.as_deref()), track) {
         _ if absent => {
-            ui.label("Not in the image.");
+            ui.label(crate::progress::NOT_IN_INPUT);
         }
         (Some(summary), _) => {
             ui.label(summary);
@@ -2058,9 +2061,13 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
     }
     // Where the pointer is, and when, in each revolution read whole.
     let spin = facts.and_then(|f| f.flux.as_ref());
+    let zero = match spin.is_some_and(|s| s.holes) {
+        true => "sector 0's hole",
+        false => "the index",
+    };
     ui.weak(match spin.map(|spin| from_index(spin, share)) {
-        Some(ms) => format!("At {:.1}° · {ms} ms from the index", share * 360.0),
-        None => format!("At {:.1}° from the index", share * 360.0),
+        Some(ms) => format!("At {:.1}° · {ms} ms from {zero}", share * 360.0),
+        None => format!("At {:.1}° from {zero}", share * 360.0),
     });
     let Some(f) = facts else {
         return;
@@ -2288,6 +2295,9 @@ fn spin_line(spin: &Spin, from: Origin) -> String {
     let revs: Vec<String> = spin.revs.iter().map(|&r| ms(r)).collect();
     match (from, revs.is_empty()) {
         (Origin::Written, _) => format!("Format: {} ms · {rpm}", ms(spin.period)),
+        // As gw scaled them, not as the drive turned.
+        (_, false) if spin.scaled => format!("Scaled: {} ms · {rpm}", revs.join(", ")),
+        (_, true) if spin.scaled => format!("Scaled: {} ms · {rpm}", ms(spin.period)),
         (_, false) => format!("{} ms · {rpm}", revs.join(", ")),
         (Origin::Read | Origin::Verify, true) => format!("Drive: {} ms · {rpm}", ms(spin.period)),
         (_, true) => format!("{} ms · {rpm}", ms(spin.period)),
@@ -2536,7 +2546,11 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
         gap: 0.0,
     };
     let area = egui::ScrollArea::vertical().max_height(360.0);
-    lines.show(ui, ui.id().with("bytes"), area);
+    let pane = Pane {
+        name: "Sector bytes",
+        ..Pane::default()
+    };
+    lines.show_as(ui, ui.id().with("bytes"), area, pane);
 }
 
 /// A sector window's bytes as dump writes them out, and what of: kept while
@@ -2816,6 +2830,7 @@ fn turns_line(t: &Turns) -> Option<String> {
         (Seen::BadData, "data bad"),
         (Seen::BadHeader, "header bad"),
         (Seen::HeaderAlone, "no data"),
+        (Seen::BadHeaderAlone, "header bad, no data"),
         (Seen::DataAlone, "no header"),
         (Seen::NotFound, "not found"),
     ];
@@ -3022,7 +3037,11 @@ impl Legend {
                 Some(tip),
             ));
         }
-        entries.push(entry(Some(Mark::Index(look.index)), "Index".into(), None));
+        let index = match drawn.holes {
+            true => "Sector 0's hole",
+            false => "Index",
+        };
+        entries.push(entry(Some(Mark::Index(look.index)), index.into(), None));
         if drawn.to_do > 0 {
             let mark = Mark::Swatch(look.to_do);
             let text = format!("To do {}", diskmap::tracks(drawn.to_do));
@@ -3895,6 +3914,7 @@ mod tests {
             per_rev: 4.0,
             bins: vec![1.0; 4],
             intervals: None,
+            ..Spin::default()
         };
         let amiga = |placed: bool, flux: bool| Facts {
             summary: Some("AmigaDOS (1/11 sectors)".into()),
@@ -4750,6 +4770,7 @@ mod tests {
             per_rev: 4.0,
             bins: vec![1.0; 4],
             intervals: None,
+            ..Spin::default()
         }
     }
 
@@ -4784,6 +4805,19 @@ mod tests {
         assert_eq!(
             spin_line(&spin_of(vec![0.2]), Origin::Written),
             "Format: 200.00 ms · 300.00 rpm"
+        );
+        // Times gw scaled, as with --adjust-speed, are not the drive's.
+        let scaled = |revs| Spin {
+            scaled: true,
+            ..spin_of(revs)
+        };
+        assert_eq!(
+            spin_line(&scaled(vec![0.2]), Origin::Read),
+            "Scaled: 200.00 ms · 300.00 rpm"
+        );
+        assert_eq!(
+            spin_line(&scaled(Vec::new()), Origin::Read),
+            "Scaled: 200.00 ms · 300.00 rpm"
         );
     }
 
