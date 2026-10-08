@@ -84,12 +84,6 @@ struct Codec {
     time_per_rev: Option<f64>,
     /// The bit cell, in seconds.
     clock: Option<f64>,
-    /// An IBM-style track's index marks, in bit cells from the index, and
-    /// where decoded from flux, in time: see Found::times.
-    #[serde(default)]
-    iams: Vec<f64>,
-    #[serde(default)]
-    iam_times: Vec<Option<(f64, f64, Option<f64>)>>,
     /// An IBM-style track's sectors as found round it.
     #[serde(default)]
     found: Vec<Found>,
@@ -111,10 +105,9 @@ struct Codec {
     decodes: Option<Vec<Decode>>,
 }
 
-/// A decode gw made of an IBM-style track from flux, as bridge.py's
-/// decoded_from notes it: the flux decoded, by number, as gw decodes a flux
-/// again with another PLL; each revolution's bit cells, index to index, and
-/// those after the last index; and each area found, in turn round the track.
+/// One decode gw made of an IBM-style track, as bridge.py's decoded_from
+/// notes it: the flux's number, each revolution's bit cells and those after
+/// the last index, and the areas found, in turn.
 #[derive(Debug, Clone, Deserialize)]
 struct Decode {
     flux: u64,
@@ -357,8 +350,6 @@ pub struct Facts {
     pub sectors: Vec<Sector>,
     /// The sectors the format lays out that gw did not find.
     pub missing: Vec<Id>,
-    /// Index address marks, each a share of a revolution from the index.
-    pub iams: Vec<f32>,
     /// The bit cell gw decoded at, in seconds.
     pub cell: Option<f64>,
     pub flux: Option<Spin>,
@@ -538,13 +529,11 @@ pub enum Data {
     None,
 }
 
-/// Areas this close, in bit cells, are one area gw found again, in another
-/// revolution or another decode: far more than the same area moves from
-/// one revolution to the next, under 8 cells in real reads, and far less
-/// than the shortest area, an FM ID field's 112, so two never pass for one.
-/// gw's own decoder takes sectors within 1000 cells as one; that leaves
-/// one sector of each, but would take a header 44 bytes before another
-/// sector as part of it.
+/// Areas whose starts lie this close, in bit cells, are one area found
+/// again in another revolution or decode: in real reads one moves under 8
+/// cells between revolutions, and two headers or data blocks start at
+/// least an FM ID field, 112 cells, apart. gw's own 1000 would take a
+/// header 44 bytes before a sector for part of it.
 const COPY: f64 = 64.0;
 
 /// The layout of the area a sector was found as, `copy`, in its decode;
@@ -581,11 +570,10 @@ fn layout(decodes: &[Option<Decoded>], copy: Option<[usize; 2]>, mmfm: bool) -> 
     })
 }
 
-/// How gw found the sector it found as area `copy` in each revolution of
-/// each flux it decoded: the copy of each decode nearest its place, within
-/// COPY, the best of them. Where the read held its place, from the index to
-/// COPY past its end, not found if none; where it may not have, only a
-/// copy found whole, else left out.
+/// How gw found the sector it kept as area `copy` in each revolution of
+/// each flux: the best of each decode's copies within COPY of its place. A
+/// revolution the read held to COPY past the sector's end counts it not
+/// found without one; any other counts only a copy found whole.
 fn turns(decodes: &[Option<Decoded>], copy: Option<[usize; 2]>) -> Option<Turns> {
     let [d, i] = copy?;
     let kept = *decodes.get(d)?.as_ref()?.areas.get(i)?;
@@ -675,10 +663,11 @@ impl Facts {
             cell: codec.clock,
             ..Facts::default()
         };
+        // An IBM-style track keeps its places whatever gw found whole: the
+        // bridge gives its mode, where reports before it had sectors or a layout.
+        let ibm = codec.mode.is_some() || !codec.found.is_empty() || codec.laid.is_some();
         match codec.time_per_rev.zip(codec.clock) {
-            Some((per_rev, cell)) if !codec.found.is_empty() || codec.laid.is_some() => {
-                facts.ibm(&mut codec, Timing { per_rev, cell }, turned)
-            }
+            Some((per_rev, cell)) if ibm => facts.ibm(&mut codec, Timing { per_rev, cell }, turned),
             _ => facts.numbered(&mut codec),
         }
         facts
@@ -784,16 +773,6 @@ impl Facts {
             .filter(|s| !s.header)
             .map(|s| Id::Ibm(s.id))
             .collect();
-        self.iams = codec
-            .iams
-            .iter()
-            .enumerate()
-            .map(|(i, &x)| {
-                let at = codec.iam_times.get(i).copied().flatten();
-                let [share] = timing.shares([x], at.map(|(t, ..)| [t]), at.and_then(|a| a.2));
-                share.rem_euclid(1.0)
-            })
-            .collect();
     }
 
     /// Another codec's sectors, by number, placed where gw found them.
@@ -883,24 +862,24 @@ fn place(p: &Place, per_rev: Option<f64>) -> Option<([f32; 3], bool)> {
     }
     let mut index = Vec::new();
     let mut at = 0.0;
-    for (i, &bits) in p.revs.iter().enumerate() {
-        // Bits read before the first index make no revolution.
+    for (i, &length) in p.revs.iter().enumerate() {
+        // What was read before the first index makes no revolution.
         if p.cued || i > 0 {
             index.push(at);
         }
-        at += bits;
+        at += length;
     }
     index.push(at);
     // The last index at or before the sector, or the first, and the
     // revolution after it, or before it.
     let after = index.iter().rposition(|&x| x <= p.at);
     let i = after.unwrap_or(0);
-    let bits = match (index.get(i + 1), i.checked_sub(1)) {
+    let length = match (index.get(i + 1), i.checked_sub(1)) {
         (Some(next), _) => next - index[i],
         (None, Some(last)) => index[i] - index[last],
         (None, None) => per_rev?,
     };
-    let share = |x: f64| ((x - index[i]) / bits) as f32;
+    let share = |x: f64| ((x - index[i]) / length) as f32;
     let at = span(share(p.at), share(p.data.unwrap_or(p.at)), share(p.end));
     Some((at, after.is_none()))
 }
@@ -985,10 +964,8 @@ mod tests {
         assert_eq!(facts.summary.as_deref(), Some("AmigaDOS (11/11 sectors)"));
         assert_eq!(facts.sectors.len(), 11);
         assert!(facts.missing.is_empty());
-        // gw reads 544 MFM words from each sync word: the sectors abut, but
-        // where the read began. Those before the first index pulse are placed
-        // back from it by the next revolution's length, and the turn of a real
-        // drive varies.
+        // Sectors abut but for one seam: those read before the first index,
+        // placed back by the next revolution's length, meet the rest.
         let seams: Vec<f32> = facts
             .sectors
             .windows(2)
@@ -1019,7 +996,6 @@ mod tests {
         assert!(facts.sectors.iter().all(|s| s.header == Header::Good));
         let [start, data, end] = facts.sectors[0].at.unwrap();
         assert!(start < data && data < end);
-        assert!(facts.iams.is_empty(), "this disk has no index mark");
         // A whole track of data: its flux even round it.
         let relative = facts.flux.unwrap().relative();
         assert!(
@@ -1060,6 +1036,15 @@ mod tests {
             ..p.clone()
         };
         assert_eq!(place(&cued, None), Some(([0.75, 0.75, 1.25], false)));
+        let none = Place {
+            revs: Vec::new(),
+            ..p.clone()
+        };
+        assert_eq!(
+            place(&none, Some(100.0)),
+            None,
+            "no revolution to place it in"
+        );
         // One index read: the revolution is the codec's length, as gw's PLL takes it.
         let once = Place {
             revs: vec![100.0],
@@ -1081,9 +1066,9 @@ mod tests {
         assert_eq!(hex("abc"), None, "two to a byte");
     }
 
-    /// An IBM-style track as the bridge reports one decoded from flux: its
-    /// format lays out sectors 1 and 2, neither found whole, and gw found
-    /// these blocks by themselves.
+    /// An IBM-style track as the bridge reports an image's: its format lays
+    /// out sectors 1 and 2, neither found whole, and gw found these blocks
+    /// by themselves.
     fn apart(blocks: serde_json::Value) -> Facts {
         let laid = |r: u8, start: u32| {
             serde_json::json!({"id": [0, 0, r, 2], "start": start, "header_end": start + 100,
@@ -1126,14 +1111,17 @@ mod tests {
         };
         assert_eq!((s.header, s.data), (Header::Good, Data::None));
         let facts = apart(serde_json::json!([header(true, 100), header(false, 110)]));
-        assert_eq!(facts.sectors[0].header, Header::Good, "kept");
+        let [s] = &facts.sectors[..] else {
+            panic!("{:?}", facts.sectors)
+        };
+        assert_eq!(s.header, Header::Good, "kept");
     }
 
     #[test]
     fn a_part_of_a_report_that_does_not_parse_leaves_the_rest() {
         // gw's revolution unmeasured: no period.
         let report = serde_json::json!({"c": 1, "h": 0,
-            "flux": {"freq": 1000, "index": [100], "cued": true, "period": null, "end": 100,
+            "flux": {"freq": 1000, "period": null, "revs": [], "passes": [[0.0, 1.0]],
                      "bins": [1, 1]},
             "codec": {"summary": "AmigaDOS (1/11 sectors)", "nsec": 11, "good": [0],
                       "data": {"0": "00ff"}}});
@@ -1170,7 +1158,7 @@ mod tests {
         );
         assert!(
             spin(&flux(vec![100.0], vec![[-9.0, 1.0]])).is_none(),
-            "ten before"
+            "nine before"
         );
         assert!(
             spin(&flux(vec![100.0], vec![[0.0, 1e9]])).is_none(),
@@ -1180,14 +1168,41 @@ mod tests {
             spin(&flux(vec![100.0], vec![[0.5, 0.5]])).is_none(),
             "nowhere"
         );
-        let p = Place {
-            at: 10.0,
-            data: None,
-            end: 20.0,
-            revs: Vec::new(),
-            cued: false,
+    }
+
+    #[test]
+    fn a_pass_over_the_index_counts_on_either_side_of_it() {
+        let flux = |passes: Vec<[f64; 2]>| Flux {
+            freq: 1000.0,
+            period: 100.0,
+            revs: vec![100.0],
+            passes,
+            bins: vec![1; 4],
+            intervals: None,
         };
-        assert_eq!(place(&p, Some(100.0)), None, "no revolution to place it in");
+        let bins = |passes| spin(&flux(passes)).unwrap().bins;
+        // From a quarter before the index: its last part, then the first three.
+        assert_eq!(bins(vec![[-0.25, 0.75]]), [1.0, 1.0, 1.0, 1.0]);
+        // On a quarter past it: the second part never passed.
+        assert_eq!(bins(vec![[0.5, 1.25]]), [1.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_sector_its_format_does_not_lay_out_is_said_to_be_so() {
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (1/1 sectors)", "nsec": 1, "good": [0],
+            "time_per_rev": 0.2, "clock": 2e-6, "mode": "IBM MFM",
+            "found": [{"id": [0, 0, 9, 2], "start": 1001, "header_end": 1161,
+                "data_start": 1705, "end": 10001, "header": true, "data": true,
+                "mark": 251}],
+            "laid": [{"id": [0, 0, 1, 2], "start": 0, "header_end": 0, "data_start": 0,
+                "end": 0, "header": false, "data": false, "mark": 251}]}});
+        let facts = Facts::parse(&report.to_string()).unwrap().1;
+        let [s] = &facts.sectors[..] else {
+            panic!("{:?}", facts.sectors)
+        };
+        assert!(s.extra, "R9, where the format lays out R1");
+        assert_eq!(facts.missing, [Id::Ibm([0, 0, 1, 2])]);
     }
 
     /// An IBM-style track as the bridge reports one from flux the disk
@@ -1333,6 +1348,61 @@ mod tests {
     }
 
     #[test]
+    fn a_block_found_apart_within_a_sector_found_whole_is_part_of_it() {
+        // R1's header and data found again 10 cells on, and a header 70 on.
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (1/1 sectors)", "nsec": 1, "good": [0],
+            "time_per_rev": 0.2, "clock": 2e-6, "mode": "IBM MFM",
+            "found": [{"id": [0, 0, 1, 2], "start": 1001, "header_end": 1161,
+                "data_start": 1705, "end": 10001, "header": true, "data": true,
+                "mark": 251}],
+            "apart": [
+                {"id": [0, 0, 1, 2], "header": true, "start": 1011, "end": 1171},
+                {"id": null, "header": null, "start": 1715, "end": 10011, "mark": 251},
+                {"id": [0, 0, 9, 2], "header": true, "start": 1071, "end": 1231}]}});
+        let facts = Facts::parse(&report.to_string()).unwrap().1;
+        let ids: Vec<Id> = facts.sectors.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [Id::Ibm([0, 0, 1, 2]), Id::Ibm([0, 0, 9, 2])]);
+    }
+
+    #[test]
+    fn a_revolution_that_found_only_a_sectors_data_where_it_lies_counts_it_as_data_alone() {
+        let with_data_at = |at: u32| {
+            let areas = serde_json::json!([whole(0, 1001, 1, 1), [3, 1, at, at + 8296, 251]]);
+            let decodes = serde_json::json!([{"flux": 1, "cells": [100_000, 100_000],
+                "tail": 0, "areas": areas}]);
+            decoded([0, 0], decodes).sectors[0]
+                .turns
+                .clone()
+                .unwrap()
+                .seen
+        };
+        assert_eq!(with_data_at(1001 + 704), [Seen::Good, Seen::DataAlone]);
+        assert_eq!(
+            with_data_at(1001),
+            [Seen::Good, Seen::NotFound],
+            "not where its data lies"
+        );
+    }
+
+    #[test]
+    fn an_ibm_track_with_no_sector_found_whole_keeps_what_gw_found_apart() {
+        // As a write with no format decodes its verify: no layout, no sector.
+        let report = serde_json::json!({"c": 0, "h": 0, "codec": {
+            "summary": "IBM MFM (0/0 sectors)", "nsec": 0, "good": [],
+            "time_per_rev": 0.2, "clock": 2e-6, "mode": "IBM MFM", "found": [],
+            "apart": [{"id": [0, 0, 1, 2], "header": true, "start": 1001, "end": 1161}]}});
+        let facts = Facts::parse(&report.to_string()).unwrap().1;
+        let [s] = &facts.sectors[..] else {
+            panic!("{:?}", facts.sectors)
+        };
+        assert_eq!(
+            (s.id, s.header, s.data),
+            (Id::Ibm([0, 0, 1, 2]), Header::Good, Data::None)
+        );
+    }
+
+    #[test]
     fn intervals_are_counted_in_seconds_as_the_bridge_binned_its_ticks() {
         let flux = Flux {
             freq: 40e6,
@@ -1350,6 +1420,7 @@ mod tests {
         };
         let i = spin(&flux).unwrap().intervals.unwrap();
         assert!((i.width - 50e-9).abs() < 1e-15 && (i.top - 20e-6).abs() < 1e-12);
+        assert!((i.tick - 25e-9).abs() < 1e-18, "a 40 MHz tick");
         assert_eq!((i.first, i.counts, i.longer), (80, vec![3, 0, 5], 2));
     }
 
@@ -1384,10 +1455,30 @@ mod tests {
                     },
                     _ => continue,
                 };
-                if kind == "track" {
-                    assert!(Facts::parse(json).is_some(), "{path:?}: {json:.80}");
-                }
                 let v: serde_json::Value = serde_json::from_str(json).unwrap();
+                // Each part as well as the line: a part of the wrong shape is
+                // left out, the rest kept.
+                match (kind, v["event"].as_str()) {
+                    ("track", _) => {
+                        let parsed = Facts::parse(json);
+                        let (_, f) = parsed.unwrap_or_else(|| panic!("{path:?}: {json:.80}"));
+                        assert!(v["flux"].is_null() || f.flux.is_some(), "{path:?}: flux");
+                        assert!(
+                            v["codec"].is_null() || f.summary.is_some(),
+                            "{path:?}: codec"
+                        );
+                    }
+                    (_, Some("open")) => {
+                        assert!(
+                            crate::image::Image::parse(&v).is_some(),
+                            "{path:?}: {json:.80}"
+                        );
+                    }
+                    (_, Some("routes")) => {
+                        assert!(crate::image::routes(&v).is_some(), "{path:?}: {json:.80}");
+                    }
+                    _ => {}
+                }
                 for h in named(&v) {
                     let bytes = hex(&h).unwrap_or_else(|| panic!("{path:?}: not hex"));
                     assert!(

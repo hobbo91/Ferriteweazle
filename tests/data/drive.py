@@ -2,7 +2,7 @@
 exactly 300 rpm, keeps each track as gw writes it from the index, and reads
 it back from wherever it is when gw verifies. Makes IMAGE first, of random
 bytes in FORMAT; with FORMAT empty, writes IMAGE, a flux image, as it is.
-Prints gw's output, with the bridge's TRACK lines, and STAND_IN once the
+Prints gw's output, with the bridge's reports, and STAND_IN once the
 stand-in is in use. gw is given a port that does not exist, so that it could
 not reach a real drive even if it got past the stand-in. With FAIL_AT set to
 a track, such as 3.0, writing it fails, as a write-protected disk's does.
@@ -12,6 +12,7 @@ a track, such as 3.0, writing it fails, as a write-protected disk's does.
 import contextlib, io, os, random, runpy, sys
 bridge = runpy.run_path(sys.argv[1])
 fmt, image, options = sys.argv[2], sys.argv[3], sys.argv[4:]
+from greaseweazle import usb
 from greaseweazle.codec import codec
 from greaseweazle.flux import Flux
 from greaseweazle.tools import util
@@ -53,7 +54,8 @@ class Drive:
                     hard_sector_ticks=0):
         assert cue_at_index and not hard_sector_ticks
         if os.environ.get('FAIL_AT') == '%d.%d' % self.at:
-            raise OSError('the stand-in drive could not write')
+            # As a Greaseweazle answers a write to a write-protected disk.
+            raise usb.CmdError(bytes([usb.Cmd.WriteFlux, 8]), usb.Ack.Wrprot)
         times, t = [], 0.0
         for f in flux_list:
             t += f

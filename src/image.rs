@@ -4,6 +4,7 @@
 //! gw's filler; and the file as gw wrote it, checked byte by byte.
 
 use crate::progress::Progress;
+use crate::track::hex;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -28,29 +29,46 @@ pub struct Image {
     pub layout: Option<Layout>,
     /// A source's size in bytes.
     pub size: Option<u64>,
-    /// A laid out source's bytes, as gw read its file.
+    /// A laid out source's bytes as gw read them, up to its layout's end.
     pub content: Option<Vec<u8>>,
     /// A made image's tracks as gw put them in it, keyed as gw keeps them.
     pub tracks: BTreeMap<(u32, u32), Held>,
     /// A made image's file once gw has made its bytes.
     pub written: Option<Written>,
+    /// A source gw lays out its type of, whose file is not as gw lays it out.
+    pub differs: bool,
 }
 
 /// A track as gw put it in an image it makes: whether each sector, by its
-/// index on the track, holds data, and the bytes it takes in the file.
+/// index on the track, holds data, and the bytes it takes in the file; and
+/// whether its sectors are the layout's, `laid`, not an input image's own
+/// track gw passed through.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Held {
     pub has: Vec<bool>,
     pub bytes: Vec<u8>,
+    pub laid: bool,
 }
 
 /// A track a conversion goes through: as gw's track lines name it, where it
-/// lies in the input image, and where gw puts it in the output.
+/// lies in the input image, and where gw puts it in the output. None where
+/// gw's track lists move it before the first cylinder, as with h0.off=-1:
+/// no image holds it there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Route {
     pub own: (u32, u32),
-    pub from: (u32, u32),
-    pub to: (u32, u32),
+    pub from: Option<(u32, u32)>,
+    pub to: Option<(u32, u32)>,
+}
+
+impl Route {
+    /// Where the track lies in an image of `role`.
+    fn place(&self, role: Role) -> Option<(u32, u32)> {
+        match role {
+            Role::Source => self.from,
+            Role::Made => self.to,
+        }
+    }
 }
 
 /// The image a write or a conversion is to take its tracks from, as gw
@@ -69,30 +87,21 @@ impl TryFrom<Value> for Preview {
     }
 }
 
-/// A `routes` event's tracks; leaving out one that gw's track lists move
-/// to a cylinder before the first, such as with h0.off=-1, as no image
-/// holds it.
+/// A `routes` event's tracks: whole numbers, or none of it.
 pub fn routes(v: &Value) -> Option<Vec<Route>> {
-    let routes = v["tracks"].as_array()?.iter().map(|t| {
-        let n: Option<Vec<i64>> = (0..6).map(|i| t.get(i)?.as_i64()).collect();
-        let n: Vec<u32> = n?
-            .into_iter()
-            .map(u32::try_from)
-            .collect::<Result<_, _>>()
-            .ok()?;
-        Some(Route {
-            own: (n[0], n[1]),
-            from: (n[2], n[3]),
-            to: (n[4], n[5]),
-        })
-    });
-    // Whole numbers, or none of it.
-    let all: Vec<Option<Route>> = routes.collect();
-    let whole = v["tracks"]
+    v["tracks"]
         .as_array()?
         .iter()
-        .all(|t| (0..6).all(|i| t.get(i).is_some_and(Value::is_i64)));
-    whole.then(|| all.into_iter().flatten().collect())
+        .map(|t| {
+            let n: Vec<i64> = (0..6).map(|i| t.get(i)?.as_i64()).collect::<Option<_>>()?;
+            let at = |i: usize| Some((u32::try_from(n[i]).ok()?, u32::try_from(n[i + 1]).ok()?));
+            Some(Route {
+                own: at(0)?,
+                from: at(2),
+                to: at(4),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,21 +169,13 @@ pub struct Job<'a> {
 }
 
 impl Job<'_> {
-    /// Where a conversion's track lies in an image of `role`.
-    fn place(role: Role, route: &Route) -> (u32, u32) {
-        match role {
-            Role::Source => route.from,
-            Role::Made => route.to,
-        }
-    }
-
     /// Whether the job is to take or put an image of `role`'s track `key`:
     /// by a conversion's routes, else by the tracks gw announced, which its
     /// track lines name as the image does.
     fn planned(&self, role: Role, key: (u32, u32)) -> bool {
         let p = self.progress;
         match &p.routes {
-            Some(routes) => routes.iter().any(|r| Job::place(role, r) == key),
+            Some(routes) => routes.iter().any(|r| r.place(role) == Some(key)),
             None => p.cyls.contains(&key.0) && p.heads.contains(&key.1),
         }
     }
@@ -185,10 +186,7 @@ impl Job<'_> {
     pub fn current(&self, role: Role) -> Option<(u32, u32)> {
         let own = self.progress.current.filter(|_| self.running)?;
         match &self.progress.routes {
-            Some(routes) => routes
-                .iter()
-                .find(|r| r.own == own)
-                .map(|r| Job::place(role, r)),
+            Some(routes) => routes.iter().find(|r| r.own == own)?.place(role),
             None => Some(own),
         }
     }
@@ -198,7 +196,7 @@ impl Job<'_> {
     pub fn named(&self, role: Role, key: (u32, u32)) -> Vec<(u32, u32)> {
         let routes = self.progress.routes.iter().flatten();
         routes
-            .filter(|r| Job::place(role, r) == key && r.own != key)
+            .filter(|r| r.place(role) == Some(key) && r.own != key)
             .map(|r| r.own)
             .collect()
     }
@@ -234,6 +232,7 @@ impl Image {
             content: v["bytes"].as_str().and_then(hex),
             tracks: BTreeMap::new(),
             written: None,
+            differs: v["differs"].as_bool() == Some(true),
         })
     }
 
@@ -241,14 +240,22 @@ impl Image {
     pub fn take(&mut self, v: &Value) {
         match v["event"].as_str() {
             Some("track") => {
-                let (Some(c), Some(h)) = (v["c"].as_u64(), v["h"].as_u64()) else {
-                    return;
+                // gw's own facts in full, or none of them; its bytes none
+                // where not reported, as in recordings, which keep none.
+                let number = |k: &str| u32::try_from(v[k].as_u64()?).ok();
+                let has = v["has"]
+                    .as_array()
+                    .and_then(|has| has.iter().map(Value::as_bool).collect());
+                let bytes = match &v["bytes"] {
+                    Value::Null => Some(Vec::new()),
+                    b => b.as_str().and_then(hex),
                 };
-                let has = v["has"].as_array().into_iter().flatten();
-                let has = has.map(|h| h.as_bool().unwrap_or(false)).collect();
-                let bytes = v["bytes"].as_str().and_then(hex).unwrap_or_default();
-                self.tracks
-                    .insert((c as u32, h as u32), Held { has, bytes });
+                let laid = v["laid"].as_bool() != Some(false);
+                if let (Some(c), Some(h), Some(has), Some(bytes)) =
+                    (number("c"), number("h"), has, bytes)
+                {
+                    self.tracks.insert((c, h), Held { has, bytes, laid });
+                }
             }
             Some("written") => {
                 // Each track's range, or none where one is not whole numbers.
@@ -294,16 +301,17 @@ impl Image {
 
     /// The last cylinder gw would put in a made image not yet written, as
     /// it does: those up to the least the file has, and past them, up to
-    /// the last in which a track holds a sector. None where it puts them all.
+    /// the last in which a track of its layout holds a sector. None where
+    /// it puts them all.
     fn kept(&self) -> Option<u32> {
-        let least = self.layout.as_ref()?.min_cyls?;
+        let layout = self.layout.as_ref()?;
+        let least = layout.min_cyls?;
         if self.role != Role::Made || self.written.is_some() {
             return None;
         }
-        let holding = self
-            .tracks
-            .iter()
-            .filter(|(_, held)| held.has.contains(&true));
+        let holding = self.tracks.iter().filter(|(key, held)| {
+            held.has.contains(&true) && layout.tracks.iter().any(|t| t.key == **key)
+        });
         Some(
             holding
                 .map(|(&(cyl, _), _)| cyl)
@@ -314,9 +322,13 @@ impl Image {
     /// Each track of the file in turn, where it lies, with what each of its
     /// sectors' parts holds, as far as `job` has gone. A made image once
     /// written as gw wrote it; before that, as gw will write it if it holds
-    /// every track. None where the file is not laid out, or not as written.
+    /// every track. None where the file is not laid out, or not as written,
+    /// or holds a track whose sectors are not the layout's.
     pub fn placed(&self, job: Option<&Job>) -> Option<Vec<Placed>> {
         let layout = self.layout.as_ref()?;
+        if self.tracks.values().any(|held| !held.laid) {
+            return None;
+        }
         let written = self.written.as_ref().map(|w| w.tracks.as_ref());
         let starts: Vec<(usize, u64)> = match written {
             Some(Some(ranges)) => {
@@ -401,9 +413,7 @@ impl Image {
         let held = content.and_then(|c| c.get(at as usize..(at + part.len) as usize));
         matches!((filler, held), (Some(f), Some(h)) if f.as_slice() == h)
     }
-}
 
-impl Image {
     /// A placed part's bytes as gw holds them: a made image's as gw put
     /// its track in the image, or for a track it did not, its filler; a
     /// source's as gw read its file, and its zeros past the file's end.
@@ -442,24 +452,28 @@ fn layout(v: &Value) -> Option<Layout> {
         .as_array()?
         .iter()
         .map(|t| {
-            let key = (t["c"].as_u64()? as u32, t["h"].as_u64()? as u32);
+            let key = (whole(&t["c"])?, whole(&t["h"])?);
             let sectors = t["sectors"]
                 .as_array()?
                 .iter()
                 .map(|s| {
-                    let id = s["id"].as_array().and_then(|id| {
-                        let id: Vec<u8> = id
-                            .iter()
-                            .filter_map(|b| b.as_u64())
-                            .map(|b| b as u8)
-                            .collect();
-                        id.try_into().ok()
-                    });
+                    // Four bytes, where gw gives an ID.
+                    let id = match &s["id"] {
+                        Value::Null => None,
+                        id => Some(
+                            id.as_array()?
+                                .iter()
+                                .map(|b| u8::try_from(b.as_u64()?).ok())
+                                .collect::<Option<Vec<u8>>>()?
+                                .try_into()
+                                .ok()?,
+                        ),
+                    };
                     Some(Part {
-                        index: s["i"].as_u64()? as usize,
+                        index: whole(&s["i"])? as usize,
                         id,
                         len: s["len"].as_u64()?,
-                        filler: s["fill"].as_u64()? as usize,
+                        filler: whole(&s["fill"])? as usize,
                     })
                 })
                 .collect::<Option<_>>()?;
@@ -471,18 +485,20 @@ fn layout(v: &Value) -> Option<Layout> {
         .iter()
         .map(|f| hex(f.as_str()?))
         .collect::<Option<_>>()?;
+    let min_cyls = match &v["min_cyls"] {
+        Value::Null => None,
+        m => Some(whole(m)?),
+    };
     Some(Layout {
         tracks,
         fillers,
-        min_cyls: v["min_cyls"].as_u64().map(|m| m as u32),
+        min_cyls,
     })
 }
 
-fn hex(s: &str) -> Option<Vec<u8>> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-        .collect()
+/// A whole number gw gives, as a u32.
+fn whole(v: &Value) -> Option<u32> {
+    u32::try_from(v.as_u64()?).ok()
 }
 
 #[cfg(test)]
@@ -499,7 +515,7 @@ mod tests {
                                               {"i": 1, "id": null, "len": 512, "fill": 0}]},
                 {"c": 1, "h": 0, "sectors": [{"i": 0, "id": null, "len": 512, "fill": 0},
                                               {"i": 1, "id": null, "len": 512, "fill": 0}]}],
-                "fillers": [hex(&filler())], "min_cyls": null}
+                "fillers": [to_hex(&filler())], "min_cyls": null}
         });
         Image::parse(&open).unwrap()
     }
@@ -509,7 +525,7 @@ mod tests {
         b"-=[BAD SECTOR]=-".repeat(32)
     }
 
-    fn hex(bytes: &[u8]) -> String {
+    fn to_hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
@@ -529,7 +545,7 @@ mod tests {
         let mut image = made();
         assert_eq!(image.bytes(), Some(2048), "as gw will write it");
         assert_eq!(image.layout.as_ref().unwrap().fillers[0], filler());
-        let track = serde_json::json!({"event": "track", "c": 0, "h": 0, "has": [true, false]});
+        let track = serde_json::json!({"event": "track", "c": 0, "h": 0, "has": [true, false], "bytes": ""});
         image.take(&track);
         let progress = announced();
         let placed = image.placed(Some(&job(&progress, true))).unwrap();
@@ -643,8 +659,7 @@ mod tests {
     fn a_sources_parts_hold_its_data_or_gws_filler_as_its_file_has_them() {
         let mut source = made();
         source.role = Role::Source;
-        let filler = b"-=[BAD SECTOR]=-".repeat(32);
-        source.layout.as_mut().unwrap().fillers[0] = filler.clone();
+        let filler = filler();
         let mut content = vec![7; 1800];
         content[512..1024].copy_from_slice(&filler);
         source.size = Some(1800);
@@ -663,28 +678,64 @@ mod tests {
         progress.feed("Writing c=0-1:h=0");
         progress.feed("T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)");
         progress.feed("All tracks verified");
-        let written = job(&progress, false);
-        assert_eq!(
-            states(Some(&written)),
-            [Data, Filler, Data, Data],
-            "as the file holds them, whatever the job does"
-        );
+        for running in [true, false] {
+            assert_eq!(
+                states(Some(&job(&progress, running))),
+                [Data, Filler, Data, Data],
+                "as the file holds them, whatever the job does"
+            );
+        }
     }
 
     #[test]
-    fn a_track_moved_before_the_first_cylinder_lies_in_no_image() {
-        let v = serde_json::json!({"tracks": [[0, 0, -1, 0, 0, 0], [1, 0, 0, 0, 1, 0]]});
-        let kept = routes(&v).unwrap();
+    fn a_track_moved_before_the_first_cylinder_lies_in_that_image_alone_not() {
+        // T0.0 read from the input's cylinder -1, none; T1.0 put at the output's -1.
+        let v = serde_json::json!({"tracks": [[0, 0, -1, 0, 0, 0], [1, 0, 1, 0, -1, 0]]});
+        let moved = routes(&v).unwrap();
         assert_eq!(
-            kept,
-            [Route {
-                own: (1, 0),
-                from: (0, 0),
-                to: (1, 0)
-            }]
+            moved,
+            [
+                Route {
+                    own: (0, 0),
+                    from: None,
+                    to: Some((0, 0))
+                },
+                Route {
+                    own: (1, 0),
+                    from: Some((1, 0)),
+                    to: None
+                },
+            ]
+        );
+        let mut progress = announced();
+        progress.routes = Some(moved);
+        progress.feed("T1.0: IBM MFM (18/18 sectors) from Raw Flux (1 flux in 200.00ms)");
+        let running = job(&progress, true);
+        assert_eq!(
+            running.current(Role::Source),
+            Some((1, 0)),
+            "gw reads it from the input"
+        );
+        assert_eq!(
+            running.current(Role::Made),
+            None,
+            "and puts it in no output track"
         );
         let v = serde_json::json!({"tracks": [[0, 0, 0.5, 0, 0, 0]]});
         assert_eq!(routes(&v), None, "not whole numbers");
+    }
+
+    #[test]
+    fn a_track_gw_passes_through_from_its_input_leaves_the_image_unplaced() {
+        let mut image = made();
+        let track = |laid: bool| {
+            serde_json::json!({"event": "track", "c": 0, "h": 0, "has": [true, true],
+                "bytes": "", "laid": laid})
+        };
+        image.take(&track(true));
+        assert!(image.placed(None).is_some());
+        image.take(&track(false));
+        assert_eq!(image.placed(None), None, "its sectors are not the layout's");
     }
 
     #[test]

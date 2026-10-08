@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// The last revision given any Progress.
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
+/// A track a write or a conversion's input lacks, which gw passes over.
+pub(crate) const NOT_IN_INPUT: &str = "Not in the input, so Greaseweazle Tools passed over it.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// Every sector found, or written and verified.
@@ -72,9 +75,8 @@ pub struct Progress {
     /// deciding it of each as it comes to write it: gw goes on from one only
     /// once it has verified.
     pub verifies: BTreeSet<(u32, u32)>,
-    /// Changes with each change to what is known, and is never the same for
-    /// two Progresses that have changed: what the disk view has drawn is
-    /// known by it.
+    /// Bumped on every change, and unique across Progresses, so the disk
+    /// view knows whether what it drew is current.
     pub revision: u64,
     /// The read pass under way after the first, and the most there may be.
     pub pass: Option<(u32, u32)>,
@@ -211,7 +213,7 @@ impl Progress {
     }
 
     /// Takes the bridge's report on a track, which replaces any before it:
-    /// a retry or a later pass reports all it has found so far.
+    /// a later read pass, or a write's verify, reports all found so far.
     pub fn report(&mut self, json: &str) {
         if let Some((key, mut facts)) = Facts::parse(json) {
             self.touch();
@@ -237,13 +239,15 @@ impl Progress {
         };
     }
 
-    /// gw is checking the track it is writing, and that track is the only
-    /// one written and not verified.
+    /// gw is writing, then checking, a track it verifies: the only one
+    /// written and not yet verified.
     pub fn verifying(&self) -> bool {
         let Some(current) = self.current.filter(|c| self.verifies.contains(c)) else {
             return false;
         };
-        (self.tracks.iter()).all(|(&k, t)| k == current || t.status != Status::Written)
+        self.tracks
+            .iter()
+            .all(|(&k, t)| k == current || t.status != Status::Written)
     }
 
     /// Takes the bridge's report on the job's images: how gw lays one out,
@@ -300,7 +304,7 @@ impl Progress {
                 self.tracks.entry((cyl, head)).or_insert_with(|| Track {
                     status: Status::Skipped,
                     retries: 0,
-                    text: "Not in the input, so Greaseweazle Tools passed over it.".into(),
+                    text: NOT_IN_INPUT.into(),
                     place: None,
                 });
             }
@@ -548,13 +552,16 @@ mod tests {
     /// job.rs takes them.
     fn written(log: &str) -> Progress {
         let mut p = Progress::default();
-        for line in log.lines() {
-            match line.strip_prefix("@ferriteweazle verify ") {
-                Some(report) => p.verify(report),
-                None => p.feed(line),
-            }
-        }
+        log.lines().for_each(|line| take(&mut p, line));
         p
+    }
+
+    /// A line of a write's log, or the bridge's word on a track, as job.rs takes it.
+    fn take(p: &mut Progress, line: &str) {
+        match line.strip_prefix("@ferriteweazle verify ") {
+            Some(report) => p.verify(report),
+            None => p.feed(line),
+        }
     }
 
     /// The bridge's line on whether gw verifies track `c`.0.
@@ -1025,10 +1032,7 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
             &verify(2, true),
             "T2.0: Writing Track (Flux: 1)",
         ] {
-            match line.strip_prefix("@ferriteweazle verify ") {
-                Some(report) => p.verify(report),
-                None => p.feed(line),
-            }
+            take(&mut p, line);
         }
         let status = |p: &Progress| [0, 1, 2].map(|c| p.tracks[&(c, 0)].status);
         assert_eq!(status(&p), [Good, Written, Written]);
@@ -1052,6 +1056,28 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
         );
         assert_eq!(unverified.tracks[&(0, 0)].status, Written);
         assert_eq!(unverified.tracks[&(1, 0)].status, Written);
+    }
+
+    #[test]
+    fn every_change_raises_the_revision_the_disk_view_keys_on() {
+        let mut p = Progress::default();
+        let mut last = p.revision;
+        let mut raised = |p: &Progress, what: &str| {
+            assert!(p.revision > last, "{what}");
+            last = p.revision;
+        };
+        p.feed("Reading c=0:h=0 revs=2");
+        raised(&p, "feed");
+        p.report(r#"{"c":0,"h":0}"#);
+        raised(&p, "report");
+        p.image(r#"{"event":"routes","tracks":[]}"#);
+        raised(&p, "image");
+        p.verify(r#"{"c":0,"h":0,"verifies":true}"#);
+        raised(&p, "verify");
+        p.finish();
+        raised(&p, "finish");
+        p.skip_unreported();
+        raised(&p, "skip_unreported");
     }
 
     #[test]

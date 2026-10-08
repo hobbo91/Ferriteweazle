@@ -1,6 +1,7 @@
 """Writes an Extended CPC DSK (EDSK) image of one track, cylinder 0 head 0,
-to the path given: eight sectors of 512 bytes as a uPD765 would report a
-disk holding each kind of sector the disk view tells apart. gw lays the
+to the path given: nine sectors, R1 to R8 with R7 twice, of 512 bytes
+where they hold data, as a uPD765 would report a disk holding each kind of
+sector the disk view tells apart. gw lays the
 track out from the image, faults and all, as its EDSK reader does.
 
   R1  good

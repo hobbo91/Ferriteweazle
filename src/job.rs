@@ -341,7 +341,7 @@ fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
                 }
                 None => {
                     line.extend_from_slice(buf);
-                    // Less than a buffer full: gw has written no more for now.
+                    // Short of a buffer full: gw may have paused, as at a question.
                     (buf.len(), false, buf.len() < full)
                 }
             },
@@ -353,15 +353,22 @@ fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
         if !ended && (own || !paused) {
             continue;
         }
-        let text = String::from_utf8_lossy(&line)
-            .trim_end_matches('\r')
-            .to_owned();
         let chunk = match ended {
+            // The line's own bytes, moved out: a report may be megabytes.
             true => {
-                line.clear();
+                let bytes = std::mem::take(&mut line);
+                let mut text = String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                while text.ends_with('\r') {
+                    text.pop();
+                }
                 Chunk::Line(text)
             }
-            false => Chunk::Partial(text),
+            false => Chunk::Partial(
+                String::from_utf8_lossy(&line)
+                    .trim_end_matches('\r')
+                    .to_owned(),
+            ),
         };
         if to.send(chunk).is_err() {
             return;
@@ -685,16 +692,41 @@ mod tests {
         assert_eq!(log.tail(&clean), "", "another job's lines came after");
     }
 
+    /// A pipe's end that says when the relay asks it for more, which it
+    /// does once it has done with what it read, and how much each read took.
+    struct Told<R>(R, mpsc::Sender<Option<usize>>);
+
+    impl<R: Read> Read for Told<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let _ = self.1.send(None);
+            let n = self.0.read(buf)?;
+            let _ = self.1.send(Some(n));
+            Ok(n)
+        }
+    }
+
     #[test]
     fn the_bridges_own_lines_pass_whole_and_never_show() {
         let (from, mut gw) = std::io::pipe().unwrap();
-        let (to, lines) = mpsc::channel();
-        std::thread::spawn(move || relay(from, to, Box::new(|| ())));
+        let ((to, lines), (told, asked)) = (mpsc::channel(), mpsc::channel());
+        std::thread::spawn(move || relay(Told(from, told), to, Box::new(|| ())));
         let mut read = Job::new("read", Vec::new(), lines);
+        let (mut sent, mut taken) = (0, 0);
         // As the bridge prints one: its start, then more, a while apart.
         for piece in [&b"@ferri"[..], b"teweazle track {\"c\":3,", &[b' '; 20_000]] {
             gw.write_all(piece).unwrap();
-            std::thread::sleep(Duration::from_millis(30));
+            sent += piece.len();
+            // The relay has read it all, and done with it.
+            loop {
+                match asked
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the relay reads")
+                {
+                    Some(n) => taken += n,
+                    None if taken == sent => break,
+                    None => {}
+                }
+            }
             read.poll();
             assert_eq!(read.partial, "", "none of it shows");
         }

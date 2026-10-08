@@ -2043,7 +2043,7 @@ fn a_selection_is_let_go_once_its_lines_are_gone_from_the_log_or_an_output_box()
     log.begin("gw bandwidth".into(), &mut job);
     log.follow(&mut job);
     w.run();
-    // Its Copy took the read's lines, gone, and panicked.
+    // The read's lines are gone, and the selection with them.
     let copy = copy_item(&mut w, " -> Min. Ave. Flux: 1.289 us");
     assert!(copy.accesskit_node().is_disabled(), "nothing selected");
 
@@ -2154,8 +2154,7 @@ fn a_parts_window_shuts_once_the_image_or_what_the_part_holds_is_another() {
     // The file as gw opens it again: the window stays.
     open(&mut w, scratched_adf());
     assert!(window(&w));
-    // Another file holding the same: it showed that file's bytes as the
-    // first's.
+    // Another file with the same bytes: the window was the first file's.
     let mut other = scratched_adf();
     other.file = Some("/Users/you/Floppies/Other.adf".into());
     open(&mut w, other);
@@ -2403,7 +2402,8 @@ fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smalle
     w.run_steps(4);
     let id = egui::Id::new("analyse");
     let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
-    state.outer_rect.min.y = state.outer_rect.max.y - 240.0;
+    // No height at all: the drawer takes its least.
+    state.outer_rect.min.y = state.outer_rect.max.y;
     w.ctx.data_mut(|d| d.insert_persisted(id, state));
     w.run_steps(4);
     let drawer = egui::PanelState::load(&w.ctx, id).unwrap().outer_rect;
@@ -2648,19 +2648,7 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
         shows: Shows::Flux,
         ..chosen()
     };
-    // As gw writes now: each track's line, then once written, its report.
-    let mut lines: Vec<&str> = Vec::new();
-    let mut held = None;
-    for line in WRITTEN.lines() {
-        if line.contains(r#""source":"written""#) {
-            held = Some(line);
-            continue;
-        }
-        lines.push(line);
-        if line.contains(": Writing Track") {
-            lines.extend(held.take());
-        }
-    }
+    let lines: Vec<&str> = WRITTEN.lines().collect();
     // gw's lines so far, taken as a running job takes them.
     let running = |n: usize| {
         let mut job = Job::replay("write", "");
@@ -2670,6 +2658,7 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
                 Some(("@ferriteweazle", rest)) => match rest.split_once(' ') {
                     Some(("track", report)) => job.progress.report(report),
                     Some(("image", report)) => job.progress.image(report),
+                    Some(("verify", report)) => job.progress.verify(report),
                     _ => {}
                 },
                 _ => job.progress.feed(line),
@@ -2685,7 +2674,8 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
     w.run_steps(4);
     let id = egui::Id::new("analyse");
     let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
-    state.outer_rect.min.y = state.outer_rect.max.y - 240.0;
+    // No height at all: the drawer takes its least.
+    state.outer_rect.min.y = state.outer_rect.max.y;
     w.ctx.data_mut(|d| d.insert_persisted(id, state));
     w.run_steps(4);
     let disks = |w: &Window| w.get_by_label("Disk map").rect().size();
@@ -4642,8 +4632,7 @@ fn analyse_lets_go_of_its_pictures_and_its_sector_window_when_it_is_not_drawn() 
     let title = "C0 H0 R7 N3 · cylinder 0, side 0";
     let window = |w: &Window| w.query_by_role_and_label(Role::Label, title).is_some();
     assert!(window(&w), "the sector's window");
-    // Shut, the window over its button, it lets go of them, and the window
-    // shuts with it.
+    // Shut, it lets go of its pictures, and the sector's window goes too.
     app_mut(&mut w).settings.drawer = None;
     w.run();
     assert_eq!(pictures(&w), 0);
@@ -4772,7 +4761,7 @@ fn analyse_paints_its_disks_at_a_new_size_once_that_holds() {
     w.drag_at(edge);
     w.step();
     whole(&noted);
-    // Dragged down a point a frame for a third of a second: painted at the
+    // Dragged down two points a frame for a third of a second: painted at the
     // first new size, then not until the size holds or the drag ends.
     let mut sizes = Vec::new();
     for down in 1..=20 {
@@ -4955,9 +4944,8 @@ fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_
             .unwrap()
             .contains("Header OK · Data OK · Mark FB")
     );
-    // Its bytes, from the first: a right-click selects them all, then copies
-    // them, those scrolled out of sight too; nothing to cut or paste in what
-    // was read.
+    // Select All, then Copy, takes every row, those out of sight too; nothing
+    // to cut or paste in what was read.
     w.hover_at(
         w.get_by_role_and_label(Role::Label, "C0 H0 R7 N3 · cylinder 0, side 0")
             .rect()
@@ -4998,7 +4986,7 @@ fn image_analysis_stays_chosen_while_gw_opens_a_jobs_image() {
     let mut w = start(builder, image_open("read"), Some(started));
     // Stepped, not run: a running job keeps the window repainting.
     w.run_steps(4);
-    w.get_by_label("gw is opening the image.");
+    w.get_by_label("gw is opening the file.");
     assert_eq!(app(&w).settings.analysis, Analysis::Image);
     assert!(
         w.query_by_label("Disk map").is_none(),
@@ -5096,8 +5084,8 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
         (window.center() - middle).length() < 1.0,
         "{window:?}, {middle:?}"
     );
-    // Shut, a sector's data, as gw put it in the file: from the track's
-    // 1,536th byte.
+    // Shut, a sector's data, as gw put it in the file: from byte 1,536 of
+    // its track.
     w.get_by_role_and_label(Role::Button, "Close").click();
     w.run();
     let kept = at(49, 3);
@@ -5362,7 +5350,7 @@ fn a_selection_dragged_past_a_boxs_edge_scrolls_it_on_in_the_sectors_bytes_and_t
         n.role() == Role::Label && n.value().is_some_and(|l| l.len() == 71 && &l[4..6] == "  ")
     };
     let shown = w.get_all_by(row).count();
-    assert!(shown < 64, "{shown} rows show at once");
+    assert!((1..64).contains(&shown), "{shown} rows show at once");
     // Below the box, the selection carries on to the last row.
     let below = egui::pos2(first.left() + 30.0, first.top() + 600.0);
     let rows = select(&mut w, first.left_top() + egui::vec2(2.0, 4.0), below, 1);

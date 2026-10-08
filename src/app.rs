@@ -414,7 +414,8 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
-    /// How Analyse draws the disk, as last kept in analyse_file().
+    /// How Analyse draws the disk and which analysis it shows, as last kept
+    /// in analyse_file().
     kept_analyse: (Media, Shows, Analysis),
     /// Classic in the accent it opened in or was last given while the app
     /// runs: Blue otherwise, or Classic itself (teal).
@@ -559,7 +560,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             kept_theme: theme::Choice::System,
-            kept_analyse: (Media::Fit, Shows::Sectors, Analysis::Disk),
+            kept_analyse: Default::default(),
             classic,
             delays: None,
             found_note: None,
@@ -751,8 +752,8 @@ impl App {
         self.service.pin_image(image);
     }
 
-    /// Has gw take for ever to open the image a write or a conversion is to
-    /// take its tracks from: for tests.
+    /// Leaves the image a write or a conversion is to take its tracks from
+    /// unopened, as while gw opens it: for tests.
     pub fn hold_image(&mut self) {
         self.service.hold_image();
     }
@@ -1996,7 +1997,7 @@ impl App {
     }
 
     /// The page's run button, and beside it the drawers'.
-    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command, form: f32) {
+    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command, form_width: f32) {
         let p = theme::palette(ui);
         let why = self.why_not(schema, cmd);
         let nothing = self.analysed(&cmd.name).err();
@@ -2015,12 +2016,14 @@ impl App {
             // On a narrow page the run button gives way to them, then their
             // room either side of their names, so that the row ends within
             // the form.
-            let row = form.min(ui.available_width());
+            let row = form_width.min(ui.available_width());
             let n = DRAWERS.len() as f32;
             let between = ui.spacing().item_spacing.x;
-            let [tight, roomy] = SEGMENT_PAD.map(|pad| widest + 2.0 * pad);
+            let [tight, roomy] = DRAWER_PAD.map(|pad| widest + 2.0 * pad);
             let room = row - RUN_LEAST - APART - (n - 1.0) * between;
-            let each = (room / n).clamp(tight, roomy).floor();
+            // Whole points, and never under what the widest name needs.
+            let least = tight.ceil();
+            let each = (room / n).floor().clamp(least, roomy.max(least));
             let rest = n * each + (n - 1.0) * between;
             let wide = (row - rest - APART).clamp(RUN_LEAST, RUN);
             self.run_button(ui, cmd, why.as_deref(), wide);
@@ -2044,7 +2047,7 @@ impl App {
                 } else {
                     "Stop"
                 };
-                let stop = big_button(label, p.bad, p).min_size(vec2(wide, RUN_HEIGHT));
+                let stop = big_button(label, p.bad, wide, p);
                 let stop = ui.add_enabled(!job.stopping(), stop);
                 let tip = match self.runs_motor(job) {
                     true => "Stop Greaseweazle Tools and the drive's motor.",
@@ -2086,7 +2089,7 @@ impl App {
                     _ if sets => "Set delays",
                     _ => run_label(&cmd.name),
                 };
-                let run = big_button(label, p.accent, p).min_size(vec2(wide, RUN_HEIGHT));
+                let run = big_button(label, p.accent, wide, p);
                 let run = ui.add_enabled(why.is_none(), run);
                 match why {
                     Some(why) => {
@@ -2101,8 +2104,8 @@ impl App {
 
     /// The drawers' buttons, each `each` points wide: each opens its drawer,
     /// shutting another, or shuts its own. Analyse is greyed, with why, while
-    /// there is no disk to show.
-    fn drawer_buttons(&mut self, ui: &mut Ui, each: f32, nothing: Option<&'static str>) {
+    /// it has nothing to show.
+    fn drawer_buttons(&mut self, ui: &mut Ui, each: f32, nothing: Option<String>) {
         for &(drawer, text, show, hide) in &DRAWERS {
             let open = self.settings.drawer == Some(drawer);
             let button = egui::Button::new(text)
@@ -2113,7 +2116,7 @@ impl App {
             let response = ui
                 .add_enabled(enabled, button)
                 .on_hover_text(if open { hide } else { show })
-                .on_disabled_hover_text(nothing.unwrap_or_default());
+                .on_disabled_hover_text(nothing.as_deref().unwrap_or_default());
             if response.clicked() {
                 self.settings.drawer = (!open).then_some(drawer);
             }
@@ -2594,7 +2597,7 @@ impl App {
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
-            // Analyse shows the disk below, in full.
+            // Analyse shows the disk, or its image, below.
             _ if self.settings.drawer == Some(Drawer::Analyse) => {}
             true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
@@ -2675,7 +2678,7 @@ impl App {
             top: 12,
             bottom: FOOT,
         });
-        // Analyse shuts once there is no disk job to show.
+        // Analyse shuts once it has nothing to show.
         if self.settings.drawer == Some(Drawer::Analyse) && self.analysed(page).is_err() {
             self.settings.drawer = None;
         }
@@ -2770,28 +2773,37 @@ impl App {
     }
 
     /// Whether Analyse has a disk job to show on `page`, or before one an
-    /// image it is to take its tracks from; else the status pane's line for
-    /// the page.
-    fn analysed(&mut self, page: &str) -> Result<(), &'static str> {
+    /// image it is to take its tracks from; else why not: gw's reason the
+    /// image does not map, or the status pane's line for the page.
+    fn analysed(&mut self, page: &str) -> Result<(), String> {
         let (format, _, blank) = self.blank_map(page);
         let job = self.disk.as_ref();
         if job.is_some_and(|j| shows(j, page, format.as_deref(), &blank)) {
             return Ok(());
+        }
+        if let Some(path) = self.page_image(page).filter(|p| filemap::holds_tracks(p)) {
+            return Err(filemap::not_mapped(&path));
         }
         if let Some(ask) = self.preview_args(page) {
             // While gw opens the file, as when its options change, the
             // drawer stays as it is.
             match self.service.image(&ask) {
                 Load::Ready(p) if p.0.layout.is_some() => return Ok(()),
+                Load::Ready(p) => {
+                    return Err(filemap::not_mapped(
+                        p.0.file.as_deref().unwrap_or(&p.0.kind),
+                    ));
+                }
+                Load::Failed(e) => return Err(e.clone()),
                 Load::Waiting(_) if self.settings.drawer == Some(Drawer::Analyse) => return Ok(()),
-                Load::Waiting(_) => return Err(OPENING),
-                _ => {}
+                Load::Waiting(_) => return Err(OPENING.to_owned()),
             }
         }
-        match DISK_COMMANDS.contains(&page) {
-            true => Err(idle_status(page)),
-            false => Err(NO_DISK_JOB),
+        Err(match DISK_COMMANDS.contains(&page) {
+            true => idle_status(page),
+            false => NO_DISK_JOB,
         }
+        .to_owned())
     }
 
     /// The image file a write or a conversion on `page` is to take its
@@ -2799,28 +2811,23 @@ impl App {
     /// none named.
     fn page_image(&self, page: &str) -> Option<String> {
         let cmd = self.schema.as_ref()?.command(page)?;
-        let dest = match page {
-            "write" => "file",
-            "convert" => "in_file",
-            _ => return None,
-        };
         let values = self.values_for(cmd);
-        let path = image_path(values.get(dest));
+        let path = image_path(values.get(image_dest(page)?));
         (!path.is_empty()).then(|| path.to_owned())
     }
 
     /// What gw needs to open the page's image, `page_image`, as its job
     /// will: the command with its format, definitions and files; for a
     /// conversion's output, a name of the same type, which is all gw takes
-    /// from it before opening the input. None for flux, which gw keeps as
-    /// tracks.
+    /// from it before opening the input. None for an image of flux or
+    /// bitcells, which gw keeps as tracks.
     fn preview_args(&self, page: &str) -> Option<ImageAsk> {
-        let path = self.page_image(page)?;
-        if filemap::holds_tracks(&path) {
-            return None;
-        }
         let cmd = self.schema.as_ref()?.command(page)?;
         let values = self.values_for(cmd);
+        let path = image_path(values.get(image_dest(page)?)).to_owned();
+        if path.is_empty() || filemap::holds_tracks(&path) {
+            return None;
+        }
         let mut with = Values::default();
         for dest in ["diskdefs", "format", "file", "in_file"] {
             with.set(dest, values.get(dest));
@@ -2866,10 +2873,11 @@ impl App {
         let unshown = || match (&named, opened) {
             (Some(path), _) if filemap::holds_tracks(path) => filemap::not_mapped(path),
             (_, Some(p)) => filemap::not_mapped(p.0.file.as_deref().unwrap_or(&p.0.kind)),
-            _ => (preview.as_ref())
-                .and_then(|ask| self.service.image_error(ask))
-                .unwrap_or(OPENING)
-                .to_owned(),
+            _ => match preview.as_ref() {
+                Some(ask) => self.service.image_error(ask).unwrap_or(OPENING).to_owned(),
+                // As the drawer shuts.
+                None => idle_status(page).to_owned(),
+            },
         };
         let begun =
             job.is_some_and(|j| !(j.progress.cyls.is_empty() && j.progress.tracks.is_empty()));
@@ -2885,12 +2893,15 @@ impl App {
             (None, Some(image)) => Ok(image),
             (None, None) => Err(unshown()),
         };
-        // A job gw has yet to open its image for.
+        // A job gw has yet to open its image for: one with an image.
         let opening = job.filter(|_| owns).is_some_and(|j| {
-            j.running() && j.progress.made.is_none() && j.progress.source.is_none()
+            j.running()
+                && matches!(j.command.as_str(), "read" | "write" | "convert")
+                && j.progress.made.is_none()
+                && j.progress.source.is_none()
         });
         let image = match image {
-            Err(_) if opening => Err("gw is opening the image.".to_owned()),
+            Err(_) if opening => Err(OPENING.to_owned()),
             image => image,
         };
         let analysis = &mut self.settings.analysis;
@@ -2935,7 +2946,8 @@ impl App {
                         for (size, name, _) in MEDIA {
                             // No more tracks than the disk holds.
                             let over = size.holds().filter(|&n| span > n);
-                            let why = over.map(|n| format!("{span} cylinders: it holds {n}."));
+                            let why =
+                                over.map(|n| format!("{span} cylinders: it has room for {n}."));
                             ui.add_enabled_ui(over.is_none(), |ui| {
                                 form::selectable_value(ui, media, size, name)
                             })
@@ -2956,15 +2968,15 @@ impl App {
         let tracks = args.iter().find_map(|a| a.strip_prefix("--tracks="));
         let command = job.map_or(page, |j| j.command.as_str());
         let running = job.is_some_and(Job::running);
-        // A conversion takes its tracks from an image, as Detect does from
-        // the file it names.
-        let file = args.last().is_some_and(|a| !a.starts_with('-'));
+        // A conversion takes its tracks from an image, as Detect does on any
+        // page but Read.
+        let file = job.is_some_and(|j| j.page != "read");
         let map = surface::Map {
             progress,
             image: command == "convert" || (command == DETECT && file),
             disk,
             swapped: tracks.is_some_and(form::swapped),
-            verifying: begun && running && job.is_some_and(|j| j.progress.verifying()),
+            verifying: running && job.is_some_and(|j| j.progress.verifying()),
             media: *media,
             shows: *shows,
             current: job.and_then(|j| j.progress.current).filter(|_| running),
@@ -2986,7 +2998,7 @@ impl App {
                 filemap::show(ui, &map, place);
             }
             // Nothing gw has opened yet: why.
-            (Analysis::Image, Err(why)) if job.is_none() || opening => {
+            (Analysis::Image, Err(why)) => {
                 ui.label(RichText::new(why).weak());
             }
             _ => {
@@ -4480,21 +4492,25 @@ fn undrawn(args: &[String]) -> Option<&'static str> {
     }
 }
 
-/// A name of the same image type as `file`, its `::` options and all: what
-/// gw takes from a conversion's output name before it opens the input.
+/// A name of the same image type as `file`: all gw takes from a
+/// conversion's output before it opens the input. Its `::` options gw takes
+/// only as it opens the output.
 fn of_type(file: &str) -> String {
-    let (name, options) = file
-        .split_once("::")
-        .map_or((file, None), |(n, o)| (n, Some(o)));
-    let ext = Path::new(name).extension().map(|e| e.to_string_lossy());
-    let mut out = match ext {
-        Some(ext) => format!("out.{ext}"),
+    let name = file.split_once("::").map_or(file, |(n, _)| n);
+    match Path::new(name).extension() {
+        Some(ext) => format!("out.{}", ext.to_string_lossy()),
         None => name.to_owned(),
-    };
-    if let Some(options) = options {
-        out = out + "::" + options;
     }
-    out
+}
+
+/// The field of a write's or a conversion's page that names the image it
+/// takes its tracks from.
+fn image_dest(page: &str) -> Option<&'static str> {
+    match page {
+        "write" => Some("file"),
+        "convert" => Some("in_file"),
+        _ => None,
+    }
 }
 
 /// What the status pane says before any disk job, for this page.
@@ -4547,7 +4563,7 @@ const RUN_HEIGHT: f32 = 40.0;
 const RUN_RADIUS: u8 = 8;
 /// The drawers' buttons: the room either side of each one's name, at least
 /// and at most, and the room between them and the run button.
-const SEGMENT_PAD: [f32; 2] = [10.0, 16.0];
+const DRAWER_PAD: [f32; 2] = [10.0, 16.0];
 const APART: f32 = 16.0;
 /// The drawers in the run bar's order: each one's button, and its tips to
 /// show and hide it.
@@ -4572,12 +4588,12 @@ const DRAWERS: [(Drawer, &str, &str, &str); 3] = [
     ),
 ];
 
-fn big_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
+fn big_button<'a>(text: &'a str, fill: Color32, wide: f32, p: &Palette) -> egui::Button<'a> {
     egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(14.0))
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(RUN_RADIUS)
-        .min_size(vec2(RUN, RUN_HEIGHT))
+        .min_size(vec2(wide, RUN_HEIGHT))
 }
 
 /// Every dialog button's height.
@@ -5249,15 +5265,15 @@ fn kept_analyse(file: &Path) -> (Media, Shows, Analysis) {
         MEDIA
             .iter()
             .find(|m| Some(m.2) == media)
-            .map_or(Media::Fit, |m| m.0),
+            .map_or_else(Media::default, |m| m.0),
         SHOWS
             .iter()
             .find(|v| Some(v.2) == shows)
-            .map_or(Shows::Sectors, |v| v.0),
+            .map_or_else(Shows::default, |v| v.0),
         ANALYSES
             .iter()
             .find(|a| Some(a.2) == analysis)
-            .map_or(Analysis::Disk, |a| a.0),
+            .map_or_else(Analysis::default, |a| a.0),
     )
 }
 
@@ -5268,7 +5284,7 @@ fn keep_analyse(file: &Path, (media, shows, analysis): (Media, Shows, Analysis))
         .iter()
         .find(|a| a.0 == analysis)
         .map_or("", |a| a.2);
-    let changed = (media, shows, analysis) != (Media::Fit, Shows::Sectors, Analysis::Disk);
+    let changed = (media, shows, analysis) != Default::default();
     keep(
         file,
         changed.then(|| format!("{media_word}\n{shows_word}\n{analysis_word}\n")),

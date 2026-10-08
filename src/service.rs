@@ -132,11 +132,12 @@ pub struct Service {
     times: Arc<Times>,
     /// gw's objections, or none, by the request that asked for them.
     objections: HashMap<String, Load<Option<String>>>,
-    /// The image last asked for by `image`, by its gw arguments and the
-    /// time its file last changed; or, pinned, one for every request.
+    /// The image last asked for by `image`, keyed by what it was asked with
+    /// and its file's and disk definitions' times.
     preview: Option<(ImageKey, Load<Preview>)>,
     /// The last image gw opened, kept while gw opens its file again.
     previous: Option<(String, Preview)>,
+    /// Set by pin_image or hold_image: the answer to every `image` request.
     pinned_preview: Option<Load<Preview>>,
     /// Keeps hold_image's request unanswered.
     held: Option<Sender<Result<Value, String>>>,
@@ -325,7 +326,9 @@ impl Service {
             .as_ref()
             .filter(|(key, _)| self.current(key, ask))?;
         match load {
-            Load::Waiting(_) => (self.previous.as_ref())
+            Load::Waiting(_) => self
+                .previous
+                .as_ref()
                 .filter(|(path, _)| *path == ask.path)
                 .map(|(_, p)| p),
             _ => load.ready(),

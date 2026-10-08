@@ -227,7 +227,7 @@ pub fn show(
                     }
                 }
                 None if status(progress, (cyl, head)) == Some(Status::Skipped) => {
-                    ui.label("Not in the image.");
+                    ui.label(crate::progress::NOT_IN_INPUT);
                 }
                 None => {
                     ui.weak("Greaseweazle Tools has not reported this track.");

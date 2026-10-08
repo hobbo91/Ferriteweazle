@@ -16,7 +16,8 @@ pub const DAMAGED: &str = include_str!("../data/convert-damaged.log");
 /// place of the 55 sectors that did not decode.
 pub const SCRATCHED: &str = include_str!("../data/convert-workbench-scratched.log");
 /// A real disk read: the Workbench 3.1 Install disk in a real drive, read
-/// with gw's own revolutions for its format, the bridge's reports and all.
+/// with gw's own revolutions for its format: the bridge's reports, without
+/// the disk's bytes.
 pub const WORKBENCH: &str = include_str!("../data/read-workbench.log");
 /// The Workbench disk written back from its ADF in a real drive: each track
 /// as gw writes it, then as gw's verify read it back.
@@ -84,10 +85,8 @@ pub fn image_part(
     }
 }
 
-/// The ADF that conversion made, as a write would take its tracks from it:
-/// laid out as gw laid it out, gw's filler where gw put it, and in place of
-/// the disk's data, which the recordings do not keep, byte i of the file
-/// i % 251.
+/// SCRATCHED's ADF as a write takes it: gw's layout and filler, and byte i
+/// of the file i % 251 for data the recording does not keep.
 pub fn scratched_adf() -> ferriteweazle::image::Image {
     use ferriteweazle::image::Role;
     let job = ferriteweazle::job::Job::replay("convert", SCRATCHED);
@@ -204,7 +203,7 @@ pub fn on_disk(w: &Window, share: f32, degrees: f32) -> egui::Pos2 {
 }
 
 /// A read still running whose disks show every entry their legend has, at
-/// once, on made-up tracks, its counts as wide as a disk's: on 118 tracks
+/// once, on made-up tracks: on 118 tracks
 /// nine sectors of each kind, sectors that meet, an ID repeated, nine
 /// headers and nine data blocks found alone and ten sectors missing; a
 /// track gw read whole; one where it found none; one read as flux alone;
