@@ -51,6 +51,9 @@ case "$source" in /*) source="file://$source" ;; esac
 "$py" -m pip install --quiet --no-cache-dir --disable-pip-version-check \
     --no-warn-script-location "git+$source@$tag"
 "$py" -m pip uninstall --quiet --yes pip
+# pyserial's fix for glibc 2.42, without which gw cannot open a Greaseweazle
+# there: bundle/pyserial.py.
+"$py" -I bundle/pyserial.py "$lib"
 
 # Drop what gw never uses and what only the build needed. On Linux and macOS:
 # libpython (linked into the interpreter), launchers whose #! names this folder,
@@ -96,5 +99,6 @@ assert ctypes.cdll.LoadLibrary(os.path.join(sys.prefix, "caps", name)).CAPSInit(
 # greaseweazle-version goes last: it marks a finished build.
 echo "$PYTHON+$PYTHON_RELEASE" >"$dest/python-version"
 echo "$CAPS_COMMIT" >"$dest/caps-version"
+echo "$PYSERIAL_FIX" >"$dest/pyserial-fix"
 echo "$tag" >"$dest/greaseweazle-version"
 du -sh "$dest"

@@ -662,6 +662,44 @@ fn the_port_list_says_which_ports_linux_denies_this_account() {
     }
 }
 
+/// Since glibc 2.42, a program built for an older glibc, as the bundle's Python
+/// is, has tcsetattr() refuse BOTHER: here a tcsetattr() that does the same
+/// stands in for it, on a pseudo-terminal. gw clears its link to the
+/// Greaseweazle by setting 10000 baud, which has no Bxxx code.
+#[test]
+#[cfg(target_os = "linux")]
+fn the_bundles_pyserial_sets_gws_10000_baud_without_handing_tcsetattr_bother() {
+    let Some(tools) = tools() else { return };
+    if !matches!(tools.origin, Origin::Bundled) {
+        eprintln!("skipped: no bundle");
+        return;
+    }
+    let script = r#"
+import os, pty, termios
+import serial
+BOTHER = 0o010000
+older = termios.tcsetattr
+def tcsetattr(fd, when, attributes):
+    if BOTHER in attributes[4:6]:
+        raise termios.error(22, "Invalid argument")
+    older(fd, when, attributes)
+termios.tcsetattr = tcsetattr
+_, follower = pty.openpty()
+port = serial.Serial(os.ttyname(follower))
+for rate in (9600, 10000, 9600):
+    port.baudrate = rate
+"#;
+    let out = std::process::Command::new(&tools.python)
+        .args(["-I", "-c", script])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[test]
 fn a_packaged_engine_opens_ipf_images_with_its_own_caps_library() {
     let Some(tools) = tools() else { return };

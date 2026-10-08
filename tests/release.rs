@@ -21,6 +21,8 @@ const UPSTREAM: &str = "latest v0.1 v0.10 v0.11 v0.12 v0.13 v0.14 v0.15 v0.16 v0
 const PYTHON: &str = "3.14.7+1";
 /// The SPS/CAPS library's commit every scratch versions file names.
 const CAPS: &str = "c1";
+/// The pyserial fix every scratch versions file names.
+const FIX: &str = "f1";
 
 /// A folder with bundle/greaseweazle.sh, a versions file pinning `pin` (or
 /// nothing), and an bundle/build.sh that logs each tag it is asked for.
@@ -34,8 +36,9 @@ fn repo(test: &str, pin: &str) -> PathBuf {
     std::fs::create_dir_all(&bundle).unwrap();
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/bundle/greaseweazle.sh");
     std::fs::copy(script, bundle.join("greaseweazle.sh")).unwrap();
-    let versions =
-        format!("GREASEWEAZLE={pin}\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\n");
+    let versions = format!(
+        "GREASEWEAZLE={pin}\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\nPYSERIAL_FIX={FIX}\n"
+    );
     std::fs::write(bundle.join("versions"), versions).unwrap();
     let build = "#!/bin/sh\necho \"$GREASEWEAZLE\" >>built.log\n";
     executable(&bundle.join("build.sh"), build);
@@ -194,24 +197,26 @@ fn no_release_found_is_an_error_that_says_how_to_pin_one() {
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// Records the gw tag, Python and SPS/CAPS commit `dir`'s bundle was built from.
-fn built(dir: &Path, tag: &str, python: &str, caps: &str) {
+/// Records the gw tag, Python, SPS/CAPS commit and pyserial fix `dir`'s bundle
+/// was built from.
+fn built(dir: &Path, tag: &str, python: &str, caps: &str, fix: &str) {
     let bundle = dir.join("target/greaseweazle-bundle");
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::write(bundle.join("python-version"), format!("{python}\n")).unwrap();
     std::fs::write(bundle.join("caps-version"), format!("{caps}\n")).unwrap();
+    std::fs::write(bundle.join("pyserial-fix"), format!("{fix}\n")).unwrap();
     std::fs::write(bundle.join("greaseweazle-version"), format!("{tag}\n")).unwrap();
 }
 
 #[test]
-fn packaging_rebuilds_the_engine_only_for_another_release_python_or_caps_library() {
+fn packaging_rebuilds_the_engine_only_for_another_release_python_caps_library_or_pyserial_fix() {
     let dir = repo("refresh", "");
     let clone = clone(&dir, &["v1.22", "v1.23"]);
     let source = [("GREASEWEAZLE_SOURCE", path(&clone))];
     run(&dir, &source, "", "refresh");
     assert_eq!(builds(&dir), "v1.23\n", "no bundle yet");
 
-    built(&dir, "v1.23", PYTHON, CAPS);
+    built(&dir, "v1.23", PYTHON, CAPS, FIX);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
@@ -219,7 +224,7 @@ fn packaging_rebuilds_the_engine_only_for_another_release_python_or_caps_library
         "the bundle holds the latest release"
     );
 
-    built(&dir, "v1.22", PYTHON, CAPS);
+    built(&dir, "v1.22", PYTHON, CAPS, FIX);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
@@ -227,7 +232,7 @@ fn packaging_rebuilds_the_engine_only_for_another_release_python_or_caps_library
         "the bundle is a release behind"
     );
 
-    built(&dir, "v1.23", "3.14.7+0", CAPS);
+    built(&dir, "v1.23", "3.14.7+0", CAPS, FIX);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
@@ -235,12 +240,21 @@ fn packaging_rebuilds_the_engine_only_for_another_release_python_or_caps_library
         "the bundle holds another Python build"
     );
 
-    built(&dir, "v1.23", PYTHON, "c0");
+    built(&dir, "v1.23", PYTHON, "c0", FIX);
     run(&dir, &source, "", "refresh");
     assert_eq!(
         builds(&dir),
         "v1.23\nv1.23\nv1.23\nv1.23\n",
         "the bundle holds another SPS/CAPS library"
+    );
+
+    // One built before the fix records none.
+    std::fs::remove_file(dir.join("target/greaseweazle-bundle/pyserial-fix")).unwrap();
+    run(&dir, &source, "", "refresh");
+    assert_eq!(
+        builds(&dir),
+        "v1.23\nv1.23\nv1.23\nv1.23\nv1.23\n",
+        "the bundle holds no pyserial fix"
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -258,7 +272,7 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
     let out = sh(&dir, &source, "", "refresh");
     assert!(!out.status.success(), "a half-built bundle is not kept");
 
-    built(&dir, "v1.22", "3.14.7+0", "c0");
+    built(&dir, "v1.22", "3.14.7+0", "c0", "f0");
     run(&dir, &source, "", "refresh");
     assert_eq!(builds(&dir), "", "nothing was rebuilt");
     std::fs::remove_dir_all(dir).ok();
@@ -270,7 +284,9 @@ fn packaging_offline_keeps_a_finished_engine_and_fails_without_one() {
 fn stub_build(dir: &Path) -> String {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/bundle/build.sh");
     std::fs::copy(script, dir.join("bundle/build.sh")).unwrap();
-    let versions = format!("GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\n");
+    let versions = format!(
+        "GREASEWEAZLE=\nPYTHON=3.14.7\nPYTHON_RELEASE=1\nCAPS_COMMIT={CAPS}\nPYSERIAL_FIX={FIX}\n"
+    );
     std::fs::write(dir.join("bundle/versions"), versions).unwrap();
     std::fs::write(dir.join("bundle/python.sha256"), "").unwrap();
     executable(
@@ -311,11 +327,14 @@ fn a_build_installs_the_release_wanted_and_records_it() {
         python.contains(check),
         "the check loads gw's C extension: {python}"
     );
+    let fix = "-I bundle/pyserial.py target/greaseweazle-bundle/lib/python3.14";
+    assert!(python.contains(fix), "pyserial gets its fix: {python}");
     let record =
         |file: &str| std::fs::read_to_string(dir.join("target/greaseweazle-bundle").join(file));
     assert_eq!(record("greaseweazle-version").unwrap(), "v1.30\n");
     assert_eq!(record("python-version").unwrap(), format!("{PYTHON}\n"));
     assert_eq!(record("caps-version").unwrap(), format!("{CAPS}\n"));
+    assert_eq!(record("pyserial-fix").unwrap(), format!("{FIX}\n"));
     let caps = std::fs::read_to_string(dir.join("caps.log")).unwrap();
     assert!(caps.ends_with(" target/greaseweazle-bundle\n"), "{caps}");
     assert!(

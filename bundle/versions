@@ -3,7 +3,10 @@
 # PYTHON_RELEASE pick python-build-standalone's build: list its archives in
 # bundle/python.sha256, then run packaging/python-licences.sh. CAPS_COMMIT is
 # the SPS/CAPS source (bundle/caps.sh), which bundle/caps.sha256 must list.
+# PYSERIAL_FIX is the pyserial commit bundle/pyserial.py gives the pyserial gw
+# installs: its fix for glibc 2.42, until a pyserial release has it.
 GREASEWEAZLE=
 PYTHON=3.14.7
 PYTHON_RELEASE=20260924
 CAPS_COMMIT=502015b6e117e7c52fd143025856f9b5b242b6d6
+PYSERIAL_FIX=70d1886
