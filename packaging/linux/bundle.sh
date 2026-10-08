@@ -2,10 +2,12 @@
 # Builds, for ARCH (x86_64 or aarch64, this computer's if none), a tarball
 # dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz and an AppImage
 # dist/Ferriteweazle-VERSION-ARCH.AppImage that run on glibc 2.17 or newer,
-# and the AppImage's zsync file, for AppImageUpdate. The bundle is rebuilt
-# first if gw has a newer release. Needs cargo-zigbuild, zig, meson, ninja,
-# bison, bsdtar, patchelf, objdump and appstreamcli; downloads appimagetool,
-# the AppImage runtime, and the source and libraries of lib/ (libraries.sh).
+# and the AppImage's zsync file, for AppImageUpdate. With SIGN_KEY, a key's
+# fingerprint, the AppImage is signed by that key, which gpg-agent must hold
+# unlocked. The bundle is rebuilt first if gw has a newer release. Needs
+# cargo-zigbuild, zig, meson, ninja, bison, bsdtar, patchelf, objdump and
+# appstreamcli; downloads appimagetool, the AppImage runtime, and the source
+# and libraries of lib/ (libraries.sh).
 #
 #   packaging/linux/bundle.sh           # this computer
 #   packaging/linux/bundle.sh x86_64    # another processor
@@ -25,6 +27,13 @@ triple=$arch-unknown-linux-gnu
 # The desktop entry, its icon and its AppStream metadata are named for the
 # window's app id (src/main.rs).
 id=io.github.hobbo91.ferriteweazle
+# A signature must not wait on a passphrase.
+if [ -n "${SIGN_KEY:-}" ] && ! gpg --batch --pinentry-mode error --local-user "$SIGN_KEY" \
+    --clearsign </dev/null >/dev/null 2>&1; then
+    echo "linux: unlock $SIGN_KEY first:" \
+        "echo | gpg --pinentry-mode loopback --clearsign --local-user $SIGN_KEY >/dev/null" >&2
+    exit 1
+fi
 
 refresh "$triple"
 data=$(bundle_dir "$triple")
@@ -114,7 +123,32 @@ zsync=Ferriteweazle-$version-$arch.AppImage.zsync
 rm -f "$image" "dist/$zsync" "$zsync"
 update="gh-releases-zsync|hobbo91|Ferriteweazle|latest|Ferriteweazle-*-$arch.AppImage.zsync"
 ARCH=$arch "$unpacked/AppRun" --no-appstream --runtime-file "$cache/$runtime" -u "$update" \
-    "$appdir" "$image"
+    ${SIGN_KEY:+--sign --sign-key "$SIGN_KEY"} "$appdir" "$image"
 # appimagetool leaves the zsync file in the folder it runs in.
 mv "$zsync" dist/
+
+# The signature, as AppImageUpdate checks it: SIGN_KEY's, of the SHA-256 of the
+# AppImage with its signature and key sections zeroed, and SIGN_KEY carried.
+section() {
+    readelf -S --wide "$image" | sed -n 's/^ *\[ *[0-9]*\] *//p' |
+        awk -v name="$1" '$1 == name { print $4, $5 }'
+}
+if [ -n "${SIGN_KEY:-}" ]; then
+    check=target/signature-$arch
+    rm -rf "$check"
+    mkdir -p "$check"
+    cp "$image" "$check/zeroed"
+    for part in .sha256_sig:signature .sig_key:key; do
+        set -- $(section "${part%:*}")
+        at=$((0x$1)) size=$((0x$2))
+        dd if=/dev/zero of="$check/zeroed" bs=1 seek="$at" count="$size" conv=notrunc 2>/dev/null
+        dd if="$image" bs=1 skip="$at" count="$size" 2>/dev/null | tr -d '\000' >"$check/${part#*:}.asc"
+    done
+    sha256sum "$check/zeroed" | cut -d' ' -f1 | tr -d '\n' >"$check/digest"
+    gpg --batch --status-fd 1 --verify "$check/signature.asc" "$check/digest" 2>/dev/null |
+        grep -q "^\[GNUPG:\] VALIDSIG $SIGN_KEY " || { echo "linux: $image is not $SIGN_KEY's" >&2; exit 1; }
+    gpg --batch --with-colons --show-keys "$check/key.asc" | grep -q "^fpr:*$SIGN_KEY:" ||
+        { echo "linux: $image does not carry $SIGN_KEY" >&2; exit 1; }
+    rm -rf "$check"
+fi
 du -sh "$tarball" "$image" "dist/$zsync"

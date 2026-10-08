@@ -93,14 +93,15 @@ version by it. Neither is code-signed.
 ### Linux
 
 glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
-zig, meson 1.4 or newer, ninja, bison, bsdtar, patchelf, objdump and appstreamcli (on
-Debian and Ubuntu: `ninja-build`, `bison`, `libarchive-tools`, `patchelf`, `binutils` and
-`appstream`, with meson from `pipx install meson`). Downloads appimagetool, the AppImage
-runtime, and the source and libraries of what a package carries in `lib/`
-(`packaging/linux/libraries.sh`), checked against `packaging/linux/appimage.sha256`.
-Building for the other processor runs its Python emulated: qemu-user with that
-processor's libraries, or Rosetta in a Linux VM. The AppImage carries update information
-for AppImageUpdate, which reads the `.zsync` file published beside it.
+zig, meson 1.4 or newer, ninja, bison, bsdtar, patchelf, objdump and appstreamcli (Debian
+and Ubuntu: `ninja-build`, `bison`, `libarchive-tools`, `patchelf`, `binutils`,
+`appstream`; meson by `pipx install meson`). Downloads appimagetool, the AppImage runtime,
+and the sources and libraries of `lib/` (`packaging/linux/libraries.sh`), checked against
+`packaging/linux/appimage.sha256`. Building for the other processor runs its Python
+emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM. The
+AppImage's update information names the `.zsync` file published beside it. With
+`SIGN_KEY`, a key's fingerprint, the AppImage is signed by that key, which gpg-agent must
+hold unlocked; the build checks the signature.
 
 ## Releases
 
@@ -108,5 +109,6 @@ for AppImageUpdate, which reads the `.zsync` file published beside it.
 macOS there, Windows and Linux over SSH on the machines named in
 `packaging/release.env` (copy `packaging/release.env.example`). It adds
 `LGPL-sources-VERSION.tar`, the source of the LGPL code in the Linux packages, and
-`SHA256SUMS-VERSION.txt`, which the app's Update checks downloads against.
-Publishing is up to you.
+`SHA256SUMS-VERSION.txt`, which the app's Update checks downloads against. With
+`LINUX_SIGN_KEY` in `release.env`, the Linux machine signs the AppImages; unlock the key
+there first. Publishing is up to you.

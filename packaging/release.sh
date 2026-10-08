@@ -16,6 +16,15 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 GREASEWEAZLE=$(wanted)
 export GREASEWEAZLE
 epoch=$(git log -1 --format=%ct)
+# The Linux machine signs the AppImages with LINUX_SIGN_KEY, if set, which
+# its gpg-agent must hold unlocked from the start.
+sign=${LINUX_SIGN_KEY:-}
+if [ -n "$sign" ] && ! ssh $LINUX_SSH \
+    "gpg --batch --pinentry-mode error --local-user $sign --clearsign </dev/null >/dev/null 2>&1"; then
+    echo "release: unlock $sign on the Linux machine first:" \
+        "ssh -t $LINUX_SSH 'echo | gpg --pinentry-mode loopback --clearsign --local-user $sign >/dev/null'" >&2
+    exit 1
+fi
 rm -rf dist
 mkdir -p target
 
@@ -24,8 +33,8 @@ mkdir -p target
 linux() {
     git archive --format=tar HEAD | ssh $LINUX_SSH "mkdir -p $LINUX_DIR && tar -xf - -C $LINUX_DIR"
     ssh $LINUX_SSH "cd $LINUX_DIR && $LINUX_SETUP && export GREASEWEAZLE=$GREASEWEAZLE \
-        SOURCE_DATE_EPOCH=$epoch && rm -rf dist && packaging/linux/bundle.sh x86_64 && \
-        packaging/linux/bundle.sh aarch64"
+        SOURCE_DATE_EPOCH=$epoch SIGN_KEY=$sign && rm -rf dist && \
+        packaging/linux/bundle.sh x86_64 && packaging/linux/bundle.sh aarch64"
     ssh $LINUX_SSH "cd $LINUX_DIR && tar -cf - dist" >target/linux-dist.tar
     tar -xf target/linux-dist.tar
 }
