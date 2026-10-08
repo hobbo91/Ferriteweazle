@@ -2705,11 +2705,11 @@ pub(crate) struct Asked {
     step: Option<Step>,
 }
 
-/// A sector's window: a title bar as tall as a macOS window's, what is said
-/// of the sector, its data in full, and the way round the disk. It opens in
-/// the middle of the app's, once measured, then grows from its top right
-/// corner, never smaller than it has been: the arrows there stay put as
-/// what it shows changes.
+/// A sector's window: a title bar as tall as a macOS window's, in the
+/// sidebar's colour, what is said of the sector, its data in full, and the
+/// way round the disk. It opens in the middle of the app's, once measured,
+/// then grows from its top right corner, never smaller than it has been:
+/// the arrows there stay put as what it shows changes.
 pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) -> Asked {
     let mut asked = Asked::default();
     let title = shown.title;
@@ -2733,6 +2733,8 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
     };
     window.show(ctx, |ui| {
         let p = theme::palette(ui);
+        // The title bar's fill, laid once the window's width is known.
+        let fill = ui.painter().add(Shape::Noop);
         let least_id = ui.id().with("least");
         let least = ui.data(|d| d.get_temp::<egui::Vec2>(least_id));
         ui.set_min_size(least.unwrap_or_default());
@@ -2757,6 +2759,16 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
             let builder = egui::UiBuilder::new().max_rect(rect);
             asked.step = ui.scope_builder(builder, |ui| way(ui, nav, p)).inner;
         }
+        // Its top corners the window's, as its frame rounds them.
+        let r = ui.visuals().window_corner_radius.nw;
+        let top = egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        };
+        let filled = egui::epaint::RectShape::filled(bar, top, p.sidebar);
+        ui.painter().set(fill, filled);
         let named = RichText::new(title).size(TITLE_SIZE).color(p.strong);
         ui.put(bar.shrink2(vec2(TITLE_BAR, 0.0)), egui::Label::new(named));
         let line = Stroke::new(1.0, p.line);

@@ -5241,6 +5241,48 @@ fn the_sector_windows_last_arrow_is_under_its_close_button() {
 }
 
 #[test]
+fn a_sector_windows_title_bar_is_in_the_sidebars_colour_in_every_theme() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = "C0 H0 R7 N3 · cylinder 0, side 0";
+    for (choice, p) in [
+        (Choice::Light, &theme::LIGHT),
+        (Choice::Dark, &theme::DARK),
+        (Choice::Classic, &theme::CLASSIC),
+        (Choice::Blue, &theme::BLUE),
+        (Choice::Vintage, &theme::VINTAGE),
+        (Choice::Greaseweazle, &theme::GREASEWEAZLE),
+        (Choice::PcbGreen, &theme::PCB_GREEN),
+    ] {
+        theme::apply(&w.ctx, choice);
+        w.run();
+        let close = w.get_by_role_and_label(Role::Button, "Close").rect();
+        let shapes = &w.output().shapes;
+        let bar = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => {
+                r.fill == p.sidebar && r.rect.height() == 28.0 && r.rect.contains_rect(close)
+            }
+            _ => false,
+        });
+        assert!(
+            bar,
+            "{choice:?}: no bar in the sidebar's colour under the close button"
+        );
+        let named = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                t.galley.text() == title
+                    && t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|s| s.format.color == p.strong)
+            }
+            _ => false,
+        });
+        assert!(named, "{choice:?}: the title not in the strong text colour");
+    }
+}
+
+#[test]
 fn an_arrow_held_down_steps_again_and_again_faster_and_faster() {
     let mut w = sector_open(
         Job::replay("convert", SCRATCHED),
