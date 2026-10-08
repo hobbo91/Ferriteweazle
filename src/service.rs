@@ -1,6 +1,7 @@
 //! The long-lived bridge that answers questions about gw: its schema,
 //! connected devices, disk formats, and whether a value is valid.
 
+use crate::image::{Image, Preview};
 use crate::schema::{DiskDefs, FormatInfo, Port, Schema};
 use crate::standalone;
 use crate::tools::Tools;
@@ -27,6 +28,22 @@ const FOLDER_EVERY: Duration = Duration::from_millis(500);
 
 /// When each file asked about last changed, by path.
 type Times = Mutex<HashMap<String, Option<SystemTime>>>;
+
+/// What gw needs to open the image a write or a conversion is to take its
+/// tracks from, before any job: the command's arguments as the job will
+/// give them, the image's path, and the disk definitions file they name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAsk {
+    pub args: Vec<String>,
+    pub path: String,
+    pub diskdefs: String,
+}
+
+/// An image asked for, and when its file and its disk definitions file last changed.
+type ImageKey = (ImageAsk, Option<SystemTime>, Option<SystemTime>);
+
+/// Why a standalone gw shows no image before a job.
+const STANDALONE_IMAGE: &str = "Standalone Greaseweazle Tools cannot open the image before a job.";
 
 pub type Repaint = Box<dyn Fn() + Send>;
 
@@ -115,6 +132,15 @@ pub struct Service {
     times: Arc<Times>,
     /// gw's objections, or none, by the request that asked for them.
     objections: HashMap<String, Load<Option<String>>>,
+    /// The image last asked for by `image`, keyed by what it was asked with
+    /// and its file's and disk definitions' times.
+    preview: Option<(ImageKey, Load<Preview>)>,
+    /// The last image gw opened, kept while gw opens its file again.
+    previous: Option<(String, Preview)>,
+    /// Set by pin_image or hold_image: the answer to every `image` request.
+    pinned_preview: Option<Load<Preview>>,
+    /// Keeps hold_image's request unanswered.
+    held: Option<Sender<Result<Value, String>>>,
 }
 
 impl Service {
@@ -122,6 +148,18 @@ impl Service {
         let (requests, rx) = mpsc::channel();
         let (lister, listed) = mpsc::channel();
         let found = lister.clone();
+        // The bridge's thread and the file watcher's each wake the window.
+        let repaint = Arc::new(Mutex::new(repaint));
+        let shared = |repaint: &Arc<Mutex<Repaint>>| -> Repaint {
+            let repaint = Arc::clone(repaint);
+            Box::new(move || {
+                if let Ok(repaint) = repaint.lock() {
+                    repaint();
+                }
+            })
+        };
+        let watched = shared(&repaint);
+        let repaint = shared(&repaint);
         match tools.standalone {
             true => {
                 let gw = tools.python.clone();
@@ -133,7 +171,7 @@ impl Service {
             }
         }
         let schema = Load::Waiting(call(&requests, json!({"op": "schema"})));
-        let mut service = Service::new(requests, schema, lister, listed);
+        let mut service = Service::new(requests, schema, lister, listed, watched);
         service.refresh_ports();
         service
     }
@@ -143,7 +181,7 @@ impl Service {
         let (requests, _) = mpsc::channel();
         let (lister, listed) = mpsc::channel();
         let schema = schema.map_or_else(Load::Failed, Load::Ready);
-        Service::new(requests, schema, lister, listed)
+        Service::new(requests, schema, lister, listed, Box::new(|| {}))
     }
 
     fn new(
@@ -151,10 +189,11 @@ impl Service {
         schema: Load<Schema>,
         lister: Sender<Listed>,
         listed: Receiver<Listed>,
+        repaint: Repaint,
     ) -> Service {
         let times = Arc::default();
         let watched = Arc::downgrade(&times);
-        std::thread::spawn(move || watch(&watched));
+        std::thread::spawn(move || watch(&watched, &repaint));
         Service {
             requests,
             schema,
@@ -171,6 +210,10 @@ impl Service {
             folders: HashMap::new(),
             times,
             objections: HashMap::new(),
+            preview: None,
+            previous: None,
+            pinned_preview: None,
+            held: None,
         }
     }
 
@@ -200,6 +243,9 @@ impl Service {
             load.poll();
         }
         for load in self.objections.values_mut() {
+            load.poll();
+        }
+        if let Some((_, load)) = &mut self.preview {
             load.poll();
         }
     }
@@ -242,6 +288,85 @@ impl Service {
         self.last_ports = ports;
         self.ports_error = None;
         self.pinned = true;
+    }
+
+    /// The image a write or a conversion is to take its tracks from, as gw
+    /// opens it, before any job; asked again when what it is asked with,
+    /// its file or its disk definitions file change. Only the last is kept.
+    pub fn image(&mut self, ask: &ImageAsk) -> &Load<Preview> {
+        if let Some(pinned) = &self.pinned_preview {
+            return pinned;
+        }
+        if !self
+            .preview
+            .as_ref()
+            .is_some_and(|(key, _)| self.current(key, ask))
+        {
+            let times = (self.modified(&ask.path), self.modified(&ask.diskdefs));
+            if let Some(((old, ..), Load::Ready(p))) = self.preview.take() {
+                self.previous = Some((old.path, p));
+            }
+            let load = Load::Waiting(call(
+                &self.requests,
+                json!({"op": "image", "args": ask.args}),
+            ));
+            self.preview = Some(((ask.clone(), times.0, times.1), load));
+        }
+        &self.preview.as_ref().expect("just set").1
+    }
+
+    /// As `image`, from what gw has already said; while gw opens the file
+    /// again, as it last opened it.
+    pub fn known_image(&self, ask: &ImageAsk) -> Option<&Preview> {
+        if let Some(pinned) = &self.pinned_preview {
+            return pinned.ready();
+        }
+        let (_, load) = self
+            .preview
+            .as_ref()
+            .filter(|(key, _)| self.current(key, ask))?;
+        match load {
+            Load::Waiting(_) => self
+                .previous
+                .as_ref()
+                .filter(|(path, _)| *path == ask.path)
+                .map(|(_, p)| p),
+            _ => load.ready(),
+        }
+    }
+
+    /// Why gw could not open the image asked for by `image`, if it could not.
+    pub fn image_error(&self, ask: &ImageAsk) -> Option<&str> {
+        if let Some(pinned) = &self.pinned_preview {
+            return pinned.error();
+        }
+        let (_, load) = self
+            .preview
+            .as_ref()
+            .filter(|(key, _)| self.current(key, ask))?;
+        load.error()
+    }
+
+    fn current(&self, (asked, file, diskdefs): &ImageKey, ask: &ImageAsk) -> bool {
+        asked == ask
+            && *file == self.modified(&ask.path)
+            && *diskdefs == self.modified(&ask.diskdefs)
+    }
+
+    /// Answers every `image` request with `image`: a window with a made-up
+    /// file to write, for tests and pictures.
+    pub fn pin_image(&mut self, image: Image) {
+        self.pinned_preview = Some(Load::Ready(Preview(image)));
+    }
+
+    /// Answers no `image` request, as while gw opens a file: for tests.
+    pub fn hold_image(&mut self) {
+        let (held, rx) = mpsc::channel();
+        self.held = Some(held);
+        self.pinned_preview = Some(Load::Waiting(Pending {
+            rx,
+            _type: PhantomData,
+        }));
     }
 
     /// gw's own format names.
@@ -413,7 +538,6 @@ impl Service {
             encoding: None,
             sectors: None,
             bytes: None,
-            verifies: false,
             revs: None,
         };
         let key = (String::new(), None, name.to_owned());
@@ -458,9 +582,9 @@ fn stat(path: &str) -> Option<SystemTime> {
 }
 
 /// Looks again at the files in `times` every WATCH_EVERY, until the Service
-/// is dropped. No lock is held while the file system answers. The window
-/// draws at least every PORTS_EVERY (see `serve`), and so sees a change.
-fn watch(times: &Weak<Times>) {
+/// is dropped, and wakes the window when one has changed. No lock is held
+/// while the file system answers.
+fn watch(times: &Weak<Times>, repaint: &Repaint) {
     loop {
         std::thread::sleep(WATCH_EVERY);
         let Some(live) = times.upgrade() else {
@@ -477,8 +601,16 @@ fn watch(times: &Weak<Times>) {
                 (p, time)
             })
             .collect();
-        if let Ok(mut known) = live.lock() {
-            known.extend(seen);
+        let changed = match live.lock() {
+            Ok(mut known) => {
+                let changed = seen.iter().any(|(p, t)| known.get(p) != Some(t));
+                known.extend(seen);
+                changed
+            }
+            Err(_) => return,
+        };
+        if changed {
+            repaint();
         }
     }
 }
@@ -609,6 +741,8 @@ fn serve(mut cmd: Command, requests: Receiver<Request>, found: Sender<Listed>, r
     // Sends a request and reads its reply; none once the bridge has stopped.
     let mut ask = |body: &Value| -> Option<Listed> {
         line.clear();
+        // An image's reply can run to megabytes: not kept for the next.
+        line.shrink_to(1 << 16);
         let sent = writeln!(stdin, "{body}").and_then(|()| stdin.flush());
         match sent.and_then(|()| stdout.read_line(&mut line)) {
             Ok(1..) => Some(parse(&line)),
@@ -689,6 +823,7 @@ fn serve_standalone(
                 list
             }
             Some("check" | "check_opt" | "fits") => Ok(Value::Null),
+            Some("image") => Err(STANDALONE_IMAGE.to_owned()),
             _ => {
                 unanswered.push(r.reply);
                 continue;

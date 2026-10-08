@@ -1,4 +1,5 @@
-//! Colours, type and spacing: light, dark, the Greaseweazle's purple and 90s GUI grey.
+//! Colours, type and spacing: light, dark, the Greaseweazle's purple, a board's green, 90s
+//! GUI grey and 80s beige.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
@@ -18,11 +19,12 @@ pub enum Choice {
     Blue,
     Vintage,
     Greaseweazle,
+    PcbGreen,
 }
 
 /// Each choice in Settings' order: its name, its hover, and the word theme.txt
 /// keeps. Blue is Classic in the accent it starts in, under Classic's button.
-pub const CHOICES: [(Choice, &str, &str, &str); 7] = [
+pub const CHOICES: [(Choice, &str, &str, &str); 8] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),
     (Choice::Dark, "Dark", "Always dark.", "dark"),
@@ -45,6 +47,12 @@ pub const CHOICES: [(Choice, &str, &str, &str); 7] = [
         "Always purple (dark).",
         "greaseweazle",
     ),
+    (
+        Choice::PcbGreen,
+        "PCB Green",
+        "Always green (dark).",
+        "pcb-green",
+    ),
 ];
 
 impl From<Theme> for Choice {
@@ -56,10 +64,11 @@ impl From<Theme> for Choice {
     }
 }
 
-/// Shows `choice`: Greaseweazle is egui's dark theme, and Classic and Vintage
+/// What `choice` shows: its dark palette and its light one, and which.
+/// Greaseweazle and PCB Green are egui's dark theme, and Classic and Vintage
 /// its light one, with their own colours in them.
-pub fn apply(ctx: &egui::Context, choice: Choice) {
-    let (dark, light, shown) = match choice {
+pub(crate) fn palettes(choice: Choice) -> (&'static Palette, &'static Palette, ThemePreference) {
+    match choice {
         Choice::System => (&DARK, &LIGHT, ThemePreference::System),
         Choice::Light => (&DARK, &LIGHT, ThemePreference::Light),
         Choice::Dark => (&DARK, &LIGHT, ThemePreference::Dark),
@@ -67,7 +76,13 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
         Choice::Blue => (&DARK, &BLUE, ThemePreference::Light),
         Choice::Vintage => (&DARK, &VINTAGE, ThemePreference::Light),
         Choice::Greaseweazle => (&GREASEWEAZLE, &LIGHT, ThemePreference::Dark),
-    };
+        Choice::PcbGreen => (&PCB_GREEN, &LIGHT, ThemePreference::Dark),
+    }
+}
+
+/// Shows `choice`.
+pub fn apply(ctx: &egui::Context, choice: Choice) {
+    let (dark, light, shown) = palettes(choice);
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
     ctx.set_visuals_of(Theme::Light, visuals(light, Visuals::light()));
     ctx.style_mut_of(Theme::Dark, |s| s.spacing.scroll = bars(dark));
@@ -86,16 +101,19 @@ fn bars(p: &Palette) -> ScrollStyle {
 }
 
 /// A text view's bars, drawn whenever there is more to see: a floating one
-/// hides until hovered, and a wheel does not scroll sideways.
+/// hides until hovered, and a wheel does not scroll sideways. Their handles
+/// are the floating ones' colour: the text's, faint until the pointer is on
+/// them, whole where the palette has its bars bold.
 pub fn solid_bars(ui: &mut egui::Ui, p: &Palette) {
-    ui.spacing_mut().scroll = ScrollStyle {
-        foreground_color: p.bold_bars,
-        ..ScrollStyle::solid()
-    };
-    // The theme paints an idle handle in the card's colour.
-    ui.visuals_mut().widgets.inactive.bg_fill = p.line;
+    let floating = bars(p);
+    ui.spacing_mut().scroll = ScrollStyle::solid();
+    let w = &mut ui.visuals_mut().widgets;
+    w.inactive.bg_fill = p.text.gamma_multiply(floating.active_handle_opacity);
+    w.hovered.bg_fill = p.text;
+    w.active.bg_fill = p.strong;
 }
 
+#[derive(PartialEq)]
 pub struct Palette {
     pub bg: Color32,
     pub sidebar: Color32,
@@ -112,9 +130,17 @@ pub struct Palette {
     pub on_accent: Color32,
     /// A link's colour where the accent would read as a caption (link()).
     pub link: Option<Color32>,
+    /// A filled button's fill where its text would not read on the accent
+    /// (accent_button()).
+    pub button: Option<Color32>,
     pub good: Color32,
     pub partial: Color32,
     pub bad: Color32,
+    /// The three as text: dark enough to read at 4.5:1 on a light palette's
+    /// surfaces, as a fill need not; a dark palette's are its own.
+    pub good_text: Color32,
+    pub partial_text: Color32,
+    pub bad_text: Color32,
     pub flux: Color32,
     pub written: Color32,
     pub erased: Color32,
@@ -124,7 +150,8 @@ pub struct Palette {
     /// gw's command lines and output on black in this colour, as a console
     /// (terminal()).
     pub console: Option<Color32>,
-    /// Scroll bars in the text's colour at full strength: white on the purple.
+    /// Scroll bars in the text's colour at full strength: white on the purple
+    /// and on the green.
     pub bold_bars: bool,
 }
 
@@ -141,9 +168,14 @@ pub const DARK: Palette = Palette {
     accent: Color32::from_rgb(109, 140, 255),
     on_accent: Color32::WHITE,
     link: None,
+    // White reads on this deeper blue, 5.3:1, not on the accent itself.
+    button: Some(Color32::from_rgb(61, 99, 221)),
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(242, 85, 90),
+    good_text: Color32::from_rgb(61, 214, 140),
+    partial_text: Color32::from_rgb(245, 184, 61),
+    bad_text: Color32::from_rgb(242, 85, 90),
     flux: Color32::from_rgb(79, 182, 240),
     written: Color32::from_rgb(163, 139, 250),
     erased: Color32::from_rgb(107, 114, 128),
@@ -166,9 +198,13 @@ pub const LIGHT: Palette = Palette {
     accent: Color32::from_rgb(61, 99, 221),
     on_accent: Color32::WHITE,
     link: None,
+    button: None,
     good: Color32::from_rgb(31, 164, 99),
     partial: Color32::from_rgb(212, 138, 0),
     bad: Color32::from_rgb(220, 60, 67),
+    good_text: Color32::from_rgb(23, 123, 75),
+    partial_text: Color32::from_rgb(150, 97, 0),
+    bad_text: Color32::from_rgb(209, 37, 45),
     flux: Color32::from_rgb(30, 143, 208),
     written: Color32::from_rgb(123, 97, 232),
     erased: Color32::from_rgb(154, 161, 173),
@@ -193,9 +229,14 @@ pub const GREASEWEAZLE: Palette = Palette {
     accent: Color32::from_rgb(178, 118, 255),
     on_accent: Color32::WHITE,
     link: None,
+    // White reads on this deeper purple, 6:1, not on the accent itself.
+    button: Some(Color32::from_rgb(128, 64, 200)),
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(255, 99, 112),
+    good_text: Color32::from_rgb(61, 214, 140),
+    partial_text: Color32::from_rgb(245, 184, 61),
+    bad_text: Color32::from_rgb(255, 99, 112),
     flux: Color32::from_rgb(79, 182, 240),
     written: Color32::from_rgb(240, 140, 220),
     erased: Color32::from_rgb(130, 112, 150),
@@ -204,6 +245,45 @@ pub const GREASEWEAZLE: Palette = Palette {
     console: Some(Color32::from_rgb(238, 230, 247)),
     bold_bars: true,
 };
+
+/// From the green of a board's solder mask, rgb(0, 140, 74): darker for the
+/// window, so that its text reads clearly; gold for what is chosen, as its
+/// pads are, white and silver for text, as its silkscreen and solder are, and
+/// gw's text green on black, as in Vintage. Its red and orange are lighter
+/// than Dark's, to read on the green, and the orange redder, away from the
+/// gold; its good yellower and its flux bluer, so that the disk's statuses
+/// stand apart on the green.
+pub const PCB_GREEN: Palette = Palette {
+    bg: Color32::from_rgb(8, 50, 30),
+    sidebar: Color32::from_rgb(4, 38, 22),
+    card: Color32::from_rgb(14, 70, 43),
+    hover: Color32::from_rgb(20, 86, 54),
+    line: Color32::from_rgb(30, 98, 64),
+    line_strong: Color32::from_rgb(58, 128, 92),
+    text: Color32::from_rgb(232, 240, 234),
+    strong: Color32::WHITE,
+    dim: Color32::from_rgb(192, 192, 192),
+    accent: Color32::from_rgb(212, 175, 55),
+    on_accent: Color32::from_rgb(34, 34, 34),
+    link: None,
+    button: None,
+    good: Color32::from_rgb(150, 230, 90),
+    partial: Color32::from_rgb(255, 136, 44),
+    bad: Color32::from_rgb(255, 134, 140),
+    good_text: Color32::from_rgb(150, 230, 90),
+    partial_text: Color32::from_rgb(255, 136, 44),
+    bad_text: Color32::from_rgb(255, 134, 140),
+    flux: Color32::from_rgb(110, 170, 255),
+    written: Color32::from_rgb(176, 150, 255),
+    erased: Color32::from_rgb(128, 142, 134),
+    pending: Color32::from_rgb(16, 62, 40),
+    classic: false,
+    console: Some(PHOSPHOR),
+    bold_bars: true,
+};
+
+/// A green phosphor screen's green, for gw's text on black.
+const PHOSPHOR: Color32 = Color32::from_rgb(51, 255, 102);
 
 /// 90s GUIs standard scheme, on rgb(195, 199, 203): silver-grey
 /// with lighter grey fields, and the teal of the 1990s.
@@ -219,10 +299,15 @@ pub const CLASSIC: Palette = Palette {
     dim: Color32::from_rgb(64, 64, 64),
     accent: Color32::from_rgb(0, 128, 128),
     on_accent: Color32::WHITE,
-    link: None,
+    // The teal deepened, to read on the grey.
+    link: Some(Color32::from_rgb(0, 93, 93)),
+    button: None,
     good: Color32::from_rgb(0, 128, 0),
     partial: Color32::from_rgb(224, 160, 0),
     bad: Color32::from_rgb(200, 0, 0),
+    good_text: Color32::from_rgb(0, 97, 0),
+    partial_text: Color32::from_rgb(109, 78, 0),
+    bad_text: Color32::from_rgb(171, 0, 0),
     flux: Color32::from_rgb(0, 51, 153),
     written: Color32::from_rgb(128, 0, 128),
     erased: Color32::from_rgb(128, 128, 128),
@@ -238,6 +323,7 @@ pub const CLASSIC: Palette = Palette {
 pub const BLUE: Palette = Palette {
     accent: CLASSIC.flux,
     flux: CLASSIC.accent,
+    link: None,
     ..CLASSIC
 };
 
@@ -252,20 +338,24 @@ pub const VINTAGE: Palette = Palette {
     line_strong: Color32::from_rgb(49, 53, 63),
     text: Color32::from_rgb(49, 53, 63),
     strong: Color32::from_rgb(49, 53, 63),
-    dim: Color32::from_rgb(78, 84, 88),
+    dim: Color32::from_rgb(69, 74, 78),
     accent: Color32::from_rgb(72, 91, 99),
     on_accent: Color32::from_rgb(238, 241, 219),
     // Slate is a caption's grey here: a deeper shade of the map's flux blue.
-    link: Some(Color32::from_rgb(40, 76, 132)),
+    link: Some(Color32::from_rgb(39, 73, 127)),
+    button: None,
     good: Color32::from_rgb(74, 124, 58),
     partial: Color32::from_rgb(198, 140, 36),
     bad: Color32::from_rgb(176, 58, 46),
+    good_text: Color32::from_rgb(49, 81, 38),
+    partial_text: Color32::from_rgb(97, 68, 18),
+    bad_text: Color32::from_rgb(131, 43, 34),
     flux: Color32::from_rgb(64, 98, 150),
     written: Color32::from_rgb(128, 76, 140),
     erased: Color32::from_rgb(124, 127, 130),
     pending: Color32::from_rgb(227, 225, 201),
     classic: true,
-    console: Some(Color32::from_rgb(51, 255, 102)),
+    console: Some(PHOSPHOR),
     bold_bars: false,
 };
 
@@ -274,7 +364,17 @@ impl Palette {
     pub fn link(&self) -> Color32 {
         self.link.unwrap_or(self.accent)
     }
+
+    /// A filled button's fill and text: the accent, or its deeper shade
+    /// where the palette has one, and the text on it.
+    pub fn accent_button(&self) -> (Color32, Color32) {
+        (self.button.unwrap_or(self.accent), self.on_accent)
+    }
 }
+
+/// A filled button's fill and text where it stops, erases, writes over or
+/// replaces: one red in every theme, white reading on it at 4.7:1.
+pub const RED_BUTTON: (Color32, Color32) = (Color32::from_rgb(214, 54, 62), Color32::WHITE);
 
 pub const RADIUS: u8 = 6;
 /// The height of every field, list and button in a form row.
@@ -287,13 +387,23 @@ pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 /// The floppy from the icon, large, for the About window.
 pub const ABOUT: &[u8] = include_bytes!("../assets/about.png");
 
-/// The colours the window has, known by its links': each palette apply()
-/// shows has a link colour of its own.
+/// Each palette apply() shows, as palette() knows it: by its links' colour,
+/// which is its own.
+const SHOWN: [&Palette; 7] = [
+    &LIGHT,
+    &DARK,
+    &GREASEWEAZLE,
+    &PCB_GREEN,
+    &CLASSIC,
+    &BLUE,
+    &VINTAGE,
+];
+
+/// The colours the window has, known by its links'.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE, &VINTAGE];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
-    shown
+    SHOWN
         .into_iter()
         .find(|p| p.link() == v.hyperlink_color)
         .unwrap_or(unthemed)
@@ -415,8 +525,8 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.code_bg_color = p.card;
     v.hyperlink_color = p.link();
     v.weak_text_color = Some(p.dim);
-    v.warn_fg_color = p.partial;
-    v.error_fg_color = p.bad;
+    v.warn_fg_color = p.partial_text;
+    v.error_fg_color = p.bad_text;
     // egui also edges a focused text box in this text colour: white in Classic.
     let (fill, text) = match p.classic {
         true => (p.accent, p.on_accent),
@@ -435,6 +545,9 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.window_shadow = v.popup_shadow;
 
     let w = &mut v.widgets;
+    // One edge's width, a whole point, in every state: egui pads a button by
+    // its padding less its edge, rounded to a whole point, so an edge that
+    // changes or is fractional moves its text.
     for (state, fill, stroke, text) in [
         (&mut w.noninteractive, p.bg, p.line, p.text),
         (&mut w.inactive, p.card, p.line, p.text),
@@ -450,6 +563,64 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
         state.corner_radius = CornerRadius::same(RADIUS);
         state.expansion = 0.0;
     }
-    w.active.bg_stroke.width = 1.5;
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG 2's contrast of two colours, from 1 to 21.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let luminance = |c: Color32| {
+            let linear = |v: u8| match f32::from(v) / 255.0 {
+                v if v <= 0.040_45 => v / 12.92,
+                v => ((v + 0.055) / 1.055).powf(2.4),
+            };
+            0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn every_themes_text_reads_at_4_5_to_1_on_what_it_is_drawn_on() {
+        let (red, white) = RED_BUTTON;
+        for (i, p) in SHOWN.into_iter().enumerate() {
+            let surfaces = [p.bg, p.card, p.sidebar];
+            let (fill, ink) = p.accent_button();
+            let pairs = [
+                ("text", p.text, &surfaces[..]),
+                ("strong", p.strong, &surfaces[..]),
+                ("dim", p.dim, &surfaces[..]),
+                ("link", p.link(), &surfaces[..2]),
+                ("good text", p.good_text, &surfaces[..2]),
+                ("partial text", p.partial_text, &surfaces[..2]),
+                ("bad text", p.bad_text, &surfaces[..2]),
+                ("a button's text", ink, &[fill][..]),
+                ("a red button's text", white, &[red][..]),
+            ];
+            for (what, ink, on) in pairs {
+                for &surface in on {
+                    let ratio = contrast(ink, surface);
+                    assert!(
+                        ratio >= 4.5,
+                        "palette {i}: {what} {ink:?} on {surface:?}: {ratio:.2}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_palette_a_theme_shows_is_known_by_its_links_colour_alone() {
+        for (choice, ..) in CHOICES {
+            let (dark, light, _) = palettes(choice);
+            for p in [dark, light] {
+                let known: Vec<_> = SHOWN.iter().filter(|s| s.link() == p.link()).collect();
+                assert_eq!(known.len(), 1, "{choice:?}");
+                assert!(*known[0] == p, "{choice:?}");
+            }
+        }
+    }
 }

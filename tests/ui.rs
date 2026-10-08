@@ -3,8 +3,9 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, FOUND, REFUSED, Window, app, app_mut, damaged_read, greaseweazle, line,
-    run_button, squares,
+    DAMAGED, DEFAULT, DETECTED, FOUND, KINDS, REFUSED, SCRATCHED, SPOILT, TRACK_0, WORKBENCH,
+    WRITTEN, Window, akai_report, app, app_mut, damaged_read, detect_reads, every_entry,
+    greaseweazle, held, image_part, line, on_disk, reaching_41, run_button, scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -16,7 +17,8 @@ use ferriteweazle::job::{DETECT, Job, LOG_LINES, Outcome};
 use ferriteweazle::presets::{self, Preset};
 use ferriteweazle::schema::{Port, Schema};
 use ferriteweazle::theme::{self, Choice};
-use ferriteweazle::{App, Drawer, Page, Settings};
+use ferriteweazle::track::{Facts, Id};
+use ferriteweazle::{Analysis, App, Drawer, Media, Page, Settings, Shows};
 
 /// Height in points of the firmware line a connected device adds to the device card.
 const CARD_LINE: f32 = 21.0;
@@ -243,6 +245,7 @@ fn settings_the_run_bars_buttons_and_a_drawers_box_end_on_one_line() {
         run_button(&w, "Read disk"),
         w.get_by_label("CLI"),
         w.get_by_label("Log"),
+        w.get_by_label("Analyse"),
     ];
     for button in buttons {
         assert_eq!(button.rect().bottom(), foot);
@@ -1010,6 +1013,25 @@ fn a_button_in_a_field_shows_its_own_tooltip_alone() {
 }
 
 #[test]
+fn the_drawers_buttons_are_one_width_8_points_apart_and_16_from_the_run_button() {
+    for size in [DEFAULT, ferriteweazle::SMALLEST] {
+        let w = window_at(size, chosen());
+        let buttons = ["CLI", "Log", "Analyse"]
+            .map(|name| w.get_by_role_and_label(Role::Button, name).rect());
+        for pair in buttons.windows(2) {
+            assert_eq!(pair[0].width(), pair[1].width(), "{size:?}: one width");
+            assert_eq!(pair[1].left() - pair[0].right(), 8.0, "{size:?}");
+        }
+        let run = run_button(&w, "Read disk").rect();
+        assert_eq!(buttons[0].left() - run.right(), 16.0, "{size:?}");
+        assert_eq!(run.height(), buttons[0].height(), "{size:?}");
+        // The form's right edge: where Detect ends, beside its field.
+        let edge = w.get_by_label("Detect").rect().right();
+        assert!(buttons[2].right() <= edge, "{size:?}: within the form");
+    }
+}
+
+#[test]
 fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
     let w = window_at(ferriteweazle::SMALLEST, chosen());
     let image_type = image_type(&w).rect();
@@ -1022,6 +1044,13 @@ fn the_smallest_window_keeps_the_page_clear_of_the_status_pane() {
         image_type.width() > 150.0,
         "the fields are squeezed: {image_type:?}"
     );
+    // The run button gives way to the drawers' buttons.
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse").rect();
+    assert!(
+        analyse.right() < status.left(),
+        "the run bar runs under the status pane: {analyse:?}, {status:?}"
+    );
+    assert!(run_button(&w, "Read disk").rect().width() >= 120.0);
 }
 
 #[test]
@@ -1943,20 +1972,192 @@ fn text_dragged_across_the_log_is_copied() {
     w.step();
     w.event(egui::Event::Copy);
     w.step();
-    let copied = w
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .find_map(|c| match c {
-            egui::OutputCommand::CopyText(text) => Some(text.clone()),
-            _ => None,
-        });
-    let copied = copied.expect("something was copied");
+    let copied = copied(&w).expect("something was copied");
     assert!(
         copied.contains("Write Bandwidth:") && copied.contains("Read Bandwidth:"),
         "{copied:?}"
     );
+}
+
+/// The right-click menu of the line `text`, where it shows first: its
+/// Copy, the one nearest the pointer, not the box's own.
+fn copy_item<'w>(w: &'w mut Window, text: &str) -> Node<'w> {
+    let at = w
+        .get_all_by_label(text)
+        .next()
+        .expect("the line")
+        .rect()
+        .left_center()
+        + egui::vec2(20.0, 0.0);
+    right_click(w, at);
+    let far = |n: &Node| (n.rect().center() - at).length() as u32;
+    w.get_all_by_role_and_label(Role::Button, "Copy")
+        .min_by_key(far)
+        .expect("the menu's Copy")
+}
+
+/// Selects all the lines of the box the line `text` is in, from its menu.
+fn select_all(w: &mut Window, text: &str) {
+    copy_item(w, text);
+    w.get_by_label("Select All").click();
+    w.run();
+}
+
+#[test]
+fn a_selection_is_let_go_once_its_lines_are_gone_from_the_log_or_an_output_box() {
+    let mut w = window(Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    });
+    // All of a read's lines selected, then cleared, and a shorter job's
+    // lines in their place.
+    let mut job = Job::replay("read", WORKBENCH);
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw read Workbench.adf".into(), &mut job);
+    log.end(&mut job, "Done in 0:42.".into());
+    w.run();
+    select_all(&mut w, "Done in 0:42.");
+    let copy = copy_item(&mut w, "Done in 0:42.");
+    assert!(!copy.accesskit_node().is_disabled());
+    // Escape shuts the menu, and leaves the selection.
+    w.key_press(egui::Key::Escape);
+    w.run();
+    assert!(w.query_by_label("Select All").is_none());
+    let copy = copy_item(&mut w, "Done in 0:42.");
+    assert!(!copy.accesskit_node().is_disabled());
+    w.key_press(egui::Key::Escape);
+    w.run();
+    w.get_by_role_and_label(Role::Button, "Clear").click();
+    w.run();
+    let mut job = Job::replay("bandwidth", BANDWIDTH);
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw bandwidth".into(), &mut job);
+    log.follow(&mut job);
+    w.run();
+    // The read's lines are gone, and the selection with them.
+    let copy = copy_item(&mut w, " -> Min. Ave. Flux: 1.289 us");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+
+    // A page's own box, its job's lines all selected, then another job's.
+    let mut w = window(Settings {
+        page: Page::Command("bandwidth".into()),
+        ..Settings::default()
+    });
+    app_mut(&mut w).tool = Some(Job::replay("bandwidth", BANDWIDTH));
+    w.run();
+    select_all(&mut w, " -> Min. Ave. Flux: 1.289 us");
+    app_mut(&mut w).tool = Some(Job::replay("bandwidth", "Write Bandwidth: 7.66"));
+    w.run();
+    let copy = copy_item(&mut w, "Write Bandwidth: 7.66");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+}
+
+#[test]
+fn a_double_click_in_the_log_selects_a_word_a_triple_its_line_and_escape_neither() {
+    // Frames a 60th of a second apart, as a double click's presses are.
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..Settings::default()
+    };
+    let mut w = build(builder, settings, None);
+    let mut job = Job::replay("bandwidth", "Write Bandwidth:  7.66\nRead Bandwidth:  8.15");
+    let log = &mut app_mut(&mut w).log;
+    log.begin("gw bandwidth".into(), &mut job);
+    log.follow(&mut job);
+    w.run();
+    // Within "Bandwidth", the line's 7th to 15th characters, each a fixed width.
+    let line = w.get_by_label("Write Bandwidth:  7.66").rect();
+    let font = egui::TextStyle::Monospace.resolve(&w.ctx.global_style());
+    let advance = w.ctx.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let at = egui::pos2(line.left() + 9.5 * advance, line.center().y);
+    let clicks = |w: &mut Window, n: usize| {
+        w.hover_at(at);
+        w.step();
+        for _ in 0..n {
+            for pressed in [true, false] {
+                w.event(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            w.step();
+        }
+        w.event(egui::Event::Copy);
+        w.step();
+        copied(w)
+    };
+    assert_eq!(clicks(&mut w, 2).as_deref(), Some("Bandwidth"));
+    // A pause, then three: the line, to the next.
+    w.run();
+    assert_eq!(
+        clicks(&mut w, 3).as_deref(),
+        Some("Write Bandwidth:  7.66\n")
+    );
+    // Escape lets go of it, and the box keeps the keyboard.
+    w.key_press(egui::Key::Escape);
+    w.run();
+    w.event(egui::Event::Copy);
+    w.step();
+    assert_eq!(copied(&w), None);
+    let copy = copy_item(&mut w, "Write Bandwidth:  7.66");
+    assert!(copy.accesskit_node().is_disabled(), "nothing selected");
+}
+
+#[test]
+fn a_parts_window_shuts_once_the_image_or_what_the_part_holds_is_another() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let open = |w: &mut Window, image| {
+        app_mut(w).pin_image(image);
+        w.run();
+    };
+    let window = |w: &Window| {
+        w.query_by_role_and_label(Role::Label, "Sector 3 · cylinder 18, side 0")
+            .is_some()
+    };
+    let mut w = start(Harness::builder().with_size(DEFAULT), settings, None);
+    open(&mut w, scratched_adf());
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    let opened = |w: &mut Window| {
+        let at = image_part(w, 80, 11)(36, 3);
+        w.drag_at(at);
+        w.run();
+        w.drop_at(at);
+        w.run();
+        assert!(window(w));
+    };
+    opened(&mut w);
+    // The file as gw opens it again: the window stays.
+    open(&mut w, scratched_adf());
+    assert!(window(&w));
+    // Another file with the same bytes: the window was the first file's.
+    let mut other = scratched_adf();
+    other.file = Some("/Users/you/Floppies/Other.adf".into());
+    open(&mut w, other);
+    assert!(!window(&w));
+    // The file, written over since: what the part holds is another's.
+    open(&mut w, scratched_adf());
+    opened(&mut w);
+    let mut since = scratched_adf();
+    let content = since.content.as_mut().unwrap();
+    content[0x31E00] = 0;
+    open(&mut w, since);
+    assert!(!window(&w));
 }
 
 #[test]
@@ -2060,7 +2261,8 @@ fn a_square_fades_in_as_its_track_is_read_then_the_window_rests() {
 #[test]
 fn a_written_track_fades_to_green_as_it_verifies_then_the_window_rests() {
     let mut job = Job::replay("write", "Writing c=0-1:h=0");
-    job.progress.verifies = true;
+    // As the bridge reports it, before gw says it writes the track.
+    job.progress.verify(r#"{"c":0,"h":0,"verifies":true}"#);
     job.progress.feed("T0.0: Writing Track (Flux: 1)");
     let builder = Harness::builder()
         .with_size(DEFAULT)
@@ -2115,6 +2317,409 @@ fn detects_tracks_fade_in_as_it_reads_them() {
         start != lit && between != start && between != lit,
         "it lit at once: {start:?}, {between:?}, {lit:?}"
     );
+}
+
+#[test]
+fn detects_tracks_open_as_the_format_it_found_decodes_them() {
+    let mut job = Job::replay(DETECT, DETECTED);
+    job.page = "read".into();
+    assert_eq!(job.progress.facts.len(), 3, "each track it read");
+    let facts = &job.progress.facts[&(0, 0)];
+    assert_eq!(facts.summary.as_deref(), Some("AmigaDOS (11/11 sectors)"));
+    let first = &facts.sectors[0];
+    let Id::Number(n) = first.id else {
+        panic!("an AmigaDOS sector")
+    };
+    let [start, _, end] = first.at.expect("a place");
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..chosen()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.get_by_label("Cylinder 0 · side 0");
+    w.get_by_label("AmigaDOS (11/11 sectors)");
+    // Its data's size unknown: the recording keeps none of it.
+    w.get_by_label(&format!("Sector {n}"));
+    // A click opens it, as a read's does.
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 0, side 0"));
+}
+
+/// The middle of sector `i` of a job's track 0.0, as a share of a revolution.
+fn middle(job: &Job, i: usize) -> f32 {
+    let [start, _, end] = job.progress.facts[&(0, 0)].sectors[i].at.expect("a place");
+    (start + end) / 2.0
+}
+
+/// Where the label `text` lies under the disks, in their legend: a label's
+/// text, or the value a legend's entry holds it in.
+fn in_disks_legend(w: &Window, text: &str) -> egui::Rect {
+    let map = w.get_by_label("Disk map").rect();
+    let named = |n: &egui_kittest::Node<'_>| {
+        let node = n.accesskit_node();
+        node.label().as_deref() == Some(text) || node.value().as_deref() == Some(text)
+    };
+    let mut found = w
+        .get_all_by_role(Role::Label)
+        .filter(|n| named(n) && n.rect().top() >= map.bottom() - 1.0);
+    let r = found
+        .next()
+        .unwrap_or_else(|| panic!("{text} not in the disks' legend"))
+        .rect();
+    assert!(found.next().is_none(), "{text} twice");
+    r
+}
+
+#[test]
+fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smallest_window() {
+    let small = ferriteweazle::SMALLEST;
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = start(
+        Harness::builder().with_size(small),
+        settings,
+        Some(every_entry()),
+    );
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    let id = least_drawer(&mut w);
+    let drawer = egui::PanelState::load(&w.ctx, id).unwrap().outer_rect;
+    let legend: Vec<(&str, egui::Rect)> = [
+        "Good 1183",
+        "Empty 1062",
+        "Deleted 1062",
+        "Bad data 1062",
+        "Bad header 1062",
+        "Incomplete 2124",
+        "ID field",
+        "Sectors meet",
+        "No sector found",
+        "Sectors missing 118 tracks",
+        "Bad 1 track",
+        "Flux 1 track",
+        "Not known 1 track",
+        "To do 38 tracks",
+        "Last reported",
+        "1187 missing",
+        "236 share an ID",
+        "1 retry",
+    ]
+    .map(|entry| (entry, in_disks_legend(&w, entry)))
+    .into();
+    // Disks this small have no room in their rim for the index's mark.
+    assert!(w.query_by_label("Index").is_none(), "no index's mark drawn");
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, small);
+    for (i, (name, r)) in legend.iter().enumerate() {
+        assert!(
+            drawer.contains_rect(*r) && window.contains_rect(*r),
+            "{name} at {r:?}, the drawer {drawer:?}"
+        );
+        for (other, s) in &legend[i + 1..] {
+            assert!(
+                r.intersect(*s).area() <= 0.0,
+                "{name} over {other}: {r:?}, {s:?}"
+            );
+        }
+    }
+    // The disks above it, drawn.
+    let map = w.get_by_label("Disk map").rect();
+    assert!(map.height() > 48.0 && drawer.contains_rect(map), "{map:?}");
+    // The Flux view's, with the same disk.
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.run_steps(4);
+    for entry in [
+        "More flux",
+        "Not known 1 track",
+        "To do 38 tracks",
+        "Last reported",
+        "1 retry",
+    ] {
+        let r = in_disks_legend(&w, entry);
+        assert!(
+            drawer.contains_rect(r),
+            "{entry} at {r:?}, the drawer {drawer:?}"
+        );
+    }
+}
+
+#[test]
+fn every_entry_of_the_grids_legend_fits_under_its_squares_in_the_smallest_window() {
+    // Every status the grid colours a track with, at once, and a retry.
+    let mut log = vec!["Reading c=0-79:h=0-1 revs=2".to_owned()];
+    let lines = [
+        (
+            100,
+            "IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (
+            20,
+            "IBM MFM (5/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (
+            10,
+            "IBM MFM (0/9 sectors) from Raw Flux (100000 flux in 400.00ms)",
+        ),
+        (10, "Raw Flux (100000 flux in 400.00ms)"),
+        (10, "Writing Track (Raw Flux)"),
+        (5, "Erasing Track"),
+        (
+            5,
+            "WARNING: Out of range for format 'ibm.1440': Track skipped",
+        ),
+    ];
+    let mut track = 0;
+    for (n, line) in lines {
+        for _ in 0..n {
+            log.push(format!("T{}.{}: {line}", track / 2, track % 2));
+            track += 1;
+        }
+    }
+    // A retry, at once after the track's first read, as gw prints it.
+    log.insert(
+        2,
+        "T0.1: IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms) (Retry #1.1)".into(),
+    );
+    let small = ferriteweazle::SMALLEST;
+    let settings = Settings {
+        drawer: None,
+        ..chosen()
+    };
+    let job = Job::replay("read", &log.join("\n"));
+    let w = build(Harness::builder().with_size(small), settings, Some(job));
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, small);
+    let legend: Vec<(&str, egui::Rect)> = [
+        "Good 100",
+        "Sectors missing 20",
+        "Bad 10",
+        "Flux 10",
+        "Written 10",
+        "Erased 5",
+        "Skipped 5",
+        "1 retry",
+    ]
+    .map(|entry| (entry, w.get_by_label(entry).rect()))
+    .into();
+    let bottom = squares(&w).map(|s| s.rect.bottom()).fold(0.0, f32::max);
+    for (i, (name, r)) in legend.iter().enumerate() {
+        assert!(window.contains_rect(*r), "{name} at {r:?}");
+        assert!(bottom < r.top(), "{name} under a square at {bottom}");
+        for (other, s) in &legend[i + 1..] {
+            assert!(
+                r.intersect(*s).area() <= 0.0,
+                "{name} over {other}: {r:?}, {s:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tracks_with_sectors_missing_are_named_so_on_the_grid_and_on_the_disks() {
+    // The scratch cut into side 0, cylinders 18 to 62: 55 sectors not read.
+    let disks = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let w = build(Harness::builder().with_size(DEFAULT), disks, Some(job));
+    w.get_by_label("Sectors missing 45 tracks");
+    w.get_by_label("55 missing");
+    let grid = Settings {
+        drawer: None,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let w = build(Harness::builder().with_size(DEFAULT), grid, Some(job));
+    w.get_by_label_contains("Sectors missing 45");
+    assert!(w.query_by_label_contains("Short").is_none());
+}
+
+#[test]
+fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out() {
+    let job = Job::replay("convert", KINDS);
+    let (r2, r7) = (middle(&job, 1), middle(&job, 6));
+    let settings = Settings {
+        media: Media::ThreeHalf,
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // R1, the R7s and R8 good; R2 deleted; R3 and R4 with data that fails;
+    // R5 and R6 headers with no data; the R7s one ID.
+    for entry in [
+        "Good 4",
+        "Deleted 1",
+        "Bad data 2",
+        "Incomplete 2",
+        "2 share an ID",
+    ] {
+        w.get_by_label(entry);
+    }
+    assert!(w.query_by_label_contains("Bad header").is_none());
+    let r2_at = on_disk(&w, TRACK_0, 90.0 - 360.0 * r2);
+    w.hover_at(r2_at);
+    w.run();
+    w.get_by_label("Sector C0 H0 R2 N2 · 512 bytes");
+    w.get_by_label("Header OK · Data OK · Mark F8 (deleted)");
+    // R5's header's CRC fails: its R is not known for sure.
+    w.get_by_label("Order: 1 2 3 4 ? 6 7 7 8");
+    w.get_by_label("ID repeated: R7 ×2");
+    // Not the disk's turns: nothing of revolutions.
+    assert!(w.query_by_label_contains("revolution").is_none());
+    // Sectors: what gw read, its first bytes, and not where it lies.
+    w.get_by_label_contains("0000  ");
+    for elsewhere in ["bytes from the index", "after the ID", "At ", "Click for"] {
+        assert!(
+            w.query_by_label_contains(elsewhere).is_none(),
+            "{elsewhere}"
+        );
+    }
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.hover_at(r2_at);
+    w.run();
+    w.get_by_label("Header OK · Data OK · Mark F8 (deleted)");
+    w.get_by_label("Order: 1 2 3 4 ? 6 7 7 8");
+    // As gw writes an EDSK's track: gap 3, 40 bytes, and 12 of 00.
+    w.get_by_label("772 bytes from the index · 52 bytes after R1");
+    w.get_by_label_contains(", 34 bytes after the ID");
+    w.get_by_label_contains("At ");
+    for sectors_only in ["0000  ", "Click for"] {
+        assert!(
+            w.query_by_label_contains(sectors_only).is_none(),
+            "{sectors_only}"
+        );
+    }
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r7));
+    w.run();
+    w.get_by_label_contains("Its ID also at ");
+}
+
+#[test]
+fn a_sectors_tip_says_how_gw_read_it_in_each_revolution_of_the_disk() {
+    let job = Job::replay("convert", SPOILT);
+    let r1 = middle(&job, 0);
+    let settings = Settings {
+        media: Media::ThreeHalf,
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let r1_at = on_disk(&w, TRACK_0, 90.0 - 360.0 * r1);
+    w.hover_at(r1_at);
+    w.run();
+    // gw keeps the good copy; the second revolution spoilt its data.
+    w.get_by_label("Header OK · Data OK · Mark FB");
+    w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
+    // The track's flux is Flux's to say.
+    for flux in ["Flux intervals", "flux/rev", "rpm"] {
+        assert!(w.query_by_label_contains(flux).is_none(), "{flux}");
+    }
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.hover_at(r1_at);
+    w.run();
+    w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
+    // An SCP's 25 ns ticks, two to a bin.
+    w.get_by_label("Flux intervals in µs, bins of 50.0 ns");
+    w.get_by_label_contains("flux/rev");
+    w.get_by_label_contains(" rpm");
+}
+
+#[test]
+fn a_detect_that_finds_no_format_shows_the_flux_it_read_whatever_the_pages_format() {
+    // The three tracks Detect read, and no format that reads them all.
+    let read = detect_reads();
+    let failed = read
+        + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n"
+        + "** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full.";
+    let mut job = Job::replay(DETECT, &failed);
+    job.page = "read".into();
+    assert_eq!(job.format, None);
+    // The page has a format of its own.
+    let mut w = build(Harness::builder().with_size(DEFAULT), chosen(), Some(job));
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Disk map");
+    let facts = &app(&w).disk.as_ref().unwrap().progress.facts;
+    assert!(facts.len() == 3 && facts.values().all(|f| f.flux.is_some()));
+    // Counted as tracks, where the legend's other counts are of sectors.
+    w.get_by_label("Flux 3 tracks");
+}
+
+#[test]
+fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
+    // A write, its disks' flux shown, the drawer pulled down to its least.
+    let settings = Settings {
+        page: Page::Command("write".into()),
+        drawer: Some(Drawer::Analyse),
+        shows: Shows::Flux,
+        ..chosen()
+    };
+    let lines: Vec<&str> = WRITTEN.lines().collect();
+    // gw's lines so far, taken as a running job takes them.
+    let running = |n: usize| {
+        let mut job = Job::replay("write", "");
+        job.ended = None;
+        for line in &lines[..n] {
+            match line.split_once(' ') {
+                Some(("@ferriteweazle", rest)) => match rest.split_once(' ') {
+                    Some(("track", report)) => job.progress.report(report),
+                    Some(("image", report)) => job.progress.image(report),
+                    Some(("verify", report)) => job.progress.verify(report),
+                    _ => {}
+                },
+                _ => job.progress.feed(line),
+            }
+        }
+        job
+    };
+    let mut w = start(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(running(40)),
+    );
+    w.run_steps(4);
+    least_drawer(&mut w);
+    let disks = |w: &Window| w.get_by_label("Disk map").rect().size();
+    let first = disks(&w);
+    for n in 40..120 {
+        app_mut(&mut w).disk = Some(running(n));
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        assert_eq!(disks(&w), first, "after {n} lines");
+        // The track gw is writing is to do until gw says it is written.
+        assert!(
+            w.query_by_label_contains("Not known").is_none(),
+            "after {n} lines"
+        );
+    }
+}
+
+#[test]
+fn the_disks_legend_counts_tracks_to_do_as_tracks() {
+    let running = reaching_41("read", WORKBENCH);
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = start(
+        Harness::builder().with_size(DEFAULT),
+        settings,
+        Some(running),
+    );
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label_contains("Good ");
+    w.get_by_label("To do 77 tracks");
 }
 
 #[test]
@@ -3056,6 +3661,81 @@ fn the_greaseweazle_theme_is_dark_in_the_boards_purple() {
 }
 
 #[test]
+fn the_pcb_green_theme_is_dark_in_a_boards_green_with_gold_and_a_green_console() {
+    let mut w = settings_from(Choice::Dark, Harness::builder());
+    let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
+    let after = w.get_by_label("Greaseweazle v4.1").rect();
+    assert!(after.right() < w.get_by_label("PCB Green").rect().left());
+    w.get_by_label("PCB Green").click();
+    w.run();
+    assert_eq!(visuals(&w).panel_fill, theme::PCB_GREEN.bg);
+    assert_eq!(visuals(&w).hyperlink_color, theme::PCB_GREEN.accent);
+    assert_eq!(app(&w).settings.theme, Choice::PcbGreen);
+    let log = window(Settings {
+        theme: Choice::PcbGreen,
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    });
+    assert!(on_black(&log, theme::VINTAGE.console.unwrap()));
+}
+
+#[test]
+fn every_themes_button_fits_settings_at_the_smallest_window() {
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    let small = ferriteweazle::SMALLEST;
+    let w = build(Harness::builder().with_size(small), settings, None);
+    let first = w.get_by_label("System").rect();
+    for (choice, name, ..) in theme::CHOICES {
+        // Blue is Classic in the accent it starts in, in Classic's menu.
+        if choice != Choice::Blue {
+            let button = w.get_by_label(name).rect();
+            assert_eq!(button.top(), first.top(), "{name} on a row of its own");
+            // Clear of the page's scroll bar, 20 points at its right.
+            assert!(button.right() <= small.x - 20.0, "{name} at {button:?}");
+        }
+    }
+}
+
+#[test]
+fn the_stop_button_is_one_red_in_every_theme_its_text_white() {
+    let mut w = window(Settings {
+        page: Page::Command("clean".into()),
+        ..Settings::default()
+    });
+    let mut job = Job::replay("clean", "");
+    job.ended = None;
+    app_mut(&mut w).tool = Some(job);
+    let (red, white) = theme::RED_BUTTON;
+    for (choice, ..) in theme::CHOICES {
+        theme::apply(&w.ctx, choice);
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        let stop = w.get_by_role_and_label(Role::Button, "Stop").rect();
+        let shapes = &w.output().shapes;
+        let filled = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => r.fill == red && r.rect.contains_rect(stop.shrink(1.0)),
+            _ => false,
+        });
+        assert!(filled, "{choice:?}");
+        let named = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                t.galley.text() == "Stop"
+                    && t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|s| s.format.color == white)
+            }
+            _ => false,
+        });
+        assert!(named, "{choice:?}: its text");
+    }
+}
+
+#[test]
 fn the_classic_theme_is_light_in_90s_gui_grey_blue_at_first_and_keeps_its_accent() {
     let mut w = settings_from(Choice::Light, Harness::builder());
     let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
@@ -3187,16 +3867,57 @@ fn the_vintage_themes_links_are_blue_and_its_selections_stay_slate() {
         _ => false,
     };
     assert!(w.output().shapes.iter().any(slate));
-    // Every other theme's links are its accent, as before.
+    // Classic's are its teal deepened, to read on the grey; every other
+    // theme's are its accent.
+    assert_ne!(theme::CLASSIC.link(), theme::CLASSIC.accent);
     for other in [
         &theme::LIGHT,
         &theme::DARK,
-        &theme::CLASSIC,
         &theme::BLUE,
         &theme::GREASEWEAZLE,
+        &theme::PCB_GREEN,
     ] {
         assert_eq!(other.link(), other.accent);
     }
+}
+
+#[test]
+fn a_chosen_choice_says_so_in_the_strong_text_or_classics_white_on_its_accent() {
+    let named = theme::CHOICES.iter().filter(|c| c.0 != Choice::System);
+    for &(choice, name, ..) in named {
+        let w = settings_from(choice, Harness::builder());
+        // Blue is Classic in the accent it starts in, chosen as Classic.
+        let name = if choice == Choice::Blue {
+            "Classic"
+        } else {
+            name
+        };
+        let p = palette_of(&w);
+        let ink = if p.classic { p.on_accent } else { p.strong };
+        // A button's plain text takes the colour its shape falls back on.
+        let chosen = w.output().shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => t.galley.text() == name && t.fallback_color == ink,
+            _ => false,
+        });
+        assert!(chosen, "{choice:?}");
+    }
+}
+
+/// The palette the window shows, as theme::palette() finds it: by its links' colour.
+fn palette_of(w: &Window) -> &'static theme::Palette {
+    let link = w.ctx.style_of(w.ctx.theme()).visuals.hyperlink_color;
+    let all = [
+        &theme::LIGHT,
+        &theme::DARK,
+        &theme::GREASEWEAZLE,
+        &theme::PCB_GREEN,
+        &theme::CLASSIC,
+        &theme::BLUE,
+        &theme::VINTAGE,
+    ];
+    all.into_iter()
+        .find(|p| p.link() == link)
+        .expect("a theme's palette")
 }
 
 /// Whether gw's command line shows in `text` in a black box.
@@ -3269,10 +3990,10 @@ fn the_greaseweazle_theme_draws_every_scroll_bar_in_its_texts_white() {
     w.hover_at(egui::pos2(0.0, 0.0));
     w.run();
     assert_eq!(handles(&w, 2.0, white), 1);
-    // Dark's are faint: the Log's its lines' grey, the page's its text's at 0.6.
+    // Dark's are faint, the Log's as the page's: its text's colour at 0.6.
     let w = scrolled(Choice::Dark);
-    let (grey, faint) = (theme::DARK.line, theme::DARK.text.gamma_multiply(0.6));
-    assert_eq!((handles(&w, 6.0, grey), handles(&w, 2.0, faint)), (2, 1));
+    let faint = theme::DARK.text.gamma_multiply(0.6);
+    assert_eq!((handles(&w, 6.0, faint), handles(&w, 2.0, faint)), (2, 1));
 }
 
 /// The colour the last frame drew `text` in.
@@ -3864,5 +4585,1498 @@ fn revolutions_ends_halfway_along_disk_format_at_the_default_size() {
     assert!(
         (revs.right() - format.center().x).abs() < 0.5,
         "{revs:?} under {format:?}"
+    );
+}
+
+#[test]
+fn analyse_is_greyed_with_the_status_panes_line_until_it_has_a_disk_to_show() {
+    let mut w = window(chosen());
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No disk read yet").count(),
+        2,
+        "the status pane's line, and the button's"
+    );
+}
+
+#[test]
+fn analyse_greyed_on_a_write_or_a_conversion_says_an_image_would_show_too() {
+    for (page, said, status) in [
+        (
+            "write",
+            "No disk written or image chosen yet",
+            "No disk written yet",
+        ),
+        (
+            "convert",
+            "No image chosen or converted yet",
+            "No image converted yet",
+        ),
+    ] {
+        let mut w = window(Settings {
+            page: Page::Command(page.into()),
+            ..chosen()
+        });
+        let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+        assert!(analyse.accesskit_node().is_disabled(), "{page}");
+        analyse.hover();
+        w.run();
+        w.get_by_label(said);
+        w.get_by_label(status);
+    }
+}
+
+#[test]
+fn analyse_shows_the_disk_under_the_page_and_the_status_pane_leaves_out_its_grid() {
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_max_steps(8);
+    let mut w = build(builder, chosen(), Some(Job::replay("read", WORKBENCH)));
+    assert!(squares(&w).count() > 0, "the grid, with no drawer open");
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert_eq!(app(&w).settings.drawer, Some(Drawer::Analyse));
+    let map = w.get_by_label("Disk map").rect();
+    let status = w.get_by_label("Disk status").rect();
+    assert!(map.left() < status.left() && map.right() > status.left());
+    assert!(
+        map.top() > status.bottom(),
+        "under the page and the status pane"
+    );
+    assert_eq!(squares(&w).count(), 0, "no grid while the disk shows below");
+    // Each side's disk under its name, painted in the map.
+    let named = |text: &str| {
+        w.output().shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => t.galley.text() == text && map.contains(t.pos),
+            _ => false,
+        })
+    };
+    assert!(
+        named("Side 0") && named("Side 1"),
+        "each side under its name"
+    );
+    let size = w
+        .get_all_by_role(Role::ComboBox)
+        .find(|c| c.value().is_some_and(|v| v == "Fit"))
+        .expect("the disk's size");
+    size.click();
+    w.run();
+    // gw's Amiga format has 80 cylinders: a 3½-inch disk holds them, a
+    // 48 TPI one, by ECMA-70, 45.
+    let disabled = |w: &Window, name: &str| w.get_by_label(name).accesskit_node().is_disabled();
+    assert!(disabled(&w, "5¼-inch, 48 TPI"));
+    assert!(!disabled(&w, "3½-inch, 135 TPI"));
+    w.get_by_label("3½-inch, 135 TPI").click();
+    w.run();
+    assert_eq!(app(&w).settings.media, Media::ThreeHalf);
+    w.get_by_label("Flux").click();
+    w.run();
+    assert_eq!(app(&w).settings.shows, Shows::Flux);
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert!(w.query_by_label("Disk map").is_none());
+    assert!(squares(&w).count() > 0, "the grid is back");
+}
+
+/// A conversion of cylinders 0 and 1 from an image, with the bridge's
+/// reports on the tracks gw took from it, `reports`.
+fn converted_from(reports: &[serde_json::Value]) -> Job {
+    let mut job = Job::replay("convert", "Converting c=0-1:h=0-1 -> c=0-1:h=0-1");
+    for report in reports {
+        job.progress.report(&report.to_string());
+    }
+    job
+}
+
+/// An IBM-style track of an image, as the bridge reports it: two sectors
+/// laid out by the format's bit cells, no flux.
+fn ibm_image_track(c: u32) -> serde_json::Value {
+    let sector = |r: u8, start: u32| {
+        serde_json::json!({"id": [c, 0, r, 2], "start": start, "header_end": start + 100,
+            "data_start": start + 200, "end": start + 4400, "header": true, "data": true,
+            "mark": 251, "bytes": "00ff00ff"})
+    };
+    serde_json::json!({"c": c, "h": 0, "codec": {"summary": "IBM MFM (2/2 sectors)",
+        "nsec": 2, "good": [0, 1], "time_per_rev": 0.2, "clock": 2e-6,
+        "found": [sector(1, 100), sector(2, 50_000)]}})
+}
+
+#[test]
+fn analyse_greys_flux_with_why_where_no_track_has_any_and_shows_the_sectors() {
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        shows: Shows::Flux,
+        ..Settings::default()
+    };
+    let job = converted_from(&[ibm_image_track(0), ibm_image_track(1)]);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let flux = w.get_by_role_and_label(Role::Button, "Flux");
+    assert!(flux.accesskit_node().is_disabled());
+    flux.hover();
+    w.run();
+    w.get_by_label("No flux reported.");
+    // The sectors show, as the image lays them out.
+    w.get_by_label("Good 4");
+    assert_eq!(app(&w).settings.shows, Shows::Flux, "kept for flux");
+    // And their tooltip is Sectors': the first bytes, not where it lies.
+    let r1 = middle(app(&w).disk.as_ref().unwrap(), 0);
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r1));
+    w.run();
+    w.get_by_label_contains("0000  00 FF 00 FF");
+    assert!(w.query_by_label_contains("At ").is_none());
+}
+
+#[test]
+fn analyse_draws_a_track_not_in_the_image_as_bare_disk_and_says_so() {
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let absent = serde_json::json!({"c": 1, "h": 0, "absent": true});
+    let job = converted_from(&[ibm_image_track(0), absent]);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // Track 1's centreline, a track in from track 0's, by ECMA-125.
+    w.hover_at(on_disk(&w, (39.5 - 0.1875) / 42.9, 90.0));
+    w.run();
+    w.get_by_label("Cylinder 1 · side 0");
+    w.get_by_label("Not in the input, so Greaseweazle Tools passed over it.");
+    assert!(w.query_by_label_contains("To do").is_none());
+}
+
+/// How many disk pictures the window keeps.
+fn pictures(w: &Window) -> usize {
+    let textures = w.ctx.tex_manager();
+    let textures = textures.read();
+    textures
+        .allocated()
+        .filter(|(_, t)| t.name == "disk")
+        .count()
+}
+
+#[test]
+fn analyse_lets_go_of_its_pictures_and_its_sector_window_when_it_is_not_drawn() {
+    let line = akai_report();
+    let [start, _, end] = Facts::parse(line).unwrap().1.sectors[0].at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert_eq!(pictures(&w), 2, "a side each");
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    let title = "C0 H0 R7 N3 · cylinder 0, side 0";
+    let window = |w: &Window| w.query_by_role_and_label(Role::Label, title).is_some();
+    assert!(window(&w), "the sector's window");
+    // Shut, it lets go of its pictures, and the sector's window goes too.
+    app_mut(&mut w).settings.drawer = None;
+    w.run();
+    assert_eq!(pictures(&w), 0);
+    assert!(!window(&w));
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    assert_eq!(pictures(&w), 2);
+    assert!(!window(&w), "not back with the drawer");
+    // Showing the image a conversion makes, it lets go of the disks'.
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    assert_eq!(pictures(&w), 2);
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
+        .click();
+    w.run();
+    assert_eq!(pictures(&w), 0);
+}
+
+/// A texture's update: which, and where in it, None for the whole.
+type Update = (egui::TextureId, Option<[usize; 2]>);
+
+/// A renderer that renders nothing, and notes each texture's updates.
+#[derive(Clone, Default)]
+struct Noted(std::sync::Arc<std::sync::Mutex<Vec<Update>>>);
+
+impl TestRenderer for Noted {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        let mut noted = self.0.lock().unwrap();
+        for (&id, deltas) in &delta.set {
+            noted.extend(deltas.iter().map(|d| (id, d.pos)));
+        }
+        delta.clear();
+    }
+
+    fn render(
+        &mut self,
+        _: &egui::Context,
+        _: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        Err("no renderer".into())
+    }
+}
+
+#[test]
+fn analyse_paints_a_track_reported_anew_into_its_picture_in_place() {
+    // The read as gw has read track 41.1, the bridge's report to come.
+    let next = |l: &str| l.starts_with(r#"@ferriteweazle track {"c":41,"h":1,"#);
+    let reached: String = WORKBENCH
+        .split_inclusive('\n')
+        .take_while(|l| !next(l))
+        .collect();
+    let mut running = Job::replay("read", &reached);
+    running.ended = None;
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let noted = Noted::default();
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .renderer(noted.clone());
+    let mut w = start(builder, settings, Some(running));
+    w.run_steps(4);
+    let report = WORKBENCH.lines().find(|l| next(l)).unwrap();
+    let report = report.strip_prefix("@ferriteweazle track ").unwrap();
+    let job = app_mut(&mut w).disk.as_mut().unwrap();
+    job.progress.report(report);
+    noted.0.lock().unwrap().clear();
+    w.step();
+    let disks: Vec<egui::TextureId> = {
+        let textures = w.ctx.tex_manager();
+        let textures = textures.read();
+        let disks = textures.allocated().filter(|(_, t)| t.name == "disk");
+        disks.map(|(&id, _)| id).collect()
+    };
+    let noted = noted.0.lock().unwrap();
+    let painted: Vec<_> = noted.iter().filter(|(id, _)| disks.contains(id)).collect();
+    assert_eq!(painted.len(), 1, "side 1's");
+    // Into the texture it has: only the rows of pixels the track reaches.
+    let into = painted[0].1;
+    assert!(matches!(into, Some([0, y]) if y > 0), "{into:?}");
+}
+
+#[test]
+fn analyse_paints_its_disks_at_a_new_size_once_that_holds() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let noted = Noted::default();
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(64)
+        .renderer(noted.clone());
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    let disks: Vec<egui::TextureId> = {
+        let textures = w.ctx.tex_manager();
+        let textures = textures.read();
+        let disks = textures.allocated().filter(|(_, t)| t.name == "disk");
+        disks.map(|(&id, _)| id).collect()
+    };
+    // Whole pictures painted since the last asked, as disk and size.
+    let whole = |noted: &Noted| {
+        let mut noted = noted.0.lock().unwrap();
+        let n = (noted.iter())
+            .filter(|(id, pos)| disks.contains(id) && pos.is_none())
+            .count();
+        noted.clear();
+        n
+    };
+    // The drawer's edge, along the top of its box.
+    let map = w.get_by_label("Disk map").rect();
+    let drawer = w.output().shapes.iter().find_map(|c| match &c.shape {
+        egui::Shape::Rect(r) if r.rect.contains_rect(map) && r.rect.left() > 0.0 => Some(r.rect),
+        _ => None,
+    });
+    let drawer = drawer.expect("the drawer's box");
+    let edge = egui::pos2(drawer.center().x, drawer.top() + 1.0);
+    // A while after the disks were painted.
+    w.run_steps(12);
+    w.hover_at(edge);
+    w.step();
+    w.drag_at(edge);
+    w.step();
+    whole(&noted);
+    // Dragged down two points a frame for a third of a second: painted at the
+    // first new size, then not until the size holds or the drag ends.
+    let mut sizes = Vec::new();
+    for down in 1..=20 {
+        w.hover_at(edge + egui::vec2(0.0, down as f32 * 2.0));
+        w.step();
+        sizes.push(w.get_by_label("Disk map").rect().height());
+    }
+    assert!(
+        sizes.windows(2).filter(|s| s[0] != s[1]).count() > 10,
+        "{sizes:?}"
+    );
+    assert_eq!(whole(&noted), 2, "the first, a disk each");
+    w.drop_at(edge + egui::vec2(0.0, 40.0));
+    w.step();
+    assert_eq!(whole(&noted), 2, "at its size as the drag ends");
+}
+
+#[test]
+fn a_legend_gaining_a_row_makes_the_drawer_taller_at_once_the_disks_as_they_were() {
+    // Narrower than the window can be, so that one entry more takes a second
+    // row: how the drawer meets a legend that grows, whatever its width.
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut job = Job::replay("read", WORKBENCH);
+    job.ended = None;
+    let builder = Harness::builder().with_size(egui::vec2(720.0, 780.0));
+    let mut w = start(builder, settings, Some(job));
+    w.run_steps(6);
+    let (map, good) = (
+        w.get_by_label("Disk map").rect(),
+        w.get_by_label("Good 1760").rect(),
+    );
+    app_mut(&mut w).disk.as_mut().unwrap().progress.current = Some((41, 0));
+    w.step();
+    let last = w.get_by_label("Last reported").rect();
+    assert!(
+        last.top() > w.get_by_label("Good 1760").rect().top(),
+        "a row more"
+    );
+    // In the same frame, the drawer a row taller, the disks as they were.
+    let now = w.get_by_label("Disk map").rect();
+    let row = last.top() - w.get_by_label("Good 1760").rect().top();
+    assert_eq!(now.size(), map.size());
+    assert_eq!(now.top(), map.top() - row, "{now:?} after {map:?}");
+    assert_eq!(w.get_by_label("Good 1760").rect().top(), good.top() - row);
+}
+
+#[test]
+fn a_disk_to_scale_that_holds_fewer_tracks_than_the_job_says_so_in_place_of_its_legend() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        media: Media::FiveQuarter48,
+        ..chosen()
+    };
+    let builder = Harness::builder().with_size(egui::vec2(1240.0, 780.0));
+    let w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    let said = w.get_by_label("80 cylinders: a 5¼-inch, 48 TPI disk has room for 45.");
+    assert!(said.rect().top() > w.get_by_label("Disk map").rect().bottom());
+    assert!(w.query_by_label("Index").is_none(), "no legend");
+}
+
+#[test]
+fn analyse_is_no_taller_than_its_disks_can_use_however_far_its_edge_is_dragged() {
+    // Taller than two disks side by side need.
+    let size = egui::vec2(1100.0, 1500.0);
+    let builder = Harness::builder().with_size(size).with_max_steps(64);
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    // Its box, not the window's.
+    let drawer = |w: &Window| {
+        let map = w.get_by_label("Disk map").rect();
+        let found = w.output().shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.rect.contains_rect(map) && r.rect.left() > 0.0 => {
+                Some(r.rect)
+            }
+            _ => None,
+        });
+        found.expect("the drawer's box")
+    };
+    let before = drawer(&w);
+    assert_eq!(before.bottom(), size.y, "down to the window's foot");
+    let edge = egui::pos2(before.center().x, before.top() + 1.0);
+    w.hover_at(edge);
+    w.run();
+    w.drag_at(edge);
+    w.run();
+    for up in [100.0, 200.0, 300.0] {
+        w.hover_at(edge - egui::vec2(0.0, up));
+        w.run();
+        let now = drawer(&w);
+        assert_eq!((now.top(), now.bottom()), (before.top(), size.y), "{up} up");
+    }
+    w.drop_at(edge - egui::vec2(0.0, 300.0));
+    w.run();
+    assert_eq!(drawer(&w), before);
+    // Down, it is shorter, as far as it goes.
+    w.hover_at(edge);
+    w.run();
+    w.drag_at(edge);
+    w.run();
+    w.hover_at(edge + egui::vec2(0.0, 100.0));
+    w.run();
+    w.drop_at(edge + egui::vec2(0.0, 100.0));
+    w.run();
+    let shorter = drawer(&w);
+    let down = shorter.top() - before.top();
+    assert!(
+        (95.0..=105.0).contains(&down),
+        "{shorter:?} from {before:?}"
+    );
+    assert_eq!(shorter.bottom(), size.y);
+}
+
+#[test]
+fn analyse_shuts_on_a_page_it_has_no_disk_for() {
+    let settings = Settings {
+        drawer: Some(Drawer::Analyse),
+        ..chosen()
+    };
+    let builder = Harness::builder()
+        .with_size(egui::vec2(1240.0, 780.0))
+        .with_max_steps(8);
+    let mut w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
+    w.get_by_label("Disk map");
+    app_mut(&mut w).settings.page = Page::Command("write".into());
+    w.run();
+    assert_eq!(app(&w).settings.drawer, None, "no disk written yet");
+}
+
+#[test]
+fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_its_data() {
+    let line = akai_report();
+    let (_, facts) = Facts::parse(line).unwrap();
+    let first = &facts.sectors[0];
+    assert_eq!(first.id, Id::Ibm([0, 0, 7, 3]));
+    let [start, _, end] = first.at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    // Track 0 is the outermost, and the track runs clockwise from the top.
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.get_by_label("Cylinder 0 · side 0");
+    w.get_by_label("From the image");
+    w.get_by_label("Sector C0 H0 R7 N3 · 1024 bytes");
+    w.get_by_label("Header OK · Data OK · Mark FB");
+    // A click shows its data in full.
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    // Its title in the window's title bar.
+    w.get_by_role_and_label(Role::Label, "C0 H0 R7 N3 · cylinder 0, side 0");
+    // Its text, to select and copy.
+    let said = |text: &'static str| {
+        move |n: &egui_kittest::kittest::AccessKitNode| {
+            n.role() == Role::MultilineTextInput && n.value().is_some_and(|v| v.contains(text))
+        }
+    };
+    let lines = w.get_by(said("Sector C0 H0 R7 N3 · 1024 bytes"));
+    assert!(
+        lines
+            .value()
+            .unwrap()
+            .contains("Header OK · Data OK · Mark FB")
+    );
+    // Select All, then Copy, takes every row, those out of sight too; nothing
+    // to cut or paste in what was read.
+    w.hover_at(
+        w.get_by_role_and_label(Role::Label, "C0 H0 R7 N3 · cylinder 0, side 0")
+            .rect()
+            .center(),
+    );
+    w.run();
+    let first = w.get_by_label_contains("0000  ").rect();
+    w.hover_at(first.center());
+    right_click(&mut w, first.center());
+    assert!(w.get_by_label("Copy").accesskit_node().is_disabled());
+    assert!(w.query_by_label("Cut").is_none() && w.query_by_label("Paste").is_none());
+    w.get_by_label("Select All").click();
+    w.run();
+    w.hover_at(first.center());
+    right_click(&mut w, first.center());
+    w.get_by_label("Copy").click();
+    w.step();
+    let rows = copied(&w).expect("the bytes are copied");
+    assert_eq!(rows.lines().count(), 64, "1024 bytes, 16 a row");
+    assert!(rows.starts_with("0000  ") && rows.lines().last().unwrap().starts_with("03F0  "));
+}
+
+/// Track 0.0 of the Akai disk alone, as converted: R7 to R10, then R1 to
+/// R6, round from the index.
+fn akai_track() -> Job {
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
+    job.progress.report(akai_report());
+    job
+}
+
+/// The Akai track with every sector's ID R1: each has nine twins, which its
+/// window lists in one long line.
+fn twinned_track() -> Job {
+    let mut report: serde_json::Value = serde_json::from_str(akai_report()).unwrap();
+    for found in report["codec"]["found"].as_array_mut().unwrap() {
+        found["id"] = serde_json::json!([0, 0, 1, 3]);
+    }
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.report(&report.to_string());
+    job
+}
+
+/// The app at `size`, its frames `step` seconds apart, `job`'s tracks on the
+/// disk, and the window of track 0.0's sector `id` open.
+fn sector_open(job: Job, size: egui::Vec2, step: f32, id: Id) -> Window {
+    let facts = &job.progress.facts[&(0, 0)];
+    let s = facts
+        .sectors
+        .iter()
+        .find(|s| s.id == id)
+        .expect("the sector");
+    let [start, _, end] = s.at.expect("its place");
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let builder = Harness::builder().with_size(size).with_step_dt(step);
+    let mut w = build(builder, settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w
+}
+
+/// Presses the sector window's button `name`.
+fn press(w: &mut Window, name: &str) {
+    w.get_by_role_and_label(Role::Button, name).click();
+    w.run();
+}
+
+/// What the sector window says of its sector.
+fn said_of_sector(w: &Window) -> String {
+    let said = w.get_by(|n| n.role() == Role::MultilineTextInput);
+    said.value().unwrap_or_default()
+}
+
+#[test]
+fn the_sector_window_steps_round_the_track_and_on_from_the_last_sector_to_the_first() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = |r: u8| format!("C0 H0 R{r} N3 · cylinder 0, side 0");
+    // In the middle of the app's window.
+    let opened = w.get_by_role_and_label(Role::Label, &title(7)).rect();
+    assert!(
+        (opened.center().x - DEFAULT.x / 2.0).abs() < 1.0,
+        "{opened:?}"
+    );
+    press(&mut w, "Next sector");
+    w.get_by_role_and_label(Role::Label, &title(8));
+    press(&mut w, "Previous sector");
+    press(&mut w, "Previous sector");
+    w.get_by_role_and_label(Role::Label, &title(6));
+    // The keyboard's arrows step round too.
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(7));
+    // A click on the ring opens the sector there: R2, sixth round the track.
+    let facts = &app(&w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+    let [start, _, end] = facts.sectors[5].at.unwrap();
+    let share = std::f32::consts::TAU * (start + end) / 2.0;
+    // The track's middle: the ring's half width less the notch and the
+    // track's own half, raised.
+    let ring = w.get_by_label("Track").rect();
+    let r = ring.width() / 2.0 - 6.0 - 7.0;
+    let at = ring.center() + r * egui::vec2(share.sin(), -share.cos());
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(2));
+    // No other track reported: nowhere across to go.
+    for name in [
+        "Previous cylinder",
+        "Next cylinder",
+        "Previous side",
+        "Next side",
+    ] {
+        let arrow = w.get_by_role_and_label(Role::Button, name);
+        assert!(arrow.accesskit_node().is_disabled(), "{name}");
+    }
+    // Shut and opened again, it is in the middle again.
+    press(&mut w, "Close");
+    assert!(w.query_by_role_and_label(Role::Label, &title(2)).is_none());
+    let on = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(on);
+    w.run();
+    w.drag_at(on);
+    w.run();
+    w.drop_at(on);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(2));
+    let id = egui::Id::new("disk sector window").with(2u64);
+    let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+    let middle = w.ctx.content_rect().center();
+    assert!(
+        (window.center() - middle).length() < 1.0,
+        "{window:?}, {middle:?}"
+    );
+}
+
+#[test]
+fn the_keyboards_arrows_step_the_window_and_leave_its_focus_and_a_box_elsewhere_alone() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = |r: u8| format!("C0 H0 R{r} N3 · cylinder 0, side 0");
+    // With the keyboard on an arrow of the window's, ← steps back once and
+    // the arrow keeps the keyboard.
+    w.get_by_role_and_label(Role::Button, "Next sector").focus();
+    w.run();
+    w.key_press(egui::Key::ArrowLeft);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(6));
+    let next = w.get_by_role_and_label(Role::Button, "Next sector");
+    assert!(next.is_focused(), "the keyboard moved on");
+    // With it in a box of the page's, the arrows are the box's.
+    let page = w.get_all_by_role(Role::TextInput).next().expect("a box");
+    page.focus();
+    w.run();
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(6));
+}
+
+#[test]
+fn across_cylinders_and_sides_the_window_keeps_its_sector_or_says_gw_found_it_missing() {
+    let job = Job::replay("convert", SCRATCHED);
+    let first_on_18 = job.progress.facts[&(18, 0)].sectors[0].id;
+    let mut w = sector_open(job, DEFAULT, 0.25, Id::Number(3));
+    let open = |w: &Window, cyl: u32, side: u32| {
+        let title = format!("Sector 3 · cylinder {cyl}, side {side}");
+        w.get_by_role_and_label(Role::Label, &title);
+    };
+    w.key_press(egui::Key::ArrowDown);
+    w.run();
+    open(&w, 1, 0);
+    press(&mut w, "Next side");
+    open(&w, 1, 1);
+    press(&mut w, "Previous side");
+    open(&w, 1, 0);
+    // Back from the first cylinder, on round from the last.
+    for _ in 0..2 {
+        w.key_press(egui::Key::ArrowUp);
+        w.run();
+    }
+    open(&w, 79, 0);
+    // On to cylinder 18, where gw found it missing: the window says so,
+    // with gw's own line on the track, and has no data to show.
+    for _ in 0..19 {
+        w.key_press(egui::Key::ArrowDown);
+        w.run();
+    }
+    open(&w, 18, 0);
+    assert_eq!(
+        said_of_sector(&w),
+        "Sector 3\nMissing\nAmigaDOS (10/11 sectors)"
+    );
+    assert!(w.query_by_label("Sector bytes").is_none());
+    // On to where gw found it again.
+    for _ in 0..11 {
+        w.key_press(egui::Key::ArrowDown);
+        w.run();
+    }
+    open(&w, 29, 0);
+    assert_eq!(said_of_sector(&w).lines().nth(1), Some("Checks OK"));
+    // Round the track from where it was missing: from the index.
+    for _ in 0..11 {
+        w.key_press(egui::Key::ArrowUp);
+        w.run();
+    }
+    open(&w, 18, 0);
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    let Id::Number(n) = first_on_18 else {
+        panic!("{first_on_18:?}")
+    };
+    w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 18, side 0"));
+}
+
+#[test]
+fn a_cylinder_typed_opens_its_sector_there_or_on_the_nearest_gw_reported() {
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = sector_open(job, DEFAULT, 0.25, Id::Number(3));
+    let open = |w: &Window, cyl: u32| {
+        let title = format!("Sector 3 · cylinder {cyl}, side 0");
+        w.get_by_role_and_label(Role::Label, &title);
+    };
+    let type_in = |w: &mut Window, from: u32, text: &str, key: egui::Key| {
+        let value = format!("Cylinder {from}");
+        w.get_by_role_and_label(Role::Button, &value).click();
+        w.run();
+        w.event(egui::Event::Text(text.into()));
+        w.run();
+        w.key_press(key);
+        w.run();
+    };
+    // Typed over what it shows.
+    type_in(&mut w, 0, "29", egui::Key::Enter);
+    open(&w, 29);
+    type_in(&mut w, 29, "7", egui::Key::Enter);
+    open(&w, 7);
+    // Past the last cylinder gw reported, the last.
+    type_in(&mut w, 7, "500", egui::Key::Enter);
+    open(&w, 79);
+    // Escape leaves it as it was.
+    type_in(&mut w, 79, "5", egui::Key::Escape);
+    open(&w, 79);
+    // Only digits are taken.
+    type_in(&mut w, 79, "1a2", egui::Key::Enter);
+    open(&w, 12);
+}
+
+#[test]
+fn the_sector_windows_last_arrow_is_under_its_close_button() {
+    for size in [DEFAULT, ferriteweazle::SMALLEST] {
+        let w = sector_open(akai_track(), size, 0.25, Id::Ibm([0, 0, 7, 3]));
+        let next = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+        let close = w.get_by_role_and_label(Role::Button, "Close").rect();
+        assert!(
+            (next.center().x - close.center().x).abs() < 0.5,
+            "{next:?} under {close:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sector_windows_title_bar_is_in_the_sidebars_colour_in_every_theme() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = "C0 H0 R7 N3 · cylinder 0, side 0";
+    let themes = [
+        (Choice::Light, &theme::LIGHT),
+        (Choice::Dark, &theme::DARK),
+        (Choice::Classic, &theme::CLASSIC),
+        (Choice::Blue, &theme::BLUE),
+        (Choice::Vintage, &theme::VINTAGE),
+        (Choice::Greaseweazle, &theme::GREASEWEAZLE),
+        (Choice::PcbGreen, &theme::PCB_GREEN),
+    ];
+    assert_eq!(themes.len(), theme::CHOICES.len() - 1, "every named theme");
+    for (choice, p) in themes {
+        theme::apply(&w.ctx, choice);
+        w.run();
+        let close = w.get_by_role_and_label(Role::Button, "Close").rect();
+        let shapes = &w.output().shapes;
+        let bar = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => {
+                r.fill == p.sidebar && r.rect.height() == 28.0 && r.rect.contains_rect(close)
+            }
+            _ => false,
+        });
+        assert!(
+            bar,
+            "{choice:?}: no bar in the sidebar's colour under the close button"
+        );
+        let named = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                t.galley.text() == title
+                    && t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|s| s.format.color == p.strong)
+            }
+            _ => false,
+        });
+        assert!(named, "{choice:?}: the title not in the strong text colour");
+    }
+}
+
+#[test]
+fn an_arrow_held_down_steps_again_and_again_faster_and_faster() {
+    let mut w = sector_open(
+        Job::replay("convert", SCRATCHED),
+        DEFAULT,
+        0.05,
+        Id::Number(3),
+    );
+    let next = w
+        .get_by_role_and_label(Role::Button, "Next cylinder")
+        .rect()
+        .center();
+    w.hover_at(next);
+    w.step();
+    w.drag_at(next);
+    w.step();
+    let open = |w: &Window| {
+        (0..80).find(|c| {
+            let title = format!("Sector 3 · cylinder {c}, side 0");
+            w.query_by_role_and_label(Role::Label, &title).is_some()
+        })
+    };
+    // Each frame shows the steps of the frame before.
+    w.step();
+    assert_eq!(open(&w), Some(1), "one step as it is pressed");
+    // 0.4 s on, another; then six a second, faster and faster.
+    for _ in 0..7 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(1));
+    w.step();
+    assert_eq!(open(&w), Some(2));
+    // Held 2 s: 2 + 6 × 1.6 + 12 × 1.6² ÷ 2 = 26.96 steps due, 26 made.
+    for _ in 0..32 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(26));
+    // Let go, it stops: at the 28 due as it was held 2.05 s, shown a frame on.
+    w.drop_at(next);
+    w.step();
+    assert_eq!(open(&w), Some(28));
+    for _ in 0..10 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(28));
+}
+
+#[test]
+fn what_is_said_of_a_sector_never_reaches_the_way_round_the_disk_and_its_arrows_stay_put() {
+    let smallest = ferriteweazle::SMALLEST;
+    let kinds = || Job::replay("convert", KINDS);
+    let first_placed = |job: &Job| {
+        let f = &job.progress.facts[&(0, 0)];
+        f.sectors.iter().find(|s| s.at.is_some()).unwrap().id
+    };
+    let jobs: [(Job, egui::Vec2); 5] = [
+        (kinds(), DEFAULT),
+        (kinds(), smallest),
+        (twinned_track(), DEFAULT),
+        (twinned_track(), smallest),
+        (Job::replay("convert", SCRATCHED), smallest),
+    ];
+    for (job, size) in jobs {
+        let first = first_placed(&job);
+        let count = job.progress.facts[&(0, 0)].sectors.len();
+        let mut w = sector_open(job, size, 0.25, first);
+        let arrows = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+        let check = |w: &Window| {
+            let said = w.get_by(|n| n.role() == Role::MultilineTextInput).rect();
+            let name = w.get_by_role_and_label(Role::Label, "Cylinder").rect();
+            assert!(
+                said.right() <= name.left(),
+                "{said:?} reaches {name:?} at {size:?}"
+            );
+            let now = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+            assert_eq!(now, arrows, "the arrows stay put at {size:?}");
+            let id = egui::Id::new("disk sector window").with(1u64);
+            let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+            let app = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            assert!(
+                app.contains_rect(window),
+                "{window:?} in the app at {size:?}"
+            );
+        };
+        // Every frame as it steps, not only once it has settled.
+        check(&w);
+        for key in std::iter::repeat_n(egui::Key::ArrowRight, count)
+            .chain(std::iter::repeat_n(egui::Key::ArrowDown, 3))
+        {
+            w.key_press(key);
+            for _ in 0..4 {
+                w.step();
+                check(&w);
+            }
+        }
+    }
+    // The twins' line, too long beside the arrows at the smallest, wraps.
+    let mut w = sector_open(twinned_track(), smallest, 0.25, Id::Ibm([0, 0, 1, 3]));
+    let said = w.get_by(|n| n.role() == Role::MultilineTextInput).rect();
+    let lines = said_of_sector(&w).lines().count() as f32;
+    assert!(
+        said.height() > lines * 16.0 + 8.0,
+        "wrapped: {said:?} for {lines} lines"
+    );
+    w.run();
+}
+
+/// Analyse open on `page`, showing the image.
+fn image_open(page: &str) -> Settings {
+    Settings {
+        page: Page::Command(page.into()),
+        drawer: Some(Drawer::Analyse),
+        analysis: Analysis::Image,
+        ..chosen()
+    }
+}
+
+#[test]
+fn image_analysis_stays_chosen_while_gw_opens_a_jobs_image() {
+    let mut started = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    started.ended = None;
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("read"), Some(started));
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label("gw is opening the file.");
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    assert!(
+        w.query_by_label("Disk map").is_none(),
+        "not the disk meanwhile"
+    );
+}
+
+#[test]
+fn image_analysis_is_greyed_with_why_until_gw_reports_an_image_it_lays_out() {
+    let why = |job: Job| {
+        let mut w = build(
+            Harness::builder().with_size(DEFAULT),
+            image_open("read"),
+            Some(job),
+        );
+        let chip = w.get_by_role_and_label(Role::Button, "Image analysis");
+        assert!(chip.accesskit_node().is_disabled());
+        chip.hover();
+        w.run();
+        // The disk shows meanwhile, though the image was chosen last.
+        w.get_by_label("Disk map");
+        w
+    };
+    // A read the bridge reported no image of.
+    why(Job::replay("read", &damaged_read())).get_by_label("No image reported.");
+    // A read to flux, and to bitcells.
+    for (file, kind, said) in [
+        (
+            "Disk.scp",
+            "SCP",
+            "Not mapped: .scp holds flux, not sectors.",
+        ),
+        (
+            "Disk.hfe",
+            "HFE",
+            "Not mapped: .hfe holds bitcells, not sectors.",
+        ),
+    ] {
+        let mut job = Job::replay("read", WORKBENCH);
+        let open = format!(
+            r#"{{"event":"open","role":"made","file":"{file}","type":"{kind}","layout":null}}"#
+        );
+        job.progress.image(&open);
+        why(job).get_by_label(said);
+    }
+}
+
+#[test]
+fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_there() {
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let mut job = Job::replay("convert", SCRATCHED);
+    held(&mut job, (18, 0));
+    held(&mut job, (24, 1));
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
+        .click();
+    w.run();
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    w.get_by_label("Data 1705");
+    w.get_by_label("Filler 55");
+    // Here the file's 160 tracks run down two columns where the disks lie,
+    // its first half and its second, 80 rows each of 11 sectors.
+    let at = image_part(&w, 80, 11);
+    w.hover_at(at(0, 0));
+    w.run();
+    w.get_by_label("Sector 0 · 512 bytes");
+    w.get_by_label("00000–001FF · cylinder 0, side 0");
+    w.get_by_label("Data from the input");
+    // The scratch took sector 3 of cylinder 18's side 0, gw's 37th track.
+    let lost = at(36, 3);
+    w.hover_at(lost);
+    w.run();
+    w.get_by_label("Sector 3 · 512 bytes");
+    w.get_by_label("31E00–31FFF · cylinder 18, side 0");
+    w.get_by_label("gw's filler: the sector did not decode");
+    // A click shows the filler as the file holds it, numbered from where it lies.
+    w.drag_at(lost);
+    w.run();
+    w.drop_at(lost);
+    w.run();
+    w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 18, side 0");
+    w.get_by_label("31E00  2D 3D 5B 42 41 44 20 53 45 43 54 4F 52 5D 3D 2D  -=[BAD SECTOR]=-");
+    // Its window in the middle of the app's, as each opening's is.
+    let middle = w.ctx.content_rect().center();
+    let centred = |w: &Window, opening: u64| {
+        let id = egui::Id::new("image part window").with(opening);
+        let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+        assert!(
+            (window.center() - middle).length() < 1.0,
+            "{window:?}, {middle:?}"
+        );
+    };
+    centred(&w, 1);
+    // Shut, a sector's data, as gw put it in the file: from byte 1,536 of
+    // its track.
+    w.get_by_role_and_label(Role::Button, "Close").click();
+    w.run();
+    let kept = at(49, 3);
+    w.hover_at(kept);
+    w.run();
+    w.drag_at(kept);
+    w.run();
+    w.drop_at(kept);
+    w.run();
+    w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 24, side 1");
+    w.get_by_label_contains("43C00  1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D");
+    centred(&w, 2);
+}
+
+#[test]
+fn image_analysis_says_where_gw_is_with_the_file_and_counts_what_its_sectors_hold() {
+    let shown = |page: &str, job: Job| {
+        let builder = Harness::builder().with_size(DEFAULT);
+        let mut w = start(builder, image_open(page), Some(job));
+        w.run_steps(4);
+        w
+    };
+    // A read as it reaches track 41.0: 83 tracks of 11 sectors read.
+    let running = reaching_41("read", WORKBENCH);
+    let w = shown("read", running);
+    w.get_by_label(
+        "Workbench.adf · 901,120 bytes as laid out · Being made: gw writes it when it finishes",
+    );
+    w.get_by_label("Data 913");
+    w.get_by_label("To do 847");
+    // The track gw last reported marked, as the disk view rings it.
+    w.get_by_label("Last reported");
+    let w = shown("read", Job::replay("read", WORKBENCH));
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    w.get_by_label("Data 1760");
+    // A write's: the file it takes its tracks from.
+    let w = shown("write", Job::replay("write", WRITTEN));
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw read it");
+    w.get_by_label("Data 1760");
+}
+
+#[test]
+fn before_a_write_image_analysis_shows_the_file_it_is_to_take_its_tracks_from() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, None);
+    // As gw opens it: the scratched disk's ADF.
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    // Analyse has the image to show with no disk written.
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    w.get_by_label("Data 1705");
+    w.get_by_label("Filler 55");
+    let disk = w.get_by_role_and_label(Role::Button, "Disk analysis");
+    assert!(disk.accesskit_node().is_disabled());
+    disk.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No disk written yet").count(),
+        2,
+        "the status pane's line, and the greyed view's"
+    );
+    // The scratch's first lost sector, gw's filler in the file, which gw
+    // would write as the sector's data.
+    let at = image_part(&w, 80, 11);
+    w.hover_at(at(36, 3));
+    w.run();
+    w.get_by_label("Sector 3 · 512 bytes");
+    w.get_by_label("31E00–31FFF · cylinder 18, side 0");
+    w.get_by_label("gw's filler, in the file");
+}
+
+#[test]
+fn analyse_stays_open_while_gw_opens_the_pages_image_again() {
+    let mut settings = Settings {
+        page: Page::Command("write".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, None);
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    w.get_by_role_and_label(Role::Button, "Analyse").click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    // Its format changed, say: gw opens it again.
+    app_mut(&mut w).hold_image();
+    w.run();
+    assert_eq!(app(&w).settings.drawer, Some(Drawer::Analyse));
+    w.get_by_label("gw is opening the file.");
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    // Shut, it says why it cannot open yet.
+    analyse.click();
+    w.run_steps(30); // past the drawer's slide
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    w.get_by_label("gw is opening the file.");
+}
+
+#[test]
+fn after_a_write_image_analysis_shows_the_file_the_page_names_next() {
+    // The write took Workbench.adf; the page now names another file.
+    let mut settings = image_open("write");
+    set(
+        &mut settings,
+        "write",
+        "file",
+        "/Users/you/Floppies/Other.adf",
+    );
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, settings, Some(Job::replay("write", WRITTEN)));
+    let mut next = scratched_adf();
+    next.file = Some("/Users/you/Floppies/Other.adf".into());
+    app_mut(&mut w).pin_image(next);
+    w.run();
+    w.get_by_label("Other.adf · 901,120 bytes · As gw reads it");
+    w.get_by_label("Filler 55");
+    // The disk is still the one the write left.
+    w.get_by_role_and_label(Role::Button, "Disk analysis")
+        .click();
+    w.run();
+    w.get_by_label("Disk map");
+    // Named again, the written file shows as the write took it.
+    set(
+        &mut app_mut(&mut w).settings,
+        "write",
+        "file",
+        "Workbench.adf",
+    );
+    w.get_by_role_and_label(Role::Button, "Image analysis")
+        .click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw read it");
+    w.get_by_label("Data 1760");
+}
+
+#[test]
+fn going_from_tracks_to_a_map_leaves_the_drawer_as_tall_as_it_was() {
+    // A conversion from flux: its input's tracks, and its output's map.
+    let settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    let (input, output) = ("Image analysis (Input)", "Image analysis (Output)");
+    let top = |w: &Window| w.get_by_role_and_label(Role::Button, input).rect().top();
+    let disks = top(&w);
+    w.get_by_label("Disk map");
+    w.get_by_role_and_label(Role::Button, output).click();
+    w.run();
+    w.get_by_label("Image map");
+    assert_eq!(top(&w), disks, "the drawer as tall as for the disks");
+    w.get_by_role_and_label(Role::Button, input).click();
+    w.run();
+    assert_eq!(top(&w), disks);
+}
+
+#[test]
+fn before_a_conversion_analyse_shows_its_input_and_greys_the_output() {
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "convert",
+        "in_file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let mut w = start(Harness::builder().with_size(DEFAULT), settings, None);
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    let output = w.get_by_role_and_label(Role::Button, "Image analysis (Output)");
+    assert!(output.accesskit_node().is_disabled());
+    output.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No image converted yet").count(),
+        2,
+        "the status pane's line, and the greyed view's"
+    );
+}
+
+#[test]
+fn a_conversions_input_and_output_each_show_as_gw_lays_them_out() {
+    let mut settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let input = "/Users/you/Floppies/Input.adf";
+    set(&mut settings, "convert", "in_file", input);
+    // A conversion from an ADF: its input laid out, as its output is.
+    let mut job = Job::replay("convert", SCRATCHED);
+    let mut source = scratched_adf();
+    source.file = Some(input.into());
+    job.progress.source = Some(source);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Input.adf · 901,120 bytes · As gw read it");
+    assert!(
+        w.query_by_label("Disk map").is_none(),
+        "its map, not its tracks"
+    );
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
+        .click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    // Another input named: the output is still the conversion's.
+    set(
+        &mut app_mut(&mut w).settings,
+        "convert",
+        "in_file",
+        "/d/Other.scp",
+    );
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    let input = w.get_by_role_and_label(Role::Button, "Image analysis (Input)");
+    assert!(input.accesskit_node().is_disabled());
+}
+
+#[test]
+fn a_conversions_output_stays_chosen_while_gw_opens_it() {
+    // gw has opened the input, laid out, and not yet the output.
+    let mut started = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    started.ended = None;
+    started.progress.source = Some(scratched_adf());
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("convert"), Some(started));
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label("gw is opening the file.");
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    assert!(
+        w.query_by_label_contains("As gw read it").is_none(),
+        "not the input meanwhile"
+    );
+}
+
+#[test]
+fn a_running_job_shows_as_its_own_page_would_on_any_page() {
+    // A read, seen from Convert: its disk, not a conversion's input.
+    let mut read = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    read.ended = None;
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("convert"), Some(read));
+    w.run_steps(4);
+    w.get_by_role_and_label(Role::Button, "Disk analysis");
+    assert!(w.query_by_label("Image analysis (Input)").is_none());
+    // A conversion, seen from Read: its input and its output.
+    let converting = reaching_41("convert", SCRATCHED);
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("read"), Some(converting));
+    w.run_steps(4);
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)");
+    assert!(w.query_by_label("Disk analysis").is_none());
+}
+
+#[test]
+fn a_conversions_input_kept_as_tracks_shows_them_as_gw_takes_them() {
+    let tracks_later = "Not mapped: .scp holds flux, not sectors. \
+        Its tracks show as gw converts it or Detect reads it.";
+    // Before any job, Analyse says when they show.
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..chosen()
+    };
+    set(&mut settings, "convert", "in_file", "/d/Game.scp");
+    let mut w = window(settings.clone());
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    w.get_by_label(tracks_later);
+    // Detect reads them, of the input the page names.
+    let failed = detect_reads()
+        + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n"
+        + "** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this image in full.";
+    let mut job = Job::replay(DETECT, &failed);
+    job.page = "convert".into();
+    job.args = vec!["/d/Game.scp".into()];
+    settings.drawer = Some(Drawer::Analyse);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Disk map");
+    // Another input named: nothing to show, so Analyse shuts and says why.
+    set(
+        &mut app_mut(&mut w).settings,
+        "convert",
+        "in_file",
+        "/d/Other.scp",
+    );
+    w.run();
+    assert!(w.query_by_label("Disk map").is_none());
+    assert_eq!(app_mut(&mut w).settings.drawer, None);
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    w.get_by_label(tracks_later);
+}
+
+/// A right-click at `at`.
+fn right_click(w: &mut Window, at: egui::Pos2) {
+    for pressed in [true, false] {
+        w.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    w.run();
+}
+
+/// Pulls the Analyse drawer down to no height at all, so that it takes its
+/// least: its id.
+fn least_drawer(w: &mut Window) -> egui::Id {
+    let id = egui::Id::new("analyse");
+    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
+    state.outer_rect.min.y = state.outer_rect.max.y;
+    w.ctx.data_mut(|d| d.insert_persisted(id, state));
+    w.run_steps(4);
+    id
+}
+
+fn copied(w: &Window) -> Option<String> {
+    w.output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// Drags a selection from `from` to `to` and holds it there for `seconds`, at
+/// 60 frames a second, then lets go and copies it.
+fn select(w: &mut Window, from: egui::Pos2, to: egui::Pos2, seconds: usize) -> String {
+    w.hover_at(from);
+    w.run();
+    w.drag_at(from);
+    w.step();
+    for _ in 0..60 * seconds {
+        w.hover_at(to);
+        w.step();
+    }
+    w.drop_at(to);
+    w.step();
+    w.event(egui::Event::Copy);
+    w.step();
+    copied(w).expect("the selection is copied")
+}
+
+#[test]
+fn a_selection_dragged_past_a_boxs_edge_scrolls_it_on_in_the_sectors_bytes_and_the_log() {
+    // A sector's 64 rows of bytes, which show 24 or so at once.
+    let line = akai_report();
+    let (_, facts) = Facts::parse(line).unwrap();
+    let [start, _, end] = facts.sectors[0].at.unwrap();
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
+    job.progress.report(line);
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = build(builder, settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    let first = w.get_by_label_contains("0000  ").rect();
+    let row = |n: &egui_kittest::kittest::AccessKitNode| {
+        n.role() == Role::Label && n.value().is_some_and(|l| l.len() == 71 && &l[4..6] == "  ")
+    };
+    let shown = w.get_all_by(row).count();
+    assert!((1..64).contains(&shown), "{shown} rows show at once");
+    // Below the box, the selection carries on to the last row.
+    let below = egui::pos2(first.left() + 30.0, first.top() + 600.0);
+    let rows = select(&mut w, first.left_top() + egui::vec2(2.0, 4.0), below, 1);
+    assert_eq!(rows.lines().count(), 64, "{rows}");
+
+    // The Log's lines, scrolled to their end: above the box, the selection
+    // carries on to the first, at most 3,000 points a second.
+    let settings = Settings {
+        drawer: Some(Drawer::Log),
+        ..chosen()
+    };
+    let job = Job::replay("read", &damaged_read().repeat(3));
+    let builder = Harness::builder()
+        .with_size(DEFAULT)
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120);
+    let mut w = build(builder, settings, Some(job));
+    let log = app(&w).log.lines().to_vec();
+    let last = w.get_by_label(log.last().unwrap()).rect();
+    let above = egui::pos2(last.left() + 30.0, last.top() - 900.0);
+    let lines = select(&mut w, last.right_bottom() - egui::vec2(2.0, 4.0), above, 5);
+    assert_eq!(
+        lines.lines().count(),
+        log.len(),
+        "every line, from the first"
     );
 }

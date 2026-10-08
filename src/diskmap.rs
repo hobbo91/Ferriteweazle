@@ -195,8 +195,7 @@ pub fn show(
             };
             let colour = shade(ui, egui::Id::new(("square", key)), to, p.bg);
             if taken(key) || colour != p.bg {
-                let status = progress.tracks.get(&key).map(|t| t.status);
-                let edge = edge(status == Some(Status::Skipped), p);
+                let edge = edge(status(progress, key) == Some(Status::Skipped), p);
                 painter.rect(square(head, cyl), radius, colour, edge, StrokeKind::Inside);
             }
             if taken(key) {
@@ -226,6 +225,9 @@ pub fn show(
                     if t.retries > 0 {
                         ui.weak(retry_text(t.retries));
                     }
+                }
+                None if status(progress, (cyl, head)) == Some(Status::Skipped) => {
+                    ui.label(crate::progress::NOT_IN_INPUT);
                 }
                 None => {
                     ui.weak("Greaseweazle Tools has not reported this track.");
@@ -349,10 +351,10 @@ fn shade(ui: &egui::Ui, id: egui::Id, to: Color32, bg: Color32) -> Color32 {
 }
 
 /// A track's colour, by its sectors once gw has mapped them; `None` until gw
-/// reports the track.
-fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
+/// reports the track. One gw's image does not hold is skipped.
+pub(crate) fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
     let Some(sectors) = progress.sector_map.get(&key) else {
-        return progress.tracks.get(&key).map(|t| colour(t.status, p));
+        return status(progress, key).map(|s| status_colour(s, p));
     };
     let good = sectors.contains(&Some(true));
     let bad = sectors.contains(&Some(false));
@@ -362,6 +364,14 @@ fn fill(progress: &Progress, key: (u32, u32), p: &Palette) -> Option<Color32> {
         (false, true) => p.bad,
         (true, true) => p.partial,
     })
+}
+
+/// A track's status as gw's line gives it, or skipped where gw's image does
+/// not hold it, which gw gives no line.
+fn status(progress: &Progress, key: (u32, u32)) -> Option<Status> {
+    let line = progress.tracks.get(&key).map(|t| t.status);
+    let absent = progress.facts.get(&key).is_some_and(|f| f.absent);
+    line.or(absent.then_some(Status::Skipped))
 }
 
 /// The rows of gw's sector map missing on a track that has others, such as
@@ -384,7 +394,8 @@ fn side_name(head: u32) -> &'static str {
     }
 }
 
-fn colour(status: Status, p: &Palette) -> Color32 {
+/// A track's colour on the map for its status.
+pub(crate) fn status_colour(status: Status, p: &Palette) -> Color32 {
     match status {
         Status::Good => p.good,
         Status::Partial => p.partial,
@@ -404,52 +415,48 @@ fn edge(skipped: bool, p: &Palette) -> Stroke {
     }
 }
 
-/// Each colour on the map with its track count, then the retries. `verifying`: a
-/// write gw verifies is running, so its one written track is the one gw checks.
+/// Each colour on the map with its track count, then the retries. `verifying`:
+/// the one written track is the one gw is writing and checking.
 fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: bool, p: &Palette) {
-    let written = match verifying {
-        true => "The track Greaseweazle Tools is writing and checking.",
-        false => progress
-            .unverified
-            .as_deref()
-            .unwrap_or("Written, no verify reported."),
-    };
+    // Rows a line of its text apart where it wraps, not a field's height:
+    // a wrapping row takes its height as it is made.
+    let row = ui.text_style_height(&egui::TextStyle::Small).max(10.0);
+    let spacing = ui.spacing_mut();
+    let kept = (spacing.interact_size.y, spacing.item_spacing.y);
+    (spacing.interact_size.y, spacing.item_spacing.y) = (row, 4.0);
     ui.horizontal_wrapped(|ui| {
-        for (status, name, tip) in [
-            (
-                Status::Good,
-                "Good",
-                "Every sector found, or written and verified.",
-            ),
-            (Status::Partial, "Short", "Some sectors missing."),
-            (Status::Bad, "Bad", "No sectors found, or the write failed."),
-            (Status::Flux, "Flux", "Read as flux, not decoded."),
-            (
-                Status::Written,
-                if verifying { "Verifying" } else { "Written" },
-                written,
-            ),
-            (Status::Erased, "Erased", "Erased."),
-            (
-                Status::Skipped,
-                "Skipped",
-                "Outside the format, or not in the input.",
-            ),
-        ] {
-            let swatch = colour(status, p);
-            let tracks = shown.iter().filter(|&&c| c == swatch).count();
-            if tracks == 0 {
-                continue;
-            }
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            let edge = edge(status == Status::Skipped, p);
-            ui.painter()
-                .rect(r, CornerRadius::same(2), swatch, edge, StrokeKind::Inside);
-            let text = match status == Status::Written && verifying {
-                true => name.to_owned(),
-                false => format!("{name} {tracks}"),
-            };
-            ui.label(RichText::new(text).small()).on_hover_text(tip);
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let gap = ui.spacing().item_spacing.x;
+        for (swatch, skipped, name, tracks, tip) in entries(shown, progress, verifying, p) {
+            // The grid's squares are tracks: its counts need no word for them.
+            let text = tracks.map_or(name.to_owned(), |n| format!("{name} {n}"));
+            let colour = ui.visuals().text_color();
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text.clone(), font.clone(), colour);
+            // Each entry whole on its row: its swatch and its name never apart.
+            let size = vec2(10.0 + gap + galley.size().x, galley.size().y.max(10.0));
+            let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+            let square = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.center().y - 5.0),
+                vec2(10.0, 10.0),
+            );
+            let edge = edge(skipped, p);
+            ui.painter().rect(
+                square,
+                CornerRadius::same(2),
+                swatch,
+                edge,
+                StrokeKind::Inside,
+            );
+            let at = egui::pos2(
+                square.right() + gap,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            ui.painter().galley(at, galley, colour);
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+            response.on_hover_text(tip);
             ui.add_space(6.0);
         }
         let retries = progress.tally().retries;
@@ -457,11 +464,75 @@ fn legend(ui: &mut egui::Ui, shown: &[Color32], progress: &Progress, verifying: 
             ui.label(RichText::new(retry_text(retries)).small().weak());
         }
     });
+    let spacing = ui.spacing_mut();
+    (spacing.interact_size.y, spacing.item_spacing.y) = kept;
+}
+
+/// The legend's entries for tracks shown in `shown` colours, as the map
+/// shows them: each status's colour, whether it is a skipped track's, its
+/// name, how many tracks show it where that is told, and what it means.
+pub(crate) fn entries<'a>(
+    shown: &[Color32],
+    progress: &'a Progress,
+    verifying: bool,
+    p: &Palette,
+) -> Vec<(Color32, bool, &'static str, Option<usize>, &'a str)> {
+    let written = match verifying {
+        true => "The track Greaseweazle Tools is writing and checking.",
+        false => progress
+            .unverified
+            .as_deref()
+            .unwrap_or("Written, no verify reported."),
+    };
+    [
+        (
+            Status::Good,
+            "Good",
+            "Every sector found, or written and verified.",
+        ),
+        (
+            Status::Partial,
+            "Sectors missing",
+            "Some of the track's sectors not read.",
+        ),
+        (Status::Bad, "Bad", "No sectors found, or the write failed."),
+        (Status::Flux, "Flux", "Read as flux, not decoded."),
+        (
+            Status::Written,
+            if verifying { "Verifying" } else { "Written" },
+            written,
+        ),
+        (Status::Erased, "Erased", "Erased."),
+        (
+            Status::Skipped,
+            "Skipped",
+            "Outside the format, or not in the input.",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(status, name, tip)| {
+        let swatch = status_colour(status, p);
+        let tracks = shown.iter().filter(|&&c| c == swatch).count();
+        (tracks > 0).then(|| {
+            // The one track gw is writing and checking.
+            let count = (status != Status::Written || !verifying).then_some(tracks);
+            (swatch, status == Status::Skipped, name, count, tip)
+        })
+    })
+    .collect()
+}
+
+/// `n` tracks, as a legend counts them where it also counts sectors.
+pub(crate) fn tracks(n: usize) -> String {
+    match n {
+        1 => "1 track".to_owned(),
+        n => format!("{n} tracks"),
+    }
 }
 
 /// Where gw read or wrote the track, from gw's `Drive 10.1` or `Image 10.1`:
 /// the cylinder and head a step, a swap or an offset took it to.
-fn place_text(place: &str) -> String {
+pub(crate) fn place_text(place: &str) -> String {
     let parts = place
         .split_once(' ')
         .and_then(|(what, at)| Some((what, at.split_once('.')?)));
@@ -471,7 +542,7 @@ fn place_text(place: &str) -> String {
     }
 }
 
-fn retry_text(n: u32) -> String {
+pub(crate) fn retry_text(n: u32) -> String {
     match n {
         1 => "1 retry".into(),
         n => format!("{n} retries"),
@@ -489,5 +560,19 @@ mod tests {
         assert_eq!(place_text("elsewhere"), "elsewhere", "kept as gw put it");
         assert_eq!(retry_text(1), "1 retry");
         assert_eq!(retry_text(3), "3 retries");
+    }
+
+    #[test]
+    fn a_track_gws_image_does_not_hold_is_skipped() {
+        let mut progress = Progress::default();
+        progress.feed("Converting c=0-1:h=0 -> c=0-1:h=0");
+        progress.report(r#"{"c":1,"h":0,"absent":true}"#);
+        assert_eq!(status(&progress, (1, 0)), Some(Status::Skipped));
+        assert_eq!(status(&progress, (0, 0)), None, "not yet reported");
+        let p = &theme::DARK;
+        assert_eq!(
+            fill(&progress, (1, 0), p),
+            Some(status_colour(Status::Skipped, p))
+        );
     }
 }

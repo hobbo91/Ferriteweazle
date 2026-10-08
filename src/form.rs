@@ -250,6 +250,18 @@ const CUSTOM_NAME: &str = "Custom disk definitions";
 /// no format.
 const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 
+/// What a flux image of extension `ext`, such as `.scp`, holds of each
+/// track: flux as read, or bitcells. None for other types.
+pub fn track_holds(ext: &str) -> Option<&'static str> {
+    if RAW_FLUX.contains(&ext) {
+        Some("flux")
+    } else if FLUX.contains(&ext) {
+        Some("bitcells")
+    } else {
+        None
+    }
+}
+
 /// Flux as read, which has no bitrate: gw makes HFE of it only at a set one.
 const RAW_FLUX: &[&str] = &[".scp", ".raw", ".a2r"];
 
@@ -385,6 +397,16 @@ pub fn text_box(ui: &mut Ui, edit: TextEdit<'_>) -> egui::Response {
 
 /// `text_box`, with the box under `id`.
 pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Response {
+    menu_box(ui, id, edit, true)
+}
+
+/// Adds a box of text to read, not change: selectable, with Copy and Select
+/// All on a right click.
+pub fn read_only_box(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Response {
+    menu_box(ui, id, edit, false)
+}
+
+fn menu_box(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>, editable: bool) -> egui::Response {
     let ctx = ui.ctx().clone();
     let selection = || {
         egui::text_edit::TextEditState::load(&ctx, id)
@@ -397,21 +419,26 @@ pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Res
         .input(|i| i.pointer.secondary_pressed())
         .then(selection)
         .flatten();
-    let response = ui.add(edit.id(id));
+    let output = edit.id(id).show(ui);
     if let Some(range) = kept
         && let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id)
     {
         state.cursor.set_char_range(Some(range));
         state.store(&ctx, id);
     }
+    let length = output.galley.text().chars().count();
+    let response = output.response.response;
     // A paste goes in at the cursor or over the selection.
     response.context_menu(|ui| {
         let selected = selection().is_some();
-        for (name, can, command) in [
-            ("Cut", selected, ViewportCommand::RequestCut),
-            ("Copy", selected, ViewportCommand::RequestCopy),
-            ("Paste", true, ViewportCommand::RequestPaste),
-        ] {
+        // A box that cannot be edited has nothing to cut or paste.
+        let items = [
+            ("Cut", selected, ViewportCommand::RequestCut, editable),
+            ("Copy", selected, ViewportCommand::RequestCopy, true),
+            ("Paste", true, ViewportCommand::RequestPaste, editable),
+        ];
+        let shown = items.into_iter().filter(|&(.., shows)| shows);
+        for (name, can, command, _) in shown {
             let item = ui.add_enabled(can, egui::Button::new(name));
             if item.on_disabled_hover_text("Nothing selected.").clicked() {
                 // Back in the box for the cut or paste the next frame brings.
@@ -419,6 +446,18 @@ pub fn text_box_with(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>) -> egui::Res
                 ui.ctx().send_viewport_cmd(command);
                 ui.close();
             }
+        }
+        if !editable && ui.button("Select All").clicked() {
+            if let Some(mut state) = egui::text_edit::TextEditState::load(&ctx, id) {
+                let all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(length),
+                );
+                state.cursor.set_char_range(Some(all));
+                state.store(&ctx, id);
+            }
+            ui.memory_mut(|m| m.request_focus(id));
+            ui.close();
         }
     });
     response
@@ -728,15 +767,14 @@ impl<'a> Form<'a> {
             };
             if a.default.is_none()
                 && !a.required
-                && ui
-                    .selectable_label(current.is_empty(), unset)
+                && selectable(ui, current.is_empty(), egui::Button::new(unset))
                     .own_tip(tip)
                     .clicked()
             {
                 self.values.set(&a.dest, "");
             }
             for &(value, text) in options {
-                if ui.selectable_label(current == value, text).clicked() {
+                if selectable(ui, current == value, egui::Button::new(text)).clicked() {
                     self.values
                         .set(&a.dest, if current == value { "" } else { value });
                 }
@@ -755,7 +793,7 @@ impl<'a> Form<'a> {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for f in offered {
-                    let button = ui.selectable_label(f == chosen, f.name());
+                    let button = selectable(ui, f == chosen, egui::Button::new(f.name()));
                     if button.on_hover_text(f.tip()).clicked() {
                         self.values.set(FIRMWARE, f.name());
                     }
@@ -808,7 +846,7 @@ impl<'a> Form<'a> {
         if let Some(e) = self.service.check(&self.cmd.name, &a.dest, value) {
             ui.label(
                 RichText::new(sentence(e))
-                    .color(theme::palette(ui).bad)
+                    .color(theme::palette(ui).bad_text)
                     .small(),
             );
         }
@@ -852,7 +890,7 @@ impl<'a> Form<'a> {
                 ui.label(small("Checking…".into()).weak());
             }
             Load::Failed(e) => {
-                ui.label(small(sentence(e)).color(p.bad));
+                ui.label(small(sentence(e)).color(p.bad_text));
             }
             Load::Ready(d) => {
                 let n = d.formats.len();
@@ -862,11 +900,11 @@ impl<'a> Form<'a> {
                     ui.label(small(text).weak());
                 }
                 for e in d.errors.iter().take(3) {
-                    ui.label(small(sentence(e)).color(p.bad));
+                    ui.label(small(sentence(e)).color(p.bad_text));
                 }
                 if d.errors.len() > 3 {
                     let more = format!("And {} more.", d.errors.len() - 3);
-                    ui.label(small(more).color(p.bad));
+                    ui.label(small(more).color(p.bad_text));
                 }
             }
         }
@@ -964,13 +1002,13 @@ impl<'a> Form<'a> {
                         ui.label(
                             RichText::new(sentence(e))
                                 .small()
-                                .color(theme::palette(ui).bad),
+                                .color(theme::palette(ui).bad_text),
                         );
                     }
                     Load::Waiting(_) => {}
                 }
             } else if let Some(e) = self.input_fault() {
-                ui.label(RichText::new(e).small().color(theme::palette(ui).bad));
+                ui.label(RichText::new(e).small().color(theme::palette(ui).bad_text));
             }
         });
         if let Some(f) = chosen {
@@ -1030,14 +1068,13 @@ impl<'a> Form<'a> {
                             ui.label(RichText::new(heading(&family)).strong());
                             group = family;
                         }
-                        if ui.selectable_label(*f == current, f.as_str()).clicked() {
+                        if selectable(ui, *f == current, egui::Button::new(f.as_str())).clicked() {
                             chosen = Some((*f).clone());
                         }
                     }
                 });
         } else {
-            if ui
-                .selectable_label(current.is_empty(), "None")
+            if selectable(ui, current.is_empty(), egui::Button::new("None"))
                 .on_hover_text("Use the image's own format, if it has one.")
                 .clicked()
             {
@@ -1079,7 +1116,9 @@ impl<'a> Form<'a> {
                                 {
                                     text = text.strong();
                                 }
-                                if ui.selectable_label(*family == open, text).clicked() {
+                                if selectable(ui, *family == open, egui::Button::new(text))
+                                    .clicked()
+                                {
                                     ui.data_mut(|d| d.insert_temp(family_id, family.clone()));
                                 }
                                 if family == CUSTOM {
@@ -1096,7 +1135,9 @@ impl<'a> Form<'a> {
                         ui.set_width(210.0);
                         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
                             for f in all.iter().filter(|f| family_of(f) == open) {
-                                if ui.selectable_label(*f == current, f.as_str()).clicked() {
+                                if selectable(ui, *f == current, egui::Button::new(f.as_str()))
+                                    .clicked()
+                                {
                                     chosen = Some((*f).clone());
                                 }
                             }
@@ -1203,7 +1244,10 @@ impl<'a> Form<'a> {
                     for head in 0..2u32 {
                         let on = sides.has_head(head, heads);
                         let r = ui
-                            .add_enabled(!fixed, egui::Button::selectable(on, head.to_string()))
+                            .add_enabled_ui(!fixed, |ui| {
+                                selectable(ui, on, egui::Button::new(head.to_string()))
+                            })
+                            .inner
                             .on_disabled_hover_text("This format is single sided.");
                         if r.clicked() {
                             sides.toggle_head(head, heads);
@@ -1235,14 +1279,14 @@ impl<'a> Form<'a> {
                             _ => (value, STEP_TIP),
                         };
                         let on = !other && current == value;
-                        let r = ui.add(egui::Button::selectable(on, text));
+                        let r = selectable(ui, on, egui::Button::new(text));
                         if r.on_hover_text(tip).clicked() && !on {
                             ui.data_mut(|d| d.remove_temp::<String>(other_id));
                             spec.pick_step(value, (first, last), whole, free);
                             changed = true;
                         }
                     }
-                    let r = ui.add(egui::Button::selectable(other, OTHER));
+                    let r = selectable(ui, other, egui::Button::new(OTHER));
                     if r.on_hover_text(OTHER_STEP_TIP).clicked() && !other {
                         ui.data_mut(|d| d.insert_temp(other_id, current.clone()));
                     }
@@ -1324,7 +1368,7 @@ impl<'a> Form<'a> {
             row(ui, "", |ui| {
                 let text = RichText::new(note)
                     .small()
-                    .color(theme::palette(ui).partial);
+                    .color(theme::palette(ui).partial_text);
                 ui.add(egui::Label::new(text).wrap())
             });
         }
@@ -1356,8 +1400,7 @@ impl<'a> Form<'a> {
                     "Every image in the folder, sequentially in order of name.",
                 ),
             ] {
-                if ui
-                    .selectable_label(batch == on, name)
+                if selectable(ui, batch == on, egui::Button::new(name))
                     .own_tip(tip)
                     .clicked()
                     && batch != on
@@ -1410,16 +1453,18 @@ impl<'a> Form<'a> {
                 egui::ComboBox::from_id_salt(("batch type", &self.cmd.name))
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut only, String::new(), "Every type");
+                        selectable_value(ui, &mut only, String::new(), "Every type");
                         for e in &types {
-                            ui.selectable_value(&mut only, e.clone(), name(e));
+                            selectable_value(ui, &mut only, e.clone(), name(e));
                         }
                     })
                     .response
                     .own_tip("Which of the folder's images to take.");
                 let p = theme::palette(ui);
                 let text = match taken.is_empty() {
-                    true => RichText::new("No images Greaseweazle Tools can read.").color(p.bad),
+                    true => {
+                        RichText::new("No images Greaseweazle Tools can read.").color(p.bad_text)
+                    }
                     false => RichText::new(listing(&taken)).weak(),
                 };
                 ui.add(egui::Label::new(text.small()).truncate());
@@ -1477,7 +1522,7 @@ impl<'a> Form<'a> {
                         ui.label(
                             RichText::new("Greaseweazle Tools does not know this file type.")
                                 .small()
-                                .color(theme::palette(ui).bad),
+                                .color(theme::palette(ui).bad_text),
                         );
                     }
                 }
@@ -1530,7 +1575,12 @@ impl<'a> Form<'a> {
                     .height(380.0)
                     .show_ui(ui, |ui| {
                         for (e, image) in schema.images.iter().filter(|(_, i)| i.writable) {
-                            ui.selectable_value(&mut picked, e.clone(), image_name(e, &image.name));
+                            selectable_value(
+                                ui,
+                                &mut picked,
+                                e.clone(),
+                                image_name(e, &image.name),
+                            );
                         }
                     })
                     .response
@@ -1550,7 +1600,7 @@ impl<'a> Form<'a> {
         {
             let diskdefs = diskdefs_for(self.service, self.values, &format);
             if let Load::Ready(Some(e)) = self.service.fits(&diskdefs, &format, &out.ext) {
-                let text = RichText::new(sentence(e)).small().color(p.bad);
+                let text = RichText::new(sentence(e)).small().color(p.bad_text);
                 row(ui, "", |ui| ui.label(text));
             }
         }
@@ -1643,9 +1693,9 @@ impl<'a> Form<'a> {
                 ui.add_enabled_ui(labelled, |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.selectable_value(&mut out.label_first, false, "After the name")
+                        selectable_value(ui, &mut out.label_first, false, "After the name")
                             .on_hover_text("Game_Backup, Demo_Backup…");
-                        ui.selectable_value(&mut out.label_first, true, "Before the name")
+                        selectable_value(ui, &mut out.label_first, true, "Before the name")
                             .on_hover_text("Backup_Game, Backup_Demo…");
                     });
                 })
@@ -1700,7 +1750,7 @@ impl<'a> Form<'a> {
                     } else {
                         REPLACES_INPUT
                     };
-                    ui.label(RichText::new(text).small().color(p.bad));
+                    ui.label(RichText::new(text).small().color(p.bad_text));
                 }
             });
         }
@@ -1748,11 +1798,11 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(on, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.whole_disk, false, "Incomplete tracks")
+                            selectable_value(ui, &mut out.whole_disk, false, "Incomplete tracks")
                                 .on_hover_text(
                                     "Attempt to re-read only the tracks still missing sectors.",
                                 );
-                            ui.selectable_value(&mut out.whole_disk, true, "Whole disk")
+                            selectable_value(ui, &mut out.whole_disk, true, "Whole disk")
                                 .on_hover_text("Attempt to re-read the entire disk.");
                         });
                     })
@@ -1810,9 +1860,9 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(out.disks > 1, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.ask_names, false, "Numbered")
+                            selectable_value(ui, &mut out.ask_names, false, "Numbered")
                                 .on_hover_text("Name each image file with a numbered label.");
-                            ui.selectable_value(&mut out.ask_names, true, "Ask for each")
+                            selectable_value(ui, &mut out.ask_names, true, "Ask for each")
                                 .on_hover_text("Type each disk's name when asked for the disk.");
                         });
                     })
@@ -1867,9 +1917,9 @@ impl<'a> Form<'a> {
                     ui.add_enabled_ui(numbered, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.selectable_value(&mut out.number_first, false, "After the name")
+                            selectable_value(ui, &mut out.number_first, false, "After the name")
                                 .on_hover_text("Game_Disk1, Game_Disk2…");
-                            ui.selectable_value(&mut out.number_first, true, "Before the name")
+                            selectable_value(ui, &mut out.number_first, true, "Before the name")
                                 .on_hover_text("Disk1_Game, Disk2_Game…");
                         });
                     })
@@ -2485,27 +2535,6 @@ pub fn effective_format(
     }
 }
 
-/// Whether gw verifies each track of a write with these arguments before it
-/// goes on to the next: no --no-verify, and a format whose tracks gw checks,
-/// as gw has already described it.
-pub fn verifies(service: &mut Service, schema: &Schema, args: &[String]) -> bool {
-    let arg = |flag: &str| args.iter().find_map(|a| a.strip_prefix(flag));
-    let (Some(write), Some(file)) = (schema.command("write"), args.last()) else {
-        return false;
-    };
-    if args.iter().any(|a| a == "--no-verify") {
-        return false;
-    }
-    let mut values = Values::default();
-    values.set("file", file);
-    values.set("format", arg("--format=").unwrap_or_default());
-    let Some(format) = effective_format(service, schema, write, &values) else {
-        return false;
-    };
-    let info = service.known_format_info(arg("--diskdefs=").unwrap_or_default(), &format);
-    info.and_then(Load::ready).is_some_and(|i| i.verifies)
-}
-
 /// The format gw takes when none is chosen, in gw's order: the input type's
 /// own, such as an .adf's, else the output type's, else one gw has found in
 /// the input file, such as an .nsi's.
@@ -3020,7 +3049,11 @@ fn foreign<'o>(set: &'o BTreeMap<String, String>, options: &[ImageOpt]) -> Vec<&
 /// Names the options set that the image type does not take.
 fn foreign_label(ui: &mut Ui, names: &[&str]) {
     let text = format!("This image type takes no option {}.", names.join(", "));
-    ui.label(RichText::new(text).small().color(theme::palette(ui).bad));
+    ui.label(
+        RichText::new(text)
+            .small()
+            .color(theme::palette(ui).bad_text),
+    );
 }
 
 /// Splits gw's `path::name=value:flag` into the path and its options.
@@ -3087,18 +3120,17 @@ fn drop_down<'o>(
             .width(width)
             .show_ui(ui, |ui| {
                 if !required
-                    && ui
-                        .selectable_label(!other && value.is_empty(), unset)
+                    && selectable(ui, !other && value.is_empty(), egui::Button::new(unset))
                         .clicked()
                 {
                     chosen = Some((false, ""));
                 }
                 for o in options {
-                    if ui.selectable_label(!other && value == o, o).clicked() {
+                    if selectable(ui, !other && value == o, egui::Button::new(o)).clicked() {
                         chosen = Some((false, o));
                     }
                 }
-                if ui.selectable_label(other, OTHER).clicked() {
+                if selectable(ui, other, egui::Button::new(OTHER)).clicked() {
                     chosen = Some((true, ""));
                 }
             })
@@ -3248,7 +3280,7 @@ fn image_options(
             ui.label(
                 RichText::new(sentence(e))
                     .small()
-                    .color(theme::palette(ui).bad),
+                    .color(theme::palette(ui).bad_text),
             );
         }
     }
@@ -3838,6 +3870,50 @@ fn heading(ui: &mut Ui, text: &str, end: impl FnOnce(&mut Ui)) -> egui::Response
     .inner
 }
 
+/// One of a set of choices, as egui's selectable button looks, its text
+/// where it lies in every state. egui lays an unselected one out without its
+/// frame until the pointer is over it, an edge's width nearer its corner, so
+/// its text and size change on a hover: here its frame is laid out always,
+/// drawn in nothing while idle. In a scope either way, so that its id, and
+/// with it keyboard focus, stays as it is chosen.
+pub(crate) fn selectable(ui: &mut Ui, selected: bool, button: egui::Button) -> egui::Response {
+    let button = button
+        .selected(selected)
+        .frame_when_inactive(true)
+        .frame(true);
+    ui.scope(|ui| {
+        if !selected {
+            let idle = &mut ui.visuals_mut().widgets.inactive;
+            idle.weak_bg_fill = Color32::TRANSPARENT;
+            idle.bg_stroke.color = Color32::TRANSPARENT;
+        }
+        // Chosen, on the accent's tint, its text the strong text's: the
+        // accent's own reads at 3:1 there. Classic's is solid, its text white.
+        let p = theme::palette(ui);
+        if selected && !p.classic {
+            ui.visuals_mut().selection.stroke.color = p.strong;
+        }
+        ui.add(button)
+    })
+    .inner
+}
+
+/// A selectable() choice of `value`: chosen while `current` is it, and a
+/// click makes it so.
+pub(crate) fn selectable_value<'a, T: PartialEq>(
+    ui: &mut Ui,
+    current: &mut T,
+    value: T,
+    text: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    let mut response = selectable(ui, *current == value, egui::Button::new(text));
+    if response.clicked() && *current != value {
+        *current = value;
+        response.mark_changed();
+    }
+    response
+}
+
 /// A checkbox as a row's field, centred on the row's label.
 fn row_checkbox(ui: &mut Ui, on: &mut bool, text: &str) -> egui::Response {
     ui.horizontal(|ui| checkbox(ui, on, text)).inner
@@ -3924,9 +4000,11 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
         let fill = theme::lerp(p.line_strong, p.accent, t);
         ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
         let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
-        // Round by its corners, not a circle, so Classic squares it.
+        // Round by its corners, not a circle, so Classic squares it; white,
+        // and on the accent the accent's text colour.
         let knob = egui::Rect::from_center_size(pos2(x, rect.center().y), vec2(14.0, 14.0));
-        ui.painter().rect_filled(knob, 7, Color32::WHITE);
+        let colour = theme::lerp(Color32::WHITE, p.on_accent, t);
+        ui.painter().rect_filled(knob, 7, colour);
     }
     response
 }
@@ -3940,6 +4018,96 @@ mod tests {
 
     fn schema() -> Schema {
         serde_json::from_str(include_str!("gw-1.23.json")).unwrap()
+    }
+
+    /// Where egui paints `text`: the position of the text shape that lays it
+    /// out, among the frame's shapes.
+    fn text_at(output: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+        fn find(shape: &egui::Shape, text: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(t.pos),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
+                _ => None,
+            }
+        }
+        output.shapes.iter().find_map(|c| find(&c.shape, text))
+    }
+
+    /// A choice, named B, drawn in a Ui.
+    type Choose = fn(&mut Ui) -> egui::Response;
+
+    /// Where the text of the choice `choose` draws lies, and the choice's own
+    /// size, idle, hovered and pressed, in `theme`'s colours.
+    fn choice_states(theme: theme::Choice, choose: Choose) -> [(egui::Pos2, egui::Vec2); 3] {
+        let mut harness = Harness::builder()
+            .with_size(vec2(200.0, 80.0))
+            .build_ui(move |ui| {
+                theme::install(ui.ctx());
+                theme::apply(ui.ctx(), theme);
+                choose(ui);
+            });
+        let seen = |harness: &Harness| {
+            let text = text_at(harness.output(), "B").expect("B painted");
+            (text, harness.get_by_label("B").rect().size())
+        };
+        harness.run();
+        let idle = seen(&harness);
+        let middle = harness.get_by_label("B").rect().center();
+        harness.hover_at(middle);
+        harness.run();
+        let hovered = seen(&harness);
+        harness.drag_at(middle);
+        harness.run();
+        [idle, hovered, seen(&harness)]
+    }
+
+    #[test]
+    fn a_choices_text_and_size_stay_as_they_are_on_a_hover_and_a_press() {
+        // egui lays an unselected selectable out two points narrower, its
+        // text a point off, until it is hovered; a wider edge when pressed
+        // rounds its text half a point on: issue 6.
+        let choices: [(&str, Choose); 4] = [
+            ("unselected", |ui| {
+                selectable(ui, false, egui::Button::new("B"))
+            }),
+            ("selected", |ui| {
+                selectable(ui, true, egui::Button::new("B"))
+            }),
+            ("a chosen value", |ui| selectable_value(ui, &mut 1, 1, "B")),
+            ("a button", |ui| ui.add(egui::Button::new("B"))),
+        ];
+        for theme in [theme::Choice::Light, theme::Choice::Dark] {
+            for (name, choose) in choices {
+                let [idle, hovered, pressed] = choice_states(theme, choose);
+                assert_eq!(idle, hovered, "{name} in {theme:?}, hovered");
+                assert_eq!(idle, pressed, "{name} in {theme:?}, pressed");
+            }
+        }
+    }
+
+    #[test]
+    fn a_choice_keeps_its_id_and_the_keyboards_focus_as_it_is_chosen() {
+        let mut harness = Harness::builder()
+            .with_size(vec2(200.0, 80.0))
+            .build_ui_state(
+                |ui, chosen: &mut (bool, Option<egui::Id>)| {
+                    let response = selectable(ui, chosen.0, egui::Button::new("B"));
+                    if response.clicked() {
+                        chosen.0 = true;
+                    }
+                    chosen.1 = Some(response.id);
+                },
+                (false, None),
+            );
+        harness.run();
+        let unchosen = harness.state().1;
+        harness.get_by_label("B").focus();
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert!(harness.state().0, "chosen from the keyboard");
+        assert_eq!(harness.state().1, unchosen);
+        assert!(harness.get_by_label("B").is_focused(), "still focused");
     }
 
     fn values(pairs: &[(&str, &str)]) -> Values {
@@ -5616,7 +5784,6 @@ mod tests {
             encoding: Some("IBM MFM".into()),
             sectors: Some(sectors),
             bytes: Some(bytes),
-            verifies: true,
             revs: None,
         };
         let shown = |i| describe(&i).replace('\u{a0}', " ");

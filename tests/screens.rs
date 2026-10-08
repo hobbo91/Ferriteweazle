@@ -7,14 +7,19 @@
 
 mod common;
 
-use common::{DAMAGED, DEFAULT, FOUND, REFUSED, Window, damaged_read, greaseweazle, run_button};
+use common::{
+    DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, SPOILT, TRACK_0, WORKBENCH, WRITTEN,
+    Window, akai_report, app_mut, damaged_read, detect_reads, greaseweazle, held, image_part,
+    on_disk, reaching_41, run_button, scratched_adf,
+};
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use ferriteweazle::form::{self, Output};
-use ferriteweazle::job::{Job, Outcome};
+use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::schema::Port;
-use ferriteweazle::{App, Page, Settings};
+use ferriteweazle::theme::Choice;
+use ferriteweazle::{Analysis, App, Drawer, Media, Page, Settings, Shows};
 use std::time::Duration;
 
 /// What gw info prints, as info.py formats it.
@@ -48,9 +53,20 @@ fn render_sized(
     size: egui::Vec2,
     theme: egui::Theme,
     settings: Settings,
-    mut job: Option<Job>,
+    job: Option<Job>,
     act: impl FnOnce(&mut Window),
 ) {
+    save(name, theme, &picture(size, theme, settings, job, act));
+}
+
+/// The window after `act`, two pixels to a point.
+fn picture(
+    size: egui::Vec2,
+    theme: egui::Theme,
+    settings: Settings,
+    mut job: Option<Job>,
+    act: impl FnOnce(&mut Window),
+) -> image::RgbaImage {
     let mut harness = Harness::builder()
         .with_size(size)
         .with_pixels_per_point(2.0)
@@ -78,14 +94,39 @@ fn render_sized(
     }
     act(&mut harness);
     harness.run_steps(20);
+    harness.render().expect("the window renders")
+}
+
+/// Saves `image` to target/screens, named for `theme`.
+fn save(name: &str, theme: egui::Theme, image: &image::RgbaImage) {
     let suffix = match theme {
         egui::Theme::Dark => "dark",
         egui::Theme::Light => "light",
     };
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
     std::fs::create_dir_all(dir).unwrap();
-    let image = harness.render().expect("the window renders");
     image.save(format!("{dir}/{name}-{suffix}.png")).unwrap();
+}
+
+/// Renders the window after `act`, which gives the part of it to keep, and
+/// saves that part with 16 points round it.
+fn render_part(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window) -> egui::Rect,
+) {
+    let mut part = egui::Rect::NOTHING;
+    let image = picture(DEFAULT, theme, settings, Some(job), |w| part = act(w));
+    // Two pixels a point, within the picture.
+    let size = egui::vec2(image.width() as f32, image.height() as f32);
+    let picture = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let kept = (part.expand(16.0) * 2.0).intersect(picture);
+    let [x, y, width, height] =
+        [kept.min.x, kept.min.y, kept.width(), kept.height()].map(|v| v as u32);
+    let kept = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    save(name, theme, &kept);
 }
 
 fn settings(page: &str, theme: egui::Theme) -> Settings {
@@ -98,7 +139,7 @@ fn settings(page: &str, theme: egui::Theme) -> Settings {
     read.set("format", "ibm.1440");
     read.set("revs", "2");
     let convert = s.values.entry("convert".into()).or_default();
-    convert.set("in_file", "/Users/you/Floppies/Disk07.scp");
+    convert.set("in_file", INPUT);
     convert.set("format", "ibm.1440");
     s.outputs.insert(
         "convert/out_file".into(),
@@ -428,6 +469,458 @@ fn screens() {
     }
 }
 
+/// A real Akai S950 disk's HFE image as flux, a scratch cut into side 1,
+/// cylinders 10 to 70, converted to sectors.
+const AKAI: &str = include_str!("data/convert-akai.log");
+
+/// The Convert page's input in these pictures.
+const INPUT: &str = "/Users/you/Floppies/Disk07.scp";
+
+/// A conversion's recording replayed as though run from the Convert page
+/// these pictures show: its input, as gw named it, the page's.
+fn converted(log: &str) -> Job {
+    let mut job = Job::replay("convert", log);
+    if let Some(source) = job.progress.source.as_mut() {
+        source.file = Some(INPUT.into());
+    }
+    job
+}
+
+/// The Akai conversion, its track 0.0 with its sectors' data.
+fn akai_job() -> Job {
+    let mut job = converted(AKAI);
+    job.progress.report(akai_report());
+    job
+}
+
+fn workbench() -> Job {
+    let mut job = Job::replay("read", WORKBENCH);
+    job.output = Some("/Users/you/Documents/Ferriteweazle/Images/Workbench.adf".into());
+    job
+}
+
+/// The Analyse drawer over real disks, at the window's first size, its
+/// smallest, and the size the other pictures have.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn analyse() {
+    let open = |page: &str, theme, media| Settings {
+        drawer: Some(Drawer::Analyse),
+        media,
+        ..settings(page, theme)
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        let read = open("read", theme, Media::Fit);
+        render_sized(
+            "analyse-read",
+            DEFAULT,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let read = open("read", theme, Media::Fit);
+        render("analyse-read-wide", theme, read, Some(workbench()), |_| {});
+        let read = open("read", theme, Media::Fit);
+        let small = ferriteweazle::SMALLEST;
+        render_sized(
+            "analyse-smallest",
+            small,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let read = open("read", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-read-3.5",
+            DEFAULT,
+            theme,
+            read,
+            Some(workbench()),
+            |_| {},
+        );
+        let convert = open("convert", theme, Media::Fit);
+        render_sized(
+            "analyse-akai",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |_| {},
+        );
+        for (name, media, shows) in [
+            ("analyse-scratched", Media::Fit, Shows::Sectors),
+            ("analyse-scratched-flux", Media::Fit, Shows::Flux),
+            ("analyse-scratched-3.5", Media::ThreeHalf, Shows::Sectors),
+        ] {
+            let scratched = converted(SCRATCHED);
+            let convert = Settings {
+                shows,
+                ..open("convert", theme, media)
+            };
+            render(name, theme, convert, Some(scratched), |_| {});
+        }
+        let akai = Settings {
+            shows: Shows::Flux,
+            ..open("convert", theme, Media::Fit)
+        };
+        render_sized(
+            "analyse-akai-flux",
+            DEFAULT,
+            theme,
+            akai,
+            Some(akai_job()),
+            |_| {},
+        );
+        let write = open("write", theme, Media::ThreeHalf);
+        let written = Job::replay("write", WRITTEN);
+        render_sized(
+            "analyse-write",
+            DEFAULT,
+            theme,
+            write,
+            Some(written),
+            |_| {},
+        );
+        // The read as it reaches track 41.0, ringed.
+        let running = reaching_41("read", WORKBENCH);
+        let read = open("read", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-running",
+            DEFAULT,
+            theme,
+            read,
+            Some(running),
+            |_| {},
+        );
+        let convert = open("convert", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-hover",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |w| {
+                w.run_steps(4);
+                w.hover_at(on_disk(w, TRACK_0, 60.0));
+            },
+        );
+        let convert = open("convert", theme, Media::ThreeHalf);
+        render_sized(
+            "analyse-sector",
+            DEFAULT,
+            theme,
+            convert,
+            Some(akai_job()),
+            |w| {
+                w.run_steps(4);
+                let at = on_disk(w, TRACK_0, -20.0);
+                w.drag_at(at);
+                w.run_steps(2);
+                w.drop_at(at);
+                w.run_steps(4);
+                // Some of its bytes selected, from the first row's into the third.
+                let first = w.get_by_label_contains("0000  ").rect();
+                let from = first.left_top() + egui::vec2(44.0, first.height() / 2.0);
+                w.hover_at(from);
+                w.run_steps(2);
+                w.drag_at(from);
+                w.run_steps(2);
+                w.hover_at(from + egui::vec2(180.0, 2.0 * first.height()));
+                w.run_steps(2);
+                w.drop_at(from + egui::vec2(180.0, 2.0 * first.height()));
+            },
+        );
+        let idle = settings("read", theme);
+        render_sized("analyse-greyed", DEFAULT, theme, idle, None, |w| {
+            let button = w.get_by_role_and_label(Role::Button, "Analyse").rect();
+            w.hover_at(button.center());
+        });
+        // Detect: the tracks it read, as the format it found decodes them.
+        let mut detected = Job::replay(DETECT, DETECTED);
+        detected.page = "read".into();
+        let mut found = settings("read", theme);
+        let read = found.values.entry("read".into()).or_default();
+        read.set("format", "amiga.amigados");
+        render_sized(
+            "analyse-detect",
+            DEFAULT,
+            theme,
+            found,
+            Some(detected),
+            |w| {
+                w.get_by_role_and_label(Role::Button, "Analyse").click();
+                w.run_steps(30);
+            },
+        );
+    }
+}
+
+/// The sector window in each state its way round the disk has, cropped to
+/// it: R3 of the Akai disk's track 0.0; Sector 3 of the scratched Workbench
+/// disk gone to on cylinder 18, where gw found it missing; a cylinder being
+/// typed; and a sector of the ring under the pointer.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn sector_window() {
+    use ferriteweazle::track::Id;
+    let open = open_sector;
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        let settings = || Settings {
+            drawer: Some(Drawer::Analyse),
+            media: Media::ThreeHalf,
+            ..settings("convert", theme)
+        };
+        crop_to_sector("sector-found", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+        });
+        crop_to_sector(
+            "sector-missing",
+            theme,
+            settings(),
+            converted(SCRATCHED),
+            |w| {
+                open(w, Id::Number(3));
+                for _ in 0..18 {
+                    w.key_press(egui::Key::ArrowDown);
+                    w.run_steps(2);
+                }
+                w.run_steps(20);
+            },
+        );
+        crop_to_sector("sector-typing", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+            w.get_by_role_and_label(Role::Button, "Cylinder 0").click();
+            w.run_steps(2);
+            w.event(egui::Event::Text("4".into()));
+            w.run_steps(4);
+        });
+        crop_to_sector("sector-hover", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+            // Over R5, two sectors on round the track, in the track's middle:
+            // the ring's half width less the notch and the raised track's half.
+            let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+            let s = facts
+                .sectors
+                .iter()
+                .find(|s| s.id == Id::Ibm([0, 0, 5, 3]))
+                .unwrap();
+            let [a, _, b] = s.at.unwrap();
+            let share = std::f32::consts::TAU * (a + b) / 2.0;
+            let ring = w.get_by_label("Track").rect();
+            let r = ring.width() / 2.0 - 6.0 - 7.0;
+            w.hover_at(ring.center() + r * egui::vec2(share.sin(), -share.cos()));
+            w.run_steps(4);
+        });
+    }
+}
+
+/// Opens the window of sector `id` of track 0.0, the disks drawn to scale.
+fn open_sector(w: &mut Window, id: ferriteweazle::track::Id) {
+    w.run_steps(4);
+    let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+    let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
+    let [a, _, b] = s.at.unwrap();
+    let at = on_disk(w, TRACK_0, 90.0 - 360.0 * (a + b) / 2.0);
+    w.drag_at(at);
+    w.run_steps(2);
+    w.drop_at(at);
+    w.run_steps(6);
+}
+
+/// Renders the window after `act`, which opens a sector's window, and keeps
+/// that window.
+fn crop_to_sector(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window),
+) {
+    render_part(name, theme, settings, job, |w| {
+        act(w);
+        let id = egui::Id::new("disk sector window").with(1u64);
+        w.ctx.memory(|m| m.area_rect(id)).expect("the window")
+    });
+}
+
+/// The Analyse drawer's image view: the file gw makes of a disk, or writes
+/// one from, as gw lays it out.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn images() {
+    let open = |page: &str, theme| Settings {
+        drawer: Some(Drawer::Analyse),
+        analysis: Analysis::Image,
+        ..settings(page, theme)
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        render_sized(
+            "image-read",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(workbench()),
+            |_| {},
+        );
+        let scratched = converted(SCRATCHED);
+        render(
+            "image-scratched",
+            theme,
+            open("convert", theme),
+            Some(scratched),
+            |_| {},
+        );
+        render_sized(
+            "image-akai",
+            DEFAULT,
+            theme,
+            open("convert", theme),
+            Some(akai_job()),
+            |_| {},
+        );
+        let written = Job::replay("write", WRITTEN);
+        render_sized(
+            "image-write",
+            DEFAULT,
+            theme,
+            open("write", theme),
+            Some(written),
+            |_| {},
+        );
+        // The read as it reaches track 41.0.
+        let running = reaching_41("read", WORKBENCH);
+        render_sized(
+            "image-running",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(running),
+            |_| {},
+        );
+        // Over the scratch's first lost sector, then a click on it.
+        for (name, click) in [("image-hover", false), ("image-part", true)] {
+            let mut scratched = converted(SCRATCHED);
+            held(&mut scratched, (18, 0));
+            render(
+                name,
+                theme,
+                open("convert", theme),
+                Some(scratched),
+                move |w| {
+                    w.run_steps(4);
+                    // Track 36 of two columns of 80 rows, its sector 3 of 11.
+                    let at = image_part(w, 80, 11)(36, 3);
+                    w.hover_at(at);
+                    if click {
+                        w.drag_at(at);
+                        w.run_steps(2);
+                        w.drop_at(at);
+                    }
+                },
+            );
+        }
+        // A shorter window: the file in more columns, where the disks lie.
+        render_sized(
+            "image-small",
+            egui::vec2(1240.0, 560.0),
+            theme,
+            open("convert", theme),
+            Some(converted(SCRATCHED)),
+            |_| {},
+        );
+        // A write as it reaches track 41.0: the file as it is, gw's place in
+        // it marked.
+        let writing = reaching_41("write", WRITTEN);
+        render_sized(
+            "image-writing",
+            DEFAULT,
+            theme,
+            open("write", theme),
+            Some(writing),
+            |_| {},
+        );
+        // Before a write: the file it is to take its tracks from, as gw
+        // reads it, gw's filler where the file holds it.
+        let mut before = settings("write", theme);
+        let write = before.values.entry("write".into()).or_default();
+        write.set("file", "/Users/you/Floppies/Workbench.adf");
+        render_sized("image-before", DEFAULT, theme, before, None, |w| {
+            app_mut(w).pin_image(scratched_adf());
+            w.run_steps(2);
+            w.get_by_role_and_label(Role::Button, "Analyse").click();
+            w.run_steps(30);
+        });
+        // Before a conversion, no output named: its input, as gw reads it.
+        let mut input = settings("convert", theme);
+        let convert = input.values.entry("convert".into()).or_default();
+        convert.set("in_file", "/Users/you/Floppies/Workbench.adf");
+        render_sized("convert-input-before", DEFAULT, theme, input, None, |w| {
+            app_mut(w).pin_image(scratched_adf());
+            w.run_steps(2);
+            w.get_by_role_and_label(Role::Button, "Analyse").click();
+            w.run_steps(30);
+        });
+        // A conversion from flux: its input's tracks as gw took them.
+        let tracks = Settings {
+            drawer: Some(Drawer::Analyse),
+            analysis: Analysis::Disk,
+            ..settings("convert", theme)
+        };
+        render_sized(
+            "convert-input-tracks",
+            DEFAULT,
+            theme,
+            tracks,
+            Some(converted(SCRATCHED)),
+            |_| {},
+        );
+        // A read to flux: nothing laid out to show.
+        let mut flux = workbench();
+        let line = r#"{"event":"open","role":"made","file":"Disk.scp","type":"SCP","layout":null}"#;
+        flux.progress.image(line);
+        render_sized(
+            "image-flux",
+            DEFAULT,
+            theme,
+            open("read", theme),
+            Some(flux),
+            |w| {
+                w.run_steps(4);
+                let chip = w
+                    .get_by_role_and_label(Role::Button, "Image analysis")
+                    .rect();
+                w.hover_at(chip.center());
+            },
+        );
+    }
+}
+
+/// The analyses' tabs in the Classic palettes, each chosen.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn analysis_tabs() {
+    for (name, choice) in [("classic", Choice::Classic), ("blue", Choice::Blue)] {
+        for (view, analysis) in [("disk", Analysis::Disk), ("image", Analysis::Image)] {
+            let settings = Settings {
+                theme: choice,
+                drawer: Some(Drawer::Analyse),
+                analysis,
+                ..settings("convert", egui::Theme::Light)
+            };
+            render_sized(
+                &format!("tabs-{name}-{view}"),
+                DEFAULT,
+                egui::Theme::Light,
+                settings,
+                Some(converted(SCRATCHED)),
+                |_| {},
+            );
+        }
+    }
+}
+
 /// The About window's contents, as the window shows them.
 fn about(theme: egui::Theme) {
     let mut texture = None;
@@ -457,4 +950,153 @@ fn about(theme: egui::Theme) {
     std::fs::create_dir_all(dir).unwrap();
     let image = harness.render().expect("the window renders");
     image.save(format!("{dir}/about-{suffix}.png")).unwrap();
+}
+
+/// A Detect on `page` that found no format, with the bridge's `message`.
+fn undetected(page: &str, message: &str) -> Job {
+    let read = detect_reads();
+    let log =
+        read + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n** FATAL ERROR:\n" + message;
+    let mut job = Job::replay(DETECT, &log);
+    job.page = page.into();
+    job
+}
+
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn detect_failed() {
+    const DISK: &str = "No format Greaseweazle Tools knows reads this disk in full. \
+                        Set Disk format to None to read as raw flux (.scp).";
+    const IMAGE: &str = "No format Greaseweazle Tools knows reads this image in full. \
+                         Set Disk format to None to use its tracks as they are.";
+    const IPF: &str = "/Users/you/Documents/Ferriteweazle/Images/Lemmings_Disk1.ipf";
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        for (page, message) in [("read", DISK), ("write", IMAGE), ("convert", IMAGE)] {
+            for (size, at) in [("smallest", ferriteweazle::SMALLEST), ("default", DEFAULT)] {
+                let mut s = settings(page, theme);
+                s.values.entry("write".into()).or_default().set("file", IPF);
+                let convert = s.values.entry("convert".into()).or_default();
+                convert.set("in_file", IPF);
+                convert.set("format", "");
+                let job = undetected(page, message);
+                render_sized(
+                    &format!("detect-failed-{page}-{size}"),
+                    at,
+                    theme,
+                    s,
+                    Some(job),
+                    |_| {},
+                );
+            }
+        }
+    }
+}
+
+/// The disks' tooltip over a sector in Sectors and in Flux, kept to it: R3
+/// of the Akai disk's track 0.0; R1 of the kinds of sector's track, its
+/// second revolution spoilt; Sector 6 of the scratched Workbench disk's
+/// 40.0, where gw found two missing; Sector 5 of the read disk's 40.0.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn tips() {
+    use ferriteweazle::track::Id;
+    // Each: its name, its page, its job, and the sector's cylinder and ID.
+    type Case = (&'static str, &'static str, fn() -> Job, u32, Id);
+    let cases: [Case; 4] = [
+        ("akai", "convert", akai_job, 0, Id::Ibm([0, 0, 3, 3])),
+        (
+            "spoilt",
+            "convert",
+            || converted(SPOILT),
+            0,
+            Id::Ibm([0, 0, 1, 2]),
+        ),
+        (
+            "scratched",
+            "convert",
+            || converted(SCRATCHED),
+            40,
+            Id::Number(6),
+        ),
+        ("workbench", "read", workbench, 40, Id::Number(5)),
+    ];
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        for (case, page, job, cyl, id) in cases {
+            for (view, shows) in [("sectors", Shows::Sectors), ("flux", Shows::Flux)] {
+                let settings = Settings {
+                    drawer: Some(Drawer::Analyse),
+                    media: Media::ThreeHalf,
+                    shows,
+                    ..settings(page, theme)
+                };
+                let name = format!("tip-{case}-{view}");
+                crop_to_tip(&name, theme, settings, job(), |w| {
+                    w.run_steps(4);
+                    let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(cyl, 0)];
+                    let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
+                    let [a, _, b] = s.at.unwrap();
+                    // ECMA-125's tracks, 0.1875 mm apart, in from track 0.
+                    let share = TRACK_0 - cyl as f32 * 0.1875 / 42.9;
+                    w.hover_at(on_disk(w, share, 90.0 - 360.0 * (a + b) / 2.0));
+                    w.run_steps(6);
+                });
+            }
+        }
+    }
+}
+
+/// Renders the window after `act`, which hovers over something, and keeps
+/// the tooltip.
+fn crop_to_tip(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window),
+) {
+    render_part(name, theme, settings, job, |w| {
+        act(w);
+        w.ctx
+            .memory(|m| {
+                let tips = m.areas().visible_layer_ids().into_iter();
+                tips.filter(|l| l.order == egui::Order::Tooltip)
+                    .find_map(|l| m.area_rect(l.id))
+            })
+            .expect("a tooltip")
+    });
+}
+
+/// Each named theme: the Akai disk in Analyse with R3's window open, and a
+/// read's Log, at the window's first size.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn themes() {
+    use ferriteweazle::track::Id;
+    for (choice, _, _, word) in ferriteweazle::theme::CHOICES {
+        // egui's own theme under the named one.
+        let theme = match choice {
+            Choice::System => continue,
+            Choice::Light | Choice::Classic | Choice::Blue | Choice::Vintage => egui::Theme::Light,
+            Choice::Dark | Choice::Greaseweazle | Choice::PcbGreen => egui::Theme::Dark,
+        };
+        let disk = Settings {
+            theme: choice,
+            drawer: Some(Drawer::Analyse),
+            media: Media::ThreeHalf,
+            ..settings("convert", theme)
+        };
+        let name = format!("theme-{word}");
+        render_sized(&name, DEFAULT, theme, disk, Some(akai_job()), |w| {
+            open_sector(w, Id::Ibm([0, 0, 3, 3]));
+        });
+        let read = Settings {
+            theme: choice,
+            ..settings("read", theme)
+        };
+        let name = format!("theme-{word}-log");
+        render_sized(&name, DEFAULT, theme, read, Some(read_job()), |w| {
+            session(w);
+            w.get_by_role_and_label(Role::Button, "Log").click();
+        });
+    }
 }

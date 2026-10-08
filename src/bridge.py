@@ -1,14 +1,34 @@
 """Ferriteweazle's link to gw, through gw's own modules, patched only by
-steady_handshake, bundled_caps, adafruit_seeks and read_passes.
+steady_handshake, bundled_caps, adafruit_seeks, read_passes and the report_*
+hooks.
 
 Modes: serve (one JSON request per stdin line, one reply per stdout line),
 run ARGS (`gw ARGS`; stdin takes 'answer TEXT', anything else stops it),
 detect ARGS, latest [REPO], update TAG BUNDLED DIR and fetch TAG NAME DIR."""
-import argparse, builtins, contextlib, copy, functools, importlib, io, json, os, queue, re, signal, struct, sys, threading, typing, _thread
+import argparse, bisect, builtins, collections, contextlib, copy, functools, importlib, io, itertools, json, math, os, queue, re, signal, struct, sys, threading, typing, weakref, _thread
 
 # Must match job.rs.
 ASK = '@ferriteweazle ask '
 RESULT = '@ferriteweazle result '
+TRACK = '@ferriteweazle track '
+IMAGE = '@ferriteweazle image '
+VERIFY = '@ferriteweazle verify '
+
+# Detect's word where no format reads every sector: of a disk, gw reads it
+# as raw flux with no format; of an image, gw takes its tracks as they are.
+UNDETECTED_DISK = ('No format Greaseweazle Tools knows reads this disk in full. '
+                   'Set Disk format to None to read as raw flux (.scp).')
+UNDETECTED_IMAGE = ('No format Greaseweazle Tools knows reads this image in full. '
+                    'Set Disk format to None to use its tracks as they are.')
+
+# The equal parts of a revolution a track's report counts its flux in: a
+# quarter of a degree each.
+BINS = 1440
+
+# A track's report counts its flux's intervals up to INTERVAL_TOP long, in
+# bins of whole sample ticks as near INTERVAL_BIN wide as the ticks allow.
+INTERVAL_TOP = 20e-6
+INTERVAL_BIN = 50e-9
 
 # Tests point these at a server of their own.
 GITHUB = os.environ.get('FERRITEWEAZLE_GITHUB', 'https://github.com')
@@ -236,11 +256,6 @@ def format_info(name, diskdefs=None):
         with contextlib.suppress(Exception):
             if size := sum(len(t.get_img_track()) for t in tracks):
                 info['bytes'] = size
-        # gw write verifies a track only if its codec gives what it writes a
-        # verify, as all but bitcells do: one track of each kind shows it.
-        with quiet(), contextlib.suppress(Exception):
-            kinds = {type(t): t for t in tracks}.values()
-            info['verifies'] = all(t.master_track().verify is not None for t in kinds)
     return info
 
 
@@ -317,7 +332,7 @@ def schema():
 def serve():
     ops = {'schema': schema, 'formats': formats, 'format': format_info,
            'diskdefs': diskdefs, 'image_format': image_format, 'ports': ports, 'check': check,
-           'fits': fits, 'check_opt': check_opt}
+           'fits': fits, 'check_opt': check_opt, 'image': image}
     out, sys.stdout = sys.stdout, sys.stderr  # stray prints must not corrupt replies
     for line in sys.stdin:
         req = json.loads(line)
@@ -357,14 +372,15 @@ def detect(argv):
     p.add_argument('file', nargs='?')
     a = p.parse_args(argv)
     a.tracks.step, a.fmt_cls = 1, None
-    found = []
+    found, seen = [], {}
+    guarded(scaling)
     if a.file:
         image = util.get_image_class(a.file).from_file(a.file, None, {})
 
         def read(c, h):
             return convert.process_input_track(a, convert.TrackIdentity(a.tracks, c, h), image)
 
-        found.append(probe(read, a.diskdefs))
+        found.append(probe(reporting(read, a, seen), a.diskdefs))
     else:
         usb = util.usb_open(a.device)
         pin2 = a.densel is not None or a.gen_tg43
@@ -373,13 +389,20 @@ def detect(argv):
             if a.densel is not None:
                 usb.set_pin(2, a.densel)
             last = ADAFRUIT_LAST if usb.hw_model == ADAFRUIT_MODEL else 83
-            util.with_drive_selected(lambda: found.append(probe(drive_reader(usb, a), a.diskdefs, last)),
+            read = reporting(drive_reader(usb, a), a, seen)
+            util.with_drive_selected(lambda: found.append(probe(read, a.diskdefs, last)),
                                      usb, util.Drive()(a.drive))
         finally:
             if pin2:
                 usb.set_pin(2, level)
-    ranked, step = found[0]
+    ranked, step, disks = found[0]
     whole = [m.name for m in ranked if m.full]
+    # Each track read, reported again as the format found decodes it; places
+    # are noted only now, after ranking.
+    if whole and round_from_index(a):
+        guarded(report_places)
+        for (c, h), track in seen.items():
+            report(c, h, track, decoded_as(disks[whole[0]], (c // step, h), track))
     for m in ranked[:6]:
         fit = f', {m.misfit:.1%} from its layout' if m.full else ', not all'
         print(f'{m.name}: {m.found} of {m.expected} sectors{fit}')
@@ -387,10 +410,50 @@ def detect(argv):
         print('This is a 40-track disk in an 80-track drive: it needs Step 2.')
     print(RESULT + json.dumps({'formats': whole, 'step': step}), flush=True)
     if not whole:
-        print('** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full. Choose one by hand.')
+        print('** FATAL ERROR:\n' + (UNDETECTED_IMAGE if a.file else UNDETECTED_DISK))
         return 1
     print(f'Format {whole[0]}')
     return 0
+
+
+def reporting(read, a, seen):
+    """`read(c, h)` for probe, made to report each track it reads, as gw's
+    line on it names it, and keep it in `seen` for its report again once
+    the format is found. None of a track an image lacks, nor where tracks do
+    not run round from the index."""
+    def read_reporting(c, h):
+        track = read(c, h)
+        if track is not None:
+            seen[c, h] = track
+            if round_from_index(a):
+                report(c, h, track, None)
+        return track
+    return read_reporting
+
+
+def decoded_as(disk, key, track):
+    """`track` decoded as format `disk` has its track `key`, as probe
+    decodes it to weigh the format; None if that fails."""
+    with quiet(), contextlib.suppress(Exception):
+        t = disk.mk_track(*key)
+        t.decode_flux(track)
+        return t
+    return None
+
+
+def decoded_like(made, flux):
+    """`flux` decoded as an IBM-style track of the mode, rate and revolution
+    of `made`, with no layout of its own to fill: what is there, as gw's
+    decoder finds it. None for other codecs, which have no such track."""
+    from greaseweazle.codec.ibm import ibm
+    if not isinstance(made, ibm.IBMTrack):
+        return None
+    with quiet(), contextlib.suppress(Exception):
+        t = ibm.IBMTrack(made.cyl, made.head, made.mode)
+        t.clock, t.time_per_rev = made.clock, made.time_per_rev
+        t.decode_flux(flux)
+        return t
+    return None
 
 
 def drive_reader(usb, a):
@@ -424,10 +487,11 @@ class Match(typing.NamedTuple):
 
 
 def probe(read, diskdefs, last=83):
-    """Formats ranked by the tracks `read(cyl, head)` returns, and the head
-    step the disk needs. Decoding checks only sector IDs, sizes and data rate,
-    leaving 22 groups of formats alike in gw 1.23, so rank() weighs where the
-    sectors sit, and tracks that tell the leaders apart are read."""
+    """Formats ranked by the tracks `read(cyl, head)` returns, the head step
+    the disk needs, and the formats tried, by name. Decoding checks only
+    sector IDs, sizes and data rate, leaving 22 groups of formats alike in gw
+    1.23, so rank() weighs where the sectors sit, and tracks that tell the
+    leaders apart are read."""
     from greaseweazle.codec import codec
     disks = {}
     # gw's own formats, then a definitions file's, which win a shared name.
@@ -442,7 +506,7 @@ def probe(read, diskdefs, last=83):
     decoded = {}
     ranked = rank(disks, tracks, decoded)
     if not any(m.full for m in ranked):
-        return ranked, 1
+        return ranked, 1, disks
     # A 40-track disk in an 80-track drive has cylinder 1 at physical 2.
     second = read(2, 0)
     step = stepping(disks[ranked[0].name], second)
@@ -461,7 +525,7 @@ def probe(read, diskdefs, last=83):
             break
         tracks[key] = read(key[0] * step, key[1])
         ranked = rank({m.name: disks[m.name] for m in leaders}, tracks, decoded)
-    return filesystem(ranked, disks, tracks, read, step), step
+    return filesystem(ranked, disks, tracks, read, step), step, disks
 
 
 def stepping(disk, track):
@@ -732,31 +796,51 @@ def read_passes(passes, disk, keep):
     from greaseweazle import track
     from greaseweazle.image.scp import SCP
     from greaseweazle.tools import read
-    if not all(hasattr(read, f) for f in ('read_to_image', 'read_with_retry', 'print_summary')):
+    wanted = ('read_to_image', 'read_with_retry', 'read_and_normalise', 'print_summary')
+    if not all(hasattr(read, f) for f in wanted):
         sys.exit('** FATAL ERROR:\nThis Greaseweazle Tools cannot read in passes.')
     first, retry = read.read_to_image, read.read_with_retry
-    got, reads, flux_of_pass = {}, {}, {}
+    got, count, flux_of_pass = {}, {}, {}
 
     def read_with_retry(usb, args, t):
         capture = copy.copy(args)
         capture.raw = True  # keeps every retry's flux
-        flux, dat = retry(usb, capture, t)
+        # Each read as gw makes it, before gw joins the next onto it in place.
+        made, normalise = [], read.read_and_normalise
+
+        def read_and_normalise(*a, **k):
+            flux = normalise(*a, **k)
+            with contextlib.suppress(Exception):
+                each = copy.copy(flux)
+                each.list, each.index_list = list(flux.list), list(flux.index_list)
+                made.append(each)
+            return flux
+
+        read.read_and_normalise = read_and_normalise
+        try:
+            flux, dat = retry(usb, capture, t)
+        finally:
+            read.read_and_normalise = normalise
         key = t.cyl, t.head
-        flux_of_pass[key] = flux
-        reads[key] = reads.get(key, 0) + 1
+        if keep:
+            flux_of_pass[key] = flux
+        count[key] = count.get(key, 0) + 1
         if key in got:
             old_flux, old = got[key]
             if old is not None:
-                for pll in track.plls:
-                    if old.nr_missing() == 0:
-                        break
-                    old.decode_flux(flux, pll)
-                print(f'T{t.cyl}.{t.head}: {old.summary_string()} from {reads[key]} passes')
+                # Each read on its own, as gw decodes its retries.
+                for each in made:
+                    for pll in track.plls:
+                        if old.nr_missing() == 0:
+                            break
+                        old.decode_flux(each, pll)
+                print(f'T{t.cyl}.{t.head}: {old.summary_string()} from {count[key]} passes')
                 dat = old
             if args.raw:
                 old_flux.append(flux)
-            flux = old_flux
-        got[key] = flux, dat
+                flux = old_flux
+        # Flux kept only to join the next pass's to, with --raw.
+        got[key] = (flux if args.raw else None), dat
         return flux, dat
 
     def missing(t):
@@ -785,7 +869,8 @@ def read_passes(passes, disk, keep):
                 else:
                     print(f'Pass {n} of {passes}: {len(todo)} track' + 's' * (len(todo) != 1))
                     for t in todo:
-                        flux, dat = read_with_retry(usb, args, t)
+                        # gw's name for it, which report_tracks may wrap.
+                        flux, dat = read.read_with_retry(usb, args, t)
                         if args.raw:
                             image.emit_track(t.cyl, t.head, flux)
                         elif dat is not None:
@@ -805,6 +890,1016 @@ def read_passes(passes, disk, keep):
     read.read_to_image, read.read_with_retry = read_to_image, read_with_retry
 
 
+# What the bridge has patched in gw, as it was, so that a gw whose insides
+# differ from those the bridge knows runs as it is: see guarded.
+PATCHED = []
+NOT_OWN = object()
+
+
+def patch(owner, name, value):
+    """Sets `owner`'s `name` to `value`, noting what it was."""
+    PATCHED.append((owner, name, vars(owner).get(name, NOT_OWN)))
+    setattr(owner, name, value)
+
+
+def guarded(install):
+    """Runs `install`, which patches gw to report on it. Where that fails,
+    as with a gw whose insides differ from those the bridge knows, undoes
+    every patch so far: gw runs as it is, unreported, and the log says why."""
+    try:
+        install()
+        return True
+    except Exception as e:
+        while PATCHED:
+            owner, name, was = PATCHED.pop()
+            if was is NOT_OWN:
+                delattr(owner, name)
+            else:
+                setattr(owner, name, was)
+        print(f'Ferriteweazle: no reports from this Greaseweazle Tools: {e!r}', file=sys.stderr)
+        return False
+
+
+def round_from_index(args):
+    """Whether gw takes each track round from the disk's index, so that what
+    the bridge reports of it lies where it lies on the disk: not with
+    --reverse, which runs it backwards, nor --fake-index, which starts it
+    wherever it falls."""
+    return not getattr(args, 'reverse', False) and getattr(args, 'fake_index', None) is None
+
+
+def report_tracks(command):
+    """Has gw report each track it reads, converts or writes on a TRACK line,
+    for the disk view: a read's flux and what it decoded, the input track a
+    conversion decoded, and for a write, the flux gw writes as it is, or the
+    master track it writes from a format's sectors, then the track as gw's
+    verify reads it back. None where the track does not run round from the
+    index. For a write, also whether gw verifies each track, on a VERIFY
+    line as gw comes to write it."""
+    if command in ('read', 'convert', 'write'):
+        report_places()
+    if command in ('read', 'convert'):
+        scaling()
+    if command == 'read':
+        from greaseweazle.tools import read
+        inner = read.read_with_retry
+        joining()
+
+        def read_with_retry(usb, args, t):
+            flux, dat = inner(usb, args, t)
+            if round_from_index(args):
+                report(t.cyl, t.head, indexed(flux, args), dat)
+            return flux, dat
+
+        patch(read, 'read_with_retry', read_with_retry)
+    elif command == 'convert':
+        from greaseweazle.tools import convert
+        opened, process = convert.open_input_image, convert.process_input_track
+        took = {}
+
+        def open_input_image(args, image_class):
+            image = opened(args, image_class)
+            get = image.get_track
+
+            def get_track(cyl, head):
+                took[cyl, head] = track = once(get(cyl, head))
+                return track
+
+            image.get_track = get_track
+            return image
+
+        def process_input_track(args, t, in_image):
+            dat = process(args, t, in_image)
+            track = took.pop((t.physical_cyl, t.physical_head), None)
+            if round_from_index(args):
+                report(t.cyl, t.head, track, dat, absent=track is None)
+            if getattr(getattr(track, 'flux', None), 'once', False):
+                del track.flux
+            return dat
+
+        patch(convert, 'open_input_image', open_input_image)
+        patch(convert, 'process_input_track', process_input_track)
+    elif command == 'write':
+        from greaseweazle.codec import codec
+        from greaseweazle.flux import Flux
+        from greaseweazle.tools import write
+        from greaseweazle.track import MasterTrack
+        opened, writing = write.open_image, write.write_from_image
+        taking = {}
+
+        def write_from_image(usb, args, image, *a, **k):
+            taking['args'] = args
+            put = usb.write_track
+
+            def write_track(*a, **k):
+                done = put(*a, **k)
+                # What gw wrote, once it has: once for the track, however often retried.
+                pending = taking.pop('pending', None)
+                if pending is not None and tuple(pending[:2]) == taking.get('track'):
+                    report(*pending)
+                return done
+
+            with contextlib.suppress(Exception):
+                usb.write_track = write_track
+            return writing(usb, args, image, *a, **k)
+
+        def written(*pending, master=True):
+            # gw's write precompensation moves a master track's flux as it
+            # writes it: then what it writes is not this.
+            if not master or getattr(taking.get('args'), 'precomp', None) is None:
+                taking['pending'] = pending
+
+        def open_image(args, image_class):
+            image = opened(args, image_class)
+            get = image.get_track
+
+            def get_track(cyl, head):
+                taking['track'] = cyl, head
+                track = get(cyl, head)
+                args = taking.get('args')
+                if args is None or not round_from_index(args):
+                    return track
+                if track is None:
+                    report(cyl, head, None, None, 'image', absent=True)
+                # gw writes raw flux as it is, from the index to the next, with no
+                # format to decode it into; a codec's track as its master track.
+                # A hard-sectored disk's waits on its holes.
+                elif not isinstance(track, codec.Codec) and args.fmt_cls is None and not args.hard_sectors:
+                    with contextlib.suppress(Exception):
+                        flux = copy.copy(track.flux())
+                        # gw writes only flux that starts at an index; one that
+                        # runs on past it to a splice overwrites its own start.
+                        if flux.index_cued and not flux.splice:
+                            flux.set_nr_revs(1)
+                            written(cyl, head, flux, None, 'image',
+                                    master=isinstance(track, MasterTrack))
+                return track
+
+            image.get_track = get_track
+            return image
+
+        def decoded(flux, made):
+            """`flux` decoded as the format being written has the track, or
+            with none, as a track of the kind `made` is."""
+            if (fmt := taking['args'].fmt_cls) is not None:
+                return decoded_as(fmt, taking['track'], flux)
+            return decoded_like(made, flux)
+
+        def mastering(master):
+            def mastered(self, *a, **k):
+                if taking.get('mastering'):  # a codec's master track made by another's
+                    return master(self, *a, **k)
+                taking['mastering'] = True
+                try:
+                    track = master(self, *a, **k)
+                finally:
+                    taking['mastering'] = False
+                # gw writes the master track from the index, scaled to the
+                # drive's revolution. A hard-sectored disk's waits on its holes.
+                args = taking.get('args')
+                if 'track' in taking and args and round_from_index(args) and not args.hard_sectors:
+                    with contextlib.suppress(Exception):
+                        # Decoded as the disk turns on past the index, so that a
+                        # sector over it reads to its end, as it does from the disk;
+                        # one revolution of it as gw writes it.
+                        turns = track.flux(revs=2)
+                        one = copy.copy(turns)
+                        one.set_nr_revs(1)
+                        written(*taking['track'], one, decoded(turns, self), 'written')
+                return track
+            return mastered
+
+        def verifying(verify):
+            def verified(self, flux, *a, **k):
+                ok = verify(self, flux, *a, **k)
+                # What the disk holds now: the track read back, as gw's check read it.
+                with contextlib.suppress(Exception):
+                    if 'track' in taking and round_from_index(taking.get('args')):
+                        report(*taking['track'], flux, decoded(flux, self), 'verify')
+                return ok
+            vars(verified)[REPORTS] = True
+            return verified
+
+        def writing_out(out):
+            def flux_for_writeout(self, *a, **k):
+                # gw verifies only a MasterTrack with a verify, unless
+                # --no-verify (gw 1.23's test).
+                with contextlib.suppress(Exception):
+                    if 'track' in taking and (args := taking.get('args')) is not None:
+                        c, h = taking['track']
+                        verifies = (not args.no_verify and isinstance(self, MasterTrack)
+                                    and self.verify is not None)
+                        line = json.dumps({'c': c, 'h': h, 'verifies': verifies}, separators=(',', ':'))
+                        print(VERIFY + line, flush=True)
+                        # An image's own verifier, as an IPF's or EDSK's, reports what it reads back too.
+                        if verifies and not vars(type(self.verify).verify_track).get(REPORTS):
+                            cls = type(self.verify)
+                            patch(cls, 'verify_track', verifying(cls.verify_track))
+                return out(self, *a, **k)
+            return flux_for_writeout
+
+        patch(write, 'open_image', open_image)
+        patch(write, 'write_from_image', write_from_image)
+        patch(MasterTrack, 'flux_for_writeout', writing_out(MasterTrack.flux_for_writeout))
+        patch(Flux, 'flux_for_writeout', writing_out(Flux.flux_for_writeout))
+        for cls in codecs():
+            if 'master_track' in vars(cls):
+                patch(cls, 'master_track', mastering(cls.master_track))
+            if 'verify_track' in vars(cls):
+                patch(cls, 'verify_track', verifying(cls.verify_track))
+
+
+def report_images(command):
+    """Has gw report on IMAGE lines the image a job makes or takes tracks
+    from: how gw lays out its file, each track it puts in a made image, the
+    file once written, and a conversion's routes."""
+    if command == 'read':
+        from greaseweazle.tools import read
+        patch(read, 'open_image', making(read.open_image))
+    elif command == 'convert':
+        from greaseweazle.tools import convert
+        patch(convert, 'open_output_image', making(convert.open_output_image))
+        patch(convert, 'open_input_image', taking_from(convert.open_input_image))
+        patch(convert, 'convert', routing(convert.convert))
+    elif command == 'write':
+        from greaseweazle.tools import write
+        patch(write, 'open_image', taking_from(write.open_image))
+
+
+def image_line(event, **facts):
+    print(IMAGE + json.dumps({'event': event, **facts}, separators=(',', ':')), flush=True)
+
+
+def making(opened):
+    """`opened`, which makes the image a job writes, made to report it."""
+    def open_image(args, image_class):
+        image = opened(args, image_class)
+        with contextlib.suppress(Exception):
+            layout = image_layout(image)
+            image_line('open', role='made', file=getattr(image, 'filename', None),
+                       type=type(image).__name__, layout=layout)
+            emit, made = image.emit_track, image.get_image
+
+            # Each track's sectors as the layout has them, by key.
+            laid = {(t['c'], t['h']): [[s['i'], s['id'], s['len']] for s in t['sectors']]
+                    for t in (layout or {}).get('tracks', [])}
+
+            def emit_track(cyl, side, track):
+                emit(cyl, side, track)
+                # Where the file is laid out, what each track puts in it; and
+                # whether its sectors are the layout's, as gw makes them from
+                # the format, not an input image's own track passed through.
+                if layout is not None:
+                    with contextlib.suppress(Exception):
+                        has = [bool(track.has_sec(i)) for i in range(track.nsec)]
+                        held = bytes(track.get_img_track()).hex()
+                        parts = [list(x) for x in sector_parts(track) or []]
+                        facts = {} if parts == laid.get((cyl, side)) else {'laid': False}
+                        image_line('track', c=cyl, h=side, has=has, bytes=held, **facts)
+
+            def get_image():
+                dat = made()
+                with contextlib.suppress(Exception):
+                    image_line('written', size=len(dat), tracks=as_laid_out(image, dat, False))
+                return dat
+
+            image.emit_track, image.get_image = emit_track, get_image
+        return image
+    return open_image
+
+
+def taking_from(opened):
+    """`opened`, which reads the image a job takes its tracks from, made to
+    report it, checked against the file gw read it from."""
+    def open_image(args, image_class):
+        image = opened(args, image_class)
+        with contextlib.suppress(Exception):
+            image_line('open', **taken(image))
+        return image
+    return open_image
+
+
+def taken(image):
+    """What an image gw takes tracks from is: its file and gw's type, and
+    how gw lays out the file, with its bytes, where the file is laid out so."""
+    name = getattr(image, 'filename', None)
+    layout = image_layout(image)
+    size = held = None
+    differs = False
+    if layout is not None:
+        with open(name, 'rb') as f:
+            dat = f.read()
+        size = len(dat)
+        if as_laid_out(image, dat, True) is None:
+            layout, differs = None, True
+        else:
+            laid = sum(p['len'] for t in layout['tracks'] for p in t['sectors'])
+            held = dat[:laid].hex()
+    out = {'role': 'source', 'file': name, 'type': type(image).__name__,
+           'layout': layout, 'size': size, 'bytes': held}
+    if differs:
+        out['differs'] = True  # gw lays the type out, but not this file so
+    return out
+
+
+def image(args):
+    """The image a write or a conversion is to take its tracks from, as its
+    job reports it on opening: gw's own command run with `args`, as the job
+    would run it, up to where gw has opened that image, before it opens a
+    device or a conversion's output."""
+    rest = list(args)
+    while rest and rest[0].startswith('-'):  # gw's own options, such as --bt
+        rest.pop(0)
+    command = rest[0] if rest else None
+    opener = {'write': 'open_image', 'convert': 'open_input_image'}.get(command)
+    if opener is None:
+        raise ValueError(f'gw {command} takes its tracks from no image.')
+    tool = importlib.import_module('greaseweazle.tools.' + command)
+    opened = getattr(tool, opener)
+
+    def open_image(a, image_class):
+        raise Captured(taken(opened(a, image_class)))
+
+    from greaseweazle import track
+    from greaseweazle.tools import util
+    said, plls = io.StringIO(), track.plls[:]  # gw's convert adds --pll's to them
+    usb_open = util.usb_open
+
+    def no_device(*a, **k):
+        raise ValueError('gw opens the Greaseweazle before this image.')
+
+    # A gw that opens the device before the image must not open it here.
+    setattr(tool, opener, open_image)
+    util.usb_open = no_device
+    try:
+        with contextlib.redirect_stdout(said), contextlib.redirect_stderr(said):
+            tool.main(['gw'] + rest)
+    except Captured as c:
+        return c.args[0]
+    except SystemExit:
+        # gw's parser has said why, last, after its name.
+        lines = said.getvalue().strip().splitlines()
+        why = lines[-1].split(' error: ', 1)[-1] if lines else 'gw took none of these arguments.'
+        raise ValueError(why)
+    finally:
+        setattr(tool, opener, opened)
+        util.usb_open = usb_open
+        track.plls[:] = plls
+    raise ValueError('gw opened no image.')
+
+
+def routing(converting):
+    """gw's conversion, made to report first each track it goes through, as
+    its track lines name it, with where it lies in the input image and where
+    in the output: gw's track lists can move them."""
+    def convert(args, in_image, out_image):
+        with contextlib.suppress(Exception):
+            routes = [[t.cyl, t.head, *args.tracks.ch_to_pch(t.cyl, t.head),
+                       t.physical_cyl, t.physical_head]
+                      for t in args.out_tracks if (t.cyl, t.head) in args.tracks]
+            image_line('routes', tracks=routes)
+        return converting(args, in_image, out_image)
+    return convert
+
+
+def image_layout(image):
+    """How gw lays out a sector image's file: each track in the file's
+    order, keyed as gw keeps it, with the bytes each of its sectors takes, in
+    turn, and the filler gw writes in place of each one it lacks; and the
+    least cylinders the file has, past which gw writes cylinders up to the
+    last it holds data in. None for an image gw keeps some other way, such
+    as flux, or one this cannot lay out."""
+    from greaseweazle.image.img import IMG
+    if not isinstance(image, IMG):
+        return None
+    try:
+        return sector_layout(image)
+    except Exception:
+        return None
+
+
+def sector_layout(image):
+    tracks, fillers = [], []
+    for cyl, head in placed(image):
+        track = image.fmt.mk_track(cyl, head)
+        empty = bytes(track.get_img_track())
+        parts = sector_parts(track)
+        if not empty or parts is None or sum(n for _, _, n in parts) != len(empty):
+            return None
+        sectors, at = [], 0
+        for index, sid, n in parts:
+            filler = empty[at:at + n].hex()
+            if filler not in fillers:
+                fillers.append(filler)
+            sectors.append({'i': index, 'id': sid, 'len': n, 'fill': fillers.index(filler)})
+            at += n
+        tracks.append({'c': cyl, 'h': head, 'sectors': sectors})
+    return {'tracks': tracks, 'fillers': fillers, 'min_cyls': image.min_cyls}
+
+
+def placed(image):
+    """The tracks of a sector image in its file's order, keyed as gw keeps them."""
+    for cyl, head in image.track_list():
+        yield cyl, head ^ 1 if image.sides_swapped else head
+
+
+def sector_parts(track):
+    """Each of a track's sectors as gw puts them in a sector image, in turn:
+    its index among the track's sectors, its C, H, R and N where it has them,
+    and the bytes it takes. None where they are not all one size and gw has
+    no other order for them."""
+    if hasattr(track, 'sectors') and hasattr(track, 'img_bps'):
+        # IBM-style: in the order of R, each padded to the format's bytes per sector.
+        order = sorted(range(len(track.sectors)), key=lambda i: track.sectors[i].idam.r)
+        size = lambda s: len(s.dam.data) if track.img_bps is None else track.img_bps
+        return [(i, list(sector_id(track.sectors[i])), size(track.sectors[i])) for i in order]
+    # Apple II's in its format's order, by their numbers; others' in their own.
+    from greaseweazle.codec.apple2 import apple2_gcr
+    if isinstance(track, apple2_gcr.Apple2GCR):
+        order = list(track.config.secs)
+    else:
+        order = list(range(track.nsec))
+    whole = len(track.get_img_track())
+    if not order or whole % len(order):
+        return None
+    return [(i, None, whole // len(order)) for i in order]
+
+
+def as_laid_out(image, dat, reading):
+    """Each track's part of `dat`, an image's file, as [c, h, start, end], if
+    every track there is gw's bytes for it, in turn, to the file's end: a
+    file gw reads, padded as gw pads it, else one it writes, which ends early
+    where gw left out the cylinders past the last it holds data in. None if
+    they differ."""
+    out, at = [], 0
+    for cyl, head in placed(image):
+        key = cyl, head
+        track = image.to_track[key] if key in image.to_track else image.fmt.mk_track(*key)
+        want = bytes(track.get_img_track())
+        if not reading and at == len(dat):
+            break
+        got = dat[at:at + len(want)]
+        if reading:
+            got = got.ljust(len(want), b'\0')
+        if got != want:
+            return None
+        out.append([cyl, head, at, at + len(want)])
+        at += len(want)
+    return out if reading or at == len(dat) else None
+
+
+def codecs():
+    """Every codec class gw has."""
+    from greaseweazle.codec import codec
+    todo, found = list(codec.Codec.__subclasses__()), []
+    while todo:
+        cls = todo.pop()
+        found.append(cls)
+        todo += cls.__subclasses__()
+    return found
+
+
+def report(cyl, head, track, dat, source=None, absent=False):
+    """Prints a TRACK line for cyl.head: the flux of `track`, the sectors
+    decoded into `dat`, a write's `source`, and `absent` where the image
+    lacks the track. `turned` marks flux read from a disk or a flux image,
+    not flux gw made. A report that fails is left out: gw must go on."""
+    from greaseweazle.codec import codec
+    from greaseweazle.flux import Flux
+    with contextlib.suppress(Exception):
+        out = {'c': cyl, 'h': head}
+        if source:
+            out['source'] = source
+        if absent:
+            out['absent'] = True
+        if source in (None, 'verify') and isinstance(track, Flux):
+            out['turned'] = True
+        # A codec's track is an image's sectors, whose flux gw has yet to make.
+        if track is not None and not isinstance(track, codec.Codec):
+            with contextlib.suppress(Exception):
+                out['flux'] = report_flux(track.flux())
+        if isinstance(dat, codec.Codec):
+            out['codec'] = report_codec(dat)
+        print(TRACK + json.dumps(out, separators=(',', ':')), flush=True)
+
+
+def report_flux(flux):
+    """A track's flux, in ticks of its sample rate: each revolution read,
+    from index pulse to index pulse, and their mean; and over each read gw
+    joined into it, its flux transitions in each of BINS equal parts of a
+    revolution, and the passes made over them, as shares of a revolution
+    from the index: each revolution whole, and what the read took before its
+    first pulse or after its last, by the length of the revolution beside
+    it; in a read with none, by the others' mean, else by gw's measure of
+    the drive's turn, which `period` then is. Whether gw scaled its times, `scaled`, as
+    with --adjust-speed, and whether its pulses are a hard-sectored disk's
+    first sector's hole, `holes`, as gw takes it, not its index. None where
+    the pulses are not a disk's index: one of no length, or a read that
+    runs two revolutions past one."""
+    ends = list(itertools.accumulate(flux.list))
+    bins, passes, revs = [0] * BINS, [], []
+    # Each read's first value, which runs from where the read starts.
+    firsts = [bisect.bisect_right(ends, start) for start, _, _ in reads(flux, 0.0)]
+    split = list(reads(flux, ends[-1] if ends else 0.0))
+    # Never gw's own mean, which counts the joints between reads.
+    found = [b - a for _, pulses, _ in split for a, b in zip(pulses, pulses[1:])]
+    measure = sum(found) / len(found) if found else getattr(flux, '_ticks_per_rev', None)
+    for start, pulses, end in split:
+        if not pulses or (len(pulses) < 2 and measure is None):
+            continue  # no index, or no revolution, to place it by
+        turns = [b - a for a, b in zip(pulses, pulses[1:])]
+        first = turns[0] if turns else measure
+        last = turns[-1] if turns else measure
+        lead, tail = pulses[0] - start, end - pulses[-1]
+        if min(turns + [first, last]) <= 0 or lead >= 2 * first or tail >= 2 * last:
+            return None
+        # Each part of the read: where it starts and ends, in ticks, the share
+        # of a revolution it starts at, and the revolution's length.
+        parts = [(a, b, 0.0, b - a) for a, b in zip(pulses, pulses[1:])]
+        if lead > 0:
+            parts.insert(0, (start, pulses[0], 1.0 - lead / first, first))
+        if tail > 0:
+            parts.append((pulses[-1], end, 0.0, last))
+        for a, b, share, turn in parts:
+            passes.append([share, share + (b - a) / turn])
+            part = math.floor(share * BINS)
+            at = bisect.bisect_right(ends, a)
+            while True:
+                edge = min(a + ((part + 1) / BINS - share) * turn, b)
+                hit = bisect.bisect_right(ends, edge, at)
+                bins[part % BINS] += hit - at
+                at, part = hit, part + 1
+                if edge >= b:
+                    break
+        revs += turns
+    out = {'freq': flux.sample_freq, 'period': sum(revs) / len(revs) if revs else measure,
+           'revs': revs, 'passes': passes, 'bins': bins, 'intervals': intervals(flux, firsts)}
+    if vars(flux).get(SCALED):
+        out['scaled'] = True
+    if getattr(flux, 'sector_list', None) is not None:
+        out['holes'] = True
+    return out
+
+
+def intervals(flux, firsts):
+    """How far apart the flux transitions of `flux` are, as gw holds them:
+    its values, but those at `firsts`, which run from where a read starts,
+    counted in bins `width` sample ticks wide, from bin `first`, the first
+    with any, to the last before bin `top`, the first at or past
+    INTERVAL_TOP, and how many are in it or past it."""
+    width = max(1, round(flux.sample_freq * INTERVAL_BIN))
+    # Rounded first: 40 MHz's 20 us is 800.0000000000001 ticks in floats.
+    top = math.ceil(round(flux.sample_freq * INTERVAL_TOP / width, 6))
+    # Each value counted, then each count binned: far fewer bins than values.
+    values = collections.Counter(flux.list)
+    values.subtract(flux.list[i] for i in firsts if i < len(flux.list))
+    counts = collections.Counter()
+    for value, n in values.items():
+        counts[value // width] += n
+    counts = +counts  # none of no count
+    held = [int(b) for b in counts if b < top]
+    first, last = min(held, default=0), max(held, default=-1)
+    return {'width': width, 'first': first, 'top': top,
+            'counts': [counts.get(b, 0) for b in range(first, last + 1)],
+            'longer': sum(n for b, n in counts.items() if b >= top)}
+
+
+def reads(flux, end):
+    """Each read gw joined into `flux`, in ticks from its start: where it
+    starts, its index pulses, and where it ends, `end` for the last."""
+    joins = {k: (tail, cued) for k, tail, cued in vars(flux).get(JOINS, [])}
+    start, at = 0.0, 0.0
+    pulses = [0.0] if flux.index_cued else []
+    for k, ticks in enumerate(flux.index_list):
+        if k in joins:
+            tail, cued = joins[k]
+            yield start, pulses, at + tail
+            start = at + tail
+            pulses = [start] if cued else []
+        at += ticks
+        pulses.append(at)
+    yield start, pulses, end
+
+
+def joining():
+    """Has gw's flux note where it joins one read onto the end of another:
+    the index interval that runs from the first's last pulse over the rest of
+    it and the start of the second, how far the first ran on past its last
+    pulse, and whether the second starts at a pulse. gw counts the joint as a
+    revolution; it is none."""
+    from greaseweazle.flux import Flux
+    append = Flux.append
+
+    def appended(self, flux):
+        with contextlib.suppress(Exception):
+            k = len(self.index_list)
+            factor = self.sample_freq / flux.sample_freq
+            ran = sum(self.list) - sum(self.index_list)
+            joins = vars(self).get(JOINS, []) + [(k, ran, flux.index_cued)]
+            joins += [(k + j, t * factor, c) for j, t, c in vars(flux).get(JOINS, [])]
+        append(self, flux)
+        with contextlib.suppress(NameError):
+            vars(self)[JOINS] = joins
+            if vars(flux).get(SCALED):
+                vars(self)[SCALED] = True
+    patch(Flux, 'append', appended)
+
+
+def scaling():
+    """Has gw's flux note that gw scaled its times, as --adjust-speed does:
+    then they are not the disk's."""
+    from greaseweazle.flux import Flux
+    scale = Flux.scale
+
+    def scaled(self, *a, **k):
+        vars(self)[SCALED] = True
+        return scale(self, *a, **k)
+    patch(Flux, 'scale', scaled)
+
+
+def indexed(flux, args):
+    """A read's flux with only its index pulses: gw tells a hard-sectored
+    disk's sector holes from its index only in flux it does not keep raw.
+    None where it cannot be told."""
+    if not getattr(args, 'hard_sectors', False) or getattr(flux, 'sector_list', None) is not None:
+        return flux
+    if vars(flux).get(JOINS):
+        return None
+    with contextlib.suppress(Exception):
+        flux = copy.copy(flux)  # identify_hard_sectors rebinds its lists
+        flux.identify_hard_sectors()
+        return flux
+    return None
+
+
+def once(track):
+    """An image's track, its flux made once however often gw asks for it:
+    gw's decoder asks, then report() does. Until the `flux` it is given,
+    marked `once`, is taken off it again. Raw flux is its own already."""
+    from greaseweazle.flux import Flux
+    if track is None or isinstance(track, Flux) or not callable(getattr(track, 'flux', None)):
+        return track
+    make, made = track.flux, {}
+
+    def flux(*a, **k):
+        try:
+            key = a, tuple(sorted(k.items()))
+            hash(key)
+        except TypeError:
+            return make(*a, **k)
+        if key not in made:
+            made[key] = make(*a, **k)
+        return made[key]
+    flux.once = True
+    with contextlib.suppress(Exception):  # a track that takes no attribute is left as it is
+        track.flux = flux
+    return track
+
+
+def report_codec(dat):
+    """What gw decoded of a track: its summary, timing and sectors. An IBM-
+    style track has the sectors found round it as they lie, in bit cells
+    from the index and, where decoded from flux, in seconds from it, with
+    their data, those its format lays out, and the headers and data blocks
+    found apart, which gw drops; others have the sectors that decoded, with
+    their data and where report_places saw each begin."""
+    from greaseweazle.codec.ibm import ibm
+    inner = getattr(dat, 'track', dat)  # a scan's, once it has found one
+    # A scan that found nothing keeps gw's stand-in timing, for its master track.
+    timed = not isinstance(inner, ibm.IBMTrack_Empty)
+    out = {'summary': dat.summary_string(), 'nsec': dat.nsec,
+           'good': [s for s in range(dat.nsec) if dat.has_sec(s)],
+           'time_per_rev': getattr(inner, 'time_per_rev', None) if timed else None,
+           'clock': getattr(inner, 'clock', None) if timed else None}
+    if hasattr(inner, 'iams'):
+        raw = getattr(inner, 'raw', None)
+        # A fixed format's track holds what was found apart from its layout;
+        # a scan's or an image's track only what it holds.
+        decoded = hasattr(raw, 'clock')
+        found = raw if decoded else inner
+        out['iams'] = [a.start for a in found.iams]
+        out['iam_times'] = [vars(a).get(WHEN) for a in found.iams]
+        out['found'] = [ibm_sector(s) for s in found.sectors]
+        out['apart'] = getattr(found, APART, [])
+        if timed:
+            out['mode'] = str(inner.mode)
+        out['decodes'] = getattr(found, DECODES, [])
+        if decoded:  # its data is that of the sectors found
+            out['laid'] = [ibm_sector(s, False) for s in inner.sectors]
+    else:
+        out['places'] = getattr(dat, PLACES, {})
+        out['data'] = image_data(dat)
+    return out
+
+
+def image_data(track):
+    """A track's sectors that decoded, by number, each as gw puts it in a
+    sector image: without a Mac sector's tag bytes or an AmigaDOS sector's
+    label, which gw's images do not keep."""
+    parts = sector_parts(track)
+    if parts is None:
+        return {}
+    held, at, out = bytes(track.get_img_track()), 0, {}
+    for i, _, n in parts:
+        if track.has_sec(i):
+            out[i] = held[at:at + n].hex()
+        at += n
+    return out
+
+
+def ibm_sector(s, data=True):
+    sector = {'id': list(sector_id(s)), 'start': s.start, 'header_end': s.idam.end,
+              'data_start': s.dam.start, 'end': s.end, 'header': s.idam.crc == 0,
+              'data': s.dam.crc == 0, 'mark': s.dam.mark}
+    head, body = vars(s.idam).get(WHEN), vars(s.dam).get(WHEN)
+    if head and body:
+        sector['times'], sector['turn'] = [head[0], head[1], body[0], body[1]], head[2]
+    if (found := vars(s).get(COPY)) is not None:
+        sector['copy'] = found
+    if data and s.dam.data:
+        sector['bytes'] = bytes(s.dam.data).hex()
+    return sector
+
+
+# Attributes report_places, joining and scaling set on gw's objects.
+PLACES = 'ferriteweazle_places'
+APART = 'ferriteweazle_apart'
+DECODES = 'ferriteweazle_decodes'
+COPY = 'ferriteweazle_copy'
+FLUX = 'ferriteweazle_flux'
+FLUXES = itertools.count()
+TIMES = 'ferriteweazle_times'
+STARTS = 'ferriteweazle_starts'
+JOINS = 'ferriteweazle_joins'
+SCALED = 'ferriteweazle_scaled'
+# Marks gw's verify_track as reporting what it reads back.
+REPORTS = 'ferriteweazle_reports'
+BASE = 'ferriteweazle_base'
+WHEN = 'ferriteweazle_when'
+
+
+class Clock:
+    """When each of a PLL track's bit cells starts, in seconds from its
+    first, and when its last ends, as `clock[cell]`: by its clock as it
+    followed the flux, which gw scales to the format's revolution. Summed a
+    block at a time: a float for every cell would take megabytes a track."""
+    BLOCK = 1024
+
+    def __init__(self, cells):
+        self.cells = cells
+        sums = (sum(cells[i:i + self.BLOCK]) for i in range(0, len(cells), self.BLOCK))
+        self.sums = list(itertools.accumulate(sums, initial=0.0))
+
+    def __getitem__(self, cell):
+        block = cell // self.BLOCK
+        return self.sums[block] + sum(self.cells[block * self.BLOCK:cell])
+
+
+def times(pll):
+    """A PLL track's Clock."""
+    kept = vars(pll).get(TIMES)
+    if kept is None:
+        kept = vars(pll)[TIMES] = Clock(pll.timearray)
+    return kept
+
+
+def indexes(pll):
+    """The bit cells of a PLL track its revolutions start at, from its first,
+    and where the last ends: each but the first an index pulse, and the first
+    too if the flux starts at one."""
+    kept = vars(pll).get(STARTS)
+    if kept is None:
+        kept = vars(pll)[STARTS] = list(itertools.accumulate((r.nr_bits for r in pll.revolutions),
+                                                             initial=0))
+    return kept
+
+
+def decoded_from(raw, areas, nr, flux):
+    """Decode `nr` of an IBM track, as gw's decoder found `areas` on PLL track
+    `raw` from `flux`: which flux, by number, as gw decodes one flux again
+    with another PLL; each revolution's bit cells, index to index, and those
+    after the last index; and each area in turn, a list: its kind, the
+    revolution it lies in, its place in bit cells from that revolution's
+    index, and what gw read of it. Each area keeps the decode and its place
+    in its list, as COPY."""
+    from greaseweazle.codec.ibm import ibm
+    starts = indexes(raw)
+    out, listed = [], []
+    for x in sorted(areas, key=lambda x: vars(x).get(BASE, 0) + x.start):
+        base = vars(x).get(BASE, 0)
+        rev = max(bisect.bisect_right(starts, base + x.start) - 1, 0)
+        # gw counts an area from the index before it, but for one past a
+        # revolution holding none, from the one before that.
+        at = base - starts[rev]
+        if isinstance(x, ibm.Sector):
+            i, d = x.idam, x.dam
+            area = [1, rev, i.start + at, i.end + at, d.start + at, d.end + at,
+                    int(i.crc == 0), int(d.crc == 0), d.mark, i.c, i.h, i.r, i.n]
+        elif isinstance(x, ibm.IDAM):
+            area = [2, rev, x.start + at, x.end + at, int(x.crc == 0), x.c, x.h, x.r, x.n]
+        elif isinstance(x, ibm.DAM):
+            area = [3, rev, x.start + at, x.end + at, x.mark]
+        elif isinstance(x, ibm.IAM):
+            area = [0, rev, x.start + at, x.end + at]
+        else:
+            continue
+        listed.append(x)
+        out.append(area)
+    if FLUX not in vars(flux):
+        vars(flux)[FLUX] = next(FLUXES)
+    decode = {'flux': vars(flux)[FLUX], 'cells': [b - a for a, b in zip(starts, starts[1:])],
+              'tail': len(raw.bitarray) - starts[-1], 'areas': out}
+    # Only once nothing can fail, so that no area names a decode left out.
+    for i, x in enumerate(listed):
+        vars(x)[COPY] = [nr, i]
+    return decode
+
+
+def report_places():
+    """Has gw's decoders note what they find but do not keep: where a
+    non-IBM codec's sectors lie by its PLL's clock (PLACES), when each IBM
+    area lies from its revolution's index (WHEN), IBM headers and data found
+    apart (APART), and each IBM decode's areas (DECODES)."""
+    import bitarray as module
+    from bitarray import bitarray
+    from greaseweazle import track
+    # gw's codec module first: it imports the codecs in an order their own
+    # imports of each other allow.
+    from greaseweazle.codec import codec  # noqa: F401
+    from greaseweazle.codec.ibm import ibm
+    seen = {}
+    # bitarray 3 searches lazily, as gw 1.23 takes it; 2, as older gw, a list.
+    lazy = int(module.__version__.split('.')[0]) >= 3
+
+    class Offsets(list):
+        """A search's list of offsets, as bitarray 2 gives it, each noted as
+        it is read."""
+
+        def __iter__(self):
+            return noted(self.bits, list.__iter__(self))
+
+    def noted(bits, offsets):
+        for offs in offsets:
+            if bits is current('bits'):
+                seen['at'], seen['parts'] = bits.base + offs, []
+            yield offs
+
+    def current(name):
+        ref = seen.get(name)
+        return ref() if ref is not None else None
+
+    class Searched(bitarray):
+        """A PLL track's bits, or a revolution's, `base` bits into it, which
+        note the decoder's searches and reads: not those of a part of them,
+        such as its search for a data mark."""
+
+        def search(self, *a, **k):
+            found = super().search(*a, **k)
+            if lazy:
+                return noted(self, found)
+            offsets = Offsets(found)
+            offsets.bits = self
+            return offsets
+
+        def __getitem__(self, key):
+            if isinstance(key, slice) and self is current('bits'):
+                start, stop, _ = key.indices(len(self))
+                seen['parts'].append((self.base + start, self.base + stop))
+            return super().__getitem__(key)
+
+    def searched(pll, bits, base):
+        bits = Searched(bits)
+        # Held weakly: a PLL track holds every cell of the track.
+        seen['bits'], seen['pll'] = weakref.ref(bits), weakref.ref(pll)
+        bits.base, seen['parts'] = base, []
+        seen.pop('at', None)
+        return bits
+
+    begin, get, get_rev = (track.PLLTrack.__init__, track.PLLTrack.get_all_data,
+                           track.PLLTrack.get_revolution)
+
+    def init(self, *a, **k):
+        seen.clear()
+        begin(self, *a, **k)
+        data = k['data'] if 'data' in k else a[1]
+        # Only raw flux may start between index pulses; a bitcell track's flux starts at one.
+        seen['cued'] = getattr(data, 'index_cued', True)
+
+    def get_all_data(self):
+        bits, cells = get(self)
+        return searched(self, bits, 0), cells
+
+    def get_revolution(self, nr):
+        bits, cells = get_rev(self, nr)
+        return searched(self, bits, sum(r.nr_bits for r in self.revolutions[:nr])), cells
+
+    def noting(add):
+        def noted(self, sec_id, *a, **k):
+            parts = seen.get('parts')
+            with contextlib.suppress(Exception):
+                if parts:
+                    # In seconds by the PLL's clock: with no sync searched to, as
+                    # in a hard sector, from its data.
+                    at = seen.get('at', parts[-1][0])
+                    end = max(e for b, e in parts if b >= at)
+                    pll = current('pll')
+                    clock, starts = times(pll), indexes(pll)
+                    place = {'at': clock[at], 'end': clock[end],
+                             'revs': [clock[b] - clock[a] for a, b in zip(starts, starts[1:])],
+                             'cued': seen['cued']}
+                    if parts[-1][0] > at:
+                        place['data'] = clock[parts[-1][0]]
+                    vars(self).setdefault(PLACES, {}).setdefault(sec_id, place)
+            seen['parts'] = []
+            seen.pop('at', None)
+            return add(self, sec_id, *a, **k)
+        return noted
+
+    def keeping(decode):
+        def kept(raw, *a, **k):
+            seen['mmfm'] = []
+            seen['areas'] = areas = decode(raw, *a, **k)
+            with contextlib.suppress(Exception):
+                when(raw, areas, seen.pop('mmfm'))
+            return areas
+        return staticmethod(kept)
+
+    def when(raw, areas, mmfm):
+        """Notes on each of an IBM track's areas where in time it lies, from
+        the index its revolution starts at, and that revolution's length: by
+        the clock of `raw`, the PLL track it was found on, and for a DEC RX02
+        data block, its end by the clock of the double-rate track it was
+        decoded from."""
+        clock, starts = times(raw), indexes(raw)
+        late = iter(mmfm)
+        for x in sorted(areas, key=lambda x: x.start + vars(x).get(BASE, 0)):
+            # gw's base is the revolution it searched from; an area past it
+            # lies in the revolution whose index it follows.
+            cell = vars(x).get(BASE, 0) + x.start
+            at = max(bisect.bisect_right(starts, cell) - 1, 0)
+            base = starts[at]
+            turn = clock[starts[at + 1]] - clock[base] if at + 1 < len(starts) else None
+            for y in [x] + [getattr(x, n) for n in ('idam', 'dam') if hasattr(x, n)]:
+                start = vars(x).get(BASE, 0) + y.start
+                end = vars(x).get(BASE, 0) + y.end
+                vars(y)[WHEN] = [clock[start] - clock[base], clock[end] - clock[base], turn]
+            if isinstance(x, ibm.Sector) and (x.dam.mark & 0xfb) == ibm.Mark.DDAM_DEC_MMFM:
+                pll, end = next(late)
+                vars(x)[WHEN][1] = vars(x.dam)[WHEN][1] = times(pll)[end] - clock[base]
+
+    area_delta = ibm.TrackArea.delta
+
+    def delta(self, d):
+        # Its place in its revolution, d bit cells into the PLL track.
+        area_delta(self, d)
+        vars(self)[BASE] = d
+
+    mmfm_decode = ibm.dec_mmfm.decode
+
+    def mmfm(bits):
+        # The double-rate bits of a DEC RX02 data block, the last part read of them.
+        parts = seen.get('parts')
+        if parts:
+            seen.setdefault('mmfm', []).append((current('pll'), parts[-1][1]))
+        return mmfm_decode(bits)
+
+    raw_decode = ibm.IBMTrack.decode_raw
+
+    def decode_raw(self, raw, pll, flux):
+        raw_decode(self, raw, pll, flux)
+        areas = seen.pop('areas', [])
+        decodes = vars(self).setdefault(DECODES, [])
+        with contextlib.suppress(Exception):
+            decodes.append(decoded_from(raw, areas, len(decodes), flux))
+        with contextlib.suppress(Exception):
+            apart = vars(self).setdefault(APART, [])
+            for x in areas:
+                if isinstance(x, ibm.IDAM):
+                    block = {'id': [x.c, x.h, x.r, x.n], 'start': x.start, 'end': x.end,
+                             'header': x.crc == 0}
+                elif isinstance(x, ibm.DAM):
+                    block = {'start': x.start, 'end': x.end, 'mark': x.mark}
+                else:
+                    continue
+                if (at := vars(x).get(WHEN)):
+                    block['times'], block['turn'] = at[:2], at[2]
+                if (found := vars(x).get(COPY)) is not None:
+                    block['copy'] = found
+                apart.append(block)
+
+    patch(track.PLLTrack, '__init__', init)
+    patch(track.PLLTrack, 'get_all_data', get_all_data)
+    patch(track.PLLTrack, 'get_revolution', get_revolution)
+    patch(ibm.IBMTrack, 'mfm_decode_raw', keeping(ibm.IBMTrack.mfm_decode_raw))
+    patch(ibm.IBMTrack, 'fm_decode_raw', keeping(ibm.IBMTrack.fm_decode_raw))
+    patch(ibm.IBMTrack, 'decode_raw', decode_raw)
+    patch(ibm.TrackArea, 'delta', delta)
+    patch(ibm.dec_mmfm, 'decode', mmfm)
+    for cls in codecs():
+        if 'add' in vars(cls):
+            patch(cls, 'add', noting(cls.add))
+
+
 def gw(args):
     from greaseweazle import cli
     steady_handshake()
@@ -813,6 +1908,9 @@ def gw(args):
     if passes > 1:
         reread = os.environ.get('FERRITEWEAZLE_REREAD') == 'disk'
         read_passes(passes, reread, os.environ.get('FERRITEWEAZLE_KEEP'))
+    # gw's own options, such as --bt, come before its command.
+    command = next((a for a in args if not a.startswith('-')), None)
+    guarded(lambda: (report_tracks(command), report_images(command)))
     sys.argv = ['gw'] + args
     return cli.main()
 

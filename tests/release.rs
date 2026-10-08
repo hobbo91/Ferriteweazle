@@ -443,6 +443,7 @@ host=$1
 shift
 printf '%s\n--\n' "$*" >>"ssh-$host.log"
 case "$*" in
+    *"--pinentry-mode error"*) [ "${LOCKED:-}" != 1 ]; exit ;;
     *bundle.sh*)
         touch "started-$host"
         [ "${FAIL:-}" != "$host" ] || exit 1
@@ -505,6 +506,51 @@ fn a_release_builds_every_package_at_once_from_one_gw_release() {
             "cmd.exe ends a command at a line break"
         );
     }
+    // The Linux packages' AppStream release is dated by the commit.
+    let epoch = Command::new("git")
+        .args(["log", "-1", "--format=%ct"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let epoch = String::from_utf8(epoch.stdout).unwrap();
+    let dated = format!(" SOURCE_DATE_EPOCH={} ", epoch.trim());
+    assert!(builds[0].contains(&dated), "{}", builds[0]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_release_signs_with_the_key_the_linux_machine_holds_unlocked() {
+    let dir = repo("release-sign", "");
+    let stubbed = stub_release(&dir);
+    let machines = dir.join("packaging/release.env");
+    let mut text = std::fs::read_to_string(&machines).unwrap();
+    text.push_str("LINUX_SIGN_KEY=ABC123\n");
+    std::fs::write(&machines, text).unwrap();
+    commit(&dir);
+    let source = dir.join("greaseweazle");
+    let env = |locked| {
+        [
+            ("PATH", stubbed.as_str()),
+            ("GREASEWEAZLE_SOURCE", path(&source)),
+            ("LOCKED", locked),
+        ]
+    };
+    let out = sh(&dir, &env("1"), "", "packaging/release.sh");
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("unlock ABC123 on the Linux machine first"),
+        "{said}"
+    );
+    assert!(remote_builds(&dir).is_empty(), "nothing built while locked");
+    run(&dir, &env(""), "", "packaging/release.sh");
+    let asked = std::fs::read_to_string(dir.join("ssh-linux.log")).unwrap();
+    assert!(
+        asked.contains("--pinentry-mode error --local-user ABC123 "),
+        "{asked}"
+    );
+    let builds = remote_builds(&dir);
+    assert!(builds[0].contains(" SIGN_KEY=ABC123 "), "{}", builds[0]);
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -632,7 +678,10 @@ fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
     once("pyserial 3.5\n");
     once("pyserial's text.");
     once("The SPS licence.");
-    once("commit c1), which is free");
+    // The sentence as folded into lines.
+    let words = notices.split_whitespace().collect::<Vec<_>>().join(" ");
+    let caps = "commit c1), which is free for non-commercial use only.";
+    assert_eq!(words.matches(caps).count(), 1, "{notices}");
     assert!(!notices.contains("capsimage-source"), "{notices}");
     std::fs::remove_dir_all(dir).ok();
 }

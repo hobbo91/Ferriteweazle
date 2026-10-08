@@ -46,7 +46,7 @@
                  Property="INSTALLGW" CheckBoxValue="1"
                  Text="Install Greaseweazle Tools $(Tools)" />
         <Control Id="Own" Type="Text" X="20" Y="84" Width="330" Height="40" NoPrefix="yes"
-                 Text="Untick if you don't want to install Greaseweazle Tools. Go to Settings -&gt; Paths in the app to point at your own installation." />
+                 Text="Untick to use another installation of Greaseweazle Tools: name its gw.exe in the app at Settings &gt; Paths &gt; Greaseweazle Tools (gw cli)." />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
                  Text="!(loc.WixUIBack)" />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"

@@ -1,36 +1,36 @@
 # Ferriteweazle
 
-**Cross-platform, GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer. It is written in Rust for macOS, Windows and Linux.**
+**GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer, for macOS, Windows and Linux. Written in Rust.**
 
 ![Ferriteweazle](docs/images/intro_demo.gif)
 
 ## What does it do?
 
-- Full feature parity with [Greaseweazle Tools](https://github.com/keirf/greaseweazle) by [Keir Fraser](https://github.com/keirf)
-- Modern UI for macOS, Windows and Linux, on x86_64 and arm64
-- Supports Greaseweazle and the Adafruit Feather RP2040
-- Detects the most likely disk format(s) for reading and writing images
-- Single or batched reads, writes and image conversions
-- Ability to run multiple passes over disks with failed reads which exceed the retries 
-- Built-in log viewer that can save to a file
-- Shows the command line version of an action, as well as letting you pass extra arguments
-- Drag and drop images into the app
-- Most settings/options have a helpful tooltip 
-- Various safety features, such as confirmations before destructive actions and waiting for an action to finish. 
-- Releases bundle the latest [Greaseweazle Tools](https://github.com/keirf/greaseweazle) unmodified, with its dependencies. This is optional: you can point the app at your own `gw` or `gw.exe`
+- Feature parity with [Greaseweazle Tools](https://github.com/keirf/greaseweazle) by [Keir Fraser](https://github.com/keirf)
+- macOS, Windows and Linux, x86-64 and ARM64
+- Greaseweazle and Adafruit Feather RP2040 devices
+- Format detection for disks and images
+- Single and batch reads, writes and conversions
+- Further read passes over tracks with sectors still missing after gw's retries
+- Analyse: each side of the disk, track by track, with its sectors and flux as gw decoded them, and the image file as gw lays it out
+- Log of gw's output, saved to a file on request
+- Shows each action's gw command line, and passes extra arguments to gw
+- Drag and drop of image files
+- Tooltips on settings and options
+- Confirmation before destructive actions
+- Releases include [Greaseweazle Tools](https://github.com/keirf/greaseweazle), unmodified, with its Python; any other `gw` or `gw.exe` can be used instead
 
+## How does it detect disk formats?
 
-## How does it auto-detect disk formats?
+Greaseweazle Tools has no format detection, so Ferriteweazle uses gw's own codecs. It decodes both sides of cylinder 0 with every format gw knows, except the `.scan` ones, and keeps those that find every sector. Many formats pass, so it ranks them by how far each sector lies from where the format places it. Formats within 1% of the best that differ on a track not yet read have that track read, up to four more. Physical cylinder 2 shows whether a 40-track disk needs Step 2. Apple II formats differ only in sector order, so the filesystem decides: ProDOS or DOS 3.3.
 
-Greaseweazle Tools can't detect formats itself, so the bridge does it using `gw`'s codecs. It decodes both sides of cylinder 0 with every format gw knows and keeps the formats that find every sector. Many formats pass that test, so it ranks them by how closely each sector's position matches that format's layout. If the best still disagree about the track count or an unformatted track, it reads that track to settle it. Cylinder 2 shows whether a 40-track disk needs double step. Apple II disks are told apart by filesystem: ProDOS or DOS 3.3.
-
-Detection isn't always right, so the app also groups formats and image types to make choosing the right one yourself easier.
+Detection can be wrong: formats and image types are grouped for choosing one by hand.
 
 ## Why bundle Greaseweazle Tools in the releases?
 
-Greaseweazle still amazes me: with a cheap, widely available interface and almost any floppy drive, you can read and write almost any floppy disk format. Greaseweazle Tools, though, runs from the command line, and not everyone wants to work that way. Ferriteweazle provides a graphical user interface and ships with Greaseweazle Tools included by default, so you can download, run, and get straight to work without following [any pre-requisite steps first](https://github.com/keirf/greaseweazle/wiki/Software-Installation) if you don't want to. 
+Greaseweazle Tools is a command-line program that runs on Python. The packages include it, unmodified, with its own Python, so the app runs without [gw's installation steps](https://github.com/keirf/greaseweazle/wiki/Software-Installation).
 
-**You do not have to use the bundled version.** Like other Greaseweazle front ends, Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): just set the path in **Settings > Paths** when you first start the app to point to `gw`/`gw.exe`.
+**The bundled copy is optional.** Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): set **Settings > Paths > Greaseweazle Tools (gw cli)** to its `gw` or `gw.exe`.
 
 ## Installing
 
@@ -47,7 +47,7 @@ macOS 10.15 or newer, Apple Silicon or Intel.
 
 ### Windows
 
-Windows 10 or newer, x64 or ARM64 (Could add older Windows compatibility if there's interest).
+Windows 10 or newer, x64 or ARM64.
 
 1. Run [`Ferriteweazle-1.3.3-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-x64.msi), or [`Ferriteweazle-1.3.3-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-arm64.msi) on an ARM PC.
 2. If SmartScreen warns you, click **More info**, then **Run anyway**.
@@ -104,4 +104,4 @@ No. I built it in Rust, a language I know well, using Claude as a coding assista
 
 ## Licence
 
-Ferriteweazle is MIT licensed and comes with no warranty; see [LICENSE](LICENSE). Greaseweazle is by Keir Fraser and is in the public domain. Make an image of any disk you care about before writing to it, use a write-protected disk when you only want to read.
+Ferriteweazle is MIT licensed and comes with no warranty; see [LICENSE](LICENSE). Greaseweazle Tools is by Keir Fraser and is in the public domain. Image any disk you care about before writing to it, and write-protect a disk you only want to read.

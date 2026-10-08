@@ -3,9 +3,18 @@
 //! Unrecognised lines are left to the log, so a gw that rewords its output
 //! loses the map, never the job.
 
+use crate::image::{self, Image, Role, Route};
+use crate::track::Facts;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The last revision given any Progress.
+static REVISION: AtomicU64 = AtomicU64::new(0);
+
+/// A track a write or a conversion's input lacks, which gw passes over.
+pub(crate) const NOT_IN_INPUT: &str = "Not in the input, so Greaseweazle Tools passed over it.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     /// Every sector found, or written and verified.
     Good,
@@ -41,6 +50,15 @@ pub struct Progress {
     pub tracks: BTreeMap<(u32, u32), Track>,
     /// Sector by sector, from the map gw prints when it has finished.
     pub sector_map: BTreeMap<(u32, u32), Vec<Option<bool>>>,
+    /// What the bridge reports of each track gw read, converted or wrote:
+    /// where its sectors lie and how they decoded, and how its flux fell.
+    pub facts: BTreeMap<(u32, u32), Facts>,
+    /// What the bridge reports of the image the job makes, and of the one
+    /// it takes its tracks from.
+    pub made: Option<Image>,
+    pub source: Option<Image>,
+    /// A conversion's tracks, where each lies in its input and its output.
+    pub routes: Option<Vec<Route>>,
     /// Sectors found and expected over the whole disk.
     pub total: Option<(u32, u32)>,
     /// The track being worked on.
@@ -53,8 +71,13 @@ pub struct Progress {
     pub warnings: Vec<String>,
     /// A read with --raw: gw keeps the flux of tracks outside the format.
     pub raw: bool,
-    /// A write gw verifies: it goes on from a track only once that verified.
-    pub verifies: bool,
+    /// The tracks a write reads back to verify, as the bridge reports gw
+    /// deciding it of each as it comes to write it: gw goes on from one only
+    /// once it has verified.
+    pub verifies: BTreeSet<(u32, u32)>,
+    /// Bumped on every change, and unique across Progresses, so the disk
+    /// view knows whether what it drew is current.
+    pub revision: u64,
     /// The read pass under way after the first, and the most there may be.
     pub pass: Option<(u32, u32)>,
     /// The cylinders of gw's sector map, those it read. A conversion's
@@ -99,6 +122,7 @@ impl Progress {
     }
 
     pub fn feed(&mut self, line: &str) {
+        self.touch();
         let line = line.trim_end();
         match self.block {
             Block::Output => {}
@@ -172,6 +196,8 @@ impl Progress {
         } else if line.starts_with("No tracks verified ")
             || line.contains(" tracks *not* verified ")
         {
+            // gw has written every track: its last too.
+            self.passed();
             self.unverified = Some(line.to_owned());
         } else if let Some(rest) = line.strip_prefix("Found ") {
             self.total = found(rest);
@@ -184,6 +210,70 @@ impl Progress {
         } else if line.contains("WARNING:") {
             self.warnings.push(line.to_owned());
         }
+    }
+
+    /// Takes the bridge's report on a track, which replaces any before it:
+    /// a later read pass, or a write's verify, reports all found so far.
+    pub fn report(&mut self, json: &str) {
+        if let Some((key, mut facts)) = Facts::parse(json) {
+            self.touch();
+            facts.revision = self.revision;
+            self.facts.insert(key, facts);
+        }
+    }
+
+    /// Takes the bridge's word, as gw comes to write a track, on whether gw
+    /// reads it back to verify it.
+    pub fn verify(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return;
+        };
+        let number = |k: &str| v[k].as_u64().and_then(|n| u32::try_from(n).ok());
+        let (Some(c), Some(h)) = (number("c"), number("h")) else {
+            return;
+        };
+        self.touch();
+        match v["verifies"].as_bool() {
+            Some(true) => self.verifies.insert((c, h)),
+            _ => self.verifies.remove(&(c, h)),
+        };
+    }
+
+    /// gw is writing, then checking, a track it verifies: the only one
+    /// written and not yet verified.
+    pub fn verifying(&self) -> bool {
+        let Some(current) = self.current.filter(|c| self.verifies.contains(c)) else {
+            return false;
+        };
+        self.tracks
+            .iter()
+            .all(|(&k, t)| k == current || t.status != Status::Written)
+    }
+
+    /// Takes the bridge's report on the job's images: how gw lays one out,
+    /// a track gw put in it, the file as gw wrote it, or where each of a
+    /// conversion's tracks lies in its input and its output.
+    pub fn image(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return;
+        };
+        self.touch();
+        if v["event"] == "open" {
+            if let Some(image) = Image::parse(&v) {
+                match image.role {
+                    Role::Made => self.made = Some(image),
+                    Role::Source => self.source = Some(image),
+                }
+            }
+        } else if v["event"] == "routes" {
+            self.routes = image::routes(&v);
+        } else if let Some(made) = self.made.as_mut() {
+            made.take(&v);
+        }
+    }
+
+    fn touch(&mut self) {
+        self.revision = REVISION.fetch_add(1, Ordering::Relaxed) + 1;
     }
 
     /// Adds a line to the error's message, which ends where a list begins.
@@ -199,20 +289,25 @@ impl Progress {
         }
     }
 
-    /// The job has ended.
-    pub fn finish(&mut self) {
+    /// The job has ended: it finished the track gw was on if it `worked`.
+    pub fn finish(&mut self, worked: bool) {
+        if worked {
+            self.passed();
+        }
         self.current = None;
+        self.touch();
     }
 
     /// Marks the announced tracks gw has not reported as skipped: a write or
     /// conversion passes over those its input lacks without a word.
     pub fn skip_unreported(&mut self) {
+        self.touch();
         for &cyl in &self.cyls {
             for &head in &self.heads {
                 self.tracks.entry((cyl, head)).or_insert_with(|| Track {
                     status: Status::Skipped,
                     retries: 0,
-                    text: "Not in the input, so Greaseweazle Tools passed over it.".into(),
+                    text: NOT_IN_INPUT.into(),
                     place: None,
                 });
             }
@@ -301,16 +396,25 @@ impl Progress {
         };
     }
 
-    /// gw has gone on to track `key`, so a write that verifies has checked
-    /// the track before.
+    /// gw has gone on to track `key`.
     fn moved_to(&mut self, key: (u32, u32)) {
-        if !self.verifies || self.current == Some(key) {
-            return;
+        if self.current != Some(key) {
+            self.passed();
         }
-        if let Some(t) = self.current.and_then(|c| self.tracks.get_mut(&c))
-            && t.status == Status::Written
-        {
-            t.status = Status::Good;
+    }
+
+    /// gw is done with the track it was on: one gw verifies passed, as gw
+    /// stops at one that fails, and its line says what gw did.
+    fn passed(&mut self) {
+        let Some(key) = self.current else { return };
+        let verified = self.verifies.contains(&key);
+        if let Some(t) = self.tracks.get_mut(&key) {
+            if verified && t.status == Status::Written {
+                t.status = Status::Good;
+            }
+            if let Some(text) = done(&t.text) {
+                t.text = text;
+            }
         }
     }
 
@@ -371,7 +475,7 @@ fn track_line(line: &str) -> Option<((u32, u32), Option<&str>, &str)> {
 }
 
 /// `(17/18 sectors)` anywhere in the text.
-fn sectors(text: &str) -> Option<(u32, u32)> {
+pub(crate) fn sectors(text: &str) -> Option<(u32, u32)> {
     let end = text.find(" sectors)")?;
     let start = text[..end].rfind('(')? + 1;
     let (good, all) = text[start..end].split_once('/')?;
@@ -441,6 +545,22 @@ pub(crate) fn numbers(s: &str) -> Option<Vec<u32>> {
     Some(out)
 }
 
+/// gw's line for a track it is done with, in the past tense: gw says what it
+/// starts, "Erasing Track" or "Writing Track (…)". A retry's note is left to
+/// the track's retries.
+fn done(text: &str) -> Option<String> {
+    let (said, rest) = match text.strip_prefix("Erasing Track") {
+        Some(rest) => ("Erased", rest),
+        None => ("Written", text.strip_prefix("Writing Track")?),
+    };
+    let rest = if rest.contains("(Verify Failure") {
+        ""
+    } else {
+        rest
+    };
+    Some(format!("{said}{rest}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +569,27 @@ mod tests {
         let mut p = Progress::default();
         log.lines().for_each(|l| p.feed(l));
         p
+    }
+
+    /// A write's log with the bridge's word on each track it verifies, as
+    /// job.rs takes them.
+    fn written(log: &str) -> Progress {
+        let mut p = Progress::default();
+        log.lines().for_each(|line| take(&mut p, line));
+        p
+    }
+
+    /// A line of a write's log, or the bridge's word on a track, as job.rs takes it.
+    fn take(p: &mut Progress, line: &str) {
+        match line.strip_prefix("@ferriteweazle verify ") {
+            Some(report) => p.verify(report),
+            None => p.feed(line),
+        }
+    }
+
+    /// The bridge's line on whether gw verifies track `c`.0.
+    fn verify(c: u32, verifies: bool) -> String {
+        format!(r#"@ferriteweazle verify {{"c":{c},"h":0,"verifies":{verifies}}}"#)
     }
 
     #[test]
@@ -488,7 +629,7 @@ mod tests {
     #[test]
     fn a_damaged_disk_shows_which_sectors_are_missing() {
         let mut p = fed(include_str!("../tests/data/convert-damaged.log"));
-        p.finish();
+        p.finish(true);
         let status = |c, h| p.tracks[&(c, h)].status;
         assert_eq!(status(20, 0), Status::Partial);
         assert_eq!(status(55, 1), Status::Partial);
@@ -532,7 +673,7 @@ mod tests {
     #[test]
     fn a_stopped_job_keeps_what_it_did() {
         let mut p = fed(include_str!("../tests/data/convert-stopped.log"));
-        p.finish();
+        p.finish(false);
         assert_eq!(p.tracks.len(), 18);
         assert_eq!(p.tally().done, 18);
         assert_eq!(p.total, None);
@@ -611,6 +752,29 @@ mod tests {
         assert_eq!(p.tracks[&(1, 0)].status, Status::Erased);
         p.feed("All tracks verified");
         assert_eq!(p.tracks[&(0, 1)].status, Status::Good);
+    }
+
+    #[test]
+    fn a_track_gw_is_done_with_says_what_gw_did() {
+        let mut p = fed("Writing c=0-2:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Writing Track (Verify Failure: Retry #1)\n\
+            T2.0: Erasing Track");
+        let text = |p: &Progress, c| p.tracks[&(c, 0)].text.clone();
+        assert_eq!(
+            text(&p, 0),
+            "Written (Flux: 200.0ms period, 200.2 ms total, Write all)"
+        );
+        assert_eq!(text(&p, 1), "Written", "its retry counted apart");
+        assert_eq!(text(&p, 2), "Erasing Track", "gw is still on it");
+        let mut stopped =
+            fed("Erasing c=0-1:h=0, revs=1\nT0.0: Erasing Track\nT1.0: Erasing Track");
+        stopped.finish(false);
+        assert_eq!(text(&stopped, 0), "Erased");
+        assert_eq!(text(&stopped, 1), "Erasing Track", "stopped on it");
+        p.finish(true);
+        assert_eq!(text(&p, 2), "Erased");
     }
 
     #[test]
@@ -865,27 +1029,101 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
     #[test]
     fn a_failed_or_stopped_write_keeps_the_tracks_gw_verified_before_it() {
         use Status::{Bad, Good, Written};
-        let log = "Writing c=0-2:h=0\n\
-            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
-            T1.0: Erasing Track\n\
-            T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
-            T1.0: Writing Track (Verify Failure: Retry #1)";
-        let status = |log: &str, verifies: bool| {
-            let mut p = Progress {
-                verifies,
-                ..Progress::default()
-            };
-            log.lines().for_each(|l| p.feed(l));
+        // With --pre-erase: gw decides on the verify before it erases.
+        let log = |verifies| {
+            [
+                "Writing c=0-2:h=0",
+                &verify(0, verifies),
+                "T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)",
+                &verify(1, verifies),
+                "T1.0: Erasing Track",
+                "T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)",
+                "T1.0: Writing Track (Verify Failure: Retry #1)",
+            ]
+            .join("\n")
+        };
+        let status = |log: &str| {
+            let p = written(log);
             [0, 1, 2].map(|c| p.tracks.get(&(c, 0)).map(|t| t.status))
         };
-        let stopped = status(log, true);
+        let stopped = status(&log(true));
         assert_eq!(stopped, [Some(Good), Some(Written), None]);
-        let failed = format!("{log}\n** FATAL ERROR:\nFailed to verify Track 1.0");
-        assert_eq!(status(&failed, true), [Some(Good), Some(Bad), None]);
-        let lacking = format!("{log}\n** FATAL ERROR:\nT2.0: 3 missing sectors in input image");
-        assert_eq!(status(&lacking, true), [Some(Good), Some(Good), Some(Bad)]);
-        let unchecked = status(log, false);
+        let failed = format!("{}\n** FATAL ERROR:\nFailed to verify Track 1.0", log(true));
+        assert_eq!(status(&failed), [Some(Good), Some(Bad), None]);
+        let lacking = format!(
+            "{}\n** FATAL ERROR:\nT2.0: 3 missing sectors in input image",
+            log(true)
+        );
+        assert_eq!(status(&lacking), [Some(Good), Some(Good), Some(Bad)]);
+        let unchecked = status(&log(false));
         assert_eq!(unchecked, [Some(Written), Some(Written), None]);
+    }
+
+    #[test]
+    fn each_track_gw_verifies_is_good_once_gw_is_done_with_it_and_only_those() {
+        use Status::{Good, Written};
+        // A format whose track 1 gw has no verify for, as a bitcell track.
+        let mut p = written(
+            &[
+                "Writing c=0-2:h=0",
+                &verify(0, true),
+                "T0.0: Writing Track (Flux: 1)",
+            ]
+            .join("\n"),
+        );
+        assert!(p.verifying(), "gw is checking its one written track");
+        for line in [
+            &verify(1, false),
+            "T1.0: Writing Track (Flux: 1)",
+            &verify(2, true),
+            "T2.0: Writing Track (Flux: 1)",
+        ] {
+            take(&mut p, line);
+        }
+        let status = |p: &Progress| [0, 1, 2].map(|c| p.tracks[&(c, 0)].status);
+        assert_eq!(status(&p), [Good, Written, Written]);
+        assert!(!p.verifying(), "a track gw did not verify is written too");
+        p.feed("2 tracks verified; 1 tracks *not* verified (Reason: Verify unavailable)");
+        assert_eq!(
+            status(&p),
+            [Good, Written, Good],
+            "gw finished: its last passed"
+        );
+        let unverified = written(
+            &[
+                "Writing c=0-1:h=0",
+                &verify(0, false),
+                "T0.0: Writing Track (Flux: 1)",
+                &verify(1, false),
+                "T1.0: Writing Track (Flux: 1)",
+                "No tracks verified (Reason: Verify unavailable)",
+            ]
+            .join("\n"),
+        );
+        assert_eq!(unverified.tracks[&(0, 0)].status, Written);
+        assert_eq!(unverified.tracks[&(1, 0)].status, Written);
+    }
+
+    #[test]
+    fn every_change_raises_the_revision_the_disk_view_keys_on() {
+        let mut p = Progress::default();
+        let mut last = p.revision;
+        let mut raised = |p: &Progress, what: &str| {
+            assert!(p.revision > last, "{what}");
+            last = p.revision;
+        };
+        p.feed("Reading c=0:h=0 revs=2");
+        raised(&p, "feed");
+        p.report(r#"{"c":0,"h":0}"#);
+        raised(&p, "report");
+        p.image(r#"{"event":"routes","tracks":[]}"#);
+        raised(&p, "image");
+        p.verify(r#"{"c":0,"h":0,"verifies":true}"#);
+        raised(&p, "verify");
+        p.finish(true);
+        raised(&p, "finish");
+        p.skip_unreported();
+        raised(&p, "skip_unreported");
     }
 
     #[test]

@@ -11,9 +11,14 @@ use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-// Line prefixes for gw's questions and the bridge's result. Must match bridge.py.
+// Line prefixes for gw's questions, the bridge's result and its reports: on
+// tracks, on images, and on whether gw verifies a track it writes. Must match
+// bridge.py.
 const ASK: &str = "@ferriteweazle ask ";
 const RESULT: &str = "@ferriteweazle result ";
+const TRACK: &str = "@ferriteweazle track ";
+const IMAGE: &str = "@ferriteweazle image ";
+const VERIFY: &str = "@ferriteweazle verify ";
 
 /// The bridge's own command that finds a disk's format.
 pub const DETECT: &str = "detect";
@@ -201,7 +206,7 @@ impl Job {
     /// tracks it did not report.
     fn end(&mut self, at: Instant, outcome: Outcome) {
         self.ended = Some((at, outcome));
-        self.progress.finish();
+        self.progress.finish(outcome == Outcome::Succeeded);
         if outcome == Outcome::Succeeded && matches!(self.command.as_str(), "write" | "convert") {
             self.progress.skip_unreported();
         }
@@ -287,6 +292,12 @@ impl Job {
                 .map(String::from)
                 .collect();
             self.step = result["step"].as_u64().map_or(1, |s| s.max(1) as u32);
+        } else if let Some(report) = line.strip_prefix(TRACK) {
+            self.progress.report(report);
+        } else if let Some(report) = line.strip_prefix(IMAGE) {
+            self.progress.image(report);
+        } else if let Some(report) = line.strip_prefix(VERIFY) {
+            self.progress.verify(report);
         } else {
             // With no --format, gw names the image type's own or the one it finds in the file.
             if self.format.is_none() {
@@ -308,39 +319,56 @@ enum Chunk {
     Partial(String),
 }
 
+/// The start of the bridge's own lines, which are for the app, not to show.
+const OWN: &[u8] = b"@ferriteweazle ";
+
 /// Passes on gw's output from `from` as it comes: each line, and a line not
-/// yet ended each time it grows.
+/// yet ended where gw stops short of its end, as at a question. Not one of
+/// the bridge's own, which may run to megabytes, until it ends.
 fn relay(from: impl Read, to: Sender<Chunk>, repaint: Repaint) {
     let mut reader = BufReader::new(from);
+    let full = reader.capacity();
     let mut line = Vec::new();
     loop {
-        let (used, ended) = match reader.fill_buf() {
+        let (used, ended, paused) = match reader.fill_buf() {
             Ok([]) if line.is_empty() => break,
             // The end of the output ends the line too.
-            Ok([]) => (0, true),
+            Ok([]) => (0, true, true),
             Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
                 Some(end) => {
                     line.extend_from_slice(&buf[..end]);
-                    (end + 1, true)
+                    (end + 1, true, true)
                 }
                 None => {
                     line.extend_from_slice(buf);
-                    (buf.len(), false)
+                    // Short of a buffer full: gw may have paused, as at a question.
+                    (buf.len(), false, buf.len() < full)
                 }
             },
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
         reader.consume(used);
-        let text = String::from_utf8_lossy(&line)
-            .trim_end_matches('\r')
-            .to_owned();
+        let own = line.starts_with(OWN) || OWN.starts_with(&line);
+        if !ended && (own || !paused) {
+            continue;
+        }
         let chunk = match ended {
+            // The line's own bytes, moved out: a report may be megabytes.
             true => {
-                line.clear();
+                let bytes = std::mem::take(&mut line);
+                let mut text = String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                while text.ends_with('\r') {
+                    text.pop();
+                }
                 Chunk::Line(text)
             }
-            false => Chunk::Partial(text),
+            false => Chunk::Partial(
+                String::from_utf8_lossy(&line)
+                    .trim_end_matches('\r')
+                    .to_owned(),
+            ),
         };
         if to.send(chunk).is_err() {
             return;
@@ -376,6 +404,12 @@ impl SessionLog {
 
     pub fn trimmed(&self) -> bool {
         self.trimmed
+    }
+
+    /// How many lines have gone from the log's start, dropped or cleared:
+    /// the first line's number, counted from the session's first.
+    pub fn dropped(&self) -> usize {
+        self.dropped
     }
 
     /// Empties the log. A job still running goes on under its heading again.
@@ -662,6 +696,53 @@ mod tests {
         assert_eq!(log.tail(&clean), "Pass 2: 0");
         log.begin("gw info".into(), &mut job("info"));
         assert_eq!(log.tail(&clean), "", "another job's lines came after");
+    }
+
+    /// A pipe's end that says when the relay asks it for more, which it
+    /// does once it has done with what it read, and how much each read took.
+    struct Told<R>(R, mpsc::Sender<Option<usize>>);
+
+    impl<R: Read> Read for Told<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let _ = self.1.send(None);
+            let n = self.0.read(buf)?;
+            let _ = self.1.send(Some(n));
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn the_bridges_own_lines_pass_whole_and_never_show() {
+        let (from, mut gw) = std::io::pipe().unwrap();
+        let ((to, lines), (told, asked)) = (mpsc::channel(), mpsc::channel());
+        std::thread::spawn(move || relay(Told(from, told), to, Box::new(|| ())));
+        let mut read = Job::new("read", Vec::new(), lines);
+        let (mut sent, mut taken) = (0, 0);
+        // As the bridge prints one: its start, then more, a while apart.
+        for piece in [&b"@ferri"[..], b"teweazle track {\"c\":3,", &[b' '; 20_000]] {
+            gw.write_all(piece).unwrap();
+            sent += piece.len();
+            // The relay has read it all, and done with it.
+            loop {
+                match asked
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the relay reads")
+                {
+                    Some(n) => taken += n,
+                    None if taken == sent => break,
+                    None => {}
+                }
+            }
+            read.poll();
+            assert_eq!(read.partial, "", "none of it shows");
+        }
+        gw.write_all(b"\"h\":1}\nT3.1: Ra").unwrap();
+        poll_until(&mut read, |j| j.partial == "T3.1: Ra");
+        assert!(
+            read.progress.facts.contains_key(&(3, 1)),
+            "the report, whole"
+        );
+        assert!(read.log.is_empty(), "and not in the log");
     }
 
     #[test]

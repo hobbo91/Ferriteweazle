@@ -9,18 +9,22 @@ use eframe::egui;
 use egui_kittest::kittest::{NodeT, Queryable};
 use ferriteweazle::command::quote;
 use ferriteweazle::form::{self, Output};
+use ferriteweazle::image;
 use ferriteweazle::job::{DETECT, Job, Outcome};
 use ferriteweazle::presets;
-use ferriteweazle::progress::Status;
+use ferriteweazle::progress::{Progress, Status};
 use ferriteweazle::schema::{Port, Schema};
-use ferriteweazle::service::{Load, Service};
+use ferriteweazle::service::{ImageAsk, Load, Service};
 use ferriteweazle::tools::{Origin, Tools};
+use ferriteweazle::track::{Before, Data, Facts, Header, Id, Seen, Source};
 use ferriteweazle::{App, Drawer, Page, Settings};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// The bundle in target/greaseweazle-bundle or the folder FERRITEWEAZLE_BUNDLE names (such
-/// as another processor's, run emulated), else an installed gw.
+/// as another processor's, run emulated), else an installed gw. With none, each test
+/// skips, unless FERRITEWEAZLE_REQUIRE_GW is set, as for a release's machines.
 fn tools() -> Option<Tools> {
     let dir = std::env::var_os("FERRITEWEAZLE_BUNDLE").map_or_else(
         || Path::new(env!("CARGO_MANIFEST_DIR")).join("target/greaseweazle-bundle"),
@@ -40,6 +44,10 @@ fn tools() -> Option<Tools> {
         Tools::find(None)
     };
     if found.is_none() {
+        assert!(
+            std::env::var_os("FERRITEWEAZLE_REQUIRE_GW").is_none(),
+            "no Greaseweazle Tools on this machine"
+        );
         eprintln!("skipped: no Greaseweazle Tools on this machine");
     }
     found
@@ -55,16 +63,18 @@ fn path(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn wait<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
+fn wait<T>(what: &str, ready: impl FnMut() -> Option<T>) -> T {
+    wait_for(what, Duration::from_secs(60), ready)
+}
+
+/// As wait, for as long as `most`.
+fn wait_for<T>(what: &str, most: Duration, mut ready: impl FnMut() -> Option<T>) -> T {
     let start = Instant::now();
     loop {
         if let Some(t) = ready() {
             return t;
         }
-        assert!(
-            start.elapsed() < Duration::from_secs(60),
-            "timed out waiting for {what}"
-        );
+        assert!(start.elapsed() < most, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -76,7 +86,8 @@ fn start(tools: &Tools, command: &str, args: &[&str]) -> Job {
 }
 
 fn finish(mut job: Job, what: &str) -> Job {
-    wait(what, || {
+    // A whole disk's job, on a busy machine: a slow one takes minutes.
+    wait_for(what, Duration::from_secs(300), || {
         job.poll();
         (!job.running()).then_some(())
     });
@@ -211,13 +222,84 @@ fn gw_on_the_adafruit_rp2040_does_what_its_firmware_allows_and_no_more() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Prints what the bridge in argv[1] uses that gw's oldest Python, 3.8,
-/// lacks: newer syntax fails to parse, and these came in 3.9 and 3.10.
-const NEWER_PYTHON: &str = r#"
+mod strip {
+    include!("../src/strip.rs");
+}
+
+/// Prints whether argv[1] and argv[2] are one program, statement for
+/// statement and line for line, where argv[1]'s strings that stand alone
+/// as statements, as docstrings do, are `pass` in argv[2].
+const SAME_PROGRAM: &str = r#"
 import ast, sys
-tree = ast.parse(open(sys.argv[1]).read(), feature_version=(3, 8))
+def program(path, passes):
+    tree = ast.parse(open(path).read())
+    for node in ast.walk(tree):
+        for field in ('body', 'orelse', 'finalbody'):
+            body = getattr(node, field, None)
+            for i, x in enumerate(body if isinstance(body, list) else []):
+                alone = isinstance(x, ast.Expr) and isinstance(x.value, ast.Constant)
+                if passes and alone and isinstance(x.value.value, str):
+                    body[i] = ast.Pass(lineno=x.lineno, col_offset=x.col_offset)
+    lines = [(type(n).__name__, n.lineno) for n in ast.walk(tree) if hasattr(n, 'lineno')]
+    return ast.dump(tree), lines
+print('one program' if program(sys.argv[1], True) == program(sys.argv[2], False) else 'two')
+"#;
+
+#[test]
+fn the_bridge_stripped_for_the_command_line_is_the_same_program() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("stripped");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let stripped = dir.join("stripped.py");
+    std::fs::write(&stripped, strip::strip(include_str!("../src/bridge.py"))).unwrap();
+    let out = std::process::Command::new(&tools.python)
+        .args(["-c", SAME_PROGRAM])
+        .args([&bridge, &stripped])
+        .output()
+        .expect("python runs");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        said.trim(),
+        "one program",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Prints what the bridge in argv[1] uses that gw's oldest Python, 3.8,
+/// lacks: syntax 3.8 does not parse, these calls of 3.9 and 3.10, and by its
+/// tokens what a newer parser takes as 3.8's: a parenthesised `with` of
+/// several (3.10), and a string inside an f-string in that f-string's quote
+/// (3.12).
+const NEWER_PYTHON: &str = r#"
+import ast, io, sys, tokenize
+source = open(sys.argv[1]).read()
+tree = ast.parse(source, feature_version=(3, 8))
 newer = {'cache', 'get_annotations', 'removeprefix', 'removesuffix'}
-print(sorted({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & newer))
+used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} & newer
+tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+quote = lambda s: s.lstrip('rRbBuUfF')[:1]
+quotes = []
+for i, t in enumerate(tokens):
+    if t.type == tokenize.NAME and t.string == 'with' and tokens[i + 1].string == '(':
+        depth = 0
+        for u in tokens[i + 1:]:
+            depth += {'(': 1, ')': -1}.get(u.string, 0) if u.type == tokenize.OP else 0
+            if depth == 0:
+                break
+            if depth == 1 and u.type == tokenize.NAME and u.string == 'as':
+                used.add(f'with ( at line {t.start[0]}')
+                break
+    if t.type == getattr(tokenize, 'FSTRING_START', None):
+        if quote(t.string) in quotes:
+            used.add(f'f-string in an f-string at line {t.start[0]}')
+        quotes.append(quote(t.string))
+    elif t.type == getattr(tokenize, 'FSTRING_END', None):
+        quotes.pop()
+    elif t.type == tokenize.STRING and quote(t.string) in quotes:
+        used.add(f'a string in the quote of its f-string at line {t.start[0]}')
+print(sorted(used))
 "#;
 
 #[test]
@@ -637,6 +719,918 @@ fn a_conversion_round_trip_is_exact_and_fully_mapped() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Formats of each of gw 1.23's codecs that lay out sectors, and their
+/// variants, with an image type that holds each.
+const FORMATS: [(&str, &str); 23] = [
+    ("ibm.1440", ".img"),
+    ("ibm.dmf", ".img"),
+    ("ibm.360", ".img"),
+    ("ibm.1200", ".img"),
+    ("amiga.amigados", ".adf"),
+    ("amiga.amigados_hd", ".adf"),
+    ("commodore.1541", ".d64"),
+    ("commodore.1571", ".d71"),
+    ("mac.800", ".img"),
+    ("mac.400", ".img"),
+    ("apple2.appledos.140", ".do"),
+    ("apple2.prodos.140", ".po"),
+    ("hp.mmfm.9885", ".img"),
+    ("hp.mmfm.9895", ".img"),
+    ("northstar.fm.ss", ".nsi"),
+    ("northstar.mfm.ds", ".nsi"),
+    ("micropolis.100tpi.ss", ".img"),
+    ("datageneral.2f", ".img"),
+    ("dec.rx02", ".img"),
+    ("dec.rx01", ".img"),
+    ("atarist.720", ".st"),
+    ("akai.800", ".img"),
+    ("acorn.dfs.ss", ".ssd"),
+];
+
+/// What gw prints writing `image` through the bridge onto drive.py's
+/// stand-in, which first fills `image` with random bytes in `format`, if one
+/// is given.
+fn stand_in_write(tools: &Tools, format: &str, image: &Path, tracks: &str) -> String {
+    stand_in_write_with(tools, format, image, tracks, &[], &[])
+}
+
+/// As stand_in_write, with gw write's `options` and `env` for drive.py, such
+/// as FAIL_AT.
+fn stand_in_write_with(
+    tools: &Tools,
+    format: &str,
+    image: &Path,
+    tracks: &str,
+    options: &[&str],
+    env: &[(&str, &str)],
+) -> String {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .envs(env.iter().copied())
+        .arg(data.join("drive.py"))
+        .arg(&bridge)
+        .arg(format)
+        .arg(image)
+        .arg(format!("--tracks={tracks}"))
+        .args(options)
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.contains("drive.py: the stand-in drive"),
+        "{format}: not the stand-in: {}",
+        unreported(&text)
+    );
+    text.into_owned()
+}
+
+/// gw's own lines of `text`, without the bridge's reports.
+fn unreported(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with("@ferriteweazle "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_write_says_where_gw_puts_each_sector_and_its_verify_finds_each_there() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("writes");
+    for (format, ext) in FORMATS {
+        let image = dir.join(format!("{}{ext}", format.replace('.', "_")));
+        let text = stand_in_write(&tools, format, &image, "c=0-3");
+        assert!(
+            text.contains("All tracks verified"),
+            "{format}: {}",
+            unreported(&text)
+        );
+        let (mut written, mut verified) = (BTreeMap::new(), BTreeMap::new());
+        for line in text
+            .lines()
+            .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        {
+            let (key, facts) = Facts::parse(line).expect("a report");
+            match facts.source {
+                Some(Source::Written) => written.insert(key, facts),
+                Some(Source::Verify) => verified.insert(key, facts),
+                other => panic!("{format}: a report on {other:?}"),
+            };
+        }
+        assert!(!written.is_empty(), "{format}: {}", unreported(&text));
+        assert_eq!(
+            written.keys().collect::<Vec<_>>(),
+            verified.keys().collect::<Vec<_>>(),
+            "{format}"
+        );
+        let checked = written.keys().map(|&k| (k, true)).collect();
+        assert_eq!(verifies_said(&text), checked, "{format}");
+        // The file as gw lays it out, as the bridge reported it opened.
+        let source = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("@ferriteweazle image "))
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .find_map(|v| image::Image::parse(&v).filter(|i| i.role == image::Role::Source))
+            .expect("the image the write takes its tracks from");
+        let laid = source.placed(None).expect("the file laid out");
+        let file = std::fs::read(&image).unwrap();
+        for (key, w) in &written {
+            let v = &verified[key];
+            assert!(!w.sectors.is_empty(), "{format} {key:?}: no sectors");
+            // The sectors written hold the file's bytes, each its part's.
+            let track = laid.iter().find(|t| t.key == *key).expect("laid out");
+            let mut file_parts: Vec<&[u8]> = (track.parts.iter())
+                .map(|(p, at, _)| &file[*at as usize..(at + p.len) as usize])
+                .collect();
+            let mut sent: Vec<&[u8]> = w.sectors.iter().map(|s| &s.bytes[..]).collect();
+            file_parts.sort();
+            sent.sort();
+            assert!(sent == file_parts, "{format} {key:?}: not the file's bytes");
+            assert!(
+                w.missing.is_empty() && v.missing.is_empty(),
+                "{format} {key:?}"
+            );
+            assert_eq!(w.sectors.len(), v.sectors.len(), "{format} {key:?}");
+            for (a, b) in w.sectors.iter().zip(&v.sectors) {
+                assert_eq!((a.id, &a.bytes), (b.id, &b.bytes), "{format} {key:?}");
+                let (a, b) = (a.at.expect("a place"), b.at.expect("a place"));
+                // Within a ten-thousandth of a revolution, a few bit cells:
+                // the verify read starts where it falls, and its PLL locks on.
+                for (x, y) in a.iter().zip(&b) {
+                    assert!((x - y).abs() < 1e-4, "{format} {key:?}: {a:?} then {b:?}");
+                }
+            }
+            assert!(
+                w.flux.is_some() && v.flux.is_some(),
+                "{format} {key:?}: flux"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_track_is_reported_as_written_only_once_gw_has_written_it() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("write-fails");
+    let image = dir.join("disk.img");
+    let text = stand_in_write_with(
+        &tools,
+        "ibm.1440",
+        &image,
+        "c=0-3",
+        &[],
+        &[("FAIL_AT", "2.0")],
+    );
+    assert!(
+        text.contains("Command Failed: WriteFlux: Disk is Write Protected"),
+        "{}",
+        unreported(&text)
+    );
+    let sources: Vec<((u32, u32), Option<Source>)> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        .map(|l| {
+            let (key, facts) = Facts::parse(l).expect("a report");
+            (key, facts.source)
+        })
+        .collect();
+    let written = |key| sources.contains(&(key, Some(Source::Written)));
+    assert!(written((1, 1)) && sources.contains(&((1, 1), Some(Source::Verify))));
+    assert!(!written((2, 0)), "the write failed: {sources:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// What the bridge's report_flux, given gw's own Flux, makes of reads gw
+/// joined, of pulses that are no index, and of a hard-sectored disk's holes.
+const FLUX_CASES: &str = r#"
+import json, runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle.flux import Flux
+bridge['joining']()
+# A read from between pulses, of two revolutions and a tenth, then another
+# from between pulses, of one revolution and a tenth: in ticks of 1000 a second.
+a = Flux([50, 100, 100], [10] * 26, 1000, index_cued=False)
+b = Flux([30, 100], [10] * 14, 1000, index_cued=False)
+a.append(b)
+joined = bridge['report_flux'](a)
+# A last pulse of no length, with flux on past it; and a read two revolutions on past its last.
+none = [bridge['report_flux'](Flux([1000, 0], [100] * 15, 1e6, index_cued=False)),
+        bridge['report_flux'](Flux([100, 100], [10] * 50, 1000, index_cued=False))]
+# 16 sector holes a revolution of 1600 ticks, and the index hole between two.
+holes = [50, 50] + [100] * 15
+raw = Flux(holes * 3, [10] * 480, 1000, index_cued=False)
+args = type('Args', (), {'hard_sectors': True})()
+told = bridge['indexed'](raw, args)
+holes = (bridge['report_flux'](told) or {}).get('holes')
+print(json.dumps({'joined': joined, 'none': none, 'index': told.index_list,
+                  'raw': raw.index_list[:3], 'holes': holes}))
+"#;
+
+#[test]
+fn reads_gw_joins_are_each_counted_on_their_own_and_pulses_that_are_no_index_count_nothing() {
+    let Some(tools) = tools() else { return };
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let mut python = std::process::Command::new(&tools.python)
+        .args(["-c", FLUX_CASES])
+        .arg(&bridge)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("python runs");
+    // A count that never ends ends the test, not hangs it.
+    let start = Instant::now();
+    while python.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(30) {
+            python.kill().ok();
+            panic!("report_flux did not end");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = python.wait_with_output().unwrap();
+    let said: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    let joined = &said["joined"];
+    // Three revolutions, not the joint between the reads.
+    assert_eq!(
+        joined["revs"],
+        serde_json::json!([100.0, 100.0, 100.0]),
+        "{joined}"
+    );
+    let passes = serde_json::json!([
+        [0.5, 1.0],
+        [0.0, 1.0],
+        [0.0, 1.0],
+        [0.0, 0.1],
+        [0.7, 1.0],
+        [0.0, 1.0],
+        [0.0, 0.1]
+    ]);
+    assert_eq!(joined["passes"], passes);
+    let counted: u64 = joined["bins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.as_u64().unwrap())
+        .sum();
+    assert_eq!(counted, 40, "every transition of both reads");
+    assert_eq!(said["none"], serde_json::json!([null, null]));
+    // gw's own index, the sector holes left out, and the flux it was given as it was.
+    let index: Vec<f64> = serde_json::from_value(said["index"].clone()).unwrap();
+    assert_eq!(index, [50.0, 1600.0, 1600.0]);
+    assert_eq!(said["raw"], serde_json::json!([50, 50, 100]));
+    // gw takes the hole after the index's as the index: the report says so.
+    assert_eq!(said["holes"], true);
+    assert!(joined.get("holes").is_none());
+}
+
+#[test]
+fn a_bitcell_image_converts_as_it_would_unreported_and_each_track_reports_its_flux() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("bitcells");
+    let (img, hfe, back) = (dir.join("a.img"), dir.join("a.hfe"), dir.join("back.img"));
+    let bytes: Vec<u8> = (0..368_640u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(&img, &bytes).unwrap();
+    let fmt = "--format=ibm.360";
+    run(&tools, &["convert", fmt, &path(&img), &path(&hfe)]);
+    // An HFE's tracks are gw's master tracks, which make their flux when asked.
+    let job = run(&tools, &["convert", fmt, &path(&hfe), &path(&back)]);
+    assert_eq!(std::fs::read(&back).unwrap(), bytes);
+    let facts = &job.progress.facts;
+    assert_eq!(facts.len(), 80);
+    for (key, f) in facts {
+        assert!(f.flux.is_some() && f.sectors.len() == 9, "{key:?}");
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// tests/data/edsk.py's image, written to `dir`.
+fn kinds(tools: &Tools, dir: &Path) -> PathBuf {
+    let dsk = dir.join("kinds.dsk");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/edsk.py");
+    let made = std::process::Command::new(&tools.python)
+        .arg(script)
+        .arg(&dsk)
+        .status()
+        .expect("python runs");
+    assert!(made.success());
+    dsk
+}
+
+#[test]
+fn a_track_gw_passes_through_from_an_input_image_is_not_taken_for_the_formats() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("passed-through");
+    let (dsk, imd, img) = (
+        kinds(&tools, &dir),
+        dir.join("kinds.imd"),
+        dir.join("kinds.img"),
+    );
+    run(
+        &tools,
+        &["convert", "--format=ibm.scan", &path(&dsk), &path(&imd)],
+    );
+    // An IMD's track is gw's IBM track already: gw puts it in as it is, its
+    // sectors R1 to R8 and R7 again, not ibm.360's R1 to R9.
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.360", &path(&imd), &path(&img)],
+    );
+    let made = job.progress.made.as_ref().expect("the image's report");
+    assert!(!made.tracks[&(0, 0)].laid, "{:?}", made.tracks[&(0, 0)]);
+    assert_eq!(made.placed(None), None, "not as the layout names them");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Bit cells as gw's FM and MFM decoders count them: 16 to a byte.
+const BYTE: f64 = 16.0;
+
+#[test]
+fn each_kind_of_sector_an_edsk_holds_is_told_apart_where_gw_lays_it_out() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("kinds");
+    let (dsk, imd) = (kinds(&tools, &dir), dir.join("kinds.imd"));
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.scan", &path(&dsk), &path(&imd)],
+    );
+    let f = &job.progress.facts[&(0, 0)];
+    let r = |s: &ferriteweazle::track::Sector| match s.id {
+        Id::Ibm([0, 0, r, 2]) => r,
+        id => panic!("{id:?}"),
+    };
+    let kinds: Vec<(u8, Header, Data, Option<u8>)> = f
+        .sectors
+        .iter()
+        .map(|s| (r(s), s.header, s.data, s.mark))
+        .collect();
+    // As edsk.py lays the track out: its data counts up, so none is empty.
+    assert_eq!(
+        kinds,
+        [
+            (1, Header::Good, Data::Good, Some(0xfb)),
+            (2, Header::Good, Data::Good, Some(0xf8)),
+            (3, Header::Good, Data::Bad, Some(0xfb)),
+            (4, Header::Good, Data::Bad, Some(0xf8)),
+            (5, Header::Bad, Data::None, None),
+            (6, Header::Good, Data::None, None),
+            (7, Header::Good, Data::Good, Some(0xfb)),
+            (7, Header::Good, Data::Good, Some(0xfb)),
+            (8, Header::Good, Data::Good, Some(0xfb)),
+        ]
+    );
+    // Where gw's EDSK reader writes each: 80 bytes of 4E after the index,
+    // 12 of 00 and the index mark, 50 of 4E; then each sector after 12 of
+    // 00, its data 22 of 4E and 12 of 00 after its ID field, and 40 of 4E,
+    // edsk.py's gap 3, after its data. A header that has no data has only
+    // the 22 after it.
+    let layout = |i: usize| {
+        f.sectors[i]
+            .layout
+            .unwrap_or_else(|| panic!("{i}: no layout"))
+    };
+    assert_eq!(layout(0).from_index, (80 + 12 + 4 + 50 + 12) as f64 * BYTE);
+    assert_eq!(layout(0).after, Some((62.0 * BYTE, Before::IndexMark)));
+    for i in [1, 2, 3, 4, 7, 8] {
+        let (cells, _) = layout(i).after.unwrap();
+        assert_eq!(cells, 52.0 * BYTE, "{i}: gap 3 and the 00s");
+    }
+    for i in [5, 6] {
+        let (cells, before) = layout(i).after.unwrap();
+        assert_eq!(cells, 34.0 * BYTE, "{i}: gap 2 and the 00s");
+        assert!(matches!(before, Before::Header(..)), "{i}: {before:?}");
+    }
+    for i in [0, 1, 2, 3, 6, 7, 8] {
+        assert_eq!(layout(i).id_to_data, Some(34.0 * BYTE), "{i}");
+    }
+    // An image's bitcells, not the disk turning: no revolutions to count.
+    assert!(f.sectors.iter().all(|s| s.turns.is_none()));
+    // Its flux is gw's, from 2 µs cells: every interval two, three or four
+    // cells, nothing between.
+    let i = f.flux.as_ref().unwrap().intervals.as_ref().unwrap();
+    let at: Vec<f64> = (i.counts.iter().enumerate())
+        .filter(|&(_, &n)| n > 0)
+        .map(|(k, _)| (i.first as f64 + k as f64) * i.width * 1e6)
+        .collect();
+    let near = |us: f64, cells: f64| (us - cells).abs() < i.width * 1e6;
+    let lengths = [4.0, 6.0, 8.0];
+    assert!(
+        at.iter().all(|&us| lengths.iter().any(|&c| near(us, c))),
+        "{at:?}"
+    );
+    assert!(
+        lengths.iter().all(|&c| at.iter().any(|&us| near(us, c))),
+        "{at:?}"
+    );
+    assert_eq!(i.longer, 0);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Revolution `rev` of an SCP's first track, spoilt `ms` after its index:
+/// `n` intervals made one long one and n−1 of 1.5 µs; the revolution keeps
+/// its length.
+const DAMAGE: &str = r#"
+import struct, sys
+path, rev, ms, n = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4])
+d = bytearray(open(path, 'rb').read())
+track = struct.unpack_from('<I', d, 16)[0]
+_, count, data = struct.unpack_from('<3I', d, track + 4 + 12 * rev)
+at, t, i = track + data, 0, 0
+while t < ms * 40000:  # 25 ns ticks
+    t += struct.unpack_from('>H', d, at + 2 * i)[0]
+    i += 1
+values = [struct.unpack_from('>H', d, at + 2 * (i + k))[0] for k in range(n)]
+short = 60  # 1.5 us
+made = [sum(values) - short * (n - 1)] + [short] * (n - 1)
+for k, v in enumerate(made):
+    struct.pack_into('>H', d, at + 2 * (i + k), v)
+struct.pack_into('<I', d, 12, sum(d[16:]) & 0xffffffff)
+open(path, 'wb').write(d)
+"#;
+
+#[test]
+fn each_revolution_of_flux_gw_reads_is_counted_and_one_the_disk_spoilt_told_apart() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("turns");
+    let (dsk, scp, imd) = (
+        kinds(&tools, &dir),
+        dir.join("kinds.scp"),
+        dir.join("kinds.imd"),
+    );
+    run(&tools, &["convert", &path(&dsk), &path(&scp)]);
+    // In the second of the two revolutions gw writes: R1's data, which runs
+    // from 6.5 ms to 23 ms after the index, spoilt at 12; and R2's header,
+    // at 24.96, its data left whole.
+    for damage in [["1", "12", "10"], ["1", "24.96", "4"]] {
+        let spoilt = std::process::Command::new(&tools.python)
+            .args(["-c", DAMAGE])
+            .arg(&scp)
+            .args(damage)
+            .status()
+            .expect("python runs");
+        assert!(spoilt.success());
+    }
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.scan", &path(&scp), &path(&imd)],
+    );
+    let f = &job.progress.facts[&(0, 0)];
+    let turns = |i: usize| f.sectors[i].turns.clone().unwrap_or_else(|| panic!("{i}"));
+    // gw keeps the good copy: the sector is good, the revolution was not.
+    assert_eq!(f.sectors[0].data, Data::Good);
+    assert_eq!(turns(0).seen, [Seen::Good, Seen::BadData]);
+    assert_eq!(turns(0).reads, 1);
+    assert_eq!(turns(1).seen, [Seen::Good, Seen::BadHeader]);
+    assert_eq!(turns(2).seen, [Seen::BadData, Seen::BadData]);
+    // R5's header, its CRC failing, with no data after it.
+    assert_eq!(turns(4).seen, [Seen::BadHeaderAlone, Seen::BadHeaderAlone]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_track_a_conversions_input_lacks_is_reported_absent() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("absent");
+    let (img, scp, back) = (dir.join("a.img"), dir.join("a.scp"), dir.join("back.img"));
+    std::fs::write(&img, vec![0x5a; 368_640]).unwrap();
+    // Flux of cylinders 0 and 1 only.
+    let fmt = "--format=ibm.360";
+    run(
+        &tools,
+        &["convert", fmt, "--tracks=c=0-1", &path(&img), &path(&scp)],
+    );
+    let job = run(&tools, &["convert", fmt, &path(&scp), &path(&back)]);
+    let facts = &job.progress.facts;
+    assert!(!facts[&(1, 1)].absent && facts[&(1, 1)].flux.is_some());
+    assert!(facts[&(2, 0)].absent && facts[&(39, 1)].absent);
+    assert_eq!(facts.values().filter(|f| f.absent).count(), 76);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_flux_image_written_as_it_is_is_reported_as_gw_writes_it_one_revolution_from_the_index() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("flux-write");
+    let (img, scp) = (dir.join("a.img"), dir.join("a.scp"));
+    std::fs::write(
+        &img,
+        (0..368_640u32)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    // gw's own flux of the image, two revolutions a track.
+    run(
+        &tools,
+        &["convert", "--format=ibm.360", &path(&img), &path(&scp)],
+    );
+    let text = stand_in_write(&tools, "", &scp, "c=0-1");
+    // Raw flux has no format to verify it by.
+    assert!(text.contains("No tracks verified"), "{}", unreported(&text));
+    let reports: Vec<_> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        .map(|l| Facts::parse(l).expect("a report"))
+        .collect();
+    assert_eq!(reports.len(), 4, "{}", unreported(&text));
+    for (key, facts) in reports {
+        assert_eq!(facts.source, Some(Source::Image), "{key:?}");
+        assert!(
+            facts.sectors.is_empty() && facts.summary.is_none(),
+            "{key:?}"
+        );
+        let spin = facts.flux.expect("its flux");
+        assert_eq!(spin.revs.len(), 1, "{key:?}: the revolution gw writes");
+        assert!(
+            (spin.revs[0] - 0.2).abs() < 1e-3,
+            "{key:?}: {:?}",
+            spin.revs
+        );
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// What the bridge said of each track gw wrote: whether gw verifies it.
+fn verifies_said(text: &str) -> BTreeMap<(u32, u32), bool> {
+    let mut said = BTreeMap::new();
+    for line in text
+        .lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle verify "))
+    {
+        let v: serde_json::Value = serde_json::from_str(line).expect("a report");
+        let key = (
+            v["c"].as_u64().unwrap() as u32,
+            v["h"].as_u64().unwrap() as u32,
+        );
+        assert!(
+            said.insert(key, v["verifies"] == true).is_none(),
+            "once a track: {line}"
+        );
+    }
+    said
+}
+
+/// The track of gw's `T1.0: Writing Track` line, as it numbers it.
+fn writing(line: &str) -> Option<(u32, u32)> {
+    let (track, text) = line.strip_prefix('T')?.split_once(": ")?;
+    let (c, h) = track.split(' ').next()?.split_once('.')?;
+    text.starts_with("Writing Track")
+        .then_some((c.parse().ok()?, h.parse().ok()?))
+}
+
+#[test]
+fn gw_verifies_a_write_track_by_track_as_the_bridge_says_whatever_the_image() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("verifies");
+    let img = dir.join("a.img");
+    let bytes = (0..368_640u32).map(|i| (i * 7 % 251) as u8);
+    std::fs::write(&img, bytes.collect::<Vec<_>>()).unwrap();
+    // An image of each kind of track gw writes: sectors of a format, its own
+    // tracks with gw's verify (as an IPF's), bitcells (as a DMK's), raw flux
+    // (as a KryoFlux's or an A2R's).
+    let (adf, dsk) = (dir.join("a.adf"), kinds(&tools, &dir));
+    std::fs::write(&adf, vec![0x5a; 901_120]).unwrap();
+    let [imd, scp, hfe] = ["a.imd", "a.scp", "a.hfe"].map(|f| dir.join(f));
+    for made in [&imd, &scp, &hfe] {
+        run(
+            &tools,
+            &["convert", "--format=ibm.360", &path(&img), &path(made)],
+        );
+    }
+    let cases: [(&str, &Path, &[&str], bool); 8] = [
+        ("an ADF, in its type's format", &adf, &[], true),
+        ("an EDSK, its own tracks", &dsk, &[], true),
+        ("an IMD, sectors of its own", &imd, &[], true),
+        ("raw flux", &scp, &[], false),
+        ("an HFE's bitcells", &hfe, &[], false),
+        ("raw flux in a format", &scp, &["--format=ibm.360"], true),
+        (
+            "raw flux in a bitcell format",
+            &scp,
+            &["--format=raw.250"],
+            false,
+        ),
+        ("an IMD with --no-verify", &imd, &["--no-verify"], false),
+    ];
+    for (what, image, options, verifies) in cases {
+        let text = stand_in_write_with(&tools, "", image, "c=0-1", options, &[]);
+        let gw = (
+            text.contains("All tracks verified"),
+            text.contains("No tracks verified"),
+        );
+        assert_eq!(gw, (verifies, !verifies), "{what}: {}", unreported(&text));
+        let said = verifies_said(&text);
+        assert!(said.values().all(|&v| v == verifies), "{what}: {said:?}");
+        // The track as gw's verify read it back, of each track it verifies.
+        let read_back: Vec<_> = (text.lines())
+            .filter_map(|l| Facts::parse(l.strip_prefix("@ferriteweazle track ")?))
+            .filter(|(_, f)| f.source == Some(Source::Verify) && f.flux.is_some())
+            .map(|(key, _)| key)
+            .collect();
+        let checked: Vec<_> = said.iter().filter(|(_, v)| **v).map(|(k, _)| *k).collect();
+        assert_eq!(read_back, checked, "{what}");
+        // Fed as job.rs feeds it: each track good as gw goes on from it.
+        let mut p = Progress::default();
+        let mut so_far = BTreeMap::new();
+        for line in text.lines() {
+            if let Some(report) = line.strip_prefix("@ferriteweazle verify ") {
+                so_far.extend(verifies_said(line));
+                p.verify(report);
+            } else if line.starts_with("@ferriteweazle ") {
+                continue;
+            } else if let Some(key) = writing(line) {
+                assert!(
+                    so_far.contains_key(&key),
+                    "{what}: said before gw wrote {key:?}"
+                );
+                p.feed(line);
+            } else {
+                if line.ends_with(" verified") || line.contains(" verified (Reason") {
+                    // gw's last line on the write: the tracks before its last.
+                    let last = p.current.expect("a track written");
+                    let want = if verifies {
+                        Status::Good
+                    } else {
+                        Status::Written
+                    };
+                    for (key, t) in p.tracks.iter().filter(|(k, _)| **k != last) {
+                        assert_eq!(t.status, want, "{what}: {key:?}");
+                    }
+                    assert_eq!(p.verifying(), verifies, "{what}: its last");
+                }
+                p.feed(line);
+            }
+        }
+        assert_eq!(
+            p.tracks.keys().collect::<Vec<_>>(),
+            said.keys().collect::<Vec<_>>(),
+            "{what}"
+        );
+        let want = if verifies {
+            Status::Good
+        } else {
+            Status::Written
+        };
+        assert!(
+            p.tracks.values().all(|t| t.status == want),
+            "{what}: {:?}",
+            p.tracks
+        );
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// How far a finished conversion went with its images.
+fn converted(job: &Job) -> image::Job<'_> {
+    image::Job {
+        progress: &job.progress,
+        running: false,
+    }
+}
+
+/// Each part of a made image's file, where the job's report on it lays
+/// it, holds what the report says: data as `want`, else gw's filler; and
+/// the bytes the report gives for it.
+fn holds_as_reported(job: &Job, file: &Path, want: &[u8]) -> (usize, usize, usize) {
+    let made = job.progress.made.as_ref().expect("the image's report");
+    let layout = made.layout.as_ref().expect("laid out");
+    let written = std::fs::read(file).unwrap();
+    assert_eq!(made.bytes(), Some(written.len() as u64), "the file's size");
+    let (mut data, mut filler, mut unread) = (0, 0, 0);
+    for track in made.placed(Some(&converted(job))).expect("as written") {
+        for (k, (part, at, state)) in track.parts.iter().enumerate() {
+            let (at, len) = (*at as usize, part.len as usize);
+            let got = &written[at..at + len];
+            let reported = made.part_bytes(&track, k);
+            assert_eq!(reported.as_deref(), Some(got), "{:?} {:?}", track.key, part);
+            match state {
+                image::State::Data => {
+                    data += 1;
+                    assert_eq!(got, &want[at..at + len], "{:?} {:?}", track.key, part);
+                }
+                image::State::Filler | image::State::Unread => {
+                    match state {
+                        image::State::Filler => filler += 1,
+                        _ => unread += 1,
+                    }
+                    assert_eq!(
+                        got, layout.fillers[part.filler],
+                        "{:?} {:?}",
+                        track.key, part
+                    );
+                }
+                other => panic!("{other:?} in a made image"),
+            }
+        }
+    }
+    (data, filler, unread)
+}
+
+#[test]
+fn an_image_gw_makes_holds_each_sector_where_the_report_lays_it_as_data_or_filler() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("image-layout");
+    let mut service = Service::start(&tools, Box::new(|| {}));
+    // As many bytes as gw lays out for each format.
+    let sizes: Vec<u64> = FORMATS
+        .iter()
+        .map(|(format, _)| {
+            wait(format, || {
+                service.poll();
+                match service.format_info("", format) {
+                    Load::Ready(info) => Some(info.bytes.expect("a layout")),
+                    Load::Failed(e) => panic!("{format}: {e}"),
+                    Load::Waiting(_) => None,
+                }
+            })
+        })
+        .collect();
+    // Each format in a gw of its own, as many at once as the machine has cores.
+    let formats = std::sync::Mutex::new(FORMATS.iter().zip(sizes));
+    // Half the cores: the other tests run beside it.
+    let cores = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1));
+    std::thread::scope(|scope| {
+        for _ in 0..cores.min(FORMATS.len()) {
+            let (tools, dir, formats) = (&tools, &dir, &formats);
+            scope.spawn(move || {
+                loop {
+                    let next = formats.lock().unwrap_or_else(|e| e.into_inner()).next();
+                    let Some((&(format, ext), size)) = next else {
+                        break;
+                    };
+                    let name = format.replace('.', "_");
+                    let img = dir.join(format!("{name}{ext}"));
+                    let (scp, back) = (
+                        dir.join(format!("{name}.scp")),
+                        dir.join(format!("{name}-back{ext}")),
+                    );
+                    let bytes: Vec<u8> = (0..size as u32).map(|i| (i * 7 % 251) as u8).collect();
+                    std::fs::write(&img, &bytes).unwrap();
+                    let fmt = format!("--format={format}");
+                    // The image gw takes its tracks from, checked against its file,
+                    // and each part's bytes as the file holds them.
+                    let job = run(tools, &["convert", &fmt, &path(&img), &path(&scp)]);
+                    let source = job.progress.source.as_ref().expect("the source's report");
+                    assert!(source.layout.is_some(), "{format}: laid out");
+                    assert_eq!(source.size, Some(size), "{format}");
+                    let mut padded = bytes.clone();
+                    for track in source.placed(Some(&converted(&job))).expect("laid out") {
+                        for (k, (part, at, state)) in track.parts.iter().enumerate() {
+                            let (at, len) = (*at as usize, part.len as usize);
+                            padded.resize(padded.len().max(at + len), 0);
+                            let reported = source.part_bytes(&track, k);
+                            assert_eq!(
+                                reported.as_deref(),
+                                Some(&padded[at..at + len]),
+                                "{format}"
+                            );
+                            assert!(
+                                matches!(state, image::State::Data | image::State::PastEnd),
+                                "{format}: {:?} {state:?}",
+                                track.key
+                            );
+                        }
+                    }
+                    // Back again: every sector's data where it was, past the
+                    // source's end gw's zeros.
+                    let job = run(tools, &["convert", &fmt, &path(&scp), &path(&back)]);
+                    let made = std::fs::read(&back).unwrap();
+                    let mut want = bytes.clone();
+                    want.resize(made.len().max(want.len()), 0);
+                    let (data, filler, unread) = holds_as_reported(&job, &back, &want);
+                    assert!(
+                        data > 0 && filler == 0 && unread == 0,
+                        "{format}: {data} {filler} {unread}"
+                    );
+                }
+            });
+        }
+    });
+    // Decoded as a format the flux is not: gw's filler throughout.
+    let (scp, wrong) = (dir.join("ibm_1440.scp"), dir.join("wrong.img"));
+    let job = run(
+        &tools,
+        &["convert", "--format=ibm.720", &path(&scp), &path(&wrong)],
+    );
+    let (data, filler, unread) = holds_as_reported(&job, &wrong, &[]);
+    assert_eq!((data, filler, unread), (0, 1440, 0));
+    // Two cylinders converted: gw's filler for the rest, which it did not read.
+    let part = dir.join("part.img");
+    let args = [
+        "convert",
+        "--format=ibm.1440",
+        "--tracks=c=0-1",
+        &path(&scp),
+        &path(&part),
+    ];
+    let job = run(&tools, &args);
+    let want: Vec<u8> = (0..1_474_560u32).map(|i| (i * 7 % 251) as u8).collect();
+    let (data, filler, unread) = holds_as_reported(&job, &part, &want);
+    assert_eq!((data, filler, unread), (72, 0, 2808));
+    // Every other cylinder of the input, which gw's track lines name as
+    // their own, half as far in.
+    let (img, stepped) = (dir.join("ibm_1440.img"), dir.join("stepped.scp"));
+    let args = [
+        "convert",
+        "--format=ibm.1440",
+        "--tracks=c=0-39:step=2",
+        &path(&img),
+        &path(&stepped),
+    ];
+    let job = run(&tools, &args);
+    let route = image::Route {
+        own: (5, 1),
+        from: Some((10, 1)),
+        to: Some((5, 1)),
+    };
+    let routes = job
+        .progress
+        .routes
+        .as_ref()
+        .expect("the conversion's routes");
+    assert_eq!(routes.len(), 80);
+    assert!(routes.contains(&route), "{routes:?}");
+    let job_of = converted(&job);
+    assert_eq!(job_of.named(image::Role::Source, (10, 1)), [(5, 1)]);
+    assert!(job_of.named(image::Role::Source, (11, 1)).is_empty());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks_from() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("image-before");
+    let (adf, scp) = (dir.join("Disk.adf"), dir.join("Disk.scp"));
+    let mut bytes: Vec<u8> = (0..901_120u32).map(|i| (i * 7 % 251) as u8).collect();
+    // gw's filler where the file's track 0.1 has its sector 3.
+    let at = 11 * 512 + 3 * 512;
+    bytes[at..at + 512].copy_from_slice(&b"-=[BAD SECTOR]=-".repeat(32));
+    std::fs::write(&adf, &bytes).unwrap();
+    let mut service = Service::start(&tools, Box::new(|| {}));
+    let mut opened = |args: &[&str], file: &Path| {
+        let ask = ImageAsk {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            path: path(file),
+            diskdefs: String::new(),
+        };
+        wait("the image", || {
+            service.poll();
+            match service.image(&ask) {
+                Load::Ready(p) => Some(Ok(p.0.clone())),
+                Load::Failed(e) => Some(Err(e.clone())),
+                Load::Waiting(_) => None,
+            }
+        })
+    };
+    let states = |image: &image::Image| {
+        let mut counts = BTreeMap::new();
+        for track in image.placed(None).expect("laid out") {
+            for (_, _, state) in track.parts {
+                *counts.entry(format!("{state:?}")).or_insert(0) += 1;
+            }
+        }
+        counts
+    };
+    // A write's: gw's filler as the file holds it, the rest its data.
+    let write = opened(&["write", &path(&adf)], &adf).unwrap();
+    assert_eq!(write.role, image::Role::Source);
+    assert_eq!((write.kind.as_str(), write.size), ("ADF", Some(901_120)));
+    assert_eq!(write.content.as_deref(), Some(&bytes[..]));
+    let counts = states(&write);
+    assert_eq!((counts["Data"], counts["Filler"]), (1759, 1), "{counts:?}");
+    // As another format lays it out: past the file's end, gw's zeros.
+    let wide = opened(&["write", "--format=ibm.1440", &path(&adf)], &adf).unwrap();
+    assert_eq!(states(&wide)["PastEnd"], (1_474_560 - 901_120) / 512);
+    // A file longer than its format lays out: the rest is gw's to leave, and
+    // only what gw reads comes over.
+    let big = dir.join("Big.img");
+    std::fs::write(&big, vec![0x5a; 1_474_560]).unwrap();
+    let long = opened(&["write", "--format=amiga.amigados", &path(&big)], &big).unwrap();
+    assert_eq!((long.size, long.unread()), (Some(1_474_560), Some(573_440)));
+    assert_eq!(long.content.as_ref().map(Vec::len), Some(901_120));
+    // A conversion's input, its output not made.
+    let input = opened(&["convert", &path(&adf), &path(&scp)], &adf).unwrap();
+    assert!(input.layout.is_some() && !scp.exists());
+    // With no output named, gw's parser wants one; given an SCP's name, as
+    // the page gives gw then, the input opens.
+    let none = opened(&["convert", &path(&adf)], &adf).unwrap_err();
+    assert!(none.contains("out_file"), "{none}");
+    let alone = opened(&["convert", &path(&adf), "out.scp"], &adf).unwrap();
+    assert!(alone.layout.is_some());
+    // An SCP's type names no format, unlike an ADF's: an IMG, which names
+    // none of its own, opens only with one.
+    let img = dir.join("Disk.img");
+    std::fs::write(&img, &bytes).unwrap();
+    let unnamed = opened(&["convert", &path(&img), "out.scp"], &img).unwrap_err();
+    assert!(unnamed.contains("requires a disk format"), "{unnamed}");
+    let amiga = opened(&["convert", &path(&img), "out.adf"], &img).unwrap();
+    assert!(amiga.layout.is_some());
+    // gw's own words where it cannot.
+    let wrong = opened(&["write", "--format=no.such", &path(&adf)], &adf).unwrap_err();
+    assert!(wrong.starts_with("Unknown format 'no.such'"), "{wrong}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 /// A standalone gw: FERRITEWEAZLE_STANDALONE_GW, such as the gw.exe of gw's
 /// Windows download, else on Unix the bundle's gw run by a script of its own,
 /// as the frozen gw.exe runs it in its own Python.
@@ -755,8 +1749,10 @@ fn stopping_a_job_ends_it_and_gw_tidies_up() {
 #[test]
 fn a_question_from_gw_waits_for_an_answer() {
     let Some(tools) = tools() else { return };
-    // Past cylinder 83 gw asks first; answering No ends it before any device is opened.
-    let mut job = start(&tools, "seek", &["seek", "90"]);
+    // Past cylinder 83 gw asks first; answering No ends it before any device
+    // is opened, and the one it would open does not exist.
+    let device = format!("--device={NO_SUCH_PORT}");
+    let mut job = start(&tools, "seek", &["seek", &device, "90"]);
     let question = wait("the question", || {
         job.poll();
         job.question.clone()
@@ -840,6 +1836,10 @@ fn the_convert_page_makes_an_image_and_saves_its_log_beside_it() {
     let log =
         std::fs::read_to_string(dir.join("Game.scp.log")).expect("the log is beside the image");
     assert!(log.contains("Found 720 sectors of 720 (100%)"), "{log}");
+    // The bridge's reports, the disk's bytes and all, are the app's alone.
+    assert!(!job.progress.facts.is_empty(), "reported");
+    assert!(!log.contains("@ferriteweazle"), "{log}");
+    assert!(!job.log.iter().any(|l| l.starts_with("@ferriteweazle")));
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -940,7 +1940,8 @@ fn read_button(w: &Window) -> egui_kittest::Node<'_> {
 
 /// Starts `seek 90` as the tool job, which waits on gw's question until stopped.
 fn waiting_tool(w: &mut Window, tools: &Tools) {
-    app_mut(w).tool = Some(start(tools, "seek", &["seek", "90"]));
+    let device = format!("--device={NO_SUCH_PORT}");
+    app_mut(w).tool = Some(start(tools, "seek", &["seek", &device, "90"]));
     until(w, "gw's question", |app| {
         app.tool.as_ref().is_some_and(|j| j.question.is_some())
     });
@@ -1154,6 +2155,38 @@ fn detection_names_the_format_of_a_flux_image() {
         job.detected
     );
     assert!(!job.detected.iter().any(|f| f.ends_with(".scan")));
+    // Each track it read, as gw's line names it, decoded as the format it
+    // found, and the flux it read.
+    let read = &job.progress.tracks;
+    assert!(read.len() >= 3, "{read:?}");
+    for key in read.keys() {
+        let facts = &job.progress.facts[key];
+        assert_eq!(
+            facts.summary.as_deref(),
+            Some("IBM MFM (5/5 sectors)"),
+            "{key:?}"
+        );
+        assert!(facts.flux.is_some(), "{key:?}");
+        assert_eq!(facts.sectors.len(), 5, "{key:?}");
+        assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
+    }
+    // A codec that keeps no places: gw's decoder noted placing each sector.
+    let job = detect(&tools, &flux_of(&tools, &dir, "amiga.amigados", 901_120));
+    assert_eq!(
+        job.detected.first().map(String::as_str),
+        Some("amiga.amigados")
+    );
+    let facts = &job.progress.facts;
+    assert!(facts.len() >= 3, "{:?}", facts.keys());
+    for (key, facts) in facts {
+        assert_eq!(
+            facts.summary.as_deref(),
+            Some("AmigaDOS (11/11 sectors)"),
+            "{key:?}"
+        );
+        assert_eq!(facts.sectors.len(), 11, "{key:?}");
+        assert!(facts.sectors.iter().all(|s| s.at.is_some()), "{key:?}");
+    }
     std::fs::remove_dir_all(dir).ok();
 }
 
@@ -1165,13 +2198,21 @@ fn a_blank_image_is_no_format_and_says_so() {
     let job = detect(&tools, &flux_of(&tools, &dir, "raw.250", 0));
     assert_eq!(job.outcome(), Some(Outcome::Failed));
     assert!(job.detected.is_empty());
+    // An image's tracks, which gw takes as they are with no format.
+    assert_eq!(
+        job.progress.error.as_deref(),
+        Some(
+            "No format Greaseweazle Tools knows reads this image in full. \
+             Set Disk format to None to use its tracks as they are."
+        )
+    );
+    // The flux of each track it read, and no format's sectors.
+    let facts = &job.progress.facts;
+    assert!(!facts.is_empty());
     assert!(
-        job.progress
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("No format")),
-        "{:?}",
-        job.progress.error
+        facts
+            .values()
+            .all(|f| f.flux.is_some() && f.summary.is_none())
     );
     std::fs::remove_dir_all(dir).ok();
 }
@@ -2094,21 +3135,15 @@ fn a_disk_that_fails_is_read_again_into_its_own_file() {
 }
 
 #[test]
-fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
+fn a_format_gives_the_revolutions_gw_read_takes_of_each_track() {
     let Some(tools) = tools() else { return };
     let mut service = Service::start(&tools, Box::new(|| {}));
-    let schema = wait("the schema", || {
-        service.poll();
-        service.schema.ready().cloned()
-    });
     let mut info = |name: &str| {
         wait(name, || {
             service.poll();
             service.format_info("", name).ready().cloned()
         })
     };
-    assert!(info("ibm.1440").verifies);
-    assert!(info("amiga.amigados").verifies);
     assert_eq!(
         info("ibm.1440").revs,
         Some(2.0),
@@ -2119,21 +3154,6 @@ fn a_write_is_verified_track_by_track_only_in_a_format_gw_can_check() {
         Some(1.1),
         "a timed fraction past one"
     );
-    assert!(!info("raw.250").verifies, "gw cannot check bitcells");
-    let mut verifies = |args: &[&str]| {
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        form::verifies(&mut service, &schema, &args)
-    };
-    assert!(verifies(&["write", "--format=ibm.1440", "a.img"]));
-    assert!(verifies(&["write", "a.adf"]), "an .adf's own format");
-    assert!(!verifies(&[
-        "write",
-        "--format=ibm.1440",
-        "--no-verify",
-        "a.img"
-    ]));
-    assert!(!verifies(&["write", "--format=raw.250", "a.hfe"]));
-    assert!(!verifies(&["write", "a.scp"]), "flux written as it is");
 }
 
 /// Runs the bridge's (argv[1]) detection with the options after argv[2] on a made-up
@@ -2172,9 +3192,12 @@ util.usb_open = lambda device: unit
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
     bridge['detect'](sys.argv[3:])
-result = next(l for l in out.getvalue().splitlines() if l.startswith(bridge['RESULT']))
+lines = out.getvalue().splitlines()
+result = next(l for l in lines if l.startswith(bridge['RESULT']))
 found = json.loads(result[len(bridge['RESULT']):])
-print(json.dumps({**found, 'pins': unit.pins, 'seeks': unit.seeks[:3], 'revs': sorted(unit.revs)}))
+fatal = [b for a, b in zip(lines, lines[1:]) if a == '** FATAL ERROR:']
+print(json.dumps({**found, 'pins': unit.pins, 'seeks': unit.seeks[:3], 'revs': sorted(unit.revs),
+                  'error': fatal[0] if fatal else None}))
 "#;
 
 #[test]
@@ -2205,6 +3228,7 @@ fn detection_reads_the_disk_or_image_as_its_page_would() {
             .args(["-c", FAKE_DRIVE])
             .arg(&bridge)
             .arg(image)
+            .arg(format!("--device={NO_SUCH_PORT}"))
             .arg("--tracks=h0.off=+2:h1.off=+2:hswap")
             .args(options)
             .output()
@@ -2230,11 +3254,36 @@ fn detection_reads_the_disk_or_image_as_its_page_would() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+#[test]
+fn a_blank_disk_in_the_drive_is_no_format_and_says_to_read_it_as_raw_flux() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("detect-blank-disk");
+    let blank = flux_of(&tools, &dir, "raw.250", 0);
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .args(["-c", FAKE_DRIVE])
+        .arg(&bridge)
+        .arg(&blank)
+        .arg(format!("--device={NO_SUCH_PORT}"))
+        .arg("--tracks=c=0-2")
+        .output()
+        .expect("python runs");
+    let said: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(said["formats"], serde_json::json!([]));
+    assert_eq!(
+        said["error"],
+        "No format Greaseweazle Tools knows reads this disk in full. \
+         Set Disk format to None to read as raw flux (.scp)."
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
 /// Runs `gw` argv[4:] through the bridge (argv[1]) with the environment in JSON
 /// argv[3], on a made-up Greaseweazle whose drive holds image argv[2]'s disk.
 /// Odd reads of track 0.0 lose the second half of each revolution, even reads the
-/// first; read STOP_AT of it is stopped. Prints how often each track was read, and
-/// the revs and ticks asked for.
+/// first, or read n the half LOSE's nth names; read STOP_AT of it is stopped.
+/// Prints how often each track was read, and the revs and ticks asked for.
 const PASSES_DRIVE: &str = r#"
 import json, os, runpy, sys
 bridge = runpy.run_path(sys.argv[1])
@@ -2267,7 +3316,9 @@ class Unit:
         if self.at == (0, 0):
             if n == int(os.environ.get('STOP_AT') or 0):
                 raise KeyboardInterrupt
-            flux = silence(flux, (lambda p: p >= 0.55) if n % 2 else (lambda p: p < 0.45))
+            lose = json.loads(os.environ.get('LOSE') or 'null')
+            second = lose[n - 1] == 'second' if lose else n % 2
+            flux = silence(flux, (lambda p: p >= 0.55) if second else (lambda p: p < 0.45))
         return flux
     def __getattr__(self, name):  # selecting the drive, turning its motor
         return lambda *args: None
@@ -2298,7 +3349,8 @@ fn read_in_passes(
         .arg(&bridge)
         .arg(disk)
         .arg(env.to_string())
-        .args(["read", &format!("--format={format}"), "--retries=0"])
+        .args(["read", &format!("--device={NO_SUCH_PORT}")])
+        .args([&format!("--format={format}"), "--retries=0"])
         .args(options)
         .args(["--tracks=c=0-1", &path(image)])
         .output()
@@ -2373,6 +3425,111 @@ fn a_read_in_passes_takes_every_sector_any_pass_found() {
         "{log}"
     );
     assert!(image.exists(), "{log}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The bridge's reports on track `key` in `log`, in turn.
+fn reports_on(log: &str, key: (u64, u64)) -> Vec<serde_json::Value> {
+    log.lines()
+        .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| (v["c"].as_u64(), v["h"].as_u64()) == (Some(key.0), Some(key.1)))
+        .collect()
+}
+
+#[test]
+fn a_later_pass_decodes_each_read_on_its_own_as_gw_decodes_its_retries() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("passes-reads");
+    let disk = flux_of(&tools, &dir, "ibm.1440", 1_474_560);
+    // Reads 1 to 3 of track 0.0 lose its second half, read 4 its first: pass
+    // 2 reads it twice, which gw joins.
+    let lose = r#"["second", "second", "second", "first"]"#;
+    let env = serde_json::json!({"FERRITEWEAZLE_PASSES": "2", "LOSE": lose});
+    let image = dir.join("x.img");
+    let (drive, log) = read_in_passes(&tools, &disk, "ibm.1440", env, &image, &["--retries=1"]);
+    assert_eq!(drive["reads"]["0.0"], 4, "{log}");
+    let last = reports_on(&log, (0, 0)).pop().expect("track 0.0 reported");
+    let decodes = last["codec"]["decodes"].as_array().expect("its decodes");
+    let fluxes: std::collections::BTreeSet<u64> =
+        decodes.iter().filter_map(|d| d["flux"].as_u64()).collect();
+    assert_eq!(fluxes.len(), 4, "each read on its own");
+    let cells: std::collections::BTreeSet<usize> = (decodes.iter())
+        .filter_map(|d| Some(d["cells"].as_array()?.len()))
+        .collect();
+    assert_eq!(cells.len(), 1, "no decode of two reads joined: {cells:?}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_read_whose_times_gw_scales_says_they_are_not_the_disks() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("scaled");
+    let disk = flux_of(&tools, &dir, "ibm.1440", 1_474_560);
+    let read = |options: &[&str]| {
+        let (_, log) = read_in_passes(
+            &tools,
+            &disk,
+            "ibm.1440",
+            serde_json::json!({}),
+            &dir.join("x.img"),
+            options,
+        );
+        let fluxes: Vec<serde_json::Value> = (log.lines())
+            .filter_map(|l| l.strip_prefix("@ferriteweazle track "))
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("flux").cloned())
+            .collect();
+        assert!(!fluxes.is_empty(), "{log}");
+        fluxes
+    };
+    assert!(
+        read(&["--adjust-speed=310rpm"])
+            .iter()
+            .all(|f| f["scaled"] == true)
+    );
+    assert!(read(&[]).iter().all(|f| f.get("scaled").is_none()));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The bridge (argv[1]) converting argv[2] to argv[3] in ibm.360, a hook of
+/// its own made to fail as with a gw whose insides it does not know: gw's
+/// output, then whether gw's own functions are as they were.
+const UNKNOWN_GW: &str = r#"
+import runpy, sys
+bridge = runpy.run_path(sys.argv[1])
+from greaseweazle import track
+from greaseweazle.tools import convert
+parts = lambda: (track.PLLTrack.__init__, convert.process_input_track, convert.open_input_image)
+before = parts()
+def failing(converting):
+    raise AttributeError('gw has no such part')
+bridge['gw'].__globals__['routing'] = failing
+bridge['gw'](['convert', '--format=ibm.360', sys.argv[2], sys.argv[3]])
+print('as they were' if parts() == before else 'patched', file=sys.stderr)
+"#;
+
+#[test]
+fn a_gw_the_bridge_cannot_patch_runs_as_it_is_unreported() {
+    let Some(tools) = tools() else { return };
+    let dir = scratch("unknown-gw");
+    let (img, scp) = (dir.join("a.img"), dir.join("a.scp"));
+    std::fs::write(&img, vec![0x5a; 368_640]).unwrap();
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge.py");
+    let out = std::process::Command::new(&tools.python)
+        .args(["-c", UNKNOWN_GW])
+        .arg(&bridge)
+        .args([&img, &scp])
+        .output()
+        .expect("python runs");
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(scp.exists(), "gw converted all the same: {text}");
+    assert!(
+        text.contains("no reports from this Greaseweazle Tools"),
+        "{text}"
+    );
+    assert!(!text.contains("@ferriteweazle "), "unreported");
+    assert!(text.contains("as they were"), "every patch undone");
     std::fs::remove_dir_all(dir).ok();
 }
 

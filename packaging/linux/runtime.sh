@@ -8,17 +8,22 @@ FUSE=3.15.0
 SQUASHFUSE=0.5.2
 MUSL=1.2.5
 ZSTD=1.5.6
-ZLIB=1.3.2
+ZLIB=1.3.1
 MIMALLOC=2.1.7
 
 # Downloads NAME from URL into target/appimage-cache once, and checks it
-# against packaging/linux/appimage.sha256.
+# against packaging/linux/appimage.sha256; one that differs, or is not listed
+# there, is deleted.
 fetch() {
     mkdir -p target/appimage-cache
     if [ ! -f "target/appimage-cache/$1" ]; then
         curl -fL --retry 3 -o "target/appimage-cache/$1.part" "$2"
         mv "target/appimage-cache/$1.part" "target/appimage-cache/$1"
     fi
-    grep " $1\$" packaging/linux/appimage.sha256 |
-        (cd target/appimage-cache && shasum -a 256 -c -) >/dev/null
+    if ! grep " $1\$" packaging/linux/appimage.sha256 |
+        (cd target/appimage-cache && shasum -a 256 -c - >/dev/null 2>&1); then
+        rm -f "target/appimage-cache/$1"
+        echo "linux: $1 differs from its hash in packaging/linux/appimage.sha256" >&2
+        return 1
+    fi
 }

@@ -7,13 +7,12 @@ The AppImage runtime
 The AppImage starts with the AppImage runtime, type2-runtime 20251108
 (https://github.com/AppImage/type2-runtime, commit
 dd6cebedcbddde9c82f89b011e8e1d40b6e43868), which mounts the rest of the
-file and runs the program. It links libfuse 3.15.0 statically, whose
-library is under the GNU Lesser General Public License 2.1, and
-squashfuse, zstd, zlib, mimalloc and musl, under the licences below.
-The source of the runtime, libfuse and squashfuse is in
-LGPL-sources-@VERSION@.tar, published with this
-AppImage; zstd, zlib, mimalloc and musl are Alpine Linux 3.21's
-packages.
+file and runs the program. It is linked statically with libfuse 3.15.0,
+whose library is under the GNU Lesser General Public License 2.1,
+squashfuse 0.5.2, and Alpine Linux 3.21's zstd 1.5.6, zlib 1.3.1,
+mimalloc 2.1.7 and musl 1.2.5, under the licences below. The source of
+the runtime, libfuse and squashfuse is in LGPL-sources-@VERSION@.tar,
+published with this AppImage.
 
 ----------------------------------------------------------------------
 type2-runtime 20251108
@@ -635,12 +634,12 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------------------
-zlib 1.3.2
+zlib 1.3.1
 ----------------------------------------------------------------------
 
 Copyright notice:
 
- (C) 1995-2026 Jean-loup Gailly and Mark Adler
+ (C) 1995-2022 Jean-loup Gailly and Mark Adler
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages

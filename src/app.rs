@@ -3,12 +3,15 @@
 use crate::command::{self, Values};
 use crate::device::{self, DeviceInfo, Kind, adafruit};
 use crate::diskmap;
+use crate::filemap;
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
+use crate::lines::{Lines, Pane};
 use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
-use crate::service::{Load, Repaint, Service};
+use crate::service::{ImageAsk, Load, Repaint, Service};
+use crate::surface::{self, ANALYSES, Analysis, MEDIA, Media, Shows};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Origin, Tools};
 use crate::udev;
@@ -80,6 +83,8 @@ const NO_DEVICE: &str = "Connect a Greaseweazle.";
 const FROM_SOURCE: &str = "Needs a copy installed from a release.";
 /// Why Detect greys for a gw with no Python the bridge can run in.
 const STANDALONE_DETECT: &str = "Standalone Greaseweazle Tools cannot run Detect.";
+/// While gw opens the image a write or a conversion is to take its tracks from.
+const OPENING: &str = "gw is opening the file.";
 /// Why Restart and Update grey when no gw is found.
 const NOT_FOUND: &str = "Unable to load Greaseweazle Tools.";
 /// When no gw is found, built in, installed or chosen.
@@ -150,6 +155,9 @@ const FADE_WAIT: u32 = 8;
 const LOG_LINE: f32 = 18.0;
 /// The drawer's height, margins included: the command line's, and the log's at first.
 const DRAWER: f32 = 124.0;
+/// The Analyse drawer's least height, margins included: it opens as tall as
+/// the page lets it, for the disks.
+const ANALYSE: f32 = 240.0;
 /// A job's rows above the map, each on one line. The map's budget counts
 /// them with no job too, so its squares keep their size as a job starts.
 const JOB_ROWS: f32 = 97.0;
@@ -160,7 +168,7 @@ const DRAWER_TIME: f32 = 0.2;
 /// How long a dismissed banner takes to go, in seconds: it fades out, and the
 /// page closes up over it.
 const BANNER_TIME: f32 = 0.25;
-/// How far past its least height the log must be dragged to shut, in points.
+/// How far past its least height the log or Analyse must be dragged to shut, in points.
 const LOG_BUMP: f32 = 40.0;
 /// The status pane's strip for its scroll bar, taken from its right margin.
 const STATUS_BAR: i8 = 10;
@@ -180,11 +188,17 @@ impl Default for Page {
     }
 }
 
-/// The choices made in the window; the drive, device, gw and theme are kept between runs.
+/// The choices made in the window; the drive, device, gw, theme and how
+/// Analyse draws the disk are kept between runs.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub page: Page,
     pub theme: theme::Choice,
+    /// How the Analyse drawer draws the disk, and what its tracks show;
+    /// and whether it analyses the disk or the job's image.
+    pub media: Media,
+    pub shows: Shows,
+    pub analysis: Analysis,
     /// A Python or `gw` to use instead of the one found automatically.
     pub tools: Option<PathBuf>,
     /// Empty for gw's own choice.
@@ -222,6 +236,9 @@ pub enum Drawer {
     Cli,
     /// gw's output from every job of the session.
     Log,
+    /// The disk job's disk, each side as the round disk it is, and the image
+    /// it makes or takes its tracks from; before a job, that image.
+    Analyse,
 }
 
 enum Dialog {
@@ -397,6 +414,9 @@ pub struct App {
     kept_tools: Option<PathBuf>,
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
+    /// How Analyse draws the disk and which analysis it shows, as last kept
+    /// in analyse_file(). What the tracks show starts as Sectors each run.
+    kept_analyse: (Media, Analysis),
     /// Classic in the accent it opened in or was last given while the app
     /// runs: Blue otherwise, or Classic itself (teal).
     classic: theme::Choice,
@@ -440,6 +460,10 @@ pub struct App {
     framed: Option<Theme>,
     /// The drawer open when the drawers were last drawn.
     drawn: Option<Drawer>,
+    /// The most height Analyse's content could use when last drawn, and the
+    /// most its drawer was let be.
+    analyse_most: Option<f32>,
+    analyse_cap: Option<f32>,
     /// gw's udev rule, where a Linux package ships it.
     pub udev_rule: Option<PathBuf>,
     install: RuleInstall,
@@ -457,12 +481,15 @@ impl App {
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
         let theme = kept_theme(&theme_file());
+        let (media, analysis) = kept_analyse(&analyse_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
             device: port.clone(),
             tools: tools.clone(),
             theme,
+            media,
+            analysis,
             ..Settings::default()
         };
         let mut app = App::with_settings(&cc.egui_ctx, settings);
@@ -471,6 +498,7 @@ impl App {
         app.kept_device = (kind, port);
         app.kept_tools = tools;
         app.kept_theme = theme;
+        app.kept_analyse = (media, analysis);
         app.copy = Install::this();
         app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
         app.dismissed = kept_dismissed(&dismissed_file()).map(|tag| (tag, f64::NEG_INFINITY));
@@ -531,6 +559,7 @@ impl App {
             kept_device: (Kind::Greaseweazle, String::new()),
             kept_tools: None,
             kept_theme: theme::Choice::System,
+            kept_analyse: Default::default(),
             classic,
             delays: None,
             found_note: None,
@@ -552,6 +581,8 @@ impl App {
             desktop_theme: None,
             framed: None,
             drawn: None,
+            analyse_most: None,
+            analyse_cap: None,
             udev_rule: tools::udev_rule(),
             install: RuleInstall::Idle,
             #[cfg(target_os = "macos")]
@@ -714,6 +745,18 @@ impl App {
         self.service.pin_ports(ports);
     }
 
+    /// Shows `image` as the one any write or conversion is to take its
+    /// tracks from, whatever its page names: for tests and pictures.
+    pub fn pin_image(&mut self, image: crate::image::Image) {
+        self.service.pin_image(image);
+    }
+
+    /// Leaves the image a write or a conversion is to take its tracks from
+    /// unopened, as while gw opens it: for tests.
+    pub fn hold_image(&mut self) {
+        self.service.hold_image();
+    }
+
     /// gw's command line, once gw has described it.
     pub fn schema(&self) -> Option<&Schema> {
         self.schema.as_deref()
@@ -745,6 +788,11 @@ impl App {
         if self.live && self.settings.theme != self.kept_theme {
             self.kept_theme = self.settings.theme;
             keep_theme(&theme_file(), self.kept_theme);
+        }
+        let analyse = (self.settings.media, self.settings.analysis);
+        if self.live && analyse != self.kept_analyse {
+            self.kept_analyse = analyse;
+            keep_analyse(&analyse_file(), analyse);
         }
         self.drop_found_note();
         self.follow_desktop(&ctx);
@@ -1535,7 +1583,7 @@ impl App {
                     } else if let Some(port) = denied.filter(|_| info.is_none()) {
                         // gw info says only that it found none; the port list says why.
                         let text = format!("No access to {}.", short_port(&port.device));
-                        ui.label(RichText::new(text).small().color(p.bad));
+                        ui.label(RichText::new(text).small().color(p.bad_text));
                         let link = egui::Link::new(RichText::new("Grant access…").small());
                         if ui
                             .add(link)
@@ -1547,7 +1595,7 @@ impl App {
                     } else if info.is_none() {
                         // On the line the firmware takes once the device answers.
                         if let Some(why) = &self.probe_failed {
-                            ui.label(RichText::new(why).small().color(p.bad));
+                            ui.label(RichText::new(why).small().color(p.bad_text));
                         }
                         let link = egui::Link::new(RichText::new("Get info").small());
                         ask |= ui
@@ -1557,7 +1605,7 @@ impl App {
                             .clicked();
                     }
                 } else if let Some(why) = self.service.ports_error() {
-                    ui.label(RichText::new(why).small().color(p.bad));
+                    ui.label(RichText::new(why).small().color(p.bad_text));
                 }
                 ui.add_space(4.0);
                 let shown = match &found {
@@ -1602,8 +1650,7 @@ impl App {
                                 _ => short_port(&port.device).to_owned(),
                             };
                             let here = found.as_ref().is_some_and(|f| f.device == port.device);
-                            if ui
-                                .selectable_label(here, text)
+                            if form::selectable(ui, here, egui::Button::new(text))
                                 .on_hover_text(port.device.as_str())
                                 .clicked()
                             {
@@ -1624,12 +1671,14 @@ impl App {
                         self.settings.drive.clone()
                     };
                     for (id, about) in &drives {
-                        let button = egui::Button::selectable(current == *id, id.as_str())
-                            .min_size(vec2(26.0, 24.0));
+                        let button = egui::Button::new(id.as_str()).min_size(vec2(26.0, 24.0));
                         let possible =
                             kind == Kind::Greaseweazle || adafruit::DRIVES.contains(&id.as_str());
                         if ui
-                            .add_enabled(possible, button)
+                            .add_enabled_ui(possible, |ui| {
+                                form::selectable(ui, current == *id, button)
+                            })
+                            .inner
                             .on_hover_text(about.as_str())
                             .on_disabled_hover_text(adafruit::OPTION)
                             .clicked()
@@ -1822,7 +1871,7 @@ impl App {
                 ..Margin::ZERO
             }))
             .show_separator_line(false)
-            .show(ui, |ui| self.run_bar(ui, &schema, cmd));
+            .show(ui, |ui| self.run_bar(ui, &schema, cmd, width));
         let cannot_detect = self.cannot_detect(name);
         let mut install = false;
         let mut unsaved = None;
@@ -1942,102 +1991,131 @@ impl App {
         });
     }
 
-    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command) {
+    /// The page's run button, and beside it the drawers'.
+    fn run_bar(&mut self, ui: &mut Ui, schema: &Schema, cmd: &Command, form_width: f32) {
         let p = theme::palette(ui);
         let why = self.why_not(schema, cmd);
+        let nothing = self.analysed(&cmd.name).err();
         ui.horizontal(|ui| {
-            // The job this page started, or its format being found.
-            let here = self.running().filter(|j| {
-                j.command == cmd.name
-                    || (j.command == DETECT && self.detect_for.as_deref() == Some(&cmd.name))
-            });
-            match here {
-                Some(job) => {
-                    let label = if job.stopping() {
-                        "Stopping…"
-                    } else {
-                        "Stop"
-                    };
-                    let stop = ui.add_enabled(!job.stopping(), big_button(label, p.bad, p));
-                    let tip = match self.runs_motor(job) {
-                        true => "Stop Greaseweazle Tools and the drive's motor.",
-                        false => "Stop Greaseweazle Tools.",
-                    };
-                    let warning = flash_warning(job);
-                    let stop = stop.on_hover_ui(|ui| {
-                        ui.label(tip);
-                        if let Some(warning) = warning {
-                            ui.label(warning);
-                        }
-                    });
-                    if stop.clicked() {
-                        self.stop();
-                    }
-                }
-                None => {
-                    let several = cmd.name == "read"
-                        && self
-                            .settings
-                            .outputs
-                            .get(&form::output_key("read", "file"))
-                            .is_some_and(|o| o.first_disk() < o.disks);
-                    let batch = self
-                        .settings
-                        .values
-                        .get(&cmd.name)
-                        .is_some_and(|v| form::batch_input(cmd, v).is_some());
-                    // gw delays shows the drive's delays, after setting any typed.
-                    let sets = cmd.name == "delays"
-                        && self.settings.values.get(&cmd.name).is_some_and(|v| {
-                            let own = |dest: &str| !form::GLOBAL.contains(&dest);
-                            cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
-                        });
-                    let label = match (several, batch, cmd.name.as_str()) {
-                        (true, _, _) => "Read disks",
-                        (_, true, "write") => "Write disks",
-                        (_, true, _) => "Convert images",
-                        _ if sets => "Set delays",
-                        _ => run_label(&cmd.name),
-                    };
-                    let run = ui.add_enabled(why.is_none(), big_button(label, p.accent, p));
-                    match &why {
-                        Some(why) => {
-                            run.on_disabled_hover_text(why);
-                        }
-                        None if run.clicked() => self.start(ui.ctx(), cmd),
-                        None => {}
-                    }
-                }
-            }
-            for (drawer, text, show, hide) in [
-                (
-                    Drawer::Cli,
-                    "CLI",
-                    "Show command line.",
-                    "Hide command line.",
-                ),
-                (
-                    Drawer::Log,
-                    "Log",
-                    "Show Greaseweazle Tools' output.",
-                    "Hide Greaseweazle Tools' output.",
-                ),
-            ] {
-                ui.add_space(6.0);
-                let open = self.settings.drawer == Some(drawer);
-                let button = egui::Button::new(text)
-                    .selected(open)
-                    .min_size(vec2(70.0, 40.0))
-                    .corner_radius(8);
-                if ui
-                    .add(button)
-                    .on_hover_text(if open { hide } else { show })
-                    .clicked()
-                {
-                    self.settings.drawer = (!open).then_some(drawer);
-                }
-            }
+            // The drawers' buttons, each as wide as the widest name needs.
+            let font = TextStyle::Button.resolve(ui.style());
+            let widest = DRAWERS
+                .iter()
+                .map(|d| {
+                    ui.painter()
+                        .layout_no_wrap(d.1.into(), font.clone(), p.text)
+                        .size()
+                        .x
+                })
+                .fold(0.0, f32::max);
+            // On a narrow page the run button gives way to them, then their
+            // room either side of their names, so that the row ends within
+            // the form.
+            let row = form_width.min(ui.available_width());
+            let n = DRAWERS.len() as f32;
+            let between = ui.spacing().item_spacing.x;
+            let [tight, roomy] = DRAWER_PAD.map(|pad| widest + 2.0 * pad);
+            let room = row - RUN_LEAST - APART - (n - 1.0) * between;
+            // Whole points, and never under what the widest name needs.
+            let least = tight.ceil();
+            let each = (room / n).floor().clamp(least, roomy.max(least));
+            let rest = n * each + (n - 1.0) * between;
+            let wide = (row - rest - APART).clamp(RUN_LEAST, RUN);
+            self.run_button(ui, cmd, why.as_deref(), wide);
+            ui.add_space(APART - between);
+            self.drawer_buttons(ui, each, nothing);
         });
+    }
+
+    /// The page's run button, `wide` points wide: Stop while its job runs.
+    fn run_button(&mut self, ui: &mut Ui, cmd: &Command, why: Option<&str>, wide: f32) {
+        let p = theme::palette(ui);
+        // The job this page started, or its format being found.
+        let here = self.running().filter(|j| {
+            j.command == cmd.name
+                || (j.command == DETECT && self.detect_for.as_deref() == Some(&cmd.name))
+        });
+        match here {
+            Some(job) => {
+                let label = if job.stopping() {
+                    "Stopping…"
+                } else {
+                    "Stop"
+                };
+                let stop = big_button(label, theme::RED_BUTTON, wide);
+                let stop = ui.add_enabled(!job.stopping(), stop);
+                let tip = match self.runs_motor(job) {
+                    true => "Stop Greaseweazle Tools and the drive's motor.",
+                    false => "Stop Greaseweazle Tools.",
+                };
+                let warning = flash_warning(job);
+                let stop = stop.on_hover_ui(|ui| {
+                    ui.label(tip);
+                    if let Some(warning) = warning {
+                        ui.label(warning);
+                    }
+                });
+                if stop.clicked() {
+                    self.stop();
+                }
+            }
+            None => {
+                let several = cmd.name == "read"
+                    && self
+                        .settings
+                        .outputs
+                        .get(&form::output_key("read", "file"))
+                        .is_some_and(|o| o.first_disk() < o.disks);
+                let batch = self
+                    .settings
+                    .values
+                    .get(&cmd.name)
+                    .is_some_and(|v| form::batch_input(cmd, v).is_some());
+                // gw delays shows the drive's delays, after setting any typed.
+                let sets = cmd.name == "delays"
+                    && self.settings.values.get(&cmd.name).is_some_and(|v| {
+                        let own = |dest: &str| !form::GLOBAL.contains(&dest);
+                        cmd.args.iter().any(|a| own(&a.dest) && v.on(&a.dest))
+                    });
+                let label = match (several, batch, cmd.name.as_str()) {
+                    (true, _, _) => "Read disks",
+                    (_, true, "write") => "Write disks",
+                    (_, true, _) => "Convert images",
+                    _ if sets => "Set delays",
+                    _ => run_label(&cmd.name),
+                };
+                let run = big_button(label, p.accent_button(), wide);
+                let run = ui.add_enabled(why.is_none(), run);
+                match why {
+                    Some(why) => {
+                        run.on_disabled_hover_text(why);
+                    }
+                    None if run.clicked() => self.start(ui.ctx(), cmd),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The drawers' buttons, each `each` points wide: each opens its drawer,
+    /// shutting another, or shuts its own. Analyse is greyed, with why, while
+    /// it has nothing to show.
+    fn drawer_buttons(&mut self, ui: &mut Ui, each: f32, nothing: Option<String>) {
+        for &(drawer, text, show, hide) in &DRAWERS {
+            let open = self.settings.drawer == Some(drawer);
+            let button = egui::Button::new(text)
+                .selected(open)
+                .min_size(vec2(each, RUN_HEIGHT))
+                .corner_radius(RUN_RADIUS);
+            let enabled = drawer != Drawer::Analyse || nothing.is_none();
+            let response = ui
+                .add_enabled(enabled, button)
+                .on_hover_text(if open { hide } else { show })
+                .on_disabled_hover_text(nothing.as_deref().unwrap_or_default());
+            if response.clicked() {
+                self.settings.drawer = (!open).then_some(drawer);
+            }
+        }
     }
 
     /// Why this page cannot run now, if it cannot.
@@ -2363,9 +2441,6 @@ impl App {
                     .iter()
                     .find_map(|a| a.strip_prefix("--format="))
                     .map(String::from);
-                let schema = self.schema.as_deref();
-                job.progress.verifies = command == "write"
-                    && schema.is_some_and(|s| form::verifies(&mut self.service, s, &job.args));
                 self.log.begin(heading(&job), &mut job);
                 let disk = DISK_COMMANDS.contains(&command);
                 *(if disk { &mut self.disk } else { &mut self.tool }) = Some(job);
@@ -2402,17 +2477,10 @@ impl App {
         let (format, disk, blank) = self.blank_map(page);
         let tracks = self.settings.values.get(page).map(|v| v.get("tracks"));
         let swapped = tracks.is_some_and(form::swapped);
-        // A running job shows on every page. A finished one shows on its own page
-        // until that page takes other tracks, or for Detect another format.
-        let preview = (&blank.cyls, &blank.heads);
-        let shown = self.disk.as_ref().filter(|j| {
-            j.running()
-                || j.page == page
-                    && match j.command.as_str() {
-                        DETECT => j.format == format,
-                        _ => j.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
-                    }
-        });
+        let shown = self
+            .disk
+            .as_ref()
+            .filter(|j| shows(j, page, format.as_deref(), &blank));
         let top = ui.cursor().top();
         // The map's height above a drawer at its least height and below a job's rows, even
         // with no job, so its squares keep one size; and the room below those rows. Rows
@@ -2435,7 +2503,7 @@ impl App {
         let Some(job) = shown else {
             // Only the pages that work on a disk's tracks have a map of their own.
             if !DISK_COMMANDS.contains(&page) {
-                ui.label(RichText::new("No disk job running").weak());
+                ui.label(RichText::new(NO_DISK_JOB).weak());
                 return;
             }
             ui.label(RichText::new(idle_status(page)).weak());
@@ -2512,21 +2580,23 @@ impl App {
             error_box(ui, p.bad, |ui| match &refused {
                 Some(refused) => install = access(ui, refused),
                 None => {
-                    ui.label(RichText::new(e).color(p.bad));
+                    ui.label(RichText::new(e).color(p.bad_text));
                 }
             });
         }
         let warnings = job.progress.warnings.iter().map(String::as_str);
         for note in warnings.chain(left_behind(job)) {
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(note).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(note).color(p.partial_text)).wrap());
         }
         ui.add_space(8.0);
         let (budget, room) = room(ui);
         match job.progress.cyls.is_empty() && job.progress.tracks.is_empty() {
+            // Analyse shows the disk, or its image, below.
+            _ if self.settings.drawer == Some(Drawer::Analyse) => {}
             true => diskmap::show(ui, &blank, disk, swapped, false, budget, room),
             false => {
-                let verifying = job.running() && job.progress.verifies;
+                let verifying = job.running() && job.progress.verifying();
                 diskmap::show(ui, &job.progress, disk, swapped, verifying, budget, room);
             }
         }
@@ -2592,8 +2662,9 @@ impl App {
         (format, disk.unwrap_or_default(), blank)
     }
 
-    /// The drawers under the page and the status pane: the command line and
-    /// the log. A drawer slides open and shut; going from one to the other does not.
+    /// The drawers under the page and the status pane: the command line, the
+    /// log and Analyse. A drawer slides open and shut; going from one to the
+    /// other does not.
     fn drawers(&mut self, ui: &mut Ui, page: &str) {
         let p = theme::palette(ui);
         let frame = Frame::new().fill(p.bg).inner_margin(Margin {
@@ -2602,10 +2673,19 @@ impl App {
             top: 12,
             bottom: FOOT,
         });
+        // Analyse shuts once it has nothing to show.
+        if self.settings.drawer == Some(Drawer::Analyse) && self.analysed(page).is_err() {
+            self.settings.drawer = None;
+        }
         let open = self.settings.drawer;
         let switched = self.drawn.is_some() && open.is_some() && self.drawn != open;
         self.drawn = open;
-        for (drawer, id) in [(Drawer::Cli, "cli"), (Drawer::Log, "log")] {
+        let drawers = [
+            (Drawer::Cli, "cli"),
+            (Drawer::Log, "log"),
+            (Drawer::Analyse, "analyse"),
+        ];
+        for (drawer, id) in drawers {
             // egui's Panel keys its slide by this id. Setting it here first
             // makes it take DRAWER_TIME, or none from one drawer to the
             // other: the Panel's own call this frame then sees no time pass.
@@ -2643,17 +2723,336 @@ impl App {
         if let Some(why) = unsaved {
             self.notices.insert(page.to_owned(), why);
         }
-        // Dragged below its least height, the log holds there until pulled
-        // LOG_BUMP further; a double-click on its edge shuts it at once.
+        // As tall as the page lets it, or the disks can use; drag its edge for less.
+        let least = ANALYSE.min(tallest);
+        let most = self
+            .analyse_most
+            .map_or(tallest, |m| (m + frame.total_margin().sum().y).ceil())
+            .clamp(least, tallest);
+        // At its most, it stays at its most as that changes: the window's
+        // size, and the disks' room, measured as they are drawn.
+        let id = Id::new("analyse");
+        if let Some(was) = self.analyse_cap.replace(most)
+            && let Some(mut state) = egui::PanelState::load(ui.ctx(), id)
+            && (state.size().y - was).abs() < 1.0
+            && (most - was).abs() >= 1.0
+        {
+            state.outer_rect.min.y = state.outer_rect.max.y - most;
+            ui.ctx().data_mut(|d| d.insert_persisted(id, state));
+        }
+        let mut analyse = open == Some(Drawer::Analyse);
+        egui::Panel::bottom(id)
+            .frame(frame)
+            .resizable(true)
+            .drag_to_open(false)
+            .default_size(most)
+            .size_range(least..=most)
+            .show_collapsible(ui, &mut analyse, |ui| self.analyse(ui, page));
+        // Dragged below its least height, the log or Analyse holds there until
+        // pulled LOG_BUMP further; a double-click on its edge shuts it at once.
         let (pointer, double) = ui.input(|i| {
             let double = i
                 .pointer
                 .button_double_clicked(egui::PointerButton::Primary);
             (i.pointer.interact_pos(), double)
         });
-        let past = pointer.map_or(f32::INFINITY, |p| p.y - (bottom - DRAWER));
-        if open == Some(Drawer::Log) && !log && (double || past > LOG_BUMP) {
+        let past = |least: f32| pointer.map_or(f32::INFINITY, |p| p.y - (bottom - least));
+        let shut = match open {
+            Some(Drawer::Log) => !log && (double || past(DRAWER) > LOG_BUMP),
+            Some(Drawer::Analyse) => !analyse && (double || past(least) > LOG_BUMP),
+            _ => false,
+        };
+        if shut {
             self.settings.drawer = None;
+        }
+    }
+
+    /// Whether Analyse has something to show on `page`: a disk job's tracks
+    /// or images, or before one the image the page names; else why not: gw's
+    /// reason the image does not map, or the status pane's line for the page.
+    fn analysed(&mut self, page: &str) -> Result<(), String> {
+        let (format, _, blank) = self.blank_map(page);
+        let named = self.page_image(page);
+        let job = self
+            .disk
+            .as_ref()
+            .filter(|j| shows(j, page, format.as_deref(), &blank));
+        // A conversion has no disk: done, it shows with the input it took,
+        // or the output it made where gw lays that out.
+        let made = |j: &Job| {
+            j.command == "convert" && j.progress.made.as_ref().is_some_and(|m| m.layout.is_some())
+        };
+        if job.is_some_and(|j| j.page != "convert" || has_input(j, named.as_deref()) || made(j)) {
+            return Ok(());
+        }
+        if let Some(path) = named.filter(|p| filemap::holds_tracks(p)) {
+            return Err(unlaid(page, filemap::not_mapped(&path)));
+        }
+        if let Some(ask) = self.preview_args(page) {
+            // While gw opens the file, as when its options change, the
+            // drawer stays as it is.
+            match self.service.image(&ask) {
+                Load::Ready(p) if p.0.layout.is_some() => return Ok(()),
+                Load::Ready(p) => return Err(unlaid(page, filemap::not_laid_out(&p.0))),
+                Load::Failed(e) => return Err(e.clone()),
+                Load::Waiting(_) if self.settings.drawer == Some(Drawer::Analyse) => return Ok(()),
+                Load::Waiting(_) => return Err(OPENING.to_owned()),
+            }
+        }
+        Err(match DISK_COMMANDS.contains(&page) {
+            true => unanalysed(page),
+            false => NO_DISK_JOB,
+        }
+        .to_owned())
+    }
+
+    /// The image file a write or a conversion on `page` is to take its
+    /// tracks from, as gw is to be given it. None for other pages, or with
+    /// none named.
+    fn page_image(&self, page: &str) -> Option<String> {
+        let cmd = self.schema.as_ref()?.command(page)?;
+        let values = self.values_for(cmd);
+        let path = image_path(values.get(image_dest(page)?));
+        (!path.is_empty()).then(|| path.to_owned())
+    }
+
+    /// What gw needs to open the page's image, `page_image`, as its job
+    /// will: the command with its format, definitions and files; for a
+    /// conversion's output, a name of its type, which is all gw takes from it
+    /// before opening the input. None for an image of flux or bitcells,
+    /// which gw keeps as tracks.
+    fn preview_args(&self, page: &str) -> Option<ImageAsk> {
+        let cmd = self.schema.as_ref()?.command(page)?;
+        let values = self.values_for(cmd);
+        let path = image_path(values.get(image_dest(page)?)).to_owned();
+        if path.is_empty() || filemap::holds_tracks(&path) {
+            return None;
+        }
+        let mut with = Values::default();
+        for dest in ["diskdefs", "format", "file", "in_file"] {
+            with.set(dest, values.get(dest));
+        }
+        let output = self
+            .settings
+            .outputs
+            .get(&form::output_key(page, "out_file"));
+        let ext = output.map_or("", |o| o.ext.as_str());
+        with.set("out_file", of_type(values.get("out_file"), ext));
+        Some(ImageAsk {
+            args: command::argv(cmd, &with),
+            path,
+            diskdefs: values.get("diskdefs").to_owned(),
+        })
+    }
+
+    /// The Analyse drawer: the disk job's disk, each side as the round disk
+    /// it is, and the disk's size to draw it at; or the image the job makes
+    /// or takes its tracks from, which before a job it is to take them from.
+    fn analyse(&mut self, ui: &mut Ui, page: &str) {
+        let p = theme::palette(ui);
+        let top = ui.cursor().top();
+        // Its box down to the drawer's foot, however short what is in it.
+        ui.set_min_height(ui.max_rect().height());
+        let (format, disk, blank) = self.blank_map(page);
+        let job = self
+            .disk
+            .as_ref()
+            .filter(|j| shows(j, page, format.as_deref(), &blank));
+        let named = self.page_image(page);
+        // The job's images, where they are the page's; else the page's own
+        // shows, as before a job.
+        let owned = job.filter(|j| owns(j, named.as_deref()));
+        let preview = self.preview_args(page).filter(|_| owned.is_none());
+        if let Some(ask) = &preview {
+            self.service.image(ask);
+        }
+        let opened = preview
+            .as_ref()
+            .and_then(|ask| self.service.known_image(ask));
+        let previewed = opened.map(|p| &p.0).filter(|i| i.layout.is_some());
+        // Why the page's own image does not show where a job's might.
+        let unshown = || match (&named, opened) {
+            (Some(path), _) if filemap::holds_tracks(path) => {
+                unlaid(page, filemap::not_mapped(path))
+            }
+            (_, Some(p)) => unlaid(page, filemap::not_laid_out(&p.0)),
+            _ => match preview.as_ref() {
+                Some(ask) => self.service.image_error(ask).unwrap_or(OPENING).to_owned(),
+                // As the drawer shuts.
+                None => idle_status(page).to_owned(),
+            },
+        };
+        let begun =
+            job.is_some_and(|j| !(j.progress.cyls.is_empty() && j.progress.tracks.is_empty()));
+        let progress = match job {
+            Some(j) if begun => &j.progress,
+            _ => &blank,
+        };
+        let span = surface::span(progress, disk);
+        // A job gw has yet to open its image for: one with an image.
+        let opening = owned.is_some_and(|j| {
+            j.running()
+                && matches!(j.command.as_str(), "read" | "write" | "convert")
+                && j.progress.made.is_none()
+                && j.progress.source.is_none()
+        });
+        let command = job.map_or(page, |j| j.command.as_str());
+        let running = job.is_some_and(Job::running);
+        let analysis = &mut self.settings.analysis;
+        let (views, showing) = if job.map_or(page, |j| j.page.as_str()) == "convert" {
+            // A conversion has no disk: its input, as gw lays it out or else
+            // its tracks as gw takes them, and the output it makes.
+            let source = owned.and_then(|j| j.progress.source.as_ref());
+            let input = match (source.filter(|i| i.layout.is_some()), previewed) {
+                (Some(image), _) => Ok(Draws::Map(image, owned.map(|j| &j.progress))),
+                (None, Some(image)) => Ok(Draws::Map(image, None)),
+                _ if opening => Err(OPENING.to_owned()),
+                _ if job.is_some_and(|j| has_input(j, named.as_deref())) => Ok(Draws::Tracks),
+                _ if named.is_none() => Err("No image chosen yet".to_owned()),
+                _ => Err(unshown()),
+            };
+            let converting = job.filter(|j| j.command == "convert");
+            let output = match converting.map(|j| (j, j.progress.made.as_ref())) {
+                Some((j, Some(made))) if made.layout.is_some() => {
+                    Ok(Draws::Map(made, Some(&j.progress)))
+                }
+                Some((_, Some(made))) => Err(filemap::not_laid_out(made)),
+                Some((j, None)) if j.running() => Err(OPENING.to_owned()),
+                _ => Err(idle_status(page).to_owned()),
+            };
+            let making = converting.is_some_and(|j| j.running() && j.progress.made.is_none());
+            let showing = match (&input, &output) {
+                (Ok(_), Err(_)) if !making => Analysis::Disk,
+                (Err(_), Ok(_)) => Analysis::Image,
+                // As chosen: both show, or gw is yet to open one.
+                _ => *analysis,
+            };
+            let views = [
+                (Analysis::Disk, "Image analysis (Input)", input),
+                (Analysis::Image, "Image analysis (Output)", output),
+            ];
+            (views, showing)
+        } else {
+            // The image the job makes or takes its tracks from, where gw
+            // lays it out; before a job, the one it is to take them from.
+            let image = match (owned, previewed) {
+                (Some(_), _) if opening => Err(OPENING.to_owned()),
+                (Some(j), _) => filemap::shown(&j.progress),
+                (None, Some(image)) => Ok(image),
+                (None, None) => Err(unshown()),
+            };
+            let showing = match (job, &image) {
+                (None, _) => Analysis::Image,
+                (Some(_), Ok(_)) => *analysis,
+                // As chosen, until gw says what it is.
+                (Some(_), Err(_)) if opening => *analysis,
+                (Some(_), Err(_)) => Analysis::Disk,
+            };
+            let disk = job
+                .map(|_| Draws::Tracks)
+                .ok_or_else(|| idle_status(page).to_owned());
+            let image = image.map(|i| Draws::Map(i, owned.map(|j| &j.progress)));
+            let [(_, disk_name, _), (_, image_name, _)] = ANALYSES;
+            let views = [
+                (Analysis::Disk, disk_name, disk),
+                (Analysis::Image, image_name, image),
+            ];
+            (views, showing)
+        };
+        // The views are the disk's, then the image's.
+        let drawn = match showing {
+            Analysis::Disk => &views[0].2,
+            Analysis::Image => &views[1].2,
+        };
+        let tracks = matches!(drawn, Ok(Draws::Tracks));
+        let (media, shows) = (&mut self.settings.media, &mut self.settings.shows);
+        ui.horizontal(|ui| {
+            for (view, name, draws) in &views {
+                let (view, name, why) = (*view, *name, draws.as_ref().err().cloned());
+                // A chosen one's name in the selection's colour, as every
+                // selectable's is; the other's as a heading's.
+                let selected = showing == view;
+                let colour = match selected {
+                    true => ui.visuals().selection.stroke.color,
+                    false => ui.visuals().strong_text_color(),
+                };
+                let chosen = egui::Button::new(RichText::new(name).color(colour));
+                let chosen = ui
+                    .add_enabled_ui(why.is_none(), |ui| form::selectable(ui, selected, chosen))
+                    .inner
+                    .on_disabled_hover_text(why.unwrap_or_default());
+                if chosen.clicked() {
+                    *analysis = view;
+                }
+            }
+            if !tracks {
+                return;
+            }
+            right(ui, |ui| {
+                egui::ComboBox::from_id_salt("disk size")
+                    .selected_text(media.name())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for (size, name, _) in MEDIA {
+                            // No more tracks than the disk holds.
+                            let over = size.holds().filter(|&n| span > n);
+                            let why =
+                                over.map(|n| format!("{span} cylinders: it has room for {n}."));
+                            ui.add_enabled_ui(over.is_none(), |ui| {
+                                form::selectable_value(ui, media, size, name)
+                            })
+                            .inner
+                            .on_disabled_hover_text(why.unwrap_or_default());
+                        }
+                    });
+                ui.add_space(8.0);
+                surface::choose_shows(ui, shows, progress, disk);
+            });
+        });
+        let args = job.map_or(&[][..], |j| &j.args[..]);
+        if let Some(note) = undrawn(args).filter(|_| tracks) {
+            ui.add(egui::Label::new(RichText::new(note).small().color(p.partial_text)).wrap());
+        }
+        ui.add_space(6.0);
+        // The sides as the job took them, whatever its page says now.
+        let sides = args.iter().find_map(|a| a.strip_prefix("--tracks="));
+        // A conversion takes its tracks from an image, as Detect does on any
+        // page but Read.
+        let file = job.is_some_and(|j| j.page != "read");
+        let map = surface::Map {
+            progress,
+            image: command == "convert" || (command == DETECT && file),
+            disk,
+            swapped: sides.is_some_and(form::swapped),
+            verifying: running && job.is_some_and(|j| j.progress.verifying()),
+            media: *media,
+            shows: *shows,
+            current: job.and_then(|j| j.progress.current).filter(|_| running),
+            running,
+        };
+        let above = ui.cursor().top() - top;
+        // As tall as the disks can use, whichever shows: going from one
+        // view to the other leaves the drawer as it is.
+        let most = surface::most(ui, &map);
+        let place = surface::place(ui, &map);
+        match drawn {
+            Ok(Draws::Map(image, progress)) => {
+                let map = filemap::Map {
+                    progress: *progress,
+                    image,
+                    running: running && progress.is_some(),
+                    converts: command == "convert",
+                };
+                filemap::show(ui, &map, place);
+            }
+            Ok(Draws::Tracks) => surface::show(ui, &map),
+            // Nothing gw has opened yet: why.
+            Err(why) => {
+                ui.label(RichText::new(why).weak());
+            }
+        }
+        if let Some(most) = most {
+            self.analyse_most = Some(above + most);
         }
     }
 
@@ -2699,7 +3098,7 @@ impl App {
                     ui.memory_mut(|m| m.surrender_focus(id));
                 }
                 if let Some(e) = &cli.error {
-                    let e = RichText::new(e).small().color(p.bad);
+                    let e = RichText::new(e).small().color(p.bad_text);
                     ui.add(egui::Label::new(e).truncate());
                 }
             });
@@ -2878,9 +3277,12 @@ impl App {
                     }
                     let classic = choice == theme::Choice::Classic;
                     let choice = if classic { self.classic } else { choice };
-                    let r = ui
-                        .selectable_label(self.settings.theme == choice, text)
-                        .on_hover_text(tip);
+                    let r = form::selectable(
+                        ui,
+                        self.settings.theme == choice,
+                        egui::Button::new(text),
+                    )
+                    .on_hover_text(tip);
                     if r.clicked() {
                         self.choose_theme(ui.ctx(), choice);
                     }
@@ -2921,10 +3323,10 @@ impl App {
                     });
                 }
                 (None, _) => {
-                    ui.label(RichText::new(NOT_FOUND).color(p.bad));
+                    ui.label(RichText::new(NOT_FOUND).color(p.bad_text));
                 }
                 (_, load) => {
-                    ui.label(RichText::new(load.error().unwrap_or(NOT_FOUND)).color(p.bad));
+                    ui.label(RichText::new(load.error().unwrap_or(NOT_FOUND)).color(p.bad_text));
                 }
             }
             ui.add_space(4.0);
@@ -3169,12 +3571,11 @@ impl App {
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
                         let text = match disks {
                             1 => run_label(command).to_owned(),
                             _ => format!("{} 1", run_label(command)),
                         };
-                        if ui.add(dialog_button(&text, p.bad, p)).clicked() {
+                        if ui.add(dialog_button(&text, theme::RED_BUTTON)).clicked() {
                             let (ctx, command, args) = (ctx.clone(), command.clone(), args.clone());
                             action = Some(match disks {
                                 1 => Box::new(move |app: &mut App| {
@@ -3213,8 +3614,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Overwrite", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Overwrite", theme::RED_BUTTON)).clicked() {
                             let (ctx, command, runs) = (ctx.clone(), command.clone(), runs.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.begin(&ctx, &command, runs)
@@ -3237,6 +3637,11 @@ impl App {
                 } => {
                     let (disk, failed) = (*disk, *failed);
                     let (verb, p) = (run_label(command), theme::palette(ui));
+                    // Red where the disk is written or erased.
+                    let colours = match destructive(command) {
+                        true => theme::RED_BUTTON,
+                        false => p.accent_button(),
+                    };
                     let heading = match disk {
                         Some(disk) => format!("Insert disk {disk} of {total}"),
                         None => format!("{verb} {total} again?"),
@@ -3244,7 +3649,7 @@ impl App {
                     dialog_heading(ui, &heading);
                     if let Some(failed) = failed {
                         let text = format!("Disk {failed} failed. The Log says why.");
-                        ui.label(RichText::new(text).color(p.bad));
+                        ui.label(RichText::new(text).color(p.bad_text));
                     }
                     if disk.is_some() {
                         let first = self.session.as_ref().is_some_and(|s| s.next == 0);
@@ -3293,7 +3698,7 @@ impl App {
                                 ),
                                 false => format!("{file} exists. Reading replaces it."),
                             };
-                            ui.label(RichText::new(text).small().color(p.partial));
+                            ui.label(RichText::new(text).small().color(p.partial_text));
                         }
                         named = Some(chosen);
                     }
@@ -3304,7 +3709,7 @@ impl App {
                             let ready = named.as_ref().is_none_or(|n| !n.is_empty());
                             let enter = ready && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             let button = ui
-                                .add_enabled(ready, dialog_button(&next, p.accent, p))
+                                .add_enabled(ready, dialog_button(&next, colours))
                                 .on_disabled_hover_text("Type a name.");
                             if button.clicked() || (enter && named.is_some()) {
                                 let ctx = ctx.clone();
@@ -3322,7 +3727,7 @@ impl App {
                             let again = format!("{verb} {failed} again");
                             let button = match disk {
                                 Some(_) => dialog_plain(&again),
-                                None => dialog_button(&again, p.accent, p),
+                                None => dialog_button(&again, colours),
                             };
                             if ui
                                 .add(button)
@@ -3370,7 +3775,7 @@ impl App {
                     if exists {
                         let p = theme::palette(ui);
                         let text = "A preset of this name exists. Saving replaces it.";
-                        ui.label(RichText::new(text).small().color(p.partial));
+                        ui.label(RichText::new(text).small().color(p.partial_text));
                     }
                     ui.add_space(6.0);
                     form::text_box_with(
@@ -3390,9 +3795,12 @@ impl App {
                         let name = name.trim().to_owned();
                         let description = description.trim().to_owned();
                         let p = theme::palette(ui);
-                        let text = if exists { "Replace" } else { "Save" };
+                        let (text, colours) = match exists {
+                            true => ("Replace", theme::RED_BUTTON),
+                            false => ("Save", p.accent_button()),
+                        };
                         if ui
-                            .add_enabled(!name.is_empty(), dialog_button(text, p.accent, p))
+                            .add_enabled(!name.is_empty(), dialog_button(text, colours))
                             .on_disabled_hover_text("Type a name.")
                             .clicked()
                         {
@@ -3416,8 +3824,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Delete", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Delete", theme::RED_BUTTON)).clicked() {
                             let (command, path) = (command.clone(), path.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.delete_preset(&command, &path)
@@ -3459,8 +3866,7 @@ impl App {
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Stop and quit", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Stop and quit", theme::RED_BUTTON)).clicked() {
                             action = Some(Box::new(|app: &mut App| {
                                 app.quitting = true;
                                 app.stop();
@@ -3999,7 +4405,7 @@ fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> 
         || line.contains(": error:")
         || before == Some("** FATAL ERROR:")
     {
-        Some(p.bad)
+        Some(p.bad_text)
     } else if ["WARNING", "Giving up", "Retry #"]
         .iter()
         .any(|w| line.contains(w))
@@ -4007,7 +4413,7 @@ fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> 
             .iter()
             .any(|u| line.starts_with(u))
     {
-        Some(p.partial)
+        Some(p.partial_text)
     } else {
         None
     }
@@ -4105,6 +4511,85 @@ fn installing(update: &Update) -> bool {
     matches!(update, Update::Installing(..))
 }
 
+/// The status pane's line on a page that works on no disk, with no disk job.
+const NO_DISK_JOB: &str = "No disk job running";
+
+/// What a view of the Analyse drawer draws.
+enum Draws<'a> {
+    /// The job's tracks, drawn round: a disk's, or an image's as gw takes them.
+    Tracks,
+    /// An image as gw lays it out, with the progress of the job that has
+    /// it, if one has.
+    Map(&'a crate::image::Image, Option<&'a Progress>),
+}
+
+/// Whether the status pane shows disk job `job` on `page`, whose format is
+/// `format` and empty map `blank`. A running job shows on every page. A
+/// finished one shows on its own page until that page takes other tracks,
+/// or for Detect another format; one that found none, with the flux it
+/// read, whatever the page's.
+fn shows(job: &Job, page: &str, format: Option<&str>, blank: &Progress) -> bool {
+    let preview = (&blank.cyls, &blank.heads);
+    job.running()
+        || (job.page == page
+            && match job.command.as_str() {
+                DETECT => job.format.is_none() || job.format.as_deref() == format,
+                _ => job.planned.as_ref().is_none_or(|(c, h)| (c, h) == preview),
+            })
+}
+
+/// Whether the images of `job`, shown on a page that names image `named`,
+/// are the page's: while it runs, with none named, or once it took its
+/// tracks from that one.
+fn owns(job: &Job, named: Option<&str>) -> bool {
+    let took = job.progress.source.as_ref().and_then(|s| s.file.as_deref());
+    job.running() || named.is_none() || took == named
+}
+
+/// Whether `job` has the tracks of `named`, the image its page names: its
+/// own, or Detect's of that file, its last argument.
+fn has_input(job: &Job, named: Option<&str>) -> bool {
+    owns(job, named) || (job.command == DETECT && job.args.last().map(String::as_str) == named)
+}
+
+/// Why Analyse draws nothing of the tracks a job with `args` takes: gw does
+/// not read or write them round from the disk's index, so the bridge
+/// reports none of them.
+fn undrawn(args: &[String]) -> Option<&'static str> {
+    if args.iter().any(|a| a == "--reverse") {
+        Some("Not drawn: --reverse runs each track backwards.")
+    } else if args.iter().any(|a| a.starts_with("--fake-index")) {
+        Some("Not drawn: with --fake-index, tracks do not start at the index.")
+    } else {
+        None
+    }
+}
+
+/// A name of the type of a conversion's output `file`, or with none named,
+/// of `ext`, the type chosen: all gw takes from the output before it opens
+/// the input is its type's default format, and its `::` options only as it
+/// opens it. With no type, an SCP's, which has no default format: gw opens
+/// the input as it would alone.
+fn of_type(file: &str, ext: &str) -> String {
+    let name = file.split_once("::").map_or(file, |(n, _)| n);
+    match Path::new(name).extension() {
+        Some(ext) => format!("out.{}", ext.to_string_lossy()),
+        None if !name.is_empty() => name.to_owned(),
+        None if !ext.is_empty() => format!("out{ext}"),
+        None => "out.scp".to_owned(),
+    }
+}
+
+/// The field of a write's or a conversion's page that names the image it
+/// takes its tracks from.
+fn image_dest(page: &str) -> Option<&'static str> {
+    match page {
+        "write" => Some("file"),
+        "convert" => Some("in_file"),
+        _ => None,
+    }
+}
+
 /// What the status pane says before any disk job, for this page.
 fn idle_status(page: &str) -> &'static str {
     match page {
@@ -4112,6 +4597,25 @@ fn idle_status(page: &str) -> &'static str {
         "erase" => "No disk erased yet",
         "convert" => "No image converted yet",
         _ => "No disk read yet",
+    }
+}
+
+/// `why` the image `page` names shows no layout; for a conversion's input,
+/// with when its tracks show.
+fn unlaid(page: &str, why: String) -> String {
+    match page {
+        "convert" => format!("{why} Its tracks show as gw converts it or Detect reads it."),
+        _ => why,
+    }
+}
+
+/// Why Analyse is greyed on `page` before any job: on a write's and a
+/// conversion's page, the image the page names would show too.
+fn unanalysed(page: &str) -> &'static str {
+    match page {
+        "write" => "No disk written or image chosen yet",
+        "convert" => "No image chosen or converted yet",
+        _ => idle_status(page),
     }
 }
 
@@ -4147,12 +4651,46 @@ fn repaint(ctx: &egui::Context) -> Repaint {
     Box::new(move || ctx.request_repaint())
 }
 
-fn big_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
-    egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(15.0))
+/// The run button's width, the least it gives way to on a narrow page, and
+/// its height; and the CLI, Log and Analyse buttons' size beside it.
+const RUN: f32 = 170.0;
+const RUN_LEAST: f32 = 120.0;
+const RUN_HEIGHT: f32 = 40.0;
+const RUN_RADIUS: u8 = 8;
+/// The drawers' buttons: the room either side of each one's name, at least
+/// and at most, and the room between them and the run button.
+const DRAWER_PAD: [f32; 2] = [10.0, 16.0];
+const APART: f32 = 16.0;
+/// The drawers in the run bar's order: each one's button, and its tips to
+/// show and hide it.
+const DRAWERS: [(Drawer, &str, &str, &str); 3] = [
+    (
+        Drawer::Cli,
+        "CLI",
+        "Show command line.",
+        "Hide command line.",
+    ),
+    (
+        Drawer::Log,
+        "Log",
+        "Show Greaseweazle Tools' output.",
+        "Hide Greaseweazle Tools' output.",
+    ),
+    (
+        Drawer::Analyse,
+        "Analyse",
+        "Show disk and image analysis.",
+        "Hide disk and image analysis.",
+    ),
+];
+
+/// A page's run button, `wide` points wide, in `fill` with its text in `ink`.
+fn big_button(text: &str, (fill, ink): (Color32, Color32), wide: f32) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(ink).strong().size(14.0))
         .fill(fill)
         .stroke(Stroke::NONE)
-        .corner_radius(8)
-        .min_size(vec2(170.0, 40.0))
+        .corner_radius(RUN_RADIUS)
+        .min_size(vec2(wide, RUN_HEIGHT))
 }
 
 /// Every dialog button's height.
@@ -4163,8 +4701,9 @@ fn dialog_heading(ui: &mut Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-fn dialog_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
-    egui::Button::new(RichText::new(text).color(p.on_accent).strong())
+/// A dialog's button that acts, in `fill` with its text in `ink`.
+fn dialog_button(text: &str, (fill, ink): (Color32, Color32)) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(ink).strong())
         .fill(fill)
         .stroke(Stroke::NONE)
         .min_size(vec2(120.0, DIALOG_BUTTON))
@@ -4364,11 +4903,11 @@ fn setting(ui: &mut Ui, on: &mut bool, label: &str, tip: &str) {
 
 fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
     match job.outcome() {
-        None if job.stopping() => ("Stopping", p.partial),
+        None if job.stopping() => ("Stopping", p.partial_text),
         None => ("Running", p.accent),
-        Some(Outcome::Succeeded) => ("Done", p.good),
-        Some(Outcome::Failed) => ("Failed", p.bad),
-        Some(Outcome::Stopped) => ("Stopped", p.partial),
+        Some(Outcome::Succeeded) => ("Done", p.good_text),
+        Some(Outcome::Failed) => ("Failed", p.bad_text),
+        Some(Outcome::Stopped) => ("Stopped", p.partial_text),
     }
 }
 
@@ -4455,8 +4994,8 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
             // Orange for a job that worked all the same, as gw info does
             // when only its check for newer firmware fails.
             let colour = match job.outcome() {
-                Some(Outcome::Succeeded) => p.partial,
-                _ => p.bad,
+                Some(Outcome::Succeeded) => p.partial_text,
+                _ => p.bad_text,
             };
             error_box(ui, colour, |ui| {
                 ui.label(RichText::new(e).color(colour));
@@ -4504,7 +5043,7 @@ const NO_ACCESS: &str = "This account has no permission to open the port. Grease
 fn access(ui: &mut Ui, refused: &Refused) -> bool {
     let p = theme::palette(ui);
     let heading = format!("No access to {}", refused.port);
-    ui.label(RichText::new(heading).strong().color(p.bad));
+    ui.label(RichText::new(heading).strong().color(p.bad_text));
     ui.add(egui::Label::new(NO_ACCESS).wrap());
     ui.add_space(4.0);
     let running = matches!(refused.install, RuleInstall::Running(_));
@@ -4528,10 +5067,10 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
             });
         }
         RuleInstall::Done(Ok(())) => {
-            ui.label(RichText::new("Installed, and udev has applied it.").color(p.good));
+            ui.label(RichText::new("Installed, and udev has applied it.").color(p.good_text));
         }
         RuleInstall::Done(Err(e)) => {
-            ui.add(egui::Label::new(RichText::new(e).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(e).color(p.partial_text)).wrap());
         }
     }
     ui.add_space(4.0);
@@ -4667,33 +5206,43 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
                 ui.label(RichText::new(empty).weak());
                 return;
             }
-            let row = ui.text_style_height(&TextStyle::Monospace);
-            // A line gw has not ended yet comes last.
-            let lines = log.len() + usize::from(!tail.is_empty());
+            let plain = ui.visuals().text_color();
+            let line = |i: usize| {
+                // A line gw has not ended yet comes last.
+                let line = log.get(i).map_or(tail, String::as_str);
+                let before = i.checked_sub(1).map(|b| log[b].as_str());
+                let colour = match shown {
+                    Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
+                    _ => log_colour(line, before, p),
+                };
+                (line, colour.unwrap_or(plain))
+            };
+            let lines = Lines {
+                count: log.len() + usize::from(!tail.is_empty()),
+                line: &line,
+                font: TextStyle::Monospace.resolve(ui.style()),
+                gap: ui.spacing().item_spacing.y,
+            };
             theme::solid_bars(ui, p);
-            egui::ScrollArea::both()
+            let area = egui::ScrollArea::both()
                 .id_salt("log")
                 .stick_to_bottom(true)
-                .auto_shrink([false, false])
                 .max_height(height)
                 // A drawer's sideways bar fits inside its height: added to
                 // it, the drawer would open that much taller every frame.
-                .min_scrolled_height(if drawer { 0.0 } else { height })
-                .show_rows(ui, row, lines, |ui, rows| {
-                    for i in rows {
-                        let line = log.get(i).map_or(tail, String::as_str);
-                        let before = i.checked_sub(1).map(|b| log[b].as_str());
-                        let colour = match shown {
-                            Shown::Log(log, _) if log.is_head(i) => Some(p.accent),
-                            _ => log_colour(line, before, p),
-                        };
-                        let mut text = RichText::new(line).monospace();
-                        if let Some(colour) = colour {
-                            text = text.color(colour);
-                        }
-                        ui.add(egui::Label::new(text).extend().selectable(true));
-                    }
-                });
+                .min_scrolled_height(if drawer { 0.0 } else { height });
+            // The Log's lines are numbered past those it dropped, so that a
+            // selection keeps to its lines as the oldest go.
+            let first = match shown {
+                Shown::Log(log, _) => log.dropped(),
+                Shown::Job(_) => 0,
+            };
+            let pane = Pane {
+                name: heading,
+                first,
+                fills: true,
+            };
+            lines.show_as(ui, ui.id().with("log lines"), area, pane);
         });
     });
     (clear, unsaved)
@@ -4810,6 +5359,42 @@ fn keep_theme(file: &Path, choice: theme::Choice) {
     keep(file, word.filter(|w| !w.is_empty()).map(String::from));
 }
 
+/// Where how Analyse draws the disk, and which analysis it shows, are kept
+/// between runs, a word a line; the defaults keep no file.
+fn analyse_file() -> PathBuf {
+    crate::data_folder().join("analyse.txt")
+}
+
+/// The words keep_analyse() writes, each on a line of its own; any other
+/// line is passed over.
+fn kept_analyse(file: &Path) -> (Media, Analysis) {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let kept = |word: &str| text.lines().any(|l| l.trim() == word);
+    (
+        MEDIA
+            .iter()
+            .find(|m| kept(m.2))
+            .map_or_else(Media::default, |m| m.0),
+        ANALYSES
+            .iter()
+            .find(|a| kept(a.2))
+            .map_or_else(Analysis::default, |a| a.0),
+    )
+}
+
+fn keep_analyse(file: &Path, (media, analysis): (Media, Analysis)) {
+    let media_word = MEDIA.iter().find(|m| m.0 == media).map_or("", |m| m.2);
+    let analysis_word = ANALYSES
+        .iter()
+        .find(|a| a.0 == analysis)
+        .map_or("", |a| a.2);
+    let changed = (media, analysis) != Default::default();
+    keep(
+        file,
+        changed.then(|| format!("{media_word}\n{analysis_word}\n")),
+    );
+}
+
 /// Where the drive identifier is kept between runs.
 fn drive_file() -> PathBuf {
     crate::data_folder().join("drive.txt")
@@ -4893,7 +5478,7 @@ fn text_width(ui: &Ui, text: &str, font: &FontId) -> f32 {
 
 /// `text`, or where it is wider than `width` in `font`, its two ends about
 /// an ellipsis, so that texts differing at either end stay apart.
-fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
+pub(crate) fn cut_middle<'a>(ui: &Ui, text: &'a str, font: &FontId, width: f32) -> Cow<'a, str> {
     let whole = text_width(ui, text, font);
     if whole <= width {
         return text.into();
@@ -5156,7 +5741,7 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
     let p = theme::palette(ui);
     let (fill, colour) = match (selected, p.classic) {
         (true, true) => (p.accent, p.on_accent),
-        (true, false) => (p.accent.gamma_multiply(0.16), p.accent),
+        (true, false) => (p.accent.gamma_multiply(0.16), p.strong),
         (false, _) if response.hovered() => (p.hover, p.text),
         (false, _) => (Color32::TRANSPARENT, p.text),
     };
@@ -5519,14 +6104,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ferriteweazle-theme-{}", std::process::id()));
         let file = dir.join("theme.txt");
         assert_eq!(kept_theme(&file), theme::Choice::System);
-        for theme in [
-            theme::Choice::Light,
-            theme::Choice::Dark,
-            theme::Choice::Classic,
-            theme::Choice::Blue,
-            theme::Choice::Vintage,
-            theme::Choice::Greaseweazle,
-        ] {
+        let named = theme::CHOICES.map(|c| c.0);
+        for theme in named.into_iter().filter(|&c| c != theme::Choice::System) {
             keep_theme(&file, theme);
             assert_eq!(kept_theme(&file), theme);
         }
@@ -5534,6 +6113,30 @@ mod tests {
         assert!(!file.exists(), "System is the default");
         std::fs::write(&file, "purple").unwrap();
         assert_eq!(kept_theme(&file), theme::Choice::System);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn how_analyse_draws_the_disk_is_kept_and_the_defaults_keep_no_file() {
+        let dir =
+            std::env::temp_dir().join(format!("ferriteweazle-analyse-{}", std::process::id()));
+        let file = dir.join("analyse.txt");
+        let defaults = (Media::Fit, Analysis::Disk);
+        assert_eq!(kept_analyse(&file), defaults);
+        for (media, ..) in MEDIA {
+            for (analysis, ..) in ANALYSES {
+                keep_analyse(&file, (media, analysis));
+                assert_eq!(kept_analyse(&file), (media, analysis));
+            }
+        }
+        keep_analyse(&file, defaults);
+        assert!(!file.exists(), "the defaults");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "round\nsquare\n").unwrap();
+        assert_eq!(kept_analyse(&file), defaults);
+        // A line it does not keep, between those it does, is passed over.
+        std::fs::write(&file, "3.5\nflux\nimage\n").unwrap();
+        assert_eq!(kept_analyse(&file), (Media::ThreeHalf, Analysis::Image));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5861,13 +6464,13 @@ mod tests {
     #[test]
     fn a_verified_write_calls_its_purple_track_verifying_until_it_stops() {
         let mut job = running("write");
-        job.progress.verifies = true;
-        for line in [
-            "Writing c=0-1:h=0",
-            "T0.0: Writing Track (Flux: 1)",
-            "T1.0: Writing Track (Flux: 1)",
-        ] {
-            job.progress.feed(line);
+        job.progress.feed("Writing c=0-1:h=0");
+        for c in 0..2 {
+            // As the bridge reports it, before gw says it writes the track.
+            job.progress
+                .verify(&format!(r#"{{"c":{c},"h":0,"verifies":true}}"#));
+            job.progress
+                .feed(&format!("T{c}.0: Writing Track (Flux: 1)"));
         }
         let mut app = offline();
         app.settings.page = Page::Command("write".into());
@@ -6676,6 +7279,133 @@ mod tests {
         assert!(app.quitting, "no Insert disk 2 of 2");
     }
 
+    #[test]
+    fn a_dialog_button_in_the_accent_is_its_palettes_button_colours() {
+        let named = theme::CHOICES
+            .iter()
+            .filter(|c| c.0 != theme::Choice::System);
+        for &(choice, ..) in named {
+            let (dark, light, shown) = theme::palettes(choice);
+            let p = match shown {
+                egui::ThemePreference::Dark => dark,
+                _ => light,
+            };
+            let (fill, ink) = p.accent_button();
+            let mut app = offline();
+            app.dialog = Some(Dialog::NextDisk {
+                command: "read".into(),
+                disk: Some(2),
+                total: 2,
+                failed: None,
+                image: None,
+                name: Some("Disk 2".into()),
+                default: "Disk 2".into(),
+            });
+            let mut w = window(app);
+            theme::apply(&w.ctx, choice);
+            w.run_steps(2);
+            let name = format!("{} 2", run_label("read"));
+            let role = egui::accesskit::Role::Button;
+            let named: Vec<egui::Rect> = w
+                .get_all_by_role_and_label(role, &name)
+                .map(|n| n.rect())
+                .collect();
+            let shapes = &w.output().shapes;
+            let filled = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(r) => {
+                    r.fill == fill && named.iter().any(|b| r.rect.contains_rect(b.shrink(1.0)))
+                }
+                _ => false,
+            });
+            assert!(filled, "{choice:?}");
+            let text = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    t.galley.text() == name
+                        && t.galley.job.sections.iter().all(|s| s.format.color == ink)
+                }
+                _ => false,
+            });
+            assert!(text, "{choice:?}: its text");
+        }
+    }
+
+    #[test]
+    fn every_dialog_button_that_erases_writes_over_replaces_or_stops_is_one_red() {
+        let (red, white) = theme::RED_BUTTON;
+        let erase = run_label("erase");
+        let dialogs = [
+            (
+                Dialog::Confirm {
+                    command: "erase".into(),
+                    args: Vec::new(),
+                    disks: 1,
+                },
+                erase.to_owned(),
+            ),
+            (
+                Dialog::Overwrite {
+                    files: vec!["/Images/Floppy.img".into()],
+                    command: "read".into(),
+                    runs: Runs::default(),
+                },
+                "Overwrite".to_owned(),
+            ),
+            (
+                Dialog::NextDisk {
+                    command: "erase".into(),
+                    disk: Some(2),
+                    total: 2,
+                    failed: None,
+                    image: None,
+                    name: None,
+                    default: String::new(),
+                },
+                format!("{erase} 2"),
+            ),
+            (
+                Dialog::DeletePreset {
+                    command: "read".into(),
+                    name: "Mine".into(),
+                    path: "/Presets/read/Mine.txt".into(),
+                },
+                "Delete".to_owned(),
+            ),
+            (Dialog::Quit, "Stop and quit".to_owned()),
+        ];
+        for (dialog, name) in dialogs {
+            let mut app = offline();
+            app.disk = Some(running("erase"));
+            app.dialog = Some(dialog);
+            let w = window(app);
+            // The dialog's, of those so named, as the sidebar's page.
+            let role = egui::accesskit::Role::Button;
+            let named: Vec<egui::Rect> = w
+                .get_all_by_role_and_label(role, &name)
+                .map(|n| n.rect())
+                .collect();
+            let shapes = &w.output().shapes;
+            let filled = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(r) => {
+                    r.fill == red && named.iter().any(|b| r.rect.contains_rect(b.shrink(1.0)))
+                }
+                _ => false,
+            });
+            assert!(filled, "{name}");
+            let named = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    t.galley.text() == name
+                        && t.galley
+                            .job
+                            .sections
+                            .iter()
+                            .all(|s| s.format.color == white)
+                }
+                _ => false,
+            });
+            assert!(named, "{name}: its text");
+        }
+    }
+
     /// A file dropped on the window.
     #[derive(Debug)]
     struct Dropped(PathBuf);
@@ -7231,6 +7961,33 @@ mod tests {
         app.start(&ctx, read);
         assert!(matches!(app.dialog, Some(Dialog::Overwrite { .. })));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_conversions_input_opens_before_its_output_is_named() {
+        let mut app = offline();
+        let convert = |app: &mut App, out: &str| {
+            let values = app.settings.values.entry("convert".into()).or_default();
+            values.set("in_file", "/d/a.adf");
+            values.set("out_file", out);
+            app.preview_args("convert").map(|ask| ask.args)
+        };
+        // None yet: one of a type that names no format, so gw's parser,
+        // which wants an output, opens the input as gw would alone.
+        let args = convert(&mut app, "").unwrap();
+        assert_eq!(args[args.len() - 2..], ["/d/a.adf", "out.scp"]);
+        // A type chosen and no name yet: one of that type.
+        let output = form::Output {
+            ext: ".adf".into(),
+            ..form::Output::default()
+        };
+        let key = form::output_key("convert", "out_file");
+        app.settings.outputs.insert(key, output);
+        let args = convert(&mut app, "").unwrap();
+        assert_eq!(args.last().map(String::as_str), Some("out.adf"));
+        // Named: one of its type, without the options gw takes as it opens it.
+        let args = convert(&mut app, "/o/b.img::bitrate=250").unwrap();
+        assert_eq!(args.last().map(String::as_str), Some("out.img"));
     }
 
     #[test]

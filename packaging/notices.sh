@@ -1,9 +1,9 @@
 #!/bin/sh
 # Writes to stdout the THIRD-PARTY-NOTICES.txt a package carries: the licences
 # of the Rust crates built into the program for each TRIPLE, then of what the
-# bundle at BUNDLE holds: Python and the libraries linked into it, gw and its
-# Python packages, and the SPS/CAPS library. packaging/licences has the texts
-# their sources leave out.
+# bundle at BUNDLE holds: Python and the libraries linked into it, Greaseweazle
+# Tools and its Python packages, and the SPS/CAPS library. packaging/licences
+# has the texts their sources leave out.
 #
 #   packaging/notices.sh BUNDLE TRIPLE...
 set -eu
@@ -127,7 +127,7 @@ cat "$python"
 
 # A package's licence files are in its .dist-info folder, but pyserial 3.5's
 # wheel has none.
-section "Greaseweazle and its Python packages"
+section "Greaseweazle Tools and its Python packages"
 packages=0
 for info in "$bundle"/lib/python3.*/site-packages/*.dist-info \
     "$bundle"/Lib/site-packages/*.dist-info; do
@@ -164,7 +164,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 section "The SPS Decoder Library"
 echo
 fold -s -w 72 <<EOF | sed 's/ *$//'
-gw reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$bundle/caps-version")), which is free for non-commercial use only.
+Greaseweazle Tools reads IPF and CT Raw images with the SPS Decoder Library (CAPSImage 5.1, https://github.com/simonowen/capsimage, commit $(cat "$bundle/caps-version")), which is free for non-commercial use only.
 EOF
 echo
 cat "$bundle/caps/LICENCE.txt"

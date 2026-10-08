@@ -11,10 +11,10 @@ Drag Ferriteweazle.app onto Applications.
 The first time
 --------------
 This build is signed ad hoc, not with a Developer ID, and is not
-notarised, so Gatekeeper stops it the first time. Control-click
-Ferriteweazle.app in Applications, choose Open, then choose Open again. On
-macOS 15 or newer, open System Settings, Privacy & Security, and choose
-Open Anyway.
+notarised, so Gatekeeper stops it the first time. On macOS 15 or newer,
+open System Settings, Privacy & Security, and choose Open Anyway. On older
+versions, Control-click Ferriteweazle.app in Applications, choose Open,
+then choose Open again.
 
 If macOS says the app is damaged, run this in Terminal:
 
@@ -22,13 +22,13 @@ If macOS says the app is damaged, run this in Terminal:
 
 Presets
 -------
-Example presets for common disks, which each page's Presets menu loads,
-are in the repository at
+Example presets for common disks are in the repository:
 
     https://github.com/hobbo91/Ferriteweazle/tree/main/presets
 
-Download to Documents/Ferriteweazle/Presets or load them via the Presets
-menu.
+Each page's Presets menu lists those in Documents/Ferriteweazle/Presets,
+or the folder Settings > Paths names; Load... opens one from anywhere.
 
 Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
-holds the licences of the software it includes.
+holds the licences of the software it includes. Greaseweazle Tools is by
+Keir Fraser and is in the public domain.

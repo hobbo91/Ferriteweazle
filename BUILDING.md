@@ -17,7 +17,7 @@ The app runs the first gw it finds:
 2. An installed `gw`: on the PATH, or in `~/.local/bin`, `/opt/homebrew/bin` or
    `/usr/local/bin`.
 
-**Settings > Paths > gw** points it at any other gw.
+**Settings > Paths > Greaseweazle Tools (gw cli)** points it at any other gw.
 
 ## The Greaseweazle Tools bundle
 
@@ -51,7 +51,11 @@ cargo test --test screens -- --ignored       # draws the window to target/screen
 ```
 
 The end-to-end tests run real gw conversions through the bridge, and skip when
-there is no gw. No test opens a device.
+there is no gw; with `FERRITEWEAZLE_REQUIRE_GW=1` they fail instead.
+`FERRITEWEAZLE_STANDALONE_GW` names a standalone gw to test as well, such as the
+`gw.exe` of gw's Windows download, and `FERRITEWEAZLE_BUNDLE` a bundle to test in
+place of `target/greaseweazle-bundle`, such as another processor's, run emulated.
+No test opens a device.
 
 ## Packages
 
@@ -62,7 +66,7 @@ release. `VERSION` is the one in `Cargo.toml`.
 | --- | --- | --- |
 | macOS | `packaging/macos/bundle.sh` | `Ferriteweazle-VERSION-macos-universal.dmg` |
 | Windows | `packaging/windows/bundle.sh x64` or `arm64` | `Ferriteweazle-VERSION-win-ARCH.zip` and `.msi` |
-| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz` and `Ferriteweazle-VERSION-ARCH.AppImage` |
+| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz`, `Ferriteweazle-VERSION-ARCH.AppImage` and its `.zsync` |
 
 ### macOS
 
@@ -86,16 +90,24 @@ dotnet tool install --global wix --version 5.0.2
 wix extension add --global WixToolset.UI.wixext/5.0.2
 ```
 
-The zip runs where it is unzipped. The MSI installs for all users. Keep the
-UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows Installer knows a new
-version by it. Neither is code-signed.
+The zip runs where it is unzipped. The MSI installs for all users; `INSTALLGW=0`
+leaves Greaseweazle Tools out of a silent install, and `LAUNCH=1` opens the app once
+installed. Keep the UpgradeCode in `packaging/windows/ferriteweazle.wxs`: Windows
+Installer knows a new version by it. Neither is code-signed.
 
 ### Linux
 
-glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)
-and zig. Downloads appimagetool and the AppImage runtime, checked against
-`packaging/linux/appimage.sha256`. Building for the other processor runs its Python
-emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
+glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
+zig, meson 1.4 or newer, ninja, bison 3.6 or newer, pkg-config, bsdtar, patchelf, objdump,
+readelf and appstreamcli (Debian and Ubuntu: `ninja-build`, `bison`, `pkg-config`,
+`libarchive-tools`, `patchelf`, `binutils`, `appstream`; meson by `pipx install meson`).
+Downloads appimagetool, the AppImage runtime, and the sources and libraries of `lib/`
+(`packaging/linux/libraries.sh`), checked against `packaging/linux/appimage.sha256`.
+Building for the other processor runs its Python emulated: qemu-user with that processor's
+libraries, or Rosetta in a Linux VM. The AppImage's update information names the `.zsync`
+file published beside it. With `SIGN_KEY`, a key's fingerprint, the AppImage is signed by
+that key, which gpg-agent must hold unlocked: the build checks that at its start and
+before signing, then checks the signature.
 
 ## Releases
 
@@ -103,5 +115,6 @@ emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
 macOS there, Windows and Linux over SSH on the machines named in
 `packaging/release.env` (copy `packaging/release.env.example`). It adds
 `LGPL-sources-VERSION.tar`, the source of the LGPL code in the Linux packages, and
-`SHA256SUMS-VERSION.txt`, which the app's Update checks downloads against.
-Publishing is up to you.
+`SHA256SUMS-VERSION.txt`, which the app's Update checks downloads against. With
+`LINUX_SIGN_KEY` in `release.env`, the Linux machine signs the AppImages; unlock the key
+there first. Publishing is up to you.

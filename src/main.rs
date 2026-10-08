@@ -8,7 +8,8 @@ fn main() -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Ferriteweazle")
-            .with_app_id("ferriteweazle")
+            // The Linux desktop entry's name, by which a desktop knows the window.
+            .with_app_id("io.github.hobbo91.ferriteweazle")
             .with_icon(
                 eframe::icon_data::from_png_bytes(ferriteweazle::theme::LOGO)
                     .expect("the logo is a PNG"),

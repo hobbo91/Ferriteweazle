@@ -8,8 +8,11 @@ mod app;
 pub mod command;
 pub mod device;
 mod diskmap;
+mod filemap;
 pub mod form;
+pub mod image;
 pub mod job;
+mod lines;
 #[cfg(target_os = "macos")]
 mod menu;
 #[cfg(target_os = "linux")]
@@ -19,14 +22,17 @@ pub mod progress;
 pub mod schema;
 pub mod service;
 pub mod standalone;
+mod surface;
 pub mod theme;
 pub mod tools;
+pub mod track;
 mod udev;
 pub mod update;
 
 pub use app::{
     ABOUT_SIZE, App, Drawer, Page, SMALLEST, Settings, WINDOW, about, about_image, opening_size,
 };
+pub use surface::{Analysis, Media, Shows};
 
 use std::ffi::OsString;
 use std::path::PathBuf;

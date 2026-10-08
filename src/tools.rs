@@ -340,6 +340,57 @@ mod tests {
         assert!(updates().ends_with(own), "{:?}", updates());
     }
 
+    mod strip {
+        include!("strip.rs");
+
+        #[test]
+        fn comments_and_docstrings_go_and_every_line_stays_where_it_was() {
+            let source = r#""""The module's."""
+import os  # why
+def f(a='#', b="x # y"):
+    """Its doc,
+    over lines."""
+    t = '''kept # too'''
+    return (
+        """an argument"""
+    )
+class C:
+    r'''Raw.'''
+    x = f"{a!r:#>4}"  # a comment
+    f"{print(1)}"
+y = \
+    "continued"
+"""a statement"""; z = 1
+"#;
+            let want = r#"pass
+import os
+def f(a='#', b="x # y"):
+    pass
+
+    t = '''kept # too'''
+    return (
+        """an argument"""
+    )
+class C:
+    pass
+    x = f"{a!r:#>4}"
+    f"{print(1)}"
+y = \
+    "continued"
+"""a statement"""; z = 1
+"#;
+            assert_eq!(strip(source), want);
+        }
+
+        #[test]
+        fn the_bridge_keeps_every_line() {
+            // That it is the same program, tests/gw.rs checks with Python's parser.
+            let bridge = include_str!("bridge.py");
+            let stripped = strip(bridge);
+            assert_eq!(stripped.lines().count(), bridge.lines().count());
+        }
+    }
+
     #[test]
     fn the_bridge_fits_on_a_windows_command_line() {
         // It goes whole on the command line, beside the Python's path, the
