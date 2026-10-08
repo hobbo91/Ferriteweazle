@@ -9,8 +9,8 @@ Unzip the Ferriteweazle folder anywhere and run Ferriteweazle.exe. Nothing
 is installed, and it needs no administrator rights and no Visual C++
 Redistributable.
 
-The greaseweazle folder holds Greaseweazle Tools and the Python it runs on. Keep it
-beside Ferriteweazle.exe: the app looks for it there.
+The greaseweazle folder holds Greaseweazle Tools and the Python it runs
+on. Keep it beside Ferriteweazle.exe: the app looks for it there.
 
 A Greaseweazle needs no driver on Windows 10 or newer. It appears as a COM
 port.
@@ -22,13 +22,13 @@ with "Windows protected your PC". Choose More info, then Run anyway.
 
 Presets
 -------
-Example presets for common disks, which each page's Presets menu loads,
-are in the repository at
+Example presets for common disks are in the repository:
 
     https://github.com/hobbo91/Ferriteweazle/tree/main/presets
 
-Download to Documents/Ferriteweazle/Presets or load them via the Presets
-menu.
+Each page's Presets menu lists those in Documents/Ferriteweazle/Presets,
+or the folder Settings > Paths names; Load... opens one from anywhere.
 
 Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
-holds the licences of the software it includes.
+holds the licences of the software it includes. Greaseweazle Tools is by
+Keir Fraser and is in the public domain.

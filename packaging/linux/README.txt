@@ -5,10 +5,12 @@ A desktop app for Greaseweazle. It runs on 64-bit x86 or ARM Linux with
 glibc 2.17 or newer, under Wayland or X11, with Vulkan or OpenGL.
 
     ferriteweazle            the program
-    greaseweazle/            Greaseweazle Tools and its Python; keep it beside the program
-    lib/                     libraries some systems lack; keep it beside the program
+    greaseweazle/            Greaseweazle Tools and its Python
+    lib/                     libraries some systems lack
     io.github.hobbo91.ferriteweazle.desktop
                              a menu entry, with ferriteweazle.png its icon
+
+Keep greaseweazle/ and lib/ beside the program.
 
 Running
 -------
@@ -41,14 +43,13 @@ ModemManager to leave it alone. To install it by hand:
 
 Presets
 -------
-Example presets for common disks, which each page's Presets menu loads,
-are in the repository at
+Example presets for common disks are in the repository:
 
     https://github.com/hobbo91/Ferriteweazle/tree/main/presets
 
-Download to Documents/Ferriteweazle/Presets or load them via the Presets
-menu.
+Each page's Presets menu lists those in Documents/Ferriteweazle/Presets,
+or the folder Settings > Paths names; Load... opens one from anywhere.
 
 Ferriteweazle is MIT licensed; see LICENSE.txt. THIRD-PARTY-NOTICES.txt
-holds the licences of the software it includes. Greaseweazle is by Keir
-Fraser and is in the public domain.
+holds the licences of the software it includes. Greaseweazle Tools is by
+Keir Fraser and is in the public domain.
