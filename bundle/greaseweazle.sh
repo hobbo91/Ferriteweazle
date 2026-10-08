@@ -62,13 +62,15 @@ wanted() {
 }
 
 # Builds TRIPLE's bundle (this computer's if none) unless it holds the wanted
-# release, Python and SPS/CAPS library. Offline, a bundle already built is kept.
+# release, Python, SPS/CAPS library and pyserial fix. Offline, a bundle already
+# built is kept.
 refresh() {
     dir=$(bundle_dir "${1:-}")
     if tag=$(wanted); then
         [ "$(cat "$dir/greaseweazle-version" 2>/dev/null)" = "$tag" ] &&
             [ "$(cat "$dir/python-version" 2>/dev/null)" = "$PYTHON+$PYTHON_RELEASE" ] &&
-            [ "$(cat "$dir/caps-version" 2>/dev/null)" = "$CAPS_COMMIT" ] ||
+            [ "$(cat "$dir/caps-version" 2>/dev/null)" = "$CAPS_COMMIT" ] &&
+            [ "$(cat "$dir/pyserial-fix" 2>/dev/null)" = "$PYSERIAL_FIX" ] ||
             GREASEWEAZLE=$tag bundle/build.sh ${1:+"$1"}
     else
         [ -f "$dir/greaseweazle-version" ] || return 1

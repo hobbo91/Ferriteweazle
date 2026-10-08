@@ -26,7 +26,9 @@ Python from [python-build-standalone](https://github.com/astral-sh/python-build-
 gw's latest release installed into it with pip, and the
 [SPS/CAPS library](https://github.com/simonowen/capsimage), which gw needs for IPF and
 CT Raw images. Python and the CAPS source are checked against the hashes in
-`bundle/`. The CAPS library is free for non-commercial use only.
+`bundle/`. The CAPS library is free for non-commercial use only. The pyserial gw
+installs gets pyserial's fix for glibc 2.42 and later (`bundle/pyserial.py`),
+which no pyserial release has yet; without it gw cannot open a Greaseweazle there.
 
 It needs curl, git and a C/C++ compiler:
 
