@@ -289,8 +289,11 @@ impl Progress {
         }
     }
 
-    /// The job has ended.
-    pub fn finish(&mut self) {
+    /// The job has ended: it finished the track gw was on if it `worked`.
+    pub fn finish(&mut self, worked: bool) {
+        if worked {
+            self.passed();
+        }
         self.current = None;
         self.touch();
     }
@@ -401,13 +404,17 @@ impl Progress {
     }
 
     /// gw is done with the track it was on: one gw verifies passed, as gw
-    /// stops at one that fails.
+    /// stops at one that fails, and its line says what gw did.
     fn passed(&mut self) {
-        let checked = self.current.filter(|c| self.verifies.contains(c));
-        if let Some(t) = checked.and_then(|c| self.tracks.get_mut(&c))
-            && t.status == Status::Written
-        {
-            t.status = Status::Good;
+        let Some(key) = self.current else { return };
+        let verified = self.verifies.contains(&key);
+        if let Some(t) = self.tracks.get_mut(&key) {
+            if verified && t.status == Status::Written {
+                t.status = Status::Good;
+            }
+            if let Some(text) = done(&t.text) {
+                t.text = text;
+            }
         }
     }
 
@@ -538,6 +545,22 @@ pub(crate) fn numbers(s: &str) -> Option<Vec<u32>> {
     Some(out)
 }
 
+/// gw's line for a track it is done with, in the past tense: gw says what it
+/// starts, "Erasing Track" or "Writing Track (…)". A retry's note is left to
+/// the track's retries.
+fn done(text: &str) -> Option<String> {
+    let (said, rest) = match text.strip_prefix("Erasing Track") {
+        Some(rest) => ("Erased", rest),
+        None => ("Written", text.strip_prefix("Writing Track")?),
+    };
+    let rest = if rest.contains("(Verify Failure") {
+        ""
+    } else {
+        rest
+    };
+    Some(format!("{said}{rest}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,7 +629,7 @@ mod tests {
     #[test]
     fn a_damaged_disk_shows_which_sectors_are_missing() {
         let mut p = fed(include_str!("../tests/data/convert-damaged.log"));
-        p.finish();
+        p.finish(true);
         let status = |c, h| p.tracks[&(c, h)].status;
         assert_eq!(status(20, 0), Status::Partial);
         assert_eq!(status(55, 1), Status::Partial);
@@ -650,7 +673,7 @@ mod tests {
     #[test]
     fn a_stopped_job_keeps_what_it_did() {
         let mut p = fed(include_str!("../tests/data/convert-stopped.log"));
-        p.finish();
+        p.finish(false);
         assert_eq!(p.tracks.len(), 18);
         assert_eq!(p.tally().done, 18);
         assert_eq!(p.total, None);
@@ -729,6 +752,29 @@ mod tests {
         assert_eq!(p.tracks[&(1, 0)].status, Status::Erased);
         p.feed("All tracks verified");
         assert_eq!(p.tracks[&(0, 1)].status, Status::Good);
+    }
+
+    #[test]
+    fn a_track_gw_is_done_with_says_what_gw_did() {
+        let mut p = fed("Writing c=0-2:h=0\n\
+            T0.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Writing Track (Flux: 200.0ms period, 200.2 ms total, Write all)\n\
+            T1.0: Writing Track (Verify Failure: Retry #1)\n\
+            T2.0: Erasing Track");
+        let text = |p: &Progress, c| p.tracks[&(c, 0)].text.clone();
+        assert_eq!(
+            text(&p, 0),
+            "Written (Flux: 200.0ms period, 200.2 ms total, Write all)"
+        );
+        assert_eq!(text(&p, 1), "Written", "its retry counted apart");
+        assert_eq!(text(&p, 2), "Erasing Track", "gw is still on it");
+        let mut stopped =
+            fed("Erasing c=0-1:h=0, revs=1\nT0.0: Erasing Track\nT1.0: Erasing Track");
+        stopped.finish(false);
+        assert_eq!(text(&stopped, 0), "Erased");
+        assert_eq!(text(&stopped, 1), "Erasing Track", "stopped on it");
+        p.finish(true);
+        assert_eq!(text(&p, 2), "Erased");
     }
 
     #[test]
@@ -1074,7 +1120,7 @@ Valid options: bitrate, version, interface, encoding, double_step, uniform"#);
         raised(&p, "image");
         p.verify(r#"{"c":0,"h":0,"verifies":true}"#);
         raised(&p, "verify");
-        p.finish();
+        p.finish(true);
         raised(&p, "finish");
         p.skip_unreported();
         raised(&p, "skip_unreported");

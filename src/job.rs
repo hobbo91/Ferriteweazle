@@ -206,7 +206,7 @@ impl Job {
     /// tracks it did not report.
     fn end(&mut self, at: Instant, outcome: Outcome) {
         self.ended = Some((at, outcome));
-        self.progress.finish();
+        self.progress.finish(outcome == Outcome::Succeeded);
         if outcome == Outcome::Succeeded && matches!(self.command.as_str(), "write" | "convert") {
             self.progress.skip_unreported();
         }
