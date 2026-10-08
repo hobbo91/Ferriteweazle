@@ -468,7 +468,7 @@ fn track_line(line: &str) -> Option<((u32, u32), Option<&str>, &str)> {
 }
 
 /// `(17/18 sectors)` anywhere in the text.
-fn sectors(text: &str) -> Option<(u32, u32)> {
+pub(crate) fn sectors(text: &str) -> Option<(u32, u32)> {
     let end = text.find(" sectors)")?;
     let start = text[..end].rfind('(')? + 1;
     let (good, all) = text[start..end].split_once('/')?;

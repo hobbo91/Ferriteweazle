@@ -2421,7 +2421,6 @@ fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smalle
         "Bad 1 track",
         "Flux 1 track",
         "Not known 1 track",
-        "Index",
         "To do 38 tracks",
         "Last reported",
         "1187 missing",
@@ -2430,6 +2429,8 @@ fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smalle
     ]
     .map(|entry| (entry, in_disks_legend(&w, entry)))
     .into();
+    // Disks this small have no room in their rim for the index's mark.
+    assert!(w.query_by_label("Index").is_none(), "no index's mark drawn");
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, small);
     for (i, (name, r)) in legend.iter().enumerate() {
         assert!(
@@ -2452,7 +2453,6 @@ fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smalle
     for entry in [
         "More flux",
         "Not known 1 track",
-        "Index",
         "To do 38 tracks",
         "Last reported",
         "1 retry",
@@ -2583,7 +2583,8 @@ fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out(
     // As gw writes an EDSK's track: gap 3, 40 bytes, and 12 of 00.
     w.get_by_label("772 bytes from the index · 52 bytes after R1");
     w.get_by_label_contains(", 34 bytes after the ID");
-    w.get_by_label("Order: 1 2 3 4 5 6 7 7 8");
+    // R5's header's CRC fails: its R is not known for sure.
+    w.get_by_label("Order: 1 2 3 4 ? 6 7 7 8");
     w.get_by_label("ID repeated: R7 ×2");
     w.get_by_label_contains("At ");
     // Not the disk's turns: nothing of revolutions.
@@ -4591,7 +4592,7 @@ fn analyse_draws_a_track_not_in_the_image_as_bare_disk_and_says_so() {
     w.hover_at(on_disk(&w, (39.5 - 0.1875) / 42.9, 90.0));
     w.run();
     w.get_by_label("Cylinder 1 · side 0");
-    w.get_by_label("Not in the image");
+    w.get_by_label("Not in the image.");
     assert!(w.query_by_label_contains("To do").is_none());
 }
 
@@ -4715,7 +4716,9 @@ fn analyse_paints_a_track_reported_anew_into_its_picture_in_place() {
     let noted = noted.0.lock().unwrap();
     let painted: Vec<_> = noted.iter().filter(|(id, _)| disks.contains(id)).collect();
     assert_eq!(painted.len(), 1, "side 1's");
-    assert_eq!(painted[0].1, Some([0, 0]), "into the texture it has");
+    // Into the texture it has: only the rows of pixels the track reaches.
+    let into = painted[0].1;
+    assert!(matches!(into, Some([0, y]) if y > 0), "{into:?}");
 }
 
 #[test]
@@ -4819,7 +4822,7 @@ fn a_disk_to_scale_that_holds_fewer_tracks_than_the_job_says_so_in_place_of_its_
     };
     let builder = Harness::builder().with_size(egui::vec2(1240.0, 780.0));
     let w = build(builder, settings, Some(Job::replay("read", WORKBENCH)));
-    let said = w.get_by_label("80 cylinders: a 5¼-inch, 48 TPI disk holds 45.");
+    let said = w.get_by_label("80 cylinders: a 5¼-inch, 48 TPI disk has room for 45.");
     assert!(said.rect().top() > w.get_by_label("Disk map").rect().bottom());
     assert!(w.query_by_label("Index").is_none(), "no legend");
 }

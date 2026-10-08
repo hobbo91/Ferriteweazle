@@ -1,11 +1,12 @@
 //! The Analyse drawer's view of the disk: each side as a round disk, a ring
 //! per track, and on it each sector gw found, where it found it, round from
-//! the index at the top, clockwise. Nothing is drawn that gw did not report.
+//! the index at the top, clockwise, each side as seen from side 0. Nothing is
+//! drawn that gw did not report.
 
 use crate::diskmap;
 use crate::form;
 use crate::lines::Lines;
-use crate::progress::{Progress, Status};
+use crate::progress::{self, Progress, Status};
 use crate::theme::{self, Palette};
 use crate::track::{
     Before, Data, Facts, Header, Id, Intervals, Layout, Sector, Seen, Source, Spin, Turns,
@@ -15,6 +16,7 @@ use eframe::egui::{
     emath::GuiRounding, plugin::TypedPluginHandle, vec2,
 };
 use std::f64::consts::TAU;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +55,17 @@ pub const SHOWS: [(Shows, &str, &str); 2] = [
     (Shows::Sectors, "Sectors", "sectors"),
     (Shows::Flux, "Flux", "flux"),
 ];
+
+impl Shows {
+    /// What the tracks show with this chosen: their flux only where a track
+    /// drawn has some, `fluxed`; else their sectors.
+    fn given(self, fluxed: bool) -> Shows {
+        match self {
+            Shows::Flux if fluxed => Shows::Flux,
+            _ => Shows::Sectors,
+        }
+    }
+}
 
 /// What the drawer analyses: the disk, or the image the job makes or takes
 /// its tracks from.
@@ -104,13 +117,14 @@ impl Media {
                 width: 0.115,
                 innermost: 20.6,
             }),
-            // ECMA-78: 130.2 mm across, its hole 28.57 mm (3.3.1), the
-            // recording area in to 31.3 mm (3.3.4), track n at 57.150 or
-            // 55.033 mm less n/96 inch, 0.155 mm wide (5.1).
+            // ECMA-78: 130.2 mm across (3.3.1), the recording area in to
+            // 31.3 mm (3.3.4), track n at 57.150 or 55.033 mm less n/96 inch,
+            // 0.155 mm wide (5.1). Its hole 28.575 mm, as ECMA-99 gives the
+            // same disk's (3.3.1), where ECMA-78 gives 28.57.
             Media::FiveQuarter96 => Some(Size {
                 radius: 130.2 / 2.0,
                 hub: None,
-                hole: 28.57 / 2.0,
+                hole: 28.575 / 2.0,
                 track_0: [57.150, 55.033],
                 pitch: INCH / 96.0,
                 width: 0.155,
@@ -121,7 +135,7 @@ impl Media {
             Media::FiveQuarter48 => Some(Size {
                 radius: 130.2 / 2.0,
                 hub: None,
-                hole: 28.57 / 2.0,
+                hole: 28.575 / 2.0,
                 track_0: [57.150, 55.033],
                 pitch: INCH / 48.0,
                 width: 0.300,
@@ -205,10 +219,7 @@ fn fluxed(progress: &Progress, span: u32, sides: u32) -> bool {
 /// the disk view spans has flux, and their sectors shown.
 pub fn choose_shows(ui: &mut egui::Ui, shows: &mut Shows, progress: &Progress, disk: (u32, u32)) {
     let fluxed = fluxed(progress, span(progress, disk), sides(progress, disk));
-    let showing = match *shows {
-        Shows::Flux if fluxed => Shows::Flux,
-        _ => Shows::Sectors,
-    };
+    let showing = shows.given(fluxed);
     for (view, name, _) in SHOWS.into_iter().rev() {
         let why = (view == Shows::Flux && !fluxed).then_some("No flux reported.");
         let button = egui::Button::new(name);
@@ -227,10 +238,13 @@ pub fn choose_shows(ui: &mut egui::Ui, shows: &mut Shows, progress: &Progress, d
 /// Room for a side's name above its disk.
 pub(crate) const TITLE: f32 = 20.0;
 /// The sector window's title bar, as tall as a macOS window's, its title in
-/// the same 13-point type.
+/// the same 13-point type, as each side's name.
 const TITLE_BAR: f32 = 28.0;
 const TITLE_SIZE: f32 = 13.0;
-/// The legend: the room above it and after each entry.
+/// The sector window's bytes, and the first rows of them a sector's tip
+/// shows, in 12-point monospace.
+const DUMP_SIZE: f32 = 12.0;
+/// The legend: the room above it and after each marked entry.
 const LEGEND_GAP: f32 = 6.0;
 const SIDE_GAP: f32 = 32.0;
 /// How long the last track reported takes to fade in or out, in seconds.
@@ -253,9 +267,13 @@ const SEPARATE: f64 = 4.0;
 /// revolution meet to within a few bit cells; across the seam between two
 /// revolutions, a real drive's changes of speed leave them up to a degree
 /// or so apart, which counts on a track where others meet exactly. Formats
-/// with a gap between their sectors, however short, have none that meet.
+/// with a gap of EXACT or more after each sector have none that meet.
 const EXACT: f64 = 1e-4;
 const MEET: f64 = 0.003;
+/// How far, behind a track with sectors missing or none found, the grid's
+/// colour is toned toward the disk's; an incomplete sector keeps it at full
+/// strength.
+const MISSING_TONE: f32 = 0.15;
 /// The least time between paintings of a disk while what it shows changes,
 /// in seconds: a conversion reports tracks faster than they are worth painting.
 const REPAINT: f64 = 0.1;
@@ -272,15 +290,15 @@ const REACH: f64 = 1.0;
 /// The disk's colours, from the window's palette.
 pub(crate) struct Look {
     /// The disk's surface, erased between tracks; and a 3½-inch disk's hub.
-    pub(crate) body: Color32,
-    pub(crate) hub: Color32,
-    pub(crate) rim: Color32,
+    body: Color32,
+    hub: Color32,
+    rim: Color32,
     /// Where no sector was found on a track gw decoded from flux; on a track
     /// with sectors missing, or with none found, the grid's colour for it,
     /// toned toward the disk's.
-    pub(crate) gap: Color32,
-    pub(crate) missing_gap: Color32,
-    pub(crate) bad_gap: Color32,
+    gap: Color32,
+    missing_gap: Color32,
+    bad_gap: Color32,
     /// A track gw is to work on and has not reported: in the image view, and
     /// on the disk, a shade off its surface toward the text's colour.
     pub(crate) pending: Color32,
@@ -289,18 +307,18 @@ pub(crate) struct Look {
     /// sectors lie, or its flux. Further toward the text's colour, no hue.
     unknown: Color32,
     pub(crate) good: Color32,
-    pub(crate) empty: Color32,
+    empty: Color32,
     /// Data its mark calls deleted, its CRC holding.
-    pub(crate) deleted: Color32,
+    deleted: Color32,
     /// A CRC that fails: of the data; of the header, a shade further toward
     /// the ink.
     pub(crate) bad: Color32,
-    pub(crate) bad_header: Color32,
+    bad_header: Color32,
     /// A header with no data after it, or data with no header.
     pub(crate) alone: Color32,
-    pub(crate) flux: Color32,
+    flux: Color32,
     pub(crate) last: Color32,
-    pub(crate) index: Color32,
+    index: Color32,
     /// The palette's strongest colour, furthest from the disk's: round what
     /// the pointer is over, and toward it, ID fields and the most flux.
     pub(crate) ink: Color32,
@@ -375,9 +393,8 @@ impl Look {
 /// many cylinders and sides, and whether the disk holds them; each disk's
 /// picture and its diameter on whole pixels, its lines' width, and the
 /// width of them all with the gaps between; their legend, laid out under
-/// them; and the most height they can use, as wide as the room lets them,
-/// with the legend's height then.
-#[derive(Clone)]
+/// them, and their colours at that size; and the most height they can use,
+/// as wide as the room lets them.
 struct Room {
     span: u32,
     sides: u32,
@@ -388,56 +405,45 @@ struct Room {
     diameter: f32,
     width: f32,
     legend: Legend,
+    look: Look,
     most: f32,
-    widest_legend: f32,
 }
 
-/// What a room was laid out for: the pass, the ui and the room it had
-/// left, and what of the map it shows.
-#[derive(Clone, PartialEq)]
+/// What a room was laid out for: the pass, whose one map it shows, and the
+/// ui and the room it had left.
+#[derive(Clone, Copy, PartialEq)]
 struct RoomKey {
     pass: u64,
     ui: egui::Id,
     rect: Rect,
-    revision: u64,
-    disk: (u32, u32),
-    media: Media,
-    shows: Shows,
-    current: Option<(u32, u32)>,
-    verifying: bool,
 }
 
 impl Room {
     /// The disks' room in what `ui` has left for `map`, laid out once a pass.
     /// None with no cylinders to show.
-    fn of(ui: &egui::Ui, map: &Map) -> Option<Room> {
+    fn of(ui: &egui::Ui, map: &Map) -> Option<Arc<Room>> {
         let ctx = ui.ctx();
         let kept = ctx.plugin_or_default::<Kept>();
         let key = RoomKey {
             pass: ctx.cumulative_pass_nr(),
             ui: ui.id(),
             rect: ui.available_rect_before_wrap(),
-            revision: map.progress.revision,
-            disk: map.disk,
-            media: map.media,
-            shows: map.shows,
-            current: map.current,
-            verifying: map.verifying,
         };
         if let Some((_, room)) = kept.lock().room.as_ref().filter(|(k, _)| *k == key) {
             return Some(room.clone());
         }
-        let room = Room::lay(ui, map, &kept)?;
+        let room = Arc::new(Room::lay(ui, map, &kept)?);
         let mut kept = kept.lock();
         // The most height the disks can use changes with their legend's:
         // the pass again, the drawer as tall as that, not a frame late.
-        if kept.widest.is_some_and(|h| h != room.widest_legend) {
+        let height = room.legend.height;
+        if kept.legend.is_some_and(|h| h != height) {
             ctx.request_discard("the disks' legend");
             if !ctx.will_discard() {
                 ctx.request_repaint();
             }
         }
-        kept.widest = Some(room.widest_legend);
+        kept.legend = Some(height);
         kept.room = Some((key, room.clone()));
         Some(room)
     }
@@ -459,16 +465,15 @@ impl Room {
         let across = (room.x - SIDE_GAP * (n - 1.0)) / n;
         // The space between the disks and their legend.
         let gap = ui.spacing().item_spacing.y;
-        let holds = map
-            .media
-            .holds()
-            .filter(|_| !fits)
-            .map(|n| format!("{span} cylinders: a {} disk holds {n}.", map.media.name()));
+        let holds = map.media.holds().filter(|_| !fits).map(|n| {
+            let name = map.media.name();
+            format!("{span} cylinders: a {name} disk has room for {n}.")
+        });
         // The legend runs across the room under the disks, whatever their
         // size, so its height sets theirs and never the other way round.
         // While gw works its counts change: the room it has taken it keeps.
         let mut look = Look::of(p, map.media);
-        let mut legend = Legend::of(ui, map, &drawn, &look, holds.clone());
+        let mut legend = Legend::of(ui, map, &drawn, &look, holds);
         let mut height = legend.flow(ui, room.x);
         {
             let mut kept = kept.lock();
@@ -485,12 +490,16 @@ impl Room {
         let most = TITLE + widest.pixels as f32 / ppp + gap + height;
         let diameter = across.min(room.y - TITLE - gap - height).max(LEAST);
         let geometry = Geometry::new(map.media, span, f64::from(diameter * ppp));
-        // Its colours as the tracks show them at that size.
+        // Its colours as the tracks show them at that size; and the index's
+        // mark only where a disk has room for it, in the room laid out.
         look.covered = geometry.covered(line);
-        legend = Legend::of(ui, map, &drawn, &look, holds);
-        legend.flow(ui, room.x);
+        legend.see(&look);
+        let notched =
+            placed(sides, map.swapped).any(|(_, head)| geometry.notch(head, line).is_some());
+        if !notched && legend.drop_index() {
+            legend.flow(ui, room.x);
+        }
         legend.height = height;
-        let widest_legend = height;
         let diameter = geometry.pixels as f32 / ppp;
         Some(Room {
             span,
@@ -502,8 +511,8 @@ impl Room {
             diameter,
             width: n * diameter + SIDE_GAP * (n - 1.0),
             legend,
+            look,
             most,
-            widest_legend,
         })
     }
 }
@@ -542,22 +551,16 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
     let progress = map.progress;
     let p = theme::palette(ui);
     let ppp = ui.ctx().pixels_per_point();
-    let mut look = Look::of(p, map.media);
-    look.covered = room.geometry.covered(room.line);
-    let (diameter, sides) = (room.diameter, room.sides);
+    let (look, diameter) = (&room.look, room.diameter);
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), TITLE + diameter), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Disk map"));
     let painter = ui.painter_at(rect.expand(2.0));
     let left = rect.center().x - room.width / 2.0;
-    let disks: Vec<Disk> = (0..sides)
-        .map(|head| {
-            let side = if map.swapped && sides == 2 {
-                1 - head
-            } else {
-                head
-            };
-            let x = left + head as f32 * (diameter + SIDE_GAP);
+    let disks: Vec<Disk> = placed(room.sides, map.swapped)
+        .enumerate()
+        .map(|(place, (side, head))| {
+            let x = left + place as f32 * (diameter + SIDE_GAP);
             let min = egui::pos2(x, rect.top() + TITLE).round_to_pixels(ppp);
             let picture = Rect::from_min_size(min, vec2(diameter, diameter));
             Disk {
@@ -567,6 +570,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
                 rect: picture,
                 centre: picture.center(),
                 scale: 1.0 / ppp,
+                line: room.line,
                 geometry: room.geometry,
             }
         })
@@ -577,7 +581,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
             title.center(),
             Align2::CENTER_CENTER,
             format!("Side {}", d.side),
-            FontId::proportional(13.0),
+            FontId::proportional(TITLE_SIZE),
             p.dim,
         );
     }
@@ -588,7 +592,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         for d in &disks {
             let head = d.head as usize;
             kept.seen[head] = true;
-            d.draw(ui, &painter, map, &room, &look, &mut kept.pictures[head]);
+            d.draw(ui, &painter, map, &room, &mut kept.pictures[head]);
         }
     }
     let pointer = response.hover_pos();
@@ -596,26 +600,26 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         let d = disks
             .iter()
             .find(|d| (at - d.centre).length() <= diameter / 2.0)?;
-        Some((d, d.track_at(at)?))
+        Some((d, at, d.track_at(at)?))
     });
-    if let Some((d, (cyl, share))) = hovered.filter(|_| room.fits) {
+    if let Some((d, at, (cyl, share))) = hovered.filter(|_| room.fits) {
         let key = (cyl, d.side);
         let found = progress.facts.get(&key);
-        let least = d.line_at(pointer.unwrap_or_default());
-        let at = found.and_then(|f| under(&f.sectors, share, least));
-        let sector = at.zip(found).map(|(i, f)| &f.sectors[i]);
+        let least = d.line_at(at);
+        let index = found.and_then(|f| under(&f.sectors, share, least));
+        let sector = index.zip(found).map(|(i, f)| &f.sectors[i]);
         let faint = Stroke::new(1.0, look.ink.gamma_multiply(0.45));
         d.outline(&painter, cyl, faint);
         if let Some((start, end)) = sector.and_then(|s| extent(s, least)) {
             let stroke = Stroke::new(1.5, look.ink);
             d.outline_arc(&painter, cyl, start, end, stroke);
         }
-        if let Some((index, f)) = at.zip(found).filter(|_| response.clicked()) {
-            ui.data_mut(|d| d.insert_temp(inspected(), (key, index, f.revision)));
+        if let Some((i, f)) = index.zip(found).filter(|_| response.clicked()) {
+            ui.data_mut(|d| d.insert_temp(inspected(), (key, i, f.revision)));
         }
         response
             .clone()
-            .on_hover_ui_at_pointer(|ui| tip(ui, map, key, share, least));
+            .on_hover_ui_at_pointer(|ui| tip(ui, map, key, share, index));
     }
     let over_title = pointer.and_then(|at| {
         disks
@@ -625,7 +629,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
     if let Some(d) = over_title {
         response
             .clone()
-            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, d.side, d.head, room.span));
+            .on_hover_ui_at_pointer(|ui| side_tip(ui, map, &room, d.side, d.head));
     }
     inspector(ui.ctx(), map);
     let top = ui.cursor().top();
@@ -665,6 +669,15 @@ impl Geometry {
         ((self.width - line) / self.pitch) as f32
     }
 
+    /// The index's notch on the disk `head` reads, with lines `line` pixels
+    /// wide: how far its base and its tip lie from the centre, in the rim
+    /// and pointing in at track 0; none where the rim has no room for it.
+    fn notch(&self, head: u32, line: f64) -> Option<(f64, f64)> {
+        let base = self.edge - line;
+        let tip = (self.outer[head as usize] + line).max(base - 10.0 * line);
+        (base - tip >= 2.0).then_some((base, tip))
+    }
+
     /// A disk at most `room` pixels across for `span` tracks, which are
     /// drawn alike: fitted, a whole number of pixels wide from a whole
     /// pixel where they are WHOLE or more; to scale, a whole number of
@@ -697,7 +710,8 @@ impl Geometry {
         }
         let edge = size.radius * per_mm;
         Geometry {
-            pixels: 2 * edge.ceil() as usize,
+            // The radius scaled back may come out a hair over the room.
+            pixels: 2 * (edge.ceil() as usize).min(radius as usize),
             edge,
             hub: size.hub.map(|r| r * per_mm),
             hole: size.hole * per_mm,
@@ -710,7 +724,8 @@ impl Geometry {
 
 /// One side's disk as drawn.
 struct Disk {
-    /// The disk's side, as gw numbers it, and the drive head that reads it.
+    /// The disk's side, as gw numbers it, and the drive head that reads it,
+    /// whose side of the disk its tracks lie on.
     side: u32,
     head: u32,
     /// The cylinders drawn.
@@ -718,13 +733,29 @@ struct Disk {
     /// The picture, on whole pixels.
     rect: Rect,
     centre: Pos2,
-    /// Points per pixel.
+    /// Points per pixel, and the width of a line, a point in whole pixels.
     scale: f32,
+    line: f64,
     geometry: Geometry,
 }
 
+/// The side each disk shows, from the left, and the drive head that reads
+/// it: with the heads swapped, side 0 is read by head 1, and with both
+/// sides shown, side 1 comes first.
+fn placed(sides: u32, swapped: bool) -> impl Iterator<Item = (u32, u32)> {
+    (0..sides).map(move |place| {
+        let side = match swapped && sides == 2 {
+            true => 1 - place,
+            false => place,
+        };
+        (side, if swapped { 1 - side } else { side })
+    })
+}
+
 /// Where a share of a revolution from the index points, from the centre:
-/// the index at the top, the track running on clockwise.
+/// the index at the top, the track running on clockwise. Seen from side 0
+/// the disk turns counter-clockwise (ECMA-125, 4.15), so this is either
+/// side's track as seen from side 0.
 fn heading(share: f64) -> (f64, f64) {
     let a = TAU * share;
     (a.sin(), -a.cos())
@@ -756,7 +787,7 @@ impl Disk {
     /// sector is drawn.
     fn line_at(&self, at: Pos2) -> f64 {
         let r = f64::from(((at - self.centre) / self.scale).length());
-        f64::from(1.0 / self.scale).round().max(1.0) / (TAU * r.max(1.0))
+        self.line / (TAU * r.max(1.0))
     }
 
     /// The track whose room lies under `at`, and the share of a revolution
@@ -781,12 +812,11 @@ impl Disk {
         painter: &egui::Painter,
         map: &Map,
         room: &Room,
-        look: &Look,
         slot: &mut Option<Picture>,
     ) {
         let ctx = ui.ctx();
         let p = theme::palette(ui);
-        let (drawn, fits) = (&*room.drawn, room.fits);
+        let (drawn, fits, look) = (&*room.drawn, room.fits, &room.look);
         let key = Key {
             media: map.media,
             shows: drawn.shows,
@@ -799,27 +829,27 @@ impl Disk {
             fits,
             pure: drawn.pure,
         };
-        let row = |cyl: usize| row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
+        let track = |cyl: usize| row(ring(map, (cyl as u32, self.side), drawn, fits, p), look);
         // A pass to be laid out again shows nothing: it paints nothing.
         if !ctx.will_discard() {
-            let stamps = stamps(map.progress, self.side, self.span, p);
+            let known = stamps(map, self.side, self.span, p);
             let (now, released) = ui.input(|i| (i.time, i.pointer.any_released()));
-            let painted = |stamps| Painted {
+            let painted = |known| Painted {
                 key,
-                stamps,
+                stamps: known,
                 at: now,
                 asked: (key.geometry, now),
             };
             match slot {
-                None => *slot = Some(Picture::new(ctx, self, look, row, painted(stamps))),
-                Some(picture) => match picture.painted.due(&key, &stamps, now, released) {
+                None => *slot = Some(Picture::new(ctx, self, look, track, painted(known))),
+                Some(picture) => match picture.painted.due(&key, &known, now, released) {
                     Due::No => {}
                     Due::Later(wait) => ctx.request_repaint_after(Duration::from_secs_f64(wait)),
                     Due::Tracks(changed) => {
-                        picture.paint(self, look, row, &changed, false, painted(stamps))
+                        picture.paint(self, look, track, &changed, false, painted(known))
                     }
                     Due::All(changed) => {
-                        picture.paint(self, look, row, &changed, true, painted(stamps))
+                        picture.paint(self, look, track, &changed, true, painted(known))
                     }
                 },
             }
@@ -831,7 +861,6 @@ impl Disk {
         self.index_mark(painter, look);
         // The last track reported, ringed. Going from side to side, it fades
         // out on one as it fades in on the other, from the report on.
-        let ctx = painter.ctx();
         let id = egui::Id::new("last reported").with(self.side);
         let reported = map.current.filter(|&(_, s)| fits && s == self.side);
         if let Some((cyl, _)) = reported {
@@ -851,15 +880,12 @@ impl Disk {
         }
     }
 
-    /// The index's mark: a notch in the rim at the top, pointing in at track 0.
+    /// The index's mark: a notch in the rim at the top, pointing in at track
+    /// 0, where the rim has room for it.
     fn index_mark(&self, painter: &egui::Painter, look: &Look) {
-        let g = &self.geometry;
-        let line = f64::from(1.0 / self.scale).round().max(1.0);
-        let base = g.edge - line;
-        let tip = (g.outer[self.head as usize] + line).max(base - 10.0 * line);
-        if base - tip < 2.0 {
+        let Some((base, tip)) = self.geometry.notch(self.head, self.line) else {
             return;
-        }
+        };
         let half = (base - tip) * 0.7;
         let corner = |x: f64| self.centre + self.scale * vec2(x as f32, -base as f32);
         let points = vec![self.at(0.0, tip), corner(half), corner(-half)];
@@ -942,8 +968,7 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
     // The track gw is on, its line all gw has said of it yet: its report is
     // to come, as a write's comes once gw has written the track.
     if facts.is_none()
-        && map.running
-        && map.current == Some(key)
+        && working_on(map, key)
         && track.is_some_and(|t| t.status != Status::Skipped)
         && planned(progress, key)
     {
@@ -997,7 +1022,8 @@ fn row(ring: Ring, look: &Look) -> Row {
 }
 
 /// What a track lacks of the sectors its format lays out, as the grid
-/// counts it: some, as Sectors missing; all it should have decoded, as Bad.
+/// counts it from gw's own "(n/m sectors)": some, as Sectors missing; all,
+/// as Bad, as is a track gw's ibm.scan calls IBM Empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shortfall {
     None,
@@ -1007,25 +1033,24 @@ enum Shortfall {
 
 impl Shortfall {
     fn of(f: &Facts) -> Shortfall {
-        let decoded =
-            |s: &Sector| matches!(Class::of(s), Class::Good | Class::Empty | Class::Deleted);
-        match (f.missing.is_empty(), f.sectors.iter().any(decoded)) {
-            (true, _) => Shortfall::None,
-            (false, true) => Shortfall::Missing,
-            (false, false) => Shortfall::Bad,
+        let summary = f.summary.as_deref().unwrap_or_default();
+        match progress::sectors(summary) {
+            _ if summary.starts_with("IBM Empty") => Shortfall::Bad,
+            Some((0, all)) if all > 0 => Shortfall::Bad,
+            Some((good, all)) if good < all => Shortfall::Missing,
+            _ => Shortfall::None,
         }
     }
 }
 
-/// How far the stretches with no sector found of a track with sectors
-/// missing, or none found, are toned from the grid's colour toward the
-/// disk's: apart from an incomplete sector's, the grid's colour at full
-/// strength.
-const MISSING_TONE: f32 = 0.15;
-
 /// Whether gw announced it would work on `key`.
 fn planned(progress: &Progress, (cyl, head): (u32, u32)) -> bool {
     progress.cyls.contains(&cyl) && progress.heads.contains(&head)
+}
+
+/// Whether gw is on track `key` as it works: the track it last reported.
+fn working_on(map: &Map, key: (u32, u32)) -> bool {
+    map.running && map.current == Some(key)
 }
 
 /// What the disk view draws, as its legend counts it.
@@ -1061,17 +1086,26 @@ struct Drawn {
 }
 
 /// What a count of what the disk view draws was of: the job's revision,
-/// the tracks gw was to work on, how many it spans and what it shows.
-#[derive(Clone, PartialEq)]
+/// the track gw is on as it works, how many tracks the view spans, what it
+/// shows and in which colours. The tracks gw was to work on are kept beside.
+#[derive(Clone, Copy, PartialEq)]
 struct DrawnKey {
     revision: u64,
-    cyls: Vec<u32>,
-    heads: Vec<u32>,
+    on: Option<(u32, u32)>,
     span: u32,
     sides: u32,
     shows: Shows,
     fits: bool,
     palette: &'static Palette,
+}
+
+/// A count of what the disk view draws, what it was of, and the cylinders
+/// and heads gw was to work on then.
+struct Counted {
+    key: DrawnKey,
+    cyls: Vec<u32>,
+    heads: Vec<u32>,
+    drawn: Arc<Drawn>,
 }
 
 impl Drawn {
@@ -1087,19 +1121,26 @@ impl Drawn {
         let progress = map.progress;
         let key = DrawnKey {
             revision: progress.revision,
-            cyls: progress.cyls.clone(),
-            heads: progress.heads.clone(),
+            on: map.current.filter(|_| map.running),
             span,
             sides,
             shows: map.shows,
             fits,
             palette: p,
         };
-        if let Some((_, drawn)) = kept.lock().counted.as_ref().filter(|(k, _)| *k == key) {
-            return drawn.clone();
+        // The tracks gw was to work on, compared where they lie.
+        let same =
+            |c: &&Counted| c.key == key && c.cyls == progress.cyls && c.heads == progress.heads;
+        if let Some(counted) = kept.lock().counted.as_ref().filter(same) {
+            return counted.drawn.clone();
         }
         let drawn = Arc::new(Drawn::of(map, span, sides, fits, p));
-        kept.lock().counted = Some((key, drawn.clone()));
+        kept.lock().counted = Some(Counted {
+            key,
+            cyls: progress.cyls.clone(),
+            heads: progress.heads.clone(),
+            drawn: drawn.clone(),
+        });
         drawn
     }
 
@@ -1112,51 +1153,58 @@ impl Drawn {
             .facts
             .iter()
             .any(|(&(c, h), f)| c < span && h < sides && f.sectors.iter().any(|s| s.at.is_some()));
-        let shows = match map.shows {
-            Shows::Flux if fluxed => Shows::Flux,
-            _ => Shows::Sectors,
-        };
         let mut drawn = Drawn {
-            shows,
+            shows: map.shows.given(fluxed),
             pure: !fluxed && !placed,
             ..Drawn::default()
         };
-        for (cyl, side) in (0..span).flat_map(|c| (0..sides).map(move |s| (c, s))) {
-            match ring(map, (cyl, side), &drawn, fits, p) {
+        drawn.count(map, span, 0..sides, fits, p);
+        drawn
+    }
+
+    /// Counts what the view, as `self` shows it, draws of `map`'s tracks:
+    /// `span` cylinders on `sides`, if the disk holds them.
+    fn count(&mut self, map: &Map, span: u32, sides: Range<u32>, fits: bool, p: &Palette) {
+        let progress = map.progress;
+        for (cyl, side) in (0..span).flat_map(|c| sides.clone().map(move |s| (c, s))) {
+            match ring(map, (cyl, side), self, fits, p) {
                 Ring::Sectors(f, shortfall) => {
-                    for s in f.sectors.iter().filter(|s| s.at.is_some()) {
+                    for s in &f.sectors {
+                        let Some(at) = s.at.map(|a| a.map(f64::from)) else {
+                            continue;
+                        };
                         let class = Class::of(s);
-                        drawn.sectors[class as usize] += 1;
+                        self.sectors[class as usize] += 1;
                         let alone = class == Class::Incomplete;
-                        drawn.headers_alone |= alone && s.header != Header::None;
-                        drawn.data_alone |= alone && s.header == Header::None;
-                        drawn.id_fields |= s.header_end.is_some();
+                        self.headers_alone |= alone && s.header != Header::None;
+                        self.data_alone |= alone && s.header == Header::None;
+                        // A header alone, all ID field, is the incomplete's.
+                        self.id_fields |= s.data != Data::None && id_end(s, at) > at[0];
                     }
-                    drawn.meet |= meet(&f.sectors);
+                    self.meet |= meet(&f.sectors);
                     if f.flux.is_some() {
                         match shortfall {
-                            Shortfall::None => drawn.gaps = true,
-                            Shortfall::Missing => drawn.missing_tracks += 1,
-                            Shortfall::Bad => drawn.bad_tracks += 1,
+                            Shortfall::None => self.gaps = true,
+                            Shortfall::Missing => self.missing_tracks += 1,
+                            Shortfall::Bad => self.bad_tracks += 1,
                         }
                     }
                 }
-                Ring::Flux => drawn.flux += 1,
-                Ring::Unknown => drawn.unknown += 1,
-                Ring::ToDo => drawn.to_do += 1,
-                Ring::Status(colour) => drawn.statuses.push(colour),
+                Ring::Flux => self.flux += 1,
+                Ring::Unknown => self.unknown += 1,
+                Ring::ToDo => self.to_do += 1,
+                Ring::Status(colour) => self.statuses.push(colour),
                 Ring::Bare | Ring::Spin(_) => {}
             }
             let facts = progress.facts.get(&(cyl, side)).filter(|_| fits);
-            drawn.missing += facts.map_or(0, |f| f.missing.len());
-            drawn.shared += facts.map_or(0, |f| {
+            self.missing += facts.map_or(0, |f| f.missing.len());
+            self.shared += facts.map_or(0, |f| {
                 let sectors = &f.sectors;
                 let shares =
                     |s: &Sector| sectors.iter().any(|t| !std::ptr::eq(s, t) && same_id(s, t));
                 sectors.iter().filter(|s| shares(s)).count()
             });
         }
-        drawn
     }
 }
 
@@ -1201,11 +1249,11 @@ struct Kept {
     shown: bool,
     viewport: egui::ViewportId,
     /// The room last laid out, and what the view draws, as the legend
-    /// counts it, for what each was of; and the legend's height at the
-    /// disks' widest, last laid out.
-    room: Option<(RoomKey, Room)>,
-    counted: Option<(DrawnKey, Arc<Drawn>)>,
-    widest: Option<f32>,
+    /// counts it, for what each was of; and the legend's height, last laid
+    /// out.
+    room: Option<(RoomKey, Arc<Room>)>,
+    counted: Option<Counted>,
+    legend: Option<f32>,
     /// While gw works, the room's width and the height its legend has
     /// taken there, which it keeps: changing counts do not resize the disks.
     floor: Option<(f32, f32)>,
@@ -1266,7 +1314,8 @@ impl Picture {
 
     /// Paints the pixels over the tracks `changed` again, their rows made
     /// again by `row`; with `all`, every pixel, at the disk's size. The
-    /// texture takes them in place where its size holds.
+    /// texture takes them in place where its size holds: of the tracks
+    /// changed, only the rows of pixels painted again.
     fn paint(
         &mut self,
         disk: &Disk,
@@ -1291,13 +1340,20 @@ impl Picture {
             dirty
         });
         let canvas = Canvas::new(disk, look, &self.rows, painted.key.line);
-        canvas.paint(Arc::make_mut(&mut self.image), dirty.as_deref());
+        let rows = canvas.paint(Arc::make_mut(&mut self.image), dirty.as_deref());
         let options = egui::TextureOptions::LINEAR;
-        match resized {
-            true => self.texture.set(self.image.clone(), options),
-            false => self
+        match (resized, dirty) {
+            (true, _) => self.texture.set(self.image.clone(), options),
+            (false, None) => self
                 .texture
                 .set_partial([0, 0], self.image.clone(), options),
+            (false, Some(_)) if !rows.is_empty() => {
+                let part = self
+                    .image
+                    .region_by_pixels([0, rows.start], [size[0], rows.len()]);
+                self.texture.set_partial([0, rows.start], part, options);
+            }
+            (false, Some(_)) => {}
         }
         let asked = self.painted.asked;
         self.painted = Painted { asked, ..painted };
@@ -1358,20 +1414,24 @@ impl Painted {
 }
 
 /// What is known of a track that its ring shows: its status as gw printed
-/// it, the bridge's report, whether gw is to work on it, and its colour on
-/// the grid.
-type Stamp = (Option<Status>, Option<u64>, bool, Option<Color32>);
+/// it, the bridge's report, whether gw is to work on it, its colour on the
+/// grid, and whether gw is on it as it works, its report yet to come.
+type Stamp = (Option<Status>, Option<u64>, bool, Option<Color32>, bool);
 
-/// What is known of each of `side`'s tracks.
-fn stamps(progress: &Progress, side: u32, span: u32, p: &Palette) -> Vec<Stamp> {
+/// What is known of each of `side`'s tracks in `map`.
+fn stamps(map: &Map, side: u32, span: u32, p: &Palette) -> Vec<Stamp> {
+    let progress = map.progress;
     (0..span)
         .map(|cyl| {
             let key = (cyl, side);
+            let facts = progress.facts.get(&key);
             (
                 progress.tracks.get(&key).map(|t| t.status),
-                progress.facts.get(&key).map(|f| f.revision),
+                facts.map(|f| f.revision),
                 planned(progress, key),
                 diskmap::fill(progress, key, p),
+                // Once reported, the track gw is on shows its report.
+                facts.is_none() && working_on(map, key),
             )
         })
         .collect()
@@ -1414,18 +1474,22 @@ impl<'a> Canvas<'a> {
 
     /// Paints `image`, or where `only` is given, the pixels as near those of
     /// its tracks as their colours reach: each row of pixels in a share of
-    /// the threads there are, and of a row, only where it crosses them.
-    fn paint(&self, image: &mut egui::ColorImage, only: Option<&[bool]>) {
+    /// the threads there are, and of a row, only where it crosses them. The
+    /// rows of pixels it may have painted.
+    fn paint(&self, image: &mut egui::ColorImage, only: Option<&[bool]>) -> Range<usize> {
         let width = self.pixels;
         let bands = only.map(|dirty| self.bands(dirty));
+        let reached = bands.as_deref().map_or(0..width, |b| self.reach(b));
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
-        let rows = width.div_ceil(threads).max(1);
+        let rows = reached.len().div_ceil(threads).max(1);
+        let pixels = &mut image.pixels[reached.start * width..reached.end * width];
         std::thread::scope(|scope| {
-            for (i, chunk) in image.pixels.chunks_mut(rows * width).enumerate() {
+            for (i, chunk) in pixels.chunks_mut(rows * width).enumerate() {
                 let bands = bands.as_deref();
+                let first = reached.start + i * rows;
                 scope.spawn(move || {
                     for (j, line) in chunk.chunks_mut(width).enumerate() {
-                        let y = i * rows + j;
+                        let y = first + j;
                         let spans = match bands {
                             Some(bands) => self.spans(y, bands),
                             None => vec![(0, width)],
@@ -1439,6 +1503,17 @@ impl<'a> Canvas<'a> {
                 });
             }
         });
+        reached
+    }
+
+    /// The rows of pixels whose middles lie nearer the centre's row than the
+    /// outermost of `bands` reaches: those spans finds pixels in.
+    fn reach(&self, bands: &[(f64, f64)]) -> Range<usize> {
+        let outer = bands.iter().map(|b| b.1).fold(0.0, f64::max);
+        let (above, below) = (self.centre - outer - 0.5, self.centre + outer - 0.5);
+        let from = ((above.floor() + 1.0).max(0.0) as usize).min(self.pixels);
+        let to = (below.ceil().max(0.0) as usize).clamp(from, self.pixels);
+        from..to
     }
 
     /// The radii, from the inner to the outer, between which the pixels lie
@@ -1563,8 +1638,9 @@ impl<'a> Canvas<'a> {
 
 /// How a pixel's area lies along a line through its middle at an angle to
 /// its sides: the share of it within a distance either side, a square's
-/// shadow on the line. A trapezoid, `half` long either side, its top `flat`
-/// long: square to the line, a box; on the diagonal, a triangle.
+/// shadow on the line. A trapezoid reaching `half` either side, flat for
+/// `flat` either side: square to the line, a box; on the diagonal, a
+/// triangle.
 #[derive(Debug, Clone, Copy)]
 struct Shadow {
     half: f64,
@@ -1656,14 +1732,11 @@ impl Row {
         }
     }
 
-    /// Pieces all as long as each other round the revolution, one per colour.
+    /// Pieces all as long as each other round the revolution, one per colour,
+    /// of which there are some: track::spin makes no count of no parts.
     fn pieces(colours: impl Iterator<Item = Color32>) -> Row {
-        let colours: Vec<Color32> = colours.collect();
-        if colours.is_empty() {
-            return Row::new(Color32::BLACK);
-        }
         Row {
-            colours,
+            colours: colours.collect(),
             ..Row::default()
         }
     }
@@ -1728,15 +1801,13 @@ impl Row {
     /// A sector where it lies, from its start to its end in the colour the
     /// legend counts it by, its ID field a shade of it.
     fn sector(&mut self, s: &Sector, look: &Look) {
-        let Some([start, data, end]) = s.at.map(|a| a.map(f64::from)) else {
+        let Some(at) = s.at.map(|a| a.map(f64::from)) else {
             return;
         };
+        let [start, _, end] = at;
         let colour = look.status(s);
         self.lay(start, end, colour);
-        if s.header != Header::None {
-            let header_end = s.header_end.map_or(data, f64::from).min(data);
-            self.lay(start, header_end, look.id(colour));
-        }
+        self.lay(start, id_end(s, at), look.id(colour));
         // A header alone is all ID field.
         let whole = match (s.header, s.data) {
             (Header::Good | Header::Bad, Data::None) => look.id(colour),
@@ -1751,9 +1822,7 @@ impl Row {
     /// Finds where two sectors meet, and puts the sectors in order of
     /// length, once the row is laid out.
     fn finish(&mut self) {
-        let (begins, ends): (Vec<f64>, Vec<f64>) =
-            std::mem::take(&mut self.edges).into_iter().unzip();
-        self.meets = meets(&begins, &ends);
+        self.meets = meets(&std::mem::take(&mut self.edges));
         self.slivers.sort_by(|a, b| a.1.total_cmp(&b.1));
     }
 
@@ -1875,6 +1944,18 @@ impl Row {
     }
 }
 
+/// Where the ID field of a sector found `at` its start, data and end is
+/// drawn to: where gw gives the field's end; a header alone, all of it;
+/// else nowhere, from its start, as gw gives no end to draw it to.
+fn id_end(s: &Sector, [start, data, end]: [f64; 3]) -> f64 {
+    match (s.header, s.header_end, s.data) {
+        (Header::None, ..) => start,
+        (_, Some(e), _) => f64::from(e).min(data),
+        (_, None, Data::None) => end,
+        (_, None, _) => start,
+    }
+}
+
 /// How far apart two shares of a revolution are, round the shorter way.
 fn apart(a: f64, b: f64) -> f64 {
     let d = (a - b).rem_euclid(1.0);
@@ -1936,8 +2017,9 @@ impl Origin {
     }
 }
 
-/// What is known of the hovered track and sector.
-fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least: f64) {
+/// What is known of the hovered track, at `share` of a revolution from the
+/// index, and of its sector there, `index` of its sectors.
+fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index: Option<usize>) {
     let progress = map.progress;
     let reported = progress.facts.get(&(cyl, side));
     let absent = reported.is_some_and(|f| f.absent);
@@ -1946,7 +2028,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     ui.strong(format!("Cylinder {cyl} · side {side}"));
     match (facts.and_then(|f| f.summary.as_deref()), track) {
         _ if absent => {
-            ui.label("Not in the image");
+            ui.label("Not in the image.");
         }
         (Some(summary), _) => {
             ui.label(summary);
@@ -1955,7 +2037,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
             ui.label(&t.text);
         }
         (None, None) => {
-            ui.weak("Not reported");
+            ui.weak("Not reported.");
         }
     }
     let mut notes = Vec::new();
@@ -1974,24 +2056,20 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     if !notes.is_empty() {
         ui.weak(notes.join(" · "));
     }
-    // Where the pointer is: by the revolution the track is drawn by, in time.
-    let period = facts.and_then(|f| f.flux.as_ref()).map(|spin| spin.period);
-    ui.weak(match period {
-        Some(period) => format!(
-            "At {:.1}° · {:.2} ms from the index",
-            share * 360.0,
-            share * period * 1e3
-        ),
+    // Where the pointer is, and when, in each revolution read whole.
+    let spin = facts.and_then(|f| f.flux.as_ref());
+    ui.weak(match spin.map(|spin| from_index(spin, share)) {
+        Some(ms) => format!("At {:.1}° · {ms} ms from the index", share * 360.0),
         None => format!("At {:.1}° from the index", share * 360.0),
     });
     let Some(f) = facts else {
         return;
     };
-    if let Some(s) = under(&f.sectors, share, least).map(|i| &f.sectors[i]) {
+    if let Some(s) = index.and_then(|i| f.sectors.get(i)) {
         ui.separator();
         sector_tip(ui, s, &f.sectors);
         if s.bytes.len() > 64 {
-            ui.weak(format!("Click for all {} bytes", s.bytes.len()));
+            ui.weak(format!("Click for all {} bytes.", s.bytes.len()));
         }
     }
     let unplaced = f.sectors.iter().filter(|s| s.at.is_none()).count();
@@ -2019,9 +2097,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     if let Some(spin) = &f.flux {
         ui.separator();
         if map.shows == Shows::Flux {
-            let relative = spin.relative();
-            let at = ((share * relative.len() as f64) as usize).min(relative.len() - 1);
-            let here = (relative[at] * 100.0).round();
+            let here = (relative_at(spin, share) * 100.0).round();
             ui.label(format!("Flux here: {here}% of the track's average"));
         }
         spin_tip(ui, f, spin, Origin::of(map.image, f.source));
@@ -2031,9 +2107,37 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, least:
     }
 }
 
+/// How far `share` of a revolution lies from the index, in milliseconds:
+/// that share of each revolution read whole, the same in all to 0.01 ms or
+/// else from the least to the most; with none, of gw's measure of the drive.
+fn from_index(spin: &Spin, share: f64) -> String {
+    let ms = |seconds: f64| format!("{:.2}", share * seconds * 1e3);
+    if spin.revs.is_empty() {
+        return ms(spin.period);
+    }
+    let least = spin.revs.iter().copied().fold(f64::INFINITY, f64::min);
+    let most = spin.revs.iter().copied().fold(0.0, f64::max);
+    match (ms(least), ms(most)) {
+        (least, most) if least == most => least,
+        (least, most) => format!("{least}–{most}"),
+    }
+}
+
+/// The track's flux at `share` of a revolution against its mean, as
+/// Spin::relative gives it for that part alone.
+fn relative_at(spin: &Spin, share: f64) -> f32 {
+    let parts = spin.bins.len();
+    let at = ((share * parts as f64) as usize).min(parts - 1);
+    let mean = spin.per_rev / parts as f64;
+    match mean > 0.0 {
+        true => (f64::from(spin.bins[at]) / mean) as f32,
+        false => 0.0,
+    }
+}
+
 /// The IDs of a track's sectors in turn round it from the index, each R,
-/// or number: of every sector with an ID, where all are placed and there
-/// are two or more.
+/// "?" where its header's CRC fails, or number: of every sector with an ID,
+/// where all are placed and there are two or more.
 fn order(sectors: &[Sector]) -> Option<String> {
     let named: Vec<&Sector> = sectors.iter().filter(|s| s.id != Id::None).collect();
     if named.len() < 2 || named.iter().any(|s| s.at.is_none()) {
@@ -2042,7 +2146,8 @@ fn order(sectors: &[Sector]) -> Option<String> {
     let ids: Vec<String> = named
         .iter()
         .map(|s| match s.id {
-            Id::Ibm([.., r, _]) => r.to_string(),
+            Id::Ibm([.., r, _]) if s.header == Header::Good => r.to_string(),
+            Id::Ibm(_) => "?".to_owned(),
             Id::Number(n) => n.to_string(),
             Id::None => unreachable!(),
         })
@@ -2051,7 +2156,8 @@ fn order(sectors: &[Sector]) -> Option<String> {
 }
 
 /// Each ID two or more of a track's sectors carry, from headers whose CRC
-/// holds, and how many: as `R3 ×2`.
+/// holds, and how many: as `R3 ×2`, or in full where another repeated ID
+/// shares its R.
 fn repeated(sectors: &[Sector]) -> Vec<String> {
     let mut seen: Vec<(Id, usize)> = Vec::new();
     for s in sectors.iter().filter(|s| sure_id(s)) {
@@ -2060,9 +2166,21 @@ fn repeated(sectors: &[Sector]) -> Vec<String> {
             None => seen.push((s.id, 1)),
         }
     }
-    seen.into_iter()
-        .filter(|&(_, n)| n > 1)
-        .map(|(id, n)| format!("{} ×{n}", short_id(&id)))
+    seen.retain(|&(_, n)| n > 1);
+    // An R that two of them share names neither: their whole IDs do.
+    let name = |id: &Id| {
+        let r = short_id(id);
+        match seen
+            .iter()
+            .filter(|(other, _)| short_id(other) == r)
+            .count()
+        {
+            1 => r,
+            _ => id_text(id),
+        }
+    };
+    seen.iter()
+        .map(|(id, n)| format!("{} ×{n}", name(id)))
         .collect()
 }
 
@@ -2072,17 +2190,47 @@ fn intervals_chart(ui: &mut egui::Ui, i: &Intervals) {
     if i.counts.is_empty() && i.longer == 0 {
         return;
     }
-    let p = theme::palette(ui);
-    let width_us = i.width * 1e6;
-    let span = (i.first as usize + i.counts.len()) as f64 * width_us;
-    // Whole microseconds along the bottom, one or two apart.
-    let step = if span > 12.0 { 2.0 } else { 1.0 };
-    let end = ((span / step).ceil() * step).max(step);
     let bin = match i.width < 1e-6 {
         true => format!("{:.1} ns", i.width * 1e9),
         false => format!("{} µs", (i.width * 1e9).round() / 1e3),
     };
     ui.label(format!("Flux intervals in µs, bins of {bin}"));
+    if !i.counts.is_empty() {
+        intervals_plot(ui, i);
+    }
+    if i.longer > 0 {
+        ui.weak(format!(
+            "{} of {} µs or longer",
+            grouped(i.longer),
+            top_text(i.top)
+        ));
+    }
+}
+
+/// `top` seconds in microseconds as the chart says it: whole, or rounded
+/// down at 0.01 µs, so that each interval counted is as long or longer.
+fn top_text(top: f64) -> String {
+    let us = top * 1e6;
+    match (us - us.round()).abs() < 1e-6 {
+        true => format!("{}", us.round()),
+        false => format!("{:.2}", (us * 100.0 + 1e-6).floor() / 100.0),
+    }
+}
+
+/// Where the chart's axis ends for bins up to `span` µs, and its ticks'
+/// step: whole microseconds, one or two apart. A hair over a whole number,
+/// as floating point leaves bins' ends, is that number.
+fn axis(span: f64) -> (f64, f64) {
+    let span = span - 1e-9;
+    let step = if span > 12.0 { 2.0 } else { 1.0 };
+    (((span / step).ceil() * step).max(step), step)
+}
+
+/// The chart's bars over its axis, each bin's count against the most.
+fn intervals_plot(ui: &mut egui::Ui, i: &Intervals) {
+    let p = theme::palette(ui);
+    let width_us = i.width * 1e6;
+    let (end, step) = axis((i.first as usize + i.counts.len()) as f64 * width_us);
     let font = egui::TextStyle::Small.resolve(ui.style());
     let label = ui.text_style_height(&egui::TextStyle::Small);
     let (rect, _) = ui.allocate_exact_size(vec2(240.0, 56.0 + label + 2.0), Sense::hover());
@@ -2119,42 +2267,31 @@ fn intervals_chart(ui: &mut egui::Ui, i: &Intervals) {
         painter.text(at, Align2::CENTER_TOP, format!("{us}"), font.clone(), p.dim);
         us += step;
     }
-    if i.longer > 0 {
-        let top = i.top * 1e6;
-        let top = match (top - top.round()).abs() < 1e-6 {
-            true => format!("{}", top.round()),
-            false => format!("{top:.2}"),
-        };
-        ui.weak(format!("{} of {top} µs or longer", grouped(i.longer)));
-    }
 }
 
 /// The track's revolutions and flux.
 fn spin_tip(ui: &mut egui::Ui, f: &Facts, spin: &Spin, from: Origin) {
-    let rpm = |seconds: f64| 60.0 / seconds;
-    let ms = |seconds: f64| format!("{:.2}", seconds * 1e3);
-    let revs: Vec<String> = spin.revs.iter().map(|&r| ms(r)).collect();
-    let mean = spin.revs.iter().sum::<f64>() / spin.revs.len().max(1) as f64;
-    let line = match (from, revs.is_empty()) {
-        (Origin::Written, _) => format!(
-            "Format: {} ms · {:.2} rpm",
-            ms(spin.period),
-            rpm(spin.period)
-        ),
-        (_, false) => format!("{} ms · {:.2} rpm", revs.join(", "), rpm(mean)),
-        (Origin::Read | Origin::Verify, true) => format!(
-            "Drive: {} ms · {:.2} rpm",
-            ms(spin.period),
-            rpm(spin.period)
-        ),
-        (_, true) => format!("{} ms · {:.2} rpm", ms(spin.period), rpm(spin.period)),
-    };
-    ui.label(line);
+    ui.label(spin_line(spin, from));
     let mut flux = format!("{} flux/rev", grouped(spin.per_rev.round() as u64));
     if let Some(cell) = f.cell {
         flux += &format!(" · {:.3} µs cells", cell * 1e6);
     }
     ui.label(flux);
+}
+
+/// The track's revolutions in a line, with the rate of their mean: each
+/// read whole; of a track gw wrote, its format's; with none read, gw's
+/// measure of the drive, or the image's.
+fn spin_line(spin: &Spin, from: Origin) -> String {
+    let ms = |seconds: f64| format!("{:.2}", seconds * 1e3);
+    let rpm = format!("{:.2} rpm", 60.0 / spin.period);
+    let revs: Vec<String> = spin.revs.iter().map(|&r| ms(r)).collect();
+    match (from, revs.is_empty()) {
+        (Origin::Written, _) => format!("Format: {} ms · {rpm}", ms(spin.period)),
+        (_, false) => format!("{} ms · {rpm}", revs.join(", ")),
+        (Origin::Read | Origin::Verify, true) => format!("Drive: {} ms · {rpm}", ms(spin.period)),
+        (_, true) => format!("{} ms · {rpm}", ms(spin.period)),
+    }
 }
 
 /// `n` with its thousands apart.
@@ -2170,15 +2307,14 @@ pub(crate) fn grouped(n: u64) -> String {
     out
 }
 
-/// A side's sums: the sectors gw found by how they decoded, as the legend
-/// names them, those missing, and the encodings gw decoded; of the side's
-/// tracks the disk view spans, `span` cylinders.
-fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32, span: u32) {
+/// A side's sums over the cylinders `room` draws: see sums.
+fn side_tip(ui: &mut egui::Ui, map: &Map, room: &Room, side: u32, head: u32) {
     match side == head {
         true => ui.strong(format!("Side {side}")),
         false => ui.strong(format!("Side {side} · head {head}")),
     };
-    let (sums, encodings) = sums(map.progress, side, span);
+    let p = theme::palette(ui);
+    let (sums, encodings) = sums(map, &room.drawn, room.span, room.fits, side, p);
     if !sums.is_empty() {
         ui.label(sums);
     }
@@ -2187,30 +2323,39 @@ fn side_tip(ui: &mut egui::Ui, map: &Map, side: u32, head: u32, span: u32) {
     }
 }
 
-/// A side's sectors gw found by how they decoded and those missing, in a
-/// line, and the encodings gw decoded, over the `span` cylinders drawn.
-fn sums(progress: &Progress, side: u32, span: u32) -> (String, Vec<&str>) {
-    let facts = progress.facts.iter();
+/// A side's sectors drawn by how they decoded, and those missing, as the
+/// legend of the view `drawn` counts them, in a line; and the encodings gw
+/// decoded: over the `span` cylinders drawn, if the disk holds them.
+fn sums<'a>(
+    map: &Map<'a>,
+    drawn: &Drawn,
+    span: u32,
+    fits: bool,
+    side: u32,
+    p: &Palette,
+) -> (String, Vec<&'a str>) {
+    let mut counted = Drawn {
+        shows: drawn.shows,
+        pure: drawn.pure,
+        ..Drawn::default()
+    };
+    counted.count(map, span, side..side + 1, fits, p);
+    let mut sums: Vec<String> = (Class::ALL.map(Class::name).iter().zip(counted.sectors))
+        .filter(|&(_, n)| n > 0)
+        .map(|(name, n)| format!("{name} {n}"))
+        .collect();
+    if counted.missing > 0 && counted.shows == Shows::Sectors && !counted.pure {
+        sums.push(format!("{} missing", counted.missing));
+    }
+    let facts = map.progress.facts.iter();
     let facts = facts.filter(|((c, h), f)| *h == side && *c < span && !f.absent);
-    let (mut counts, mut missing) = ([0usize; Class::ALL.len()], 0);
     let mut encodings: Vec<&str> = Vec::new();
     for (_, f) in facts {
-        missing += f.missing.len();
-        for s in &f.sectors {
-            counts[Class::of(s) as usize] += 1;
-        }
         let summary = f.summary.as_deref().unwrap_or_default();
         let encoding = summary.split(" (").next().unwrap_or_default();
         if !encoding.is_empty() && !encodings.contains(&encoding) {
             encodings.push(encoding);
         }
-    }
-    let mut sums: Vec<String> = (Class::ALL.map(Class::name).iter().zip(counts))
-        .filter(|&(_, n)| n > 0)
-        .map(|(name, n)| format!("{name} {n}"))
-        .collect();
-    if missing > 0 {
-        sums.push(format!("{missing} missing"));
     }
     (sums.join(" · "), encodings)
 }
@@ -2236,7 +2381,7 @@ fn inspector(ctx: &egui::Context, map: &Map) {
         .facts
         .get(&key)
         .filter(|f| f.revision == revision);
-    let Some(s) = facts.and_then(|f| f.sectors.get(index)) else {
+    let Some((f, s)) = facts.and_then(|f| Some((f, f.sectors.get(index)?))) else {
         ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
         return;
     };
@@ -2245,7 +2390,7 @@ fn inspector(ctx: &egui::Context, map: &Map) {
     let id = egui::Id::new("disk sector window");
     let shown = Shown {
         title: &title,
-        lines: &sector_lines(s, facts.map_or(&[][..], |f| &f.sectors)),
+        lines: &sector_lines(s, &f.sectors),
         bytes: &s.bytes,
         base: 0,
     };
@@ -2340,7 +2485,8 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
             Tone::Weak => p.dim,
         })
         .collect();
-    // Lines as far apart as labels, none wrapped.
+    // Lines the type's size and the spacing between widgets apart, none
+    // wrapped.
     let spaced = body.size + ui.spacing().item_spacing.y;
     let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _: f32| {
         let mut job = egui::text::LayoutJob::default();
@@ -2362,30 +2508,29 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let said_width = layouter(ui, &text.as_str(), 0.0).size().x;
-    let dumped = dump(shown.bytes, usize::MAX, shown.base);
-    let rows: Vec<&str> = dumped.lines().collect();
-    let mono = FontId::monospace(12.0);
+    let dumped = Dumped::kept(ui, ui.id().with("dumped"), shown.bytes, shown.base);
+    let mono = FontId::monospace(DUMP_SIZE);
     let advance = ui.fonts_mut(|f| f.glyph_width(&mono, '0'));
-    let rows_width = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) as f32 * advance;
+    let rows_width = dumped.widest as f32 * advance;
     // A text view's bars, as the Log's: beside the rows, not over them.
     theme::solid_bars(ui, p);
     let bar = ui.spacing().scroll.allocated_width();
     ui.set_min_width(said_width.max(rows_width + bar).ceil() + 1.0);
-    let mut shown = text.as_str();
-    let said = egui::TextEdit::multiline(&mut shown)
+    let mut buffer = text.as_str();
+    let said = egui::TextEdit::multiline(&mut buffer)
         .layouter(&mut layouter)
         .frame(egui::Frame::NONE)
         .margin(0)
         .desired_rows(1)
         .desired_width(said_width.ceil() + 1.0);
     form::read_only_box(ui, ui.id().with("said"), said);
-    if rows.is_empty() {
+    if dumped.rows.is_empty() {
         return;
     }
     ui.separator();
-    let line = |i: usize| (rows[i], plain);
+    let line = |i: usize| (&dumped.text[dumped.rows[i].clone()], plain);
     let lines = Lines {
-        count: rows.len(),
+        count: dumped.rows.len(),
         line: &line,
         font: mono,
         gap: 0.0,
@@ -2394,31 +2539,75 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
     lines.show(ui, ui.id().with("bytes"), area);
 }
 
+/// A sector window's bytes as dump writes them out, and what of: kept while
+/// the bytes and their numbering hold, not written again each frame.
+struct Dumped {
+    bytes: Vec<u8>,
+    base: usize,
+    text: String,
+    /// Where each row lies in the text, and the most characters in one.
+    rows: Vec<Range<usize>>,
+    widest: usize,
+}
+
+impl Dumped {
+    /// `bytes` numbered from `base` as dumped, kept under `id`.
+    fn kept(ui: &egui::Ui, id: egui::Id, bytes: &[u8], base: usize) -> Arc<Dumped> {
+        let kept = ui.data(|d| d.get_temp::<Arc<Dumped>>(id));
+        if let Some(dumped) = kept.filter(|d| d.base == base && d.bytes == bytes) {
+            return dumped;
+        }
+        let dumped = Arc::new(Dumped::of(bytes, base));
+        ui.data_mut(|d| d.insert_temp(id, dumped.clone()));
+        dumped
+    }
+
+    fn of(bytes: &[u8], base: usize) -> Dumped {
+        let text = dump(bytes, usize::MAX, base);
+        let mut rows = Vec::new();
+        let mut at = 0;
+        for row in text.lines() {
+            rows.push(at..at + row.len());
+            at += row.len() + 1;
+        }
+        let widest = rows.iter().map(|r| text[r.clone()].chars().count());
+        Dumped {
+            bytes: bytes.to_vec(),
+            base,
+            widest: widest.max().unwrap_or(0),
+            text,
+            rows,
+        }
+    }
+}
+
 /// Up to `rows` rows of 16 bytes: the offset, from `base`, the bytes in hex,
 /// then as ASCII, others as dots.
 fn dump(bytes: &[u8], rows: usize, base: usize) -> String {
+    use std::fmt::Write as _;
     // As many hex digits as the last offset needs, and at least four.
     let last = base + bytes.len().saturating_sub(1);
     let digits = (usize::BITS - last.leading_zeros()).div_ceil(4).max(4) as usize;
-    let lines = bytes.chunks(16).take(rows).enumerate().map(|(row, chunk)| {
-        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let text: String = chunk
-            .iter()
-            .map(|&b| {
-                if (32..127).contains(&b) {
-                    b as char
-                } else {
-                    '.'
-                }
-            })
-            .collect();
-        format!(
-            "{:0digits$X}  {:<47}  {text}",
-            base + row * 16,
-            hex.join(" ")
-        )
-    });
-    lines.collect::<Vec<_>>().join("\n")
+    let ascii = |&b: &u8| match b {
+        32..127 => b as char,
+        _ => '.',
+    };
+    // Each row its offset, 51 characters of hex and its ASCII, and a newline.
+    let mut out = String::with_capacity(bytes.len().div_ceil(16).min(rows) * (digits + 68));
+    for (row, chunk) in bytes.chunks(16).take(rows).enumerate() {
+        if row > 0 {
+            out.push('\n');
+        }
+        // Writing to a String cannot fail.
+        let _ = write!(out, "{:0digits$X} ", base + row * 16);
+        for b in chunk {
+            let _ = write!(out, " {b:02X}");
+        }
+        // The hex as wide as 16 bytes', then two spaces.
+        out.extend(std::iter::repeat_n(' ', 50 - 3 * chunk.len()));
+        out.extend(chunk.iter().map(ascii));
+    }
+    out
 }
 
 /// The sector drawn at `share` of a revolution, as the track is painted with
@@ -2489,10 +2678,12 @@ pub(crate) enum Tone {
 /// and size, its checks and mark, its place, in degrees and in bytes, how gw
 /// found it in each revolution, any other sector with its ID, and notes.
 fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
-    let size = match s.id {
+    let size = match (s.id, s.data) {
         _ if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
+        // A header alone has no data: its N is in its ID.
+        (_, Data::None) => None,
         // The data its header calls for, as gw's decoder reads it.
-        Id::Ibm([.., n]) if n <= 7 => Some(128u32 << n),
+        (Id::Ibm([.., n]), _) if n <= 7 => Some(128u32 << n),
         _ => None,
     };
     let name = match s.id {
@@ -2506,21 +2697,27 @@ fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
         },
         Tone::Strong,
     )];
-    let mut checks = vec![
-        match s.header {
-            Header::Good => "Header OK",
-            Header::Bad => "Header bad",
-            Header::None => "No header",
-        }
-        .to_owned(),
-        match s.data {
-            Data::Good => "Data OK".to_owned(),
-            Data::Empty(b) => format!("Data OK, all {b:02X}"),
-            Data::Bad => "Data bad".to_owned(),
-            Data::Unread => "Data unread".to_owned(),
-            Data::None => "No data".to_owned(),
-        },
-    ];
+    let mut checks = match (s.id, s.header, s.data) {
+        // gw adds a sector by number only once its checks pass; some such
+        // codecs have no header, or no check of it apart from the data's.
+        (Id::Number(_), Header::Good, Data::Good) => vec!["Checks OK".to_owned()],
+        (Id::Number(_), Header::Good, Data::Empty(b)) => vec![format!("Checks OK, all {b:02X}")],
+        _ => vec![
+            match s.header {
+                Header::Good => "Header OK",
+                Header::Bad => "Header bad",
+                Header::None => "No header",
+            }
+            .to_owned(),
+            match s.data {
+                Data::Good => "Data OK".to_owned(),
+                Data::Empty(b) => format!("Data OK, all {b:02X}"),
+                Data::Bad => "Data bad".to_owned(),
+                Data::Unread => "Data unread".to_owned(),
+                Data::None => "No data".to_owned(),
+            },
+        ],
+    };
     if let Some(mark) = s.mark {
         checks.push(format!(
             "Mark {mark:02X}{}",
@@ -2585,19 +2782,22 @@ fn bytes(cells: f64) -> String {
     let unit = if whole == 1 { "byte" } else { "bytes" };
     match over {
         0 => format!("{} {unit}", grouped(whole as u64)),
+        1 => format!("{} {unit} 1 cell", grouped(whole as u64)),
         _ => format!("{} {unit} {over} cells", grouped(whole as u64)),
     }
 }
 
 /// Where a sector lies in bytes: from the index, and after what gw found
-/// before it.
+/// before it, its ID said to be a bad header's where that one's CRC fails.
 fn layout_line(l: &Layout) -> String {
     let mut parts = vec![format!("{} from the index", bytes(l.from_index))];
     if let Some((cells, before)) = l.after {
         let what = match before {
             Before::IndexMark => "the index mark".to_owned(),
-            Before::Sector(id, _) => short_id(&id),
-            Before::Header(id, _) => format!("{}'s header", short_id(&id)),
+            Before::Sector(id, true) => short_id(&id),
+            Before::Sector(id, false) => format!("{} (bad header)", short_id(&id)),
+            Before::Header(id, true) => format!("{}'s header", short_id(&id)),
+            Before::Header(id, false) => format!("{}'s bad header", short_id(&id)),
         };
         parts.push(match cells < 0.0 {
             true => format!("into {what} by {}", bytes(-cells)),
@@ -2658,7 +2858,7 @@ fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector]) {
         };
     }
     if !s.bytes.is_empty() {
-        let rows = RichText::new(dump(&s.bytes, 4, 0)).monospace().small();
+        let rows = RichText::new(dump(&s.bytes, 4, 0)).font(FontId::monospace(DUMP_SIZE));
         ui.add(egui::Label::new(rows).extend());
     }
 }
@@ -2666,7 +2866,6 @@ fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector]) {
 /// The disks' legend, laid out: its entries, each where it lies from the
 /// legend's top left, and its height, the room above it with it; or to
 /// scale, in place of the entries, why the disk holds none of the tracks.
-#[derive(Clone)]
 struct Legend {
     entries: Vec<Entry>,
     at: Vec<egui::Vec2>,
@@ -2679,25 +2878,22 @@ struct Legend {
 }
 
 /// A legend entry: a word before its mark, as the flux scale's "Less", its
-/// mark and its text, kept on one line, and what it says on a hover.
-#[derive(Clone)]
+/// mark and its text, kept on one line, and what it says on a hover; with
+/// no mark, a note, its text as laid out where it lies in its row.
 struct Entry {
     lead: Option<Arc<Galley>>,
     mark: Option<Mark>,
     text: Arc<Galley>,
     tip: Option<String>,
     width: f32,
+    note: Option<Arc<Galley>>,
 }
 
 impl Legend {
-    /// The key to what the disk shows, `drawn`: in the Sectors view, the
-    /// sectors drawn by how they decoded, with how many, their ID fields, the
-    /// lines where two meet and where none was found, and the tracks read as
-    /// flux and not decoded; in the Flux view, its shading. Where no track
-    /// shows more than gw's line, each status as the grid's legend counts it.
-    /// Then the tracks not known, the index's mark, the tracks to do and the
-    /// last reported, and the sectors missing or the retries. With `holds`,
-    /// why there are none.
+    /// The key to what the disks show, `drawn`: how their sectors decoded, or
+    /// the grid's statuses, or the flux's shading; what else is drawn; then
+    /// the counts of sectors missing, retries and shared IDs. With `holds`,
+    /// why nothing is drawn.
     fn of(ui: &egui::Ui, map: &Map, drawn: &Drawn, look: &Look, holds: Option<String>) -> Legend {
         let mut legend = Legend {
             entries: Vec::new(),
@@ -2725,6 +2921,7 @@ impl Legend {
                 width: marked + text.size().x,
                 text,
                 tip: tip.map(str::to_owned),
+                note: None,
             }
         };
         let entries = &mut legend.entries;
@@ -2733,8 +2930,8 @@ impl Legend {
                 let statuses = diskmap::entries(&drawn.statuses, progress, map.verifying, p);
                 for (colour, skipped, name, tracks, tip) in statuses {
                     let mark = match skipped {
-                        true => Mark::Hole(look.seen(colour), p.line_strong),
-                        false => Mark::Swatch(look.seen(colour)),
+                        true => Mark::Hole(colour, p.line_strong),
+                        false => Mark::Swatch(colour),
                     };
                     let text = tracks.map_or(name.to_owned(), |n| {
                         format!("{name} {}", diskmap::tracks(n))
@@ -2745,7 +2942,7 @@ impl Legend {
             Shows::Sectors => {
                 // An incomplete sector: a header alone, all ID field, or
                 // data alone; as the sectors drawn are.
-                let (header, data) = (look.seen(look.id(look.alone)), look.seen(look.alone));
+                let (header, data) = (look.id(look.alone), look.alone);
                 let incomplete = match (drawn.headers_alone, drawn.data_alone) {
                     (true, true) => Mark::Split(header, data),
                     (true, false) => Mark::Swatch(header),
@@ -2753,11 +2950,11 @@ impl Legend {
                 };
                 for (class, n) in Class::ALL.into_iter().zip(drawn.sectors) {
                     let mark = match class {
-                        Class::Good => Mark::Swatch(look.seen(look.good)),
-                        Class::Empty => Mark::Swatch(look.seen(look.empty)),
-                        Class::Deleted => Mark::Swatch(look.seen(look.deleted)),
-                        Class::BadData => Mark::Swatch(look.seen(look.bad)),
-                        Class::BadHeader => Mark::Swatch(look.seen(look.bad_header)),
+                        Class::Good => Mark::Swatch(look.good),
+                        Class::Empty => Mark::Swatch(look.empty),
+                        Class::Deleted => Mark::Swatch(look.deleted),
+                        Class::BadData => Mark::Swatch(look.bad),
+                        Class::BadHeader => Mark::Swatch(look.bad_header),
                         Class::Incomplete => incomplete,
                     };
                     if n > 0 {
@@ -2766,15 +2963,15 @@ impl Legend {
                     }
                 }
                 if drawn.id_fields {
-                    let mark = Mark::Swatch(look.seen(look.id(look.good)));
+                    let mark = Mark::Swatch(look.id(look.good));
                     entries.push(entry(Some(mark), "ID field".into(), None));
                 }
                 if drawn.meet {
-                    let mark = Mark::Line(look.seen(look.good), look.body);
+                    let mark = Mark::Line(look.good, look.body);
                     entries.push(entry(Some(mark), "Sectors meet".into(), None));
                 }
                 if drawn.gaps {
-                    let mark = Mark::Swatch(look.seen(look.gap));
+                    let mark = Mark::Swatch(look.gap);
                     entries.push(entry(Some(mark), "No sector found".into(), None));
                 }
                 for (n, colour, name, tip) in [
@@ -2782,29 +2979,30 @@ impl Legend {
                         drawn.missing_tracks,
                         look.missing_gap,
                         "Sectors missing",
-                        "Where gw found no sector, on a track with sectors missing",
+                        "Where gw found no sector, on a track with sectors missing.",
                     ),
-                    (drawn.bad_tracks, look.bad_gap, "Bad", "No sectors found"),
+                    (
+                        drawn.bad_tracks,
+                        look.bad_gap,
+                        "Bad",
+                        "Where gw found no sector, on a track with none decoded.",
+                    ),
                 ] {
                     if n > 0 {
                         let text = format!("{name} {}", diskmap::tracks(n));
-                        entries.push(entry(
-                            Some(Mark::Swatch(look.seen(colour))),
-                            text,
-                            Some(tip),
-                        ));
+                        entries.push(entry(Some(Mark::Swatch(colour)), text, Some(tip)));
                     }
                 }
                 if drawn.flux > 0 {
-                    let mark = Mark::Swatch(look.seen(look.flux));
-                    let tip = Some("Read as flux, not decoded");
+                    let mark = Mark::Swatch(look.flux);
+                    let tip = Some("Flux, not decoded.");
                     let text = format!("Flux {}", diskmap::tracks(drawn.flux));
                     entries.push(entry(Some(mark), text, tip));
                 }
             }
             Shows::Flux => {
-                let shades = [0.0, 0.5, 1.0, 1.5, 2.0].map(|d| look.seen(look.flux_at(d)));
-                let tip = Some("Against the track's average");
+                let shades = [0.0, 0.5, 1.0, 1.5, 2.0].map(|d| look.flux_at(d));
+                let tip = Some("Against the track's average.");
                 let mut scale = entry(Some(Mark::Shades(shades)), "More flux".into(), tip);
                 let less = galley("Less".into(), strong);
                 scale.width += less.size().x + gap;
@@ -2814,10 +3012,10 @@ impl Legend {
         }
         if drawn.unknown > 0 {
             let tip = match drawn.shows {
-                Shows::Sectors => "No sector places reported",
-                Shows::Flux => "No flux reported",
+                Shows::Sectors => "No sector places reported.",
+                Shows::Flux => "No flux reported.",
             };
-            let mark = Mark::Swatch(look.seen(look.unknown));
+            let mark = Mark::Swatch(look.unknown);
             entries.push(entry(
                 Some(mark),
                 format!("Not known {}", diskmap::tracks(drawn.unknown)),
@@ -2826,7 +3024,7 @@ impl Legend {
         }
         entries.push(entry(Some(Mark::Index(look.index)), "Index".into(), None));
         if drawn.to_do > 0 {
-            let mark = Mark::Swatch(look.seen(look.to_do));
+            let mark = Mark::Swatch(look.to_do);
             let text = format!("To do {}", diskmap::tracks(drawn.to_do));
             entries.push(entry(Some(mark), text, None));
         }
@@ -2838,7 +3036,7 @@ impl Legend {
             ));
         }
         if drawn.missing > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
-            let tip = Some("In the format, not found");
+            let tip = Some("In the format, not found.");
             entries.push(entry(None, format!("{} missing", drawn.missing), tip));
         }
         let retries = progress.tally().retries;
@@ -2846,10 +3044,26 @@ impl Legend {
             entries.push(entry(None, diskmap::retry_text(retries), None));
         }
         if drawn.shared > 0 && drawn.shows == Shows::Sectors && !drawn.pure {
-            let tip = Some("Sectors of one track with the same C, H, R and N");
+            let tip = Some("Sectors of one track with the same C, H, R and N.");
             entries.push(entry(None, format!("{} share an ID", drawn.shared), tip));
         }
         legend
+    }
+
+    /// The marks `of` gives in the tracks' own colours, as the tracks show
+    /// them by `look`: see Look::seen.
+    fn see(&mut self, look: &Look) {
+        for e in &mut self.entries {
+            e.mark = e.mark.map(|m| m.seen(look));
+        }
+    }
+
+    /// Takes the index's entry out: whether there was one.
+    fn drop_index(&mut self) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|e| !matches!(e.mark, Some(Mark::Index(_))));
+        self.entries.len() < before
     }
 
     /// Lays the legend out `width` wide, each entry after the last, or where
@@ -2875,12 +3089,25 @@ impl Legend {
         let (mut x, mut y) = (0.0, 0.0);
         self.at.clear();
         self.width = 0.0;
-        for e in &self.entries {
+        for e in &mut self.entries {
             if x > 0.0 && x + e.width > width {
                 (x, y) = (0.0, y + row + spacing.y);
             }
             self.at.push(vec2(x, y));
             self.width = self.width.max(x + e.width);
+            // A note, as a label in a row of them lays its text out: from
+            // the row's start, after as much room as lies before it.
+            if e.mark.is_none() {
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    e.text.text().to_owned(),
+                    egui::TextStyle::Small.resolve(ui.style()),
+                    ui.visuals().weak_text_color(),
+                );
+                job.first_row_min_height = row;
+                job.sections[0].leading_space = x;
+                job.sections[0].format.valign = ui.text_valign();
+                e.note = Some(ui.fonts_mut(|f| f.layout_job(job)));
+            }
             // Room after a marked entry, as between a legend's keys.
             let after = if e.mark.is_some() { LEGEND_GAP } else { 0.0 };
             x += e.width + spacing.x + after;
@@ -2942,20 +3169,13 @@ impl Legend {
                     ui.painter()
                         .galley(at, e.text.clone(), Color32::PLACEHOLDER);
                 }
-                // A note, as a label in a row of them lays its text out:
-                // from the row's start, after as much room as lies before it.
+                // A note, from its row's start: see flow.
                 None => {
-                    let mut job = egui::text::LayoutJob::simple_singleline(
-                        e.text.text().to_owned(),
-                        egui::TextStyle::Small.resolve(ui.style()),
-                        ui.visuals().weak_text_color(),
-                    );
-                    job.first_row_min_height = row;
-                    job.sections[0].leading_space = offset.x;
-                    job.sections[0].format.valign = ui.text_valign();
-                    let laid = ui.fonts_mut(|f| f.layout_job(job));
-                    let start = egui::pos2(top.x, rect.top());
-                    ui.painter().galley(start, laid, Color32::PLACEHOLDER);
+                    if let Some(note) = &e.note {
+                        let start = egui::pos2(top.x, rect.top());
+                        ui.painter()
+                            .galley(start, note.clone(), Color32::PLACEHOLDER);
+                    }
                 }
             }
             let whole = Rect::from_x_y_ranges(from..=x + e.text.size().x, rect.y_range());
@@ -3012,11 +3232,11 @@ impl Class {
     fn tip(self) -> Option<&'static str> {
         match self {
             Class::Good => None,
-            Class::Empty => Some("Every byte the same"),
-            Class::Deleted => Some("Data mark F8, or F9 on a DEC RX02"),
-            Class::BadData => Some("The data's CRC fails"),
-            Class::BadHeader => Some("The header's CRC fails"),
-            Class::Incomplete => Some("A header with no data, or data with no header"),
+            Class::Empty => Some("Every byte the same."),
+            Class::Deleted => Some("Data mark F8, or F9 on a DEC RX02."),
+            Class::BadData => Some("The data's CRC fails."),
+            Class::BadHeader => Some("The header's CRC fails."),
+            Class::Incomplete => Some("A header with no data, or data with no header."),
         }
     }
 
@@ -3040,21 +3260,24 @@ fn deleted(s: &Sector) -> bool {
 
 /// Whether any two of `sectors` meet, one starting where another ends.
 fn meet(sectors: &[Sector]) -> bool {
-    let placed: Vec<[f64; 3]> = sectors
+    let edges: Vec<(f64, f64)> = sectors
         .iter()
         .filter_map(|s| s.at.map(|a| a.map(f64::from)))
+        .map(|[start, _, end]| (start.rem_euclid(1.0), end.rem_euclid(1.0)))
         .collect();
-    let begins: Vec<f64> = placed.iter().map(|a| a[0].rem_euclid(1.0)).collect();
-    let ends: Vec<f64> = placed.iter().map(|a| a[2].rem_euclid(1.0)).collect();
-    !meets(&begins, &ends).is_empty()
+    !meets(&edges).is_empty()
 }
 
-/// Where, of sectors that start at `begins` and end at `ends` round a
-/// track, one starts where another ends, as EXACT and MEET tell.
-fn meets(begins: &[f64], ends: &[f64]) -> Vec<f64> {
+/// Where, of sectors that start and end at `edges` round a track, one
+/// starts where another ends, as EXACT and MEET tell: never where it ends
+/// itself.
+fn meets(edges: &[(f64, f64)]) -> Vec<f64> {
     let within = |near: f64| {
-        let starts = begins.iter().copied();
-        starts.filter(move |&b| ends.iter().any(|&e| apart(b, e) < near))
+        let ends = move |i: usize| edges.iter().enumerate().filter(move |&(j, _)| j != i);
+        let starts = edges.iter().enumerate();
+        starts
+            .filter(move |&(i, &(b, _))| ends(i).any(|(_, &(_, e))| apart(b, e) < near))
+            .map(|(_, &(b, _))| b)
     };
     let near = if within(EXACT).next().is_some() {
         MEET
@@ -3094,6 +3317,21 @@ impl Mark {
         match self {
             Mark::Shades(_) => 40.0,
             _ => 10.0,
+        }
+    }
+
+    /// Its colours of the tracks as they show across them by `look`, as the
+    /// disks' legend shows them: see Look::seen. Its lines' and outlines'
+    /// as they are.
+    fn seen(self, look: &Look) -> Mark {
+        let seen = |colour| look.seen(colour);
+        match self {
+            Mark::Swatch(colour) => Mark::Swatch(seen(colour)),
+            Mark::Shades(colours) => Mark::Shades(colours.map(seen)),
+            Mark::Line(fill, colour) => Mark::Line(seen(fill), colour),
+            Mark::Split(first, then) => Mark::Split(seen(first), seen(then)),
+            Mark::Hole(fill, edge) => Mark::Hole(seen(fill), edge),
+            Mark::Index(_) | Mark::Ring(_) | Mark::Frame(_) => self,
         }
     }
 
@@ -3204,7 +3442,40 @@ mod tests {
             rect: Rect::from_center_size(centre, vec2(600.0, 600.0)),
             centre,
             scale: 1.0,
+            line: 1.0,
             geometry,
+        }
+    }
+
+    #[test]
+    fn each_side_lies_on_the_side_of_the_disk_its_head_reads() {
+        let all = |sides, swapped| placed(sides, swapped).collect::<Vec<_>>();
+        assert_eq!(all(2, false), [(0, 0), (1, 1)]);
+        assert_eq!(all(1, false), [(0, 0)]);
+        // Swapped, side 1 is read by head 0, and shown first.
+        assert_eq!(all(2, true), [(1, 0), (0, 1)]);
+        // Side 0 alone is read by head 1, on side 1 of the disk.
+        assert_eq!(all(1, true), [(0, 1)]);
+        let media = Media::ThreeHalf;
+        let g = Geometry::new(media, 80, 2.0 * 42.9 * 10.0);
+        let swapped = Disk {
+            side: 0,
+            head: 1,
+            geometry: g,
+            ..disk(1, media)
+        };
+        // Track 0's centreline at 38.0 mm, as ECMA-125 has side 1's.
+        let (outer, inner) = swapped.ring(0);
+        let per_mm = g.edge / 42.9;
+        assert!(((outer + inner) / 2.0 / per_mm - 38.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_disk_to_scale_is_no_wider_than_its_room() {
+        for room in [352.0, 353.0] {
+            let g = Geometry::new(Media::ThreeHalf, 80, room);
+            assert!(g.pixels as f64 <= room, "{} px in {room}", g.pixels);
+            assert!(g.edge <= g.pixels as f64 / 2.0 + 1e-9);
         }
     }
 
@@ -3240,7 +3511,7 @@ mod tests {
                         let at = d.at(share, (outer + inner) / 2.0);
                         let (found, at_share) = d.track_at(at).unwrap();
                         assert_eq!(found, cyl, "{media:?}");
-                        assert!((at_share - share).abs() < 1e-3, "{at_share} for {share}");
+                        assert!((at_share - share).abs() < 1e-6, "{at_share} for {share}");
                     }
                 }
             }
@@ -3403,11 +3674,16 @@ mod tests {
     #[test]
     fn sectors_a_short_gap_apart_do_not_meet_unless_others_on_the_track_meet_exactly() {
         // DMF's sectors, 24 bytes of gap and sync apart: 0.0019 of a turn.
-        let (begins, ends) = ([0.1, 0.2, 0.3], [0.1981, 0.2981, 0.3981]);
-        assert!(meets(&begins, &ends).is_empty());
+        let gapped = [(0.1, 0.1981), (0.2, 0.2981), (0.3, 0.3981)];
+        assert!(meets(&gapped).is_empty());
         // Sectors end to end, one pair across the seam between revolutions.
-        let (begins, ends) = ([0.1, 0.2, 0.3], [0.2, 0.2981, 0.4]);
-        assert_eq!(meets(&begins, &ends), [0.2, 0.3]);
+        let seamed = [(0.1, 0.2), (0.2, 0.2981), (0.3, 0.4)];
+        assert_eq!(meets(&seamed), [0.2, 0.3]);
+        // A sector shorter than EXACT, or than MEET where others meet
+        // exactly, does not meet itself.
+        assert!(meets(&[(0.5, 0.50005)]).is_empty());
+        let short = [(0.1, 0.2), (0.2, 0.3), (0.6, 0.6006)];
+        assert_eq!(meets(&short), [0.2]);
     }
 
     #[test]
@@ -3496,12 +3772,25 @@ mod tests {
 
     #[test]
     fn a_legend_swatch_is_its_colour_as_the_tracks_show_it() {
-        // Fitted, the tracks fill the disk: as drawn.
-        let fit = Look::of(&theme::LIGHT, Media::Fit);
-        assert_eq!(fit.seen(fit.good), fit.good);
+        // As Room::lay sees the tracks: by the share of the disk they cover.
+        let look = |media: Media, g: &Geometry| Look {
+            covered: g.covered(1.0),
+            ..Look::of(&theme::LIGHT, media)
+        };
+        // Fitted with lines between, all but the lines; too close for
+        // lines, the whole disk, as drawn.
+        let lined = Geometry::new(Media::Fit, 20, 400.0);
+        let fit = look(Media::Fit, &lined);
+        let share = ((lined.pitch - 1.0) / lined.pitch) as f32;
+        assert!(share < 1.0);
+        assert_eq!(fit.seen(fit.good), theme::lerp(fit.body, fit.good, share));
+        let close = look(Media::Fit, &Geometry::new(Media::Fit, 84, 300.0));
+        assert_eq!(close.seen(close.good), close.good);
         // To scale, ECMA-125's 0.115 mm tracks 0.1875 mm apart, erased between.
-        let scale = Look::of(&theme::LIGHT, Media::ThreeHalf);
+        let g = Geometry::new(Media::ThreeHalf, 80, 858.0);
+        let scale = look(Media::ThreeHalf, &g);
         let share = (0.115 / 0.1875) as f32;
+        assert!((scale.covered - share).abs() < 1e-6);
         assert_eq!(
             scale.seen(scale.good),
             theme::lerp(scale.body, scale.good, share)
@@ -3537,6 +3826,12 @@ mod tests {
         let alike =
             |a: Color32, b: Color32| (0..4).all(|i| (i32::from(a[i]) - i32::from(b[i])).abs() <= 1);
         let first: Vec<Color32> = (0..wide).map(|i| at(centre + outer - i, centre)).collect();
+        // Track 0's line inside its outer edge, the bare disk's colour, then
+        // the row's.
+        assert!(alike(first[0], look.body), "{:?}", first[0]);
+        for (i, &pixel) in first.iter().enumerate().skip(1) {
+            assert!(alike(pixel, look.good), "pixel {i}: {pixel:?}");
+        }
         for cyl in 1..span as usize {
             for (i, &want) in first.iter().enumerate() {
                 let r = outer - cyl * wide - i;
@@ -3659,8 +3954,8 @@ mod tests {
         assert_eq!(drawn.sectors, [1, 0, 0, 0, 0, 0]);
         let counted = (drawn.flux, drawn.unknown, drawn.to_do, drawn.gaps);
         assert_eq!(counted, (1, 2, 1, false), "not in the image: not to do");
-        // AmigaDOS's sector 0 alone, then none: where gw found no sector, a
-        // track's with sectors missing, then a bad one's.
+        // Track 0, with sector 0 alone, has sectors missing; track 7, with
+        // none, is bad.
         assert_eq!((drawn.missing_tracks, drawn.bad_tracks), (1, 1));
         let (flux, drawn) = rings(&map_of(&progress, Shows::Flux));
         assert_eq!(drawn.shows, Shows::Flux);
@@ -3714,9 +4009,133 @@ mod tests {
     }
 
     #[test]
+    fn a_tracks_shortfall_is_gws_own_count_as_the_grid_takes_it() {
+        let of = |summary: &str, missing: Vec<Id>| {
+            Shortfall::of(&Facts {
+                summary: Some(summary.into()),
+                missing,
+                ..Facts::default()
+            })
+        };
+        // Data that fails is a sector missing to gw, its header found or not.
+        assert_eq!(
+            of("IBM MFM (17/18 sectors)", Vec::new()),
+            Shortfall::Missing
+        );
+        assert_eq!(of("IBM MFM (0/18 sectors)", Vec::new()), Shortfall::Bad);
+        assert_eq!(of("IBM MFM (18/18 sectors)", Vec::new()), Shortfall::None);
+        assert_eq!(
+            of("AmigaDOS (1/11 sectors)", vec![Id::Number(1)]),
+            Shortfall::Missing
+        );
+        // ibm.scan's track with no format it knows.
+        assert_eq!(of("IBM Empty", Vec::new()), Shortfall::Bad);
+        assert_eq!(of("IBM MFM (0/0 sectors)", Vec::new()), Shortfall::None);
+        assert_eq!(Shortfall::of(&Facts::default()), Shortfall::None);
+    }
+
+    #[test]
+    fn where_no_sector_was_found_a_ring_shows_its_tracks_shortfall() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let facts = |flux: bool| Facts {
+            sectors: vec![sector([0.1, 0.12, 0.2], None)],
+            flux: flux.then(|| spin_of(vec![0.2])),
+            ..Facts::default()
+        };
+        let w = 1.0 / 1024.0;
+        let gap = |f: &Facts, shortfall| {
+            let row = row(Ring::Sectors(f, shortfall), &look);
+            row.sample(0.6, Shadow::square(w), w, [9.0; 3])
+        };
+        let fluxed = facts(true);
+        assert!(near(gap(&fluxed, Shortfall::None), rgb(look.gap)));
+        assert!(near(
+            gap(&fluxed, Shortfall::Missing),
+            rgb(look.missing_gap)
+        ));
+        assert!(near(gap(&fluxed, Shortfall::Bad), rgb(look.bad_gap)));
+        // With no flux decoded, nothing is known between: the bare disk.
+        let image = facts(false);
+        for shortfall in [Shortfall::None, Shortfall::Missing, Shortfall::Bad] {
+            assert!(near(gap(&image, shortfall), rgb(look.body)));
+        }
+        let all = [look.gap, look.missing_gap, look.bad_gap, look.body];
+        assert!((0..4).all(|i| (i + 1..4).all(|j| all[i] != all[j])));
+    }
+
+    /// A picture's key at `room` pixels across.
+    fn key(room: f64) -> Key {
+        Key {
+            media: Media::Fit,
+            shows: Shows::Sectors,
+            span: 80,
+            side: 0,
+            head: 0,
+            geometry: Geometry::new(Media::Fit, 80, room),
+            palette: &theme::DARK,
+            line: 2.0,
+            fits: true,
+            pure: false,
+        }
+    }
+
+    #[test]
+    fn a_ring_is_painted_again_once_gw_goes_on_from_its_track_or_stops() {
+        // gw on track 3, its line alone, and track 0 read as flux.
+        let mut progress = Progress::blank((0..8).collect(), vec![0]);
+        let flux = Facts {
+            flux: Some(spin_of(vec![0.2])),
+            ..Facts::default()
+        };
+        progress.facts.insert((0, 0), flux);
+        progress.feed("T3.0: AmigaDOS (11/11 sectors) from Raw Flux (95000 flux in 400.00ms)");
+        let on = |current: (u32, u32), running: bool| Map {
+            current: Some(current),
+            running,
+            ..map_of(&progress, Shows::Sectors)
+        };
+        let p = &theme::DARK;
+        let at_3 = stamps(&on((3, 0), true), 0, 8, p);
+        let mut painted = Painted {
+            key: key(600.0),
+            stamps: at_3.clone(),
+            at: 0.0,
+            asked: (key(600.0).geometry, 0.0),
+        };
+        assert_eq!(rings(&on((3, 0), true)).0[3], "to do");
+        // On to track 4: track 3's report did not come, and the ring says so.
+        let at_4 = stamps(&on((4, 0), true), 0, 8, p);
+        assert_eq!(
+            painted.due(&key(600.0), &at_4, 1.0, false),
+            Due::Tracks(vec![3, 4])
+        );
+        assert_eq!(rings(&on((4, 0), true)).0[3], "not known");
+        // Stopped there: so too.
+        let stopped = stamps(&on((3, 0), false), 0, 8, p);
+        assert_eq!(
+            painted.due(&key(600.0), &stopped, 1.0, false),
+            Due::Tracks(vec![3])
+        );
+        assert_eq!(rings(&on((3, 0), false)).0[3], "not known");
+        // And the legend's counts with them.
+        let to_do = |map: &Map| Drawn::of(map, 8, 1, true, p).to_do;
+        assert_eq!(to_do(&on((3, 0), true)), to_do(&on((3, 0), false)) + 1);
+        assert_eq!(painted.due(&key(600.0), &at_3, 1.0, false), Due::No);
+        // A track reported shows its report, gw on it or not: from track 0
+        // to 1, only 1 is painted again.
+        let (at_0, at_1) = (
+            stamps(&on((0, 0), true), 0, 8, p),
+            stamps(&on((1, 0), true), 0, 8, p),
+        );
+        let changed: Vec<usize> = (0..8).filter(|&c| at_0[c] != at_1[c]).collect();
+        assert_eq!(changed, [1]);
+    }
+
+    #[test]
     fn a_sides_sums_count_each_sector_as_the_legend_does() {
         // A data block found with no header, and a header with no data: two
-        // incomplete sectors, the format's two missing.
+        // incomplete sectors, the format's two missing; and a sector found
+        // with no place, which is not drawn.
         let data = Sector {
             id: Id::None,
             header: Header::None,
@@ -3727,16 +4146,33 @@ mod tests {
             data: Data::None,
             ..sector([0.5, 0.51, 0.51], None)
         };
-        let mut progress = Progress::blank(vec![0], vec![0]);
+        let unplaced = Sector {
+            at: None,
+            ..sector([0.7, 0.71, 0.8], None)
+        };
+        let mut progress = Progress::blank(vec![0, 1], vec![0]);
         let facts = Facts {
             summary: Some("IBM MFM (0/2 sectors)".into()),
-            sectors: vec![data, header],
+            sectors: vec![data, header, unplaced.clone()],
             missing: vec![Id::Ibm([0, 0, 1, 2]), Id::Ibm([0, 0, 2, 2])],
             ..Facts::default()
         };
         progress.facts.insert((0, 0), facts);
-        let (line, encodings) = sums(&progress, 0, 1);
-        assert_eq!(line, "Incomplete 2 · 2 missing");
+        // A track of sectors with no place, not known: the format's one more
+        // missing there counts, as the legend's does.
+        let unknown = Facts {
+            summary: Some("IBM MFM (1/2 sectors)".into()),
+            sectors: vec![unplaced],
+            missing: vec![Id::Ibm([1, 0, 2, 2])],
+            ..Facts::default()
+        };
+        progress.facts.insert((1, 0), unknown);
+        let map = map_of(&progress, Shows::Sectors);
+        let (shown, drawn) = rings(&map);
+        assert_eq!(shown, ["sectors", "not known"]);
+        assert_eq!((drawn.sectors, drawn.missing), ([0, 0, 0, 0, 0, 2], 3));
+        let (line, encodings) = sums(&map, &drawn, 2, true, 0, &theme::DARK);
+        assert_eq!(line, "Incomplete 2 · 3 missing");
         assert_eq!(encodings, ["IBM MFM"]);
     }
 
@@ -3785,6 +4221,8 @@ mod tests {
         assert_eq!(bytes(528.0), "33 bytes");
         assert_eq!(bytes(16.0), "1 byte");
         assert_eq!(bytes(55_239.0), "3,452 bytes 7 cells");
+        assert_eq!(bytes(17.0), "1 byte 1 cell");
+        assert_eq!(bytes(-33.0), "2 bytes 1 cell");
         let layout = |after| Layout {
             from_index: 2528.0,
             after,
@@ -3805,6 +4243,19 @@ mod tests {
             "158 bytes from the index · into R8 by 2 bytes"
         );
         assert_eq!(layout_line(&layout(None)), "158 bytes from the index");
+        // Where the CRC of what lay before fails, its ID is not known for sure.
+        let r5 = Id::Ibm([0, 0, 5, 2]);
+        let (sector, header) = (Before::Sector(r5, false), Before::Header(r5, false));
+        let cases = [
+            (992.0, sector, "62 bytes after R5 (bad header)"),
+            (-32.0, sector, "into R5 (bad header) by 2 bytes"),
+            (992.0, header, "62 bytes after R5's bad header"),
+            (-32.0, header, "into R5's bad header by 2 bytes"),
+        ];
+        for (cells, before, said) in cases {
+            let line = layout_line(&layout(Some((cells, before))));
+            assert_eq!(line, format!("158 bytes from the index · {said}"));
+        }
         let turns = |seen: Vec<Seen>, reads| Turns { seen, reads };
         let line = |t: Turns| turns_line(&t).unwrap();
         assert_eq!(
@@ -3842,8 +4293,26 @@ mod tests {
             at(0.7, 7, Header::Bad),
             data,
         ];
-        assert_eq!(order(&sectors).as_deref(), Some("1 7 7 7"));
+        // The bad header's R is not known for sure.
+        assert_eq!(order(&sectors).as_deref(), Some("1 7 7 ?"));
         assert_eq!(repeated(&sectors), ["R7 ×2"]);
+        // Two IDs repeated that share their R: each in full.
+        let ided = |share: f32, id: [u8; 4]| Sector {
+            id: Id::Ibm(id),
+            ..at(share, 0, Header::Good)
+        };
+        let twice = [
+            ided(0.1, [0, 0, 3, 2]),
+            ided(0.2, [1, 0, 3, 2]),
+            ided(0.3, [0, 0, 3, 2]),
+            ided(0.4, [1, 0, 3, 2]),
+            ided(0.5, [0, 0, 7, 2]),
+            ided(0.6, [0, 0, 7, 2]),
+        ];
+        assert_eq!(
+            repeated(&twice),
+            ["C0 H0 R3 N2 ×2", "C1 H0 R3 N2 ×2", "R7 ×2"]
+        );
         let said = |s: &Sector| -> Vec<String> {
             sector_lines(s, &sectors)
                 .into_iter()
@@ -3868,11 +4337,91 @@ mod tests {
         assert_eq!(order(&[sectors[0].clone(), unplaced]), None);
     }
 
-    /// The pixel at `x`, `y` of `canvas`'s picture as the mean of `n` by `n`
-    /// points over it, premultiplied: each the colour of what lies there,
-    /// the rim, the hub, a fitted track's line, its row's piece there or a
-    /// line where two sectors meet, else the bare disk; outside the disk,
-    /// nothing.
+    #[test]
+    fn a_sector_is_said_to_pass_the_checks_gw_made_of_it_and_no_more() {
+        let said = |s: &Sector| -> Vec<String> {
+            let lines = sector_lines(s, std::slice::from_ref(s));
+            lines.into_iter().map(|(l, _)| l).collect()
+        };
+        // gw adds a sector by number only once its checks pass.
+        let numbered = Sector {
+            id: Id::Number(3),
+            bytes: vec![1, 2],
+            ..sector([0.1, 0.15, 0.2], None)
+        };
+        assert_eq!(said(&numbered)[..2], ["Sector 3 · 2 bytes", "Checks OK"]);
+        let empty = Sector {
+            data: Data::Empty(0xe5),
+            ..numbered.clone()
+        };
+        assert_eq!(said(&empty)[1], "Checks OK, all E5");
+        // An IBM-style sector's header and data apart.
+        let ibm = Sector {
+            id: Id::Ibm([0, 0, 1, 2]),
+            mark: Some(0xfb),
+            ..numbered
+        };
+        assert_eq!(said(&ibm)[1], "Header OK · Data OK · Mark FB");
+        // A header alone: no data, so no size; N is in its ID.
+        let alone = Sector {
+            id: Id::Ibm([0, 0, 5, 2]),
+            data: Data::None,
+            bytes: Vec::new(),
+            ..sector([0.5, 0.52, 0.52], None)
+        };
+        assert_eq!(
+            said(&alone)[..2],
+            ["Sector C0 H0 R5 N2", "Header OK · No data"]
+        );
+        // Data whose bytes were not reported: what its header calls for.
+        let unreported = Sector {
+            id: Id::Ibm([0, 0, 6, 2]),
+            ..sector([0.6, 0.62, 0.7], Some(0.61))
+        };
+        assert_eq!(said(&unreported)[0], "Sector C0 H0 R6 N2 · 512 bytes");
+    }
+
+    #[test]
+    fn an_id_field_is_drawn_only_as_far_as_gw_gives_its_end() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let w = 1.0 / 4096.0;
+        let at = |row: &Row, share: f64| row.sample(share, Shadow::square(w), w, [9.0; 3]);
+        // A sector by number: gw gives no end to an ID field, so none shows.
+        let numbered = sector([0.1, 0.15, 0.2], None);
+        let row = row_of(std::slice::from_ref(&numbered));
+        assert!(near(at(&row, 0.102), rgb(look.good)));
+        // An IBM-style sector's, to where gw says it ends.
+        let ibm = Sector {
+            id: Id::Ibm([0, 0, 1, 2]),
+            ..sector([0.1, 0.15, 0.2], Some(0.11))
+        };
+        let row = row_of(std::slice::from_ref(&ibm));
+        assert!(near(at(&row, 0.105), rgb(look.id(look.good))));
+        assert!(near(at(&row, 0.13), rgb(look.good)));
+        // A header alone, all ID field.
+        let alone = Sector {
+            id: Id::Ibm([0, 0, 2, 2]),
+            data: Data::None,
+            ..sector([0.5, 0.52, 0.52], None)
+        };
+        let row = row_of(std::slice::from_ref(&alone));
+        assert!(near(at(&row, 0.51), rgb(look.id(look.alone))));
+        // The legend names an ID field only where one is drawn: a header
+        // alone's is the incomplete's.
+        let listed = |s: &Sector| {
+            let mut progress = Progress::blank(vec![0], vec![0]);
+            let facts = Facts {
+                summary: Some("IBM MFM (1/1 sectors)".into()),
+                sectors: vec![s.clone()],
+                ..Facts::default()
+            };
+            progress.facts.insert((0, 0), facts);
+            rings(&map_of(&progress, Shows::Sectors)).1.id_fields
+        };
+        assert_eq!([&numbered, &ibm, &alone].map(listed), [false, true, false]);
+    }
+
+    /// Pixel (x, y) as the mean of n×n points over it, premultiplied.
     fn supersampled(canvas: &Canvas, x: usize, y: usize, n: usize) -> [f64; 4] {
         let g = &canvas.geometry;
         let mut sum = [0.0; 4];
@@ -3989,8 +4538,7 @@ mod tests {
         };
         let rows = vec![row; span as usize];
         let canvas = Canvas::new(&d, &look, &rows, 1.0);
-        // Away from the tracks' edges, whose corners with the line a pixel
-        // takes as each alone.
+        // Pixels over a pixel from any track's edge.
         let clear = |&(x, y): &(usize, usize)| {
             let c = canvas.centre;
             let r = (x as f64 + 0.5 - c).hypot(y as f64 + 0.5 - c);
@@ -4085,42 +4633,48 @@ mod tests {
                 ..disk(0, media)
             };
             let before = tracks_of(span, 0.0, 7, flux);
-            let mut after = tracks_of(span, 0.013, 3, flux);
-            // Tracks 0, 17 and 18 and the last change; the rest are as they were.
-            let changed = [0usize, 17, 18, span as usize - 1];
-            for c in 0..span as usize {
-                if !changed.contains(&c) {
-                    after[c] = before[c].clone();
+            let n = geometry.pixels;
+            // Tracks 0, 17 and 18 and the last change, the rest as they were;
+            // then two inner tracks alone.
+            let inner = [40usize, 41];
+            for changed in [&[0usize, 17, 18, span as usize - 1][..], &inner] {
+                let mut after = tracks_of(span, 0.013, 3, flux);
+                for c in 0..span as usize {
+                    if !changed.contains(&c) {
+                        after[c] = before[c].clone();
+                    }
+                }
+                let mut dirty = vec![false; span as usize];
+                changed.iter().for_each(|&c| dirty[c] = true);
+                let size = [n; 2];
+                let mut image = egui::ColorImage::filled(size, Color32::TRANSPARENT);
+                Canvas::new(&d, &look, &before, line).paint(&mut image, None);
+                let old = image.clone();
+                let rows = Canvas::new(&d, &look, &after, line).paint(&mut image, Some(&dirty));
+                let mut whole = egui::ColorImage::filled(size, Color32::TRANSPARENT);
+                Canvas::new(&d, &look, &after, line).paint(&mut whole, None);
+                let differ = |a: &egui::ColorImage| {
+                    (a.pixels.iter().zip(&whole.pixels))
+                        .filter(|(a, b)| a != b)
+                        .count()
+                };
+                assert_eq!(differ(&image), 0, "{media:?} at {room} px");
+                // The texture takes only the rows painted again, over the
+                // picture it had: the picture painted whole.
+                let mut taken = old;
+                let painted = rows.start * n..rows.end * n;
+                taken.pixels[painted.clone()].copy_from_slice(&image.pixels[painted]);
+                assert_eq!(differ(&taken), 0, "{media:?} at {room} px, rows {rows:?}");
+                if changed == inner {
+                    assert!(rows.start > 0 && rows.end < n, "{rows:?} of {n}");
                 }
             }
-            let mut dirty = vec![false; span as usize];
-            changed.iter().for_each(|&c| dirty[c] = true);
-            let size = [geometry.pixels; 2];
-            let mut image = egui::ColorImage::filled(size, Color32::TRANSPARENT);
-            Canvas::new(&d, &look, &before, line).paint(&mut image, None);
-            Canvas::new(&d, &look, &after, line).paint(&mut image, Some(&dirty));
-            let mut whole = egui::ColorImage::filled(size, Color32::TRANSPARENT);
-            Canvas::new(&d, &look, &after, line).paint(&mut whole, None);
-            let differ = (image.pixels.iter().zip(&whole.pixels)).filter(|(a, b)| a != b);
-            assert_eq!(differ.count(), 0, "{media:?} at {room} px");
         }
     }
 
     #[test]
     fn a_picture_waits_for_its_size_to_hold_while_it_changes() {
-        let key = |room: f64| Key {
-            media: Media::Fit,
-            shows: Shows::Sectors,
-            span: 80,
-            side: 0,
-            head: 0,
-            geometry: Geometry::new(Media::Fit, 80, room),
-            palette: &theme::DARK,
-            line: 2.0,
-            fits: true,
-            pure: false,
-        };
-        let stamps = vec![(None, None, true, None); 80];
+        let stamps = vec![(None, None, true, None, false); 80];
         let painted = |room: f64, at: f64| Painted {
             key: key(room),
             stamps: stamps.clone(),
@@ -4150,7 +4704,7 @@ mod tests {
         assert_eq!(p.due(&key(640.0), &stamps, 2.02, false), Due::No);
         // A track reported anew: painted again over it, once REPAINT is up.
         let mut reported = stamps.clone();
-        reported[5] = (None, Some(9), true, None);
+        reported[5] = (None, Some(9), true, None, false);
         p = painted(640.0, 3.0);
         assert!(matches!(
             p.due(&key(640.0), &reported, 3.05, false),
@@ -4165,6 +4719,185 @@ mod tests {
         light.palette = &theme::LIGHT;
         let every = Due::All((0..80).collect());
         assert_eq!(p.due(&light, &stamps, 3.2, false), every);
+    }
+
+    #[test]
+    fn equal_pieces_each_lie_their_share_of_the_revolution() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let colours = [look.good, look.bad, look.flux, look.alone];
+        let mut row = Row::pieces(colours.into_iter());
+        row.finish();
+        let w = 1.0 / 1024.0;
+        let at = |share: f64| row.sample(share, Shadow::square(w), w, [9.0; 3]);
+        for (share, i) in [(0.1, 0), (0.3, 1), (0.6, 2), (0.9, 3)] {
+            assert_eq!(row.piece(share), i, "{share}");
+            assert!(near(at(share), rgb(colours[i])), "{share}");
+        }
+        // At each edge, half of either piece; over the index, the last and
+        // the first.
+        for (edge, a, b) in [(0.25, 0, 1), (0.5, 1, 2), (0.75, 2, 3), (0.0, 3, 0)] {
+            let half = mix(rgb(colours[a]), rgb(colours[b]), 0.5);
+            assert!(near(at(edge), half), "{edge}: {:?}", at(edge));
+        }
+        assert_eq!([0.25, 0.5, 0.75].map(|t| row.piece(t)), [1, 2, 3]);
+        assert_eq!((row.bounds(0), row.bounds(3)), ((0.0, 0.25), (0.75, 1.0)));
+    }
+
+    fn spin_of(revs: Vec<f64>) -> Spin {
+        Spin {
+            period: 0.2,
+            revs,
+            per_rev: 4.0,
+            bins: vec![1.0; 4],
+            intervals: None,
+        }
+    }
+
+    #[test]
+    fn a_tracks_flux_is_said_to_be_of_what_it_is_and_its_turns_as_measured() {
+        assert_eq!(Origin::of(false, None).name(), None);
+        assert_eq!(Origin::of(true, None).name(), Some("From the image"));
+        let named = |source| Origin::of(false, Some(source)).name();
+        assert_eq!(named(Source::Verify), Some("Read back to verify"));
+        assert_eq!(named(Source::Written), Some("As written"));
+        assert_eq!(named(Source::Image), Some("As written, from the image"));
+        // Each revolution read whole, and the rate of their mean.
+        let read = Spin {
+            period: 0.20005,
+            ..spin_of(vec![0.2, 0.2001])
+        };
+        assert_eq!(
+            spin_line(&read, Origin::Read),
+            "200.00, 200.10 ms · 299.93 rpm"
+        );
+        // None read whole: gw's measure of the drive; written, the format's.
+        let none = spin_of(Vec::new());
+        assert_eq!(
+            spin_line(&none, Origin::Read),
+            "Drive: 200.00 ms · 300.00 rpm"
+        );
+        assert_eq!(
+            spin_line(&none, Origin::Verify),
+            "Drive: 200.00 ms · 300.00 rpm"
+        );
+        assert_eq!(spin_line(&none, Origin::Image), "200.00 ms · 300.00 rpm");
+        assert_eq!(
+            spin_line(&spin_of(vec![0.2]), Origin::Written),
+            "Format: 200.00 ms · 300.00 rpm"
+        );
+    }
+
+    #[test]
+    fn the_pointer_is_timed_from_the_index_in_each_revolution_read() {
+        assert_eq!(from_index(&spin_of(vec![0.2]), 0.25), "50.00");
+        // The same in each to 0.01 ms; else from the least to the most.
+        assert_eq!(from_index(&spin_of(vec![0.2, 0.200004]), 0.25), "50.00");
+        assert_eq!(
+            from_index(&spin_of(vec![0.2004, 0.2, 0.2002]), 0.25),
+            "50.00–50.10"
+        );
+        // None read whole: by gw's measure of the drive.
+        assert_eq!(from_index(&spin_of(Vec::new()), 0.5), "100.00");
+        // The flux there, as Spin::relative has it.
+        let uneven = Spin {
+            per_rev: 10.0,
+            bins: vec![1.0, 2.0, 3.0, 4.0],
+            ..spin_of(vec![0.2])
+        };
+        let relative = uneven.relative();
+        for (i, share) in [0.1, 0.3, 0.6, 0.9].into_iter().enumerate() {
+            assert_eq!(relative_at(&uneven, share), relative[i]);
+        }
+        assert_eq!(relative_at(&uneven, 1.0), relative[3]);
+        let none = Spin {
+            per_rev: 0.0,
+            ..uneven
+        };
+        assert_eq!(relative_at(&none, 0.5), 0.0);
+    }
+
+    #[test]
+    fn bytes_are_dumped_sixteen_a_row_after_their_offset_and_then_as_ascii() {
+        let bytes: Vec<u8> = (0x1e..0x32).collect();
+        let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>();
+        let rows = [
+            format!(
+                "0100  {:<47}  {}",
+                hex(&bytes[..16]).join(" "),
+                "..\u{20}!\"#$%&'()*+,-"
+            ),
+            format!("0110  {:<47}  {}", hex(&bytes[16..]).join(" "), "./01"),
+        ];
+        assert_eq!(dump(&bytes, usize::MAX, 0x100), rows.join("\n"));
+        assert_eq!(dump(&bytes, 1, 0x100), rows[0]);
+        // As many digits as the last offset needs.
+        assert!(dump(&bytes, 1, 0xfff0).starts_with("0FFF0  1E 1F"));
+        assert_eq!(dump(&[], usize::MAX, 0), "");
+        // As the sector window keeps them: row by row, the widest's length.
+        let dumped = Dumped::of(&bytes, 0x100);
+        let kept: Vec<&str> = dumped
+            .rows
+            .iter()
+            .map(|r| &dumped.text[r.clone()])
+            .collect();
+        assert_eq!(kept, rows);
+        assert_eq!(dumped.widest, rows[0].chars().count());
+        assert!(Dumped::of(&[], 0).rows.is_empty());
+    }
+
+    #[test]
+    fn the_flux_charts_scale_and_its_count_of_longer_say_only_what_holds() {
+        // Rounded down at what is shown: each counted as long or longer.
+        assert_eq!(top_text(20.0188e-6), "20.01");
+        assert_eq!(top_text(18.75e-6), "18.75");
+        assert_eq!(top_text(20e-6), "20");
+        // An axis to 20 µs, not 22, for bins whose end floating point puts a
+        // hair past it.
+        assert_eq!(axis(20.000000000000004), (20.0, 2.0));
+        assert_eq!(axis(20.5), (22.0, 2.0));
+        assert_eq!(axis(12.000000000000002), (12.0, 1.0));
+        assert_eq!(axis(0.4), (1.0, 1.0));
+    }
+
+    /// The room `map`'s disks are laid out in, in a window `size` points.
+    fn laid(map: &Map, size: egui::Vec2) -> Arc<Room> {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        let mut room = None;
+        ctx.run_ui(input, |ui| room = Room::of(ui, map))
+            .drop_without_applying_deltas();
+        room.expect("cylinders to show")
+    }
+
+    #[test]
+    fn the_legend_names_the_index_only_where_a_disk_has_room_for_its_mark() {
+        let mut progress = Progress::blank((0..80).collect(), vec![0]);
+        let facts = Facts {
+            summary: Some("IBM MFM (1/1 sectors)".into()),
+            sectors: vec![sector([0.1, 0.12, 0.2], None)],
+            ..Facts::default()
+        };
+        progress.facts.insert((0, 0), facts);
+        let map = map_of(&progress, Shows::Sectors);
+        let indexed = |room: &Room| {
+            let entries = room.legend.entries.iter();
+            entries
+                .filter(|e| matches!(e.mark, Some(Mark::Index(_))))
+                .count()
+        };
+        for (size, notched) in [(vec2(120.0, 200.0), false), (vec2(800.0, 800.0), true)] {
+            let room = laid(&map, size);
+            assert_eq!(room.geometry.notch(0, room.line).is_some(), notched);
+            assert_eq!(indexed(&room), usize::from(notched), "{size:?}");
+            // Its marks as the tracks show them at that size.
+            assert_eq!(room.look.covered, room.geometry.covered(room.line));
+            let good = room.legend.entries.first().and_then(|e| e.mark);
+            let want = room.look.seen(room.look.good);
+            assert!(matches!(good, Some(Mark::Swatch(c)) if c == want));
+        }
     }
 
     #[test]
