@@ -68,7 +68,8 @@ impl Shows {
 }
 
 /// What the drawer analyses: the disk, or the image the job makes or takes
-/// its tracks from.
+/// its tracks from; of a conversion, which has no disk, its input or its
+/// output.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Analysis {
     #[default]

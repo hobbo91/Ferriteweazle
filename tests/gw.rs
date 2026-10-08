@@ -1617,7 +1617,7 @@ fn before_a_job_gw_opens_the_image_a_write_or_a_conversion_is_to_take_its_tracks
     assert!(none.contains("out_file"), "{none}");
     let alone = opened(&["convert", &path(&adf), "out.scp"], &adf).unwrap();
     assert!(alone.layout.is_some());
-    // An SCP's type names no format, as an ADF's does: an IMG, which names
+    // An SCP's type names no format, unlike an ADF's: an IMG, which names
     // none of its own, opens only with one.
     let img = dir.join("Disk.img");
     std::fs::write(&img, &bytes).unwrap();

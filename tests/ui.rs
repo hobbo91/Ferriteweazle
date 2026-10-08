@@ -5157,7 +5157,7 @@ fn before_a_write_image_analysis_shows_the_file_it_is_to_take_its_tracks_from() 
     assert_eq!(
         w.get_all_by_label("No disk written yet").count(),
         2,
-        "the status pane's line, and the tab's"
+        "the status pane's line, and the greyed view's"
     );
     // The scratch's first lost sector, gw's filler in the file, which gw
     // would write as the sector's data.
@@ -5265,7 +5265,7 @@ fn going_from_tracks_to_a_map_leaves_the_drawer_as_tall_as_it_was() {
 }
 
 #[test]
-fn before_a_conversion_analyse_shows_its_input_with_no_output_named() {
+fn before_a_conversion_analyse_shows_its_input_and_greys_the_output() {
     let mut settings = Settings {
         page: Page::Command("convert".into()),
         ..chosen()
@@ -5291,7 +5291,7 @@ fn before_a_conversion_analyse_shows_its_input_with_no_output_named() {
     assert_eq!(
         w.get_all_by_label("No image converted yet").count(),
         2,
-        "the status pane's line, and the tab's"
+        "the status pane's line, and the greyed view's"
     );
 }
 
@@ -5318,12 +5318,60 @@ fn a_conversions_input_and_output_each_show_as_gw_lays_them_out() {
         .click();
     w.run();
     w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    // Another input named: the output is still the conversion's.
+    set(
+        &mut app_mut(&mut w).settings,
+        "convert",
+        "in_file",
+        "/d/Other.scp",
+    );
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+    let input = w.get_by_role_and_label(Role::Button, "Image analysis (Input)");
+    assert!(input.accesskit_node().is_disabled());
+}
+
+#[test]
+fn a_conversions_output_stays_chosen_while_gw_opens_it() {
+    // gw has opened the input, laid out, and not yet the output.
+    let mut started = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    started.ended = None;
+    started.progress.source = Some(scratched_adf());
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("convert"), Some(started));
+    // Stepped, not run: a running job keeps the window repainting.
+    w.run_steps(4);
+    w.get_by_label("gw is opening the file.");
+    assert_eq!(app(&w).settings.analysis, Analysis::Image);
+    assert!(
+        w.query_by_label_contains("As gw read it").is_none(),
+        "not the input meanwhile"
+    );
+}
+
+#[test]
+fn a_running_job_shows_as_its_own_page_would_on_any_page() {
+    // A read, seen from Convert: its disk, not a conversion's input.
+    let mut read = Job::replay("read", "Reading c=0-79:h=0-1 revs=2");
+    read.ended = None;
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("convert"), Some(read));
+    w.run_steps(4);
+    w.get_by_role_and_label(Role::Button, "Disk analysis");
+    assert!(w.query_by_label("Image analysis (Input)").is_none());
+    // A conversion, seen from Read: its input and its output.
+    let converting = reaching_41("convert", SCRATCHED);
+    let builder = Harness::builder().with_size(DEFAULT);
+    let mut w = start(builder, image_open("read"), Some(converting));
+    w.run_steps(4);
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)");
+    assert!(w.query_by_label("Disk analysis").is_none());
 }
 
 #[test]
 fn a_conversions_input_kept_as_tracks_shows_them_as_gw_takes_them() {
     let tracks_later = "Not mapped: .scp holds flux, not sectors. \
-        Its tracks show as gw converts or detects them.";
+        Its tracks show as gw converts it or Detect reads it.";
     // Before any job, Analyse says when they show.
     let mut settings = Settings {
         page: Page::Command("convert".into()),
@@ -5346,7 +5394,7 @@ fn a_conversions_input_kept_as_tracks_shows_them_as_gw_takes_them() {
     settings.drawer = Some(Drawer::Analyse);
     let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
     w.get_by_label("Disk map");
-    // Another input named: not its tracks.
+    // Another input named: nothing to show, so Analyse shuts and says why.
     set(
         &mut app_mut(&mut w).settings,
         "convert",
@@ -5355,6 +5403,11 @@ fn a_conversions_input_kept_as_tracks_shows_them_as_gw_takes_them() {
     );
     w.run();
     assert!(w.query_by_label("Disk map").is_none());
+    assert_eq!(app_mut(&mut w).settings.drawer, None);
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
     w.get_by_label(tracks_later);
 }
 
@@ -5371,7 +5424,6 @@ fn right_click(w: &mut Window, at: egui::Pos2) {
     w.run();
 }
 
-/// What the last frame put on the clipboard, if anything.
 /// Pulls the Analyse drawer down to no height at all, so that it takes its
 /// least: its id.
 fn least_drawer(w: &mut Window) -> egui::Id {
