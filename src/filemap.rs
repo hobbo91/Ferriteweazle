@@ -103,7 +103,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
             true => "Not as laid out: gw puts the input's own tracks in it.",
             false => "Not as laid out: gw wrote the file another way.",
         };
-        ui.label(RichText::new(text).color(p.partial));
+        ui.label(RichText::new(text).color(p.partial_text));
         return;
     };
     if placed.is_empty() {

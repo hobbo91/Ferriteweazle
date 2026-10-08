@@ -1583,7 +1583,7 @@ impl App {
                     } else if let Some(port) = denied.filter(|_| info.is_none()) {
                         // gw info says only that it found none; the port list says why.
                         let text = format!("No access to {}.", short_port(&port.device));
-                        ui.label(RichText::new(text).small().color(p.bad));
+                        ui.label(RichText::new(text).small().color(p.bad_text));
                         let link = egui::Link::new(RichText::new("Grant access…").small());
                         if ui
                             .add(link)
@@ -1595,7 +1595,7 @@ impl App {
                     } else if info.is_none() {
                         // On the line the firmware takes once the device answers.
                         if let Some(why) = &self.probe_failed {
-                            ui.label(RichText::new(why).small().color(p.bad));
+                            ui.label(RichText::new(why).small().color(p.bad_text));
                         }
                         let link = egui::Link::new(RichText::new("Get info").small());
                         ask |= ui
@@ -1605,7 +1605,7 @@ impl App {
                             .clicked();
                     }
                 } else if let Some(why) = self.service.ports_error() {
-                    ui.label(RichText::new(why).small().color(p.bad));
+                    ui.label(RichText::new(why).small().color(p.bad_text));
                 }
                 ui.add_space(4.0);
                 let shown = match &found {
@@ -2580,14 +2580,14 @@ impl App {
             error_box(ui, p.bad, |ui| match &refused {
                 Some(refused) => install = access(ui, refused),
                 None => {
-                    ui.label(RichText::new(e).color(p.bad));
+                    ui.label(RichText::new(e).color(p.bad_text));
                 }
             });
         }
         let warnings = job.progress.warnings.iter().map(String::as_str);
         for note in warnings.chain(left_behind(job)) {
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(note).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(note).color(p.partial_text)).wrap());
         }
         ui.add_space(8.0);
         let (budget, room) = room(ui);
@@ -3011,7 +3011,7 @@ impl App {
         });
         let args = job.map_or(&[][..], |j| &j.args[..]);
         if let Some(note) = undrawn(args).filter(|_| tracks) {
-            ui.add(egui::Label::new(RichText::new(note).small().color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(note).small().color(p.partial_text)).wrap());
         }
         ui.add_space(6.0);
         // The sides as the job took them, whatever its page says now.
@@ -3098,7 +3098,7 @@ impl App {
                     ui.memory_mut(|m| m.surrender_focus(id));
                 }
                 if let Some(e) = &cli.error {
-                    let e = RichText::new(e).small().color(p.bad);
+                    let e = RichText::new(e).small().color(p.bad_text);
                     ui.add(egui::Label::new(e).truncate());
                 }
             });
@@ -3323,10 +3323,10 @@ impl App {
                     });
                 }
                 (None, _) => {
-                    ui.label(RichText::new(NOT_FOUND).color(p.bad));
+                    ui.label(RichText::new(NOT_FOUND).color(p.bad_text));
                 }
                 (_, load) => {
-                    ui.label(RichText::new(load.error().unwrap_or(NOT_FOUND)).color(p.bad));
+                    ui.label(RichText::new(load.error().unwrap_or(NOT_FOUND)).color(p.bad_text));
                 }
             }
             ui.add_space(4.0);
@@ -3649,7 +3649,7 @@ impl App {
                     dialog_heading(ui, &heading);
                     if let Some(failed) = failed {
                         let text = format!("Disk {failed} failed. The Log says why.");
-                        ui.label(RichText::new(text).color(p.bad));
+                        ui.label(RichText::new(text).color(p.bad_text));
                     }
                     if disk.is_some() {
                         let first = self.session.as_ref().is_some_and(|s| s.next == 0);
@@ -3698,7 +3698,7 @@ impl App {
                                 ),
                                 false => format!("{file} exists. Reading replaces it."),
                             };
-                            ui.label(RichText::new(text).small().color(p.partial));
+                            ui.label(RichText::new(text).small().color(p.partial_text));
                         }
                         named = Some(chosen);
                     }
@@ -3775,7 +3775,7 @@ impl App {
                     if exists {
                         let p = theme::palette(ui);
                         let text = "A preset of this name exists. Saving replaces it.";
-                        ui.label(RichText::new(text).small().color(p.partial));
+                        ui.label(RichText::new(text).small().color(p.partial_text));
                     }
                     ui.add_space(6.0);
                     form::text_box_with(
@@ -4405,7 +4405,7 @@ fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> 
         || line.contains(": error:")
         || before == Some("** FATAL ERROR:")
     {
-        Some(p.bad)
+        Some(p.bad_text)
     } else if ["WARNING", "Giving up", "Retry #"]
         .iter()
         .any(|w| line.contains(w))
@@ -4413,7 +4413,7 @@ fn log_colour(line: &str, before: Option<&str>, p: &Palette) -> Option<Color32> 
             .iter()
             .any(|u| line.starts_with(u))
     {
-        Some(p.partial)
+        Some(p.partial_text)
     } else {
         None
     }
@@ -4903,11 +4903,11 @@ fn setting(ui: &mut Ui, on: &mut bool, label: &str, tip: &str) {
 
 fn state(job: &Job, p: &Palette) -> (&'static str, Color32) {
     match job.outcome() {
-        None if job.stopping() => ("Stopping", p.partial),
+        None if job.stopping() => ("Stopping", p.partial_text),
         None => ("Running", p.accent),
-        Some(Outcome::Succeeded) => ("Done", p.good),
-        Some(Outcome::Failed) => ("Failed", p.bad),
-        Some(Outcome::Stopped) => ("Stopped", p.partial),
+        Some(Outcome::Succeeded) => ("Done", p.good_text),
+        Some(Outcome::Failed) => ("Failed", p.bad_text),
+        Some(Outcome::Stopped) => ("Stopped", p.partial_text),
     }
 }
 
@@ -4994,8 +4994,8 @@ fn result(ui: &mut Ui, job: &Job, refused: Option<Refused>) -> (bool, Option<Str
             // Orange for a job that worked all the same, as gw info does
             // when only its check for newer firmware fails.
             let colour = match job.outcome() {
-                Some(Outcome::Succeeded) => p.partial,
-                _ => p.bad,
+                Some(Outcome::Succeeded) => p.partial_text,
+                _ => p.bad_text,
             };
             error_box(ui, colour, |ui| {
                 ui.label(RichText::new(e).color(colour));
@@ -5043,7 +5043,7 @@ const NO_ACCESS: &str = "This account has no permission to open the port. Grease
 fn access(ui: &mut Ui, refused: &Refused) -> bool {
     let p = theme::palette(ui);
     let heading = format!("No access to {}", refused.port);
-    ui.label(RichText::new(heading).strong().color(p.bad));
+    ui.label(RichText::new(heading).strong().color(p.bad_text));
     ui.add(egui::Label::new(NO_ACCESS).wrap());
     ui.add_space(4.0);
     let running = matches!(refused.install, RuleInstall::Running(_));
@@ -5067,10 +5067,10 @@ fn access(ui: &mut Ui, refused: &Refused) -> bool {
             });
         }
         RuleInstall::Done(Ok(())) => {
-            ui.label(RichText::new("Installed, and udev has applied it.").color(p.good));
+            ui.label(RichText::new("Installed, and udev has applied it.").color(p.good_text));
         }
         RuleInstall::Done(Err(e)) => {
-            ui.add(egui::Label::new(RichText::new(e).color(p.partial)).wrap());
+            ui.add(egui::Label::new(RichText::new(e).color(p.partial_text)).wrap());
         }
     }
     ui.add_space(4.0);
@@ -5741,7 +5741,7 @@ fn nav_item(ui: &mut Ui, text: &str, note: Option<&str>, selected: bool) -> egui
     let p = theme::palette(ui);
     let (fill, colour) = match (selected, p.classic) {
         (true, true) => (p.accent, p.on_accent),
-        (true, false) => (p.accent.gamma_multiply(0.16), p.accent),
+        (true, false) => (p.accent.gamma_multiply(0.16), p.strong),
         (false, _) if response.hovered() => (p.hover, p.text),
         (false, _) => (Color32::TRANSPARENT, p.text),
     };
@@ -7277,6 +7277,56 @@ mod tests {
         assert!(app.session.is_none());
         app.dialogs(&ctx);
         assert!(app.quitting, "no Insert disk 2 of 2");
+    }
+
+    #[test]
+    fn a_dialog_button_in_the_accent_is_its_palettes_button_colours() {
+        let named = theme::CHOICES
+            .iter()
+            .filter(|c| c.0 != theme::Choice::System);
+        for &(choice, ..) in named {
+            let (dark, light, shown) = theme::palettes(choice);
+            let p = match shown {
+                egui::ThemePreference::Dark => dark,
+                _ => light,
+            };
+            let (fill, ink) = p.accent_button();
+            let mut app = offline();
+            app.dialog = Some(Dialog::NextDisk {
+                command: "read".into(),
+                disk: Some(2),
+                total: 2,
+                failed: None,
+                image: None,
+                name: Some("Disk 2".into()),
+                default: "Disk 2".into(),
+            });
+            let mut w = window(app);
+            theme::apply(&w.ctx, choice);
+            w.run_steps(2);
+            let name = format!("{} 2", run_label("read"));
+            let role = egui::accesskit::Role::Button;
+            let named: Vec<egui::Rect> = w
+                .get_all_by_role_and_label(role, &name)
+                .map(|n| n.rect())
+                .collect();
+            let shapes = &w.output().shapes;
+            let filled = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(r) => {
+                    r.fill == fill && named.iter().any(|b| r.rect.contains_rect(b.shrink(1.0)))
+                }
+                _ => false,
+            });
+            assert!(filled, "{choice:?}");
+            let text = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    t.galley.text() == name
+                        && t.galley.job.sections.iter().all(|s| s.format.color == ink)
+                }
+                _ => false,
+            });
+            assert!(text, "{choice:?}: its text");
+        }
     }
 
     #[test]

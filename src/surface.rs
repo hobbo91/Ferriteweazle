@@ -3438,7 +3438,7 @@ fn dial(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<usize> {
                 .map_or_else(String::new, |s| short_id(&s.id)),
             p.strong,
         ),
-        (None, Open::Missing { id, .. }) => (short_id(&id), p.partial),
+        (None, Open::Missing { id, .. }) => (short_id(&id), p.partial_text),
     };
     let font = FontId::proportional(DIAL_NAME);
     painter.text(centre, Align2::CENTER_CENTER, name, font, colour);
@@ -4159,7 +4159,7 @@ impl Legend {
         if let Some((text, galley)) = &mut self.holds {
             let p = theme::palette(ui);
             let font = egui::TextStyle::Body.resolve(ui.style());
-            let laid = ui.painter().layout(text.clone(), font, p.bad, width);
+            let laid = ui.painter().layout(text.clone(), font, p.bad_text, width);
             self.height = LEGEND_GAP + laid.size().y;
             self.width = laid.size().x;
             *galley = Some(laid);

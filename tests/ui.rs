@@ -3867,17 +3867,57 @@ fn the_vintage_themes_links_are_blue_and_its_selections_stay_slate() {
         _ => false,
     };
     assert!(w.output().shapes.iter().any(slate));
-    // Every other theme's links are its accent, as before.
+    // Classic's are its teal deepened, to read on the grey; every other
+    // theme's are its accent.
+    assert_ne!(theme::CLASSIC.link(), theme::CLASSIC.accent);
     for other in [
         &theme::LIGHT,
         &theme::DARK,
-        &theme::CLASSIC,
         &theme::BLUE,
         &theme::GREASEWEAZLE,
         &theme::PCB_GREEN,
     ] {
         assert_eq!(other.link(), other.accent);
     }
+}
+
+#[test]
+fn a_chosen_choice_says_so_in_the_strong_text_or_classics_white_on_its_accent() {
+    let named = theme::CHOICES.iter().filter(|c| c.0 != Choice::System);
+    for &(choice, name, ..) in named {
+        let w = settings_from(choice, Harness::builder());
+        // Blue is Classic in the accent it starts in, chosen as Classic.
+        let name = if choice == Choice::Blue {
+            "Classic"
+        } else {
+            name
+        };
+        let p = palette_of(&w);
+        let ink = if p.classic { p.on_accent } else { p.strong };
+        // A button's plain text takes the colour its shape falls back on.
+        let chosen = w.output().shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => t.galley.text() == name && t.fallback_color == ink,
+            _ => false,
+        });
+        assert!(chosen, "{choice:?}");
+    }
+}
+
+/// The palette the window shows, as theme::palette() finds it: by its links' colour.
+fn palette_of(w: &Window) -> &'static theme::Palette {
+    let link = w.ctx.style_of(w.ctx.theme()).visuals.hyperlink_color;
+    let all = [
+        &theme::LIGHT,
+        &theme::DARK,
+        &theme::GREASEWEAZLE,
+        &theme::PCB_GREEN,
+        &theme::CLASSIC,
+        &theme::BLUE,
+        &theme::VINTAGE,
+    ];
+    all.into_iter()
+        .find(|p| p.link() == link)
+        .expect("a theme's palette")
 }
 
 /// Whether gw's command line shows in `text` in a black box.

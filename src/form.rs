@@ -846,7 +846,7 @@ impl<'a> Form<'a> {
         if let Some(e) = self.service.check(&self.cmd.name, &a.dest, value) {
             ui.label(
                 RichText::new(sentence(e))
-                    .color(theme::palette(ui).bad)
+                    .color(theme::palette(ui).bad_text)
                     .small(),
             );
         }
@@ -890,7 +890,7 @@ impl<'a> Form<'a> {
                 ui.label(small("Checking…".into()).weak());
             }
             Load::Failed(e) => {
-                ui.label(small(sentence(e)).color(p.bad));
+                ui.label(small(sentence(e)).color(p.bad_text));
             }
             Load::Ready(d) => {
                 let n = d.formats.len();
@@ -900,11 +900,11 @@ impl<'a> Form<'a> {
                     ui.label(small(text).weak());
                 }
                 for e in d.errors.iter().take(3) {
-                    ui.label(small(sentence(e)).color(p.bad));
+                    ui.label(small(sentence(e)).color(p.bad_text));
                 }
                 if d.errors.len() > 3 {
                     let more = format!("And {} more.", d.errors.len() - 3);
-                    ui.label(small(more).color(p.bad));
+                    ui.label(small(more).color(p.bad_text));
                 }
             }
         }
@@ -1002,13 +1002,13 @@ impl<'a> Form<'a> {
                         ui.label(
                             RichText::new(sentence(e))
                                 .small()
-                                .color(theme::palette(ui).bad),
+                                .color(theme::palette(ui).bad_text),
                         );
                     }
                     Load::Waiting(_) => {}
                 }
             } else if let Some(e) = self.input_fault() {
-                ui.label(RichText::new(e).small().color(theme::palette(ui).bad));
+                ui.label(RichText::new(e).small().color(theme::palette(ui).bad_text));
             }
         });
         if let Some(f) = chosen {
@@ -1368,7 +1368,7 @@ impl<'a> Form<'a> {
             row(ui, "", |ui| {
                 let text = RichText::new(note)
                     .small()
-                    .color(theme::palette(ui).partial);
+                    .color(theme::palette(ui).partial_text);
                 ui.add(egui::Label::new(text).wrap())
             });
         }
@@ -1462,7 +1462,9 @@ impl<'a> Form<'a> {
                     .own_tip("Which of the folder's images to take.");
                 let p = theme::palette(ui);
                 let text = match taken.is_empty() {
-                    true => RichText::new("No images Greaseweazle Tools can read.").color(p.bad),
+                    true => {
+                        RichText::new("No images Greaseweazle Tools can read.").color(p.bad_text)
+                    }
                     false => RichText::new(listing(&taken)).weak(),
                 };
                 ui.add(egui::Label::new(text.small()).truncate());
@@ -1520,7 +1522,7 @@ impl<'a> Form<'a> {
                         ui.label(
                             RichText::new("Greaseweazle Tools does not know this file type.")
                                 .small()
-                                .color(theme::palette(ui).bad),
+                                .color(theme::palette(ui).bad_text),
                         );
                     }
                 }
@@ -1598,7 +1600,7 @@ impl<'a> Form<'a> {
         {
             let diskdefs = diskdefs_for(self.service, self.values, &format);
             if let Load::Ready(Some(e)) = self.service.fits(&diskdefs, &format, &out.ext) {
-                let text = RichText::new(sentence(e)).small().color(p.bad);
+                let text = RichText::new(sentence(e)).small().color(p.bad_text);
                 row(ui, "", |ui| ui.label(text));
             }
         }
@@ -1748,7 +1750,7 @@ impl<'a> Form<'a> {
                     } else {
                         REPLACES_INPUT
                     };
-                    ui.label(RichText::new(text).small().color(p.bad));
+                    ui.label(RichText::new(text).small().color(p.bad_text));
                 }
             });
         }
@@ -3047,7 +3049,11 @@ fn foreign<'o>(set: &'o BTreeMap<String, String>, options: &[ImageOpt]) -> Vec<&
 /// Names the options set that the image type does not take.
 fn foreign_label(ui: &mut Ui, names: &[&str]) {
     let text = format!("This image type takes no option {}.", names.join(", "));
-    ui.label(RichText::new(text).small().color(theme::palette(ui).bad));
+    ui.label(
+        RichText::new(text)
+            .small()
+            .color(theme::palette(ui).bad_text),
+    );
 }
 
 /// Splits gw's `path::name=value:flag` into the path and its options.
@@ -3274,7 +3280,7 @@ fn image_options(
             ui.label(
                 RichText::new(sentence(e))
                     .small()
-                    .color(theme::palette(ui).bad),
+                    .color(theme::palette(ui).bad_text),
             );
         }
     }
@@ -3880,6 +3886,12 @@ pub(crate) fn selectable(ui: &mut Ui, selected: bool, button: egui::Button) -> e
             let idle = &mut ui.visuals_mut().widgets.inactive;
             idle.weak_bg_fill = Color32::TRANSPARENT;
             idle.bg_stroke.color = Color32::TRANSPARENT;
+        }
+        // Chosen, on the accent's tint, its text the strong text's: the
+        // accent's own reads at 3:1 there. Classic's is solid, its text white.
+        let p = theme::palette(ui);
+        if selected && !p.classic {
+            ui.visuals_mut().selection.stroke.color = p.strong;
         }
         ui.add(button)
     })

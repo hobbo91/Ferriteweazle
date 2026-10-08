@@ -67,7 +67,7 @@ impl From<Theme> for Choice {
 /// What `choice` shows: its dark palette and its light one, and which.
 /// Greaseweazle and PCB Green are egui's dark theme, and Classic and Vintage
 /// its light one, with their own colours in them.
-fn palettes(choice: Choice) -> (&'static Palette, &'static Palette, ThemePreference) {
+pub(crate) fn palettes(choice: Choice) -> (&'static Palette, &'static Palette, ThemePreference) {
     match choice {
         Choice::System => (&DARK, &LIGHT, ThemePreference::System),
         Choice::Light => (&DARK, &LIGHT, ThemePreference::Light),
@@ -130,9 +130,17 @@ pub struct Palette {
     pub on_accent: Color32,
     /// A link's colour where the accent would read as a caption (link()).
     pub link: Option<Color32>,
+    /// A filled button's fill where its text would not read on the accent
+    /// (accent_button()).
+    pub button: Option<Color32>,
     pub good: Color32,
     pub partial: Color32,
     pub bad: Color32,
+    /// The three as text: dark enough to read at 4.5:1 on a light palette's
+    /// surfaces, as a fill need not; a dark palette's are its own.
+    pub good_text: Color32,
+    pub partial_text: Color32,
+    pub bad_text: Color32,
     pub flux: Color32,
     pub written: Color32,
     pub erased: Color32,
@@ -160,9 +168,14 @@ pub const DARK: Palette = Palette {
     accent: Color32::from_rgb(109, 140, 255),
     on_accent: Color32::WHITE,
     link: None,
+    // White reads on this deeper blue, 5.3:1, not on the accent itself.
+    button: Some(Color32::from_rgb(61, 99, 221)),
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(242, 85, 90),
+    good_text: Color32::from_rgb(61, 214, 140),
+    partial_text: Color32::from_rgb(245, 184, 61),
+    bad_text: Color32::from_rgb(242, 85, 90),
     flux: Color32::from_rgb(79, 182, 240),
     written: Color32::from_rgb(163, 139, 250),
     erased: Color32::from_rgb(107, 114, 128),
@@ -185,9 +198,13 @@ pub const LIGHT: Palette = Palette {
     accent: Color32::from_rgb(61, 99, 221),
     on_accent: Color32::WHITE,
     link: None,
+    button: None,
     good: Color32::from_rgb(31, 164, 99),
     partial: Color32::from_rgb(212, 138, 0),
     bad: Color32::from_rgb(220, 60, 67),
+    good_text: Color32::from_rgb(23, 123, 75),
+    partial_text: Color32::from_rgb(150, 97, 0),
+    bad_text: Color32::from_rgb(209, 37, 45),
     flux: Color32::from_rgb(30, 143, 208),
     written: Color32::from_rgb(123, 97, 232),
     erased: Color32::from_rgb(154, 161, 173),
@@ -212,9 +229,14 @@ pub const GREASEWEAZLE: Palette = Palette {
     accent: Color32::from_rgb(178, 118, 255),
     on_accent: Color32::WHITE,
     link: None,
+    // White reads on this deeper purple, 6:1, not on the accent itself.
+    button: Some(Color32::from_rgb(128, 64, 200)),
     good: Color32::from_rgb(61, 214, 140),
     partial: Color32::from_rgb(245, 184, 61),
     bad: Color32::from_rgb(255, 99, 112),
+    good_text: Color32::from_rgb(61, 214, 140),
+    partial_text: Color32::from_rgb(245, 184, 61),
+    bad_text: Color32::from_rgb(255, 99, 112),
     flux: Color32::from_rgb(79, 182, 240),
     written: Color32::from_rgb(240, 140, 220),
     erased: Color32::from_rgb(130, 112, 150),
@@ -229,7 +251,8 @@ pub const GREASEWEAZLE: Palette = Palette {
 /// pads are, white and silver for text, as its silkscreen and solder are, and
 /// gw's text green on black, as in Vintage. Its red and orange are lighter
 /// than Dark's, to read on the green, and the orange redder, away from the
-/// gold.
+/// gold; its good yellower and its flux bluer, so that the disk's statuses
+/// stand apart on the green.
 pub const PCB_GREEN: Palette = Palette {
     bg: Color32::from_rgb(8, 50, 30),
     sidebar: Color32::from_rgb(4, 38, 22),
@@ -243,10 +266,14 @@ pub const PCB_GREEN: Palette = Palette {
     accent: Color32::from_rgb(212, 175, 55),
     on_accent: Color32::from_rgb(34, 34, 34),
     link: None,
-    good: Color32::from_rgb(61, 214, 140),
+    button: None,
+    good: Color32::from_rgb(150, 230, 90),
     partial: Color32::from_rgb(255, 136, 44),
     bad: Color32::from_rgb(255, 134, 140),
-    flux: Color32::from_rgb(79, 182, 240),
+    good_text: Color32::from_rgb(150, 230, 90),
+    partial_text: Color32::from_rgb(255, 136, 44),
+    bad_text: Color32::from_rgb(255, 134, 140),
+    flux: Color32::from_rgb(110, 170, 255),
     written: Color32::from_rgb(176, 150, 255),
     erased: Color32::from_rgb(128, 142, 134),
     pending: Color32::from_rgb(16, 62, 40),
@@ -272,10 +299,15 @@ pub const CLASSIC: Palette = Palette {
     dim: Color32::from_rgb(64, 64, 64),
     accent: Color32::from_rgb(0, 128, 128),
     on_accent: Color32::WHITE,
-    link: None,
+    // The teal deepened, to read on the grey.
+    link: Some(Color32::from_rgb(0, 93, 93)),
+    button: None,
     good: Color32::from_rgb(0, 128, 0),
     partial: Color32::from_rgb(224, 160, 0),
     bad: Color32::from_rgb(200, 0, 0),
+    good_text: Color32::from_rgb(0, 97, 0),
+    partial_text: Color32::from_rgb(109, 78, 0),
+    bad_text: Color32::from_rgb(171, 0, 0),
     flux: Color32::from_rgb(0, 51, 153),
     written: Color32::from_rgb(128, 0, 128),
     erased: Color32::from_rgb(128, 128, 128),
@@ -291,6 +323,7 @@ pub const CLASSIC: Palette = Palette {
 pub const BLUE: Palette = Palette {
     accent: CLASSIC.flux,
     flux: CLASSIC.accent,
+    link: None,
     ..CLASSIC
 };
 
@@ -305,14 +338,18 @@ pub const VINTAGE: Palette = Palette {
     line_strong: Color32::from_rgb(49, 53, 63),
     text: Color32::from_rgb(49, 53, 63),
     strong: Color32::from_rgb(49, 53, 63),
-    dim: Color32::from_rgb(78, 84, 88),
+    dim: Color32::from_rgb(69, 74, 78),
     accent: Color32::from_rgb(72, 91, 99),
     on_accent: Color32::from_rgb(238, 241, 219),
     // Slate is a caption's grey here: a deeper shade of the map's flux blue.
-    link: Some(Color32::from_rgb(40, 76, 132)),
+    link: Some(Color32::from_rgb(39, 73, 127)),
+    button: None,
     good: Color32::from_rgb(74, 124, 58),
     partial: Color32::from_rgb(198, 140, 36),
     bad: Color32::from_rgb(176, 58, 46),
+    good_text: Color32::from_rgb(49, 81, 38),
+    partial_text: Color32::from_rgb(97, 68, 18),
+    bad_text: Color32::from_rgb(131, 43, 34),
     flux: Color32::from_rgb(64, 98, 150),
     written: Color32::from_rgb(128, 76, 140),
     erased: Color32::from_rgb(124, 127, 130),
@@ -328,9 +365,10 @@ impl Palette {
         self.link.unwrap_or(self.accent)
     }
 
-    /// A filled button's fill and text: the accent, and its text on it.
+    /// A filled button's fill and text: the accent, or its deeper shade
+    /// where the palette has one, and the text on it.
     pub fn accent_button(&self) -> (Color32, Color32) {
-        (self.accent, self.on_accent)
+        (self.button.unwrap_or(self.accent), self.on_accent)
     }
 }
 
@@ -487,8 +525,8 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
     v.code_bg_color = p.card;
     v.hyperlink_color = p.link();
     v.weak_text_color = Some(p.dim);
-    v.warn_fg_color = p.partial;
-    v.error_fg_color = p.bad;
+    v.warn_fg_color = p.partial_text;
+    v.error_fg_color = p.bad_text;
     // egui also edges a focused text box in this text colour: white in Classic.
     let (fill, text) = match p.classic {
         true => (p.accent, p.on_accent),
@@ -531,6 +569,48 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WCAG 2's contrast of two colours, from 1 to 21.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let luminance = |c: Color32| {
+            let linear = |v: u8| match f32::from(v) / 255.0 {
+                v if v <= 0.040_45 => v / 12.92,
+                v => ((v + 0.055) / 1.055).powf(2.4),
+            };
+            0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn every_themes_text_reads_at_4_5_to_1_on_what_it_is_drawn_on() {
+        let (red, white) = RED_BUTTON;
+        for (i, p) in SHOWN.into_iter().enumerate() {
+            let surfaces = [p.bg, p.card, p.sidebar];
+            let (fill, ink) = p.accent_button();
+            let pairs = [
+                ("text", p.text, &surfaces[..]),
+                ("strong", p.strong, &surfaces[..]),
+                ("dim", p.dim, &surfaces[..]),
+                ("link", p.link(), &surfaces[..2]),
+                ("good text", p.good_text, &surfaces[..2]),
+                ("partial text", p.partial_text, &surfaces[..2]),
+                ("bad text", p.bad_text, &surfaces[..2]),
+                ("a button's text", ink, &[fill][..]),
+                ("a red button's text", white, &[red][..]),
+            ];
+            for (what, ink, on) in pairs {
+                for &surface in on {
+                    let ratio = contrast(ink, surface);
+                    assert!(
+                        ratio >= 4.5,
+                        "palette {i}: {what} {ink:?} on {surface:?}: {ratio:.2}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn each_palette_a_theme_shows_is_known_by_its_links_colour_alone() {
