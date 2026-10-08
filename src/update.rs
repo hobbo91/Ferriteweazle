@@ -251,18 +251,7 @@ impl Install {
             }
             Install::Folder(dir) => {
                 let from = new.join("Ferriteweazle");
-                // The data first, as on Windows, and the program last. lib/
-                // holds libraries the program opens, with their licences in
-                // the notices; a folder from before 1.4.0 has no lib/.
-                let mut names = vec![tools::DATA.to_owned()];
-                names.extend(
-                    ["lib", "THIRD-PARTY-NOTICES.txt"]
-                        .into_iter()
-                        .filter(|name| from.join(name).exists())
-                        .map(str::to_owned),
-                );
-                names.push(program());
-                let pairs: Vec<_> = names
+                let pairs: Vec<_> = swap_order(listed(&from)?, &program())?
                     .iter()
                     .map(|name| (dir.join(name), from.join(name)))
                     .collect();
@@ -345,29 +334,57 @@ fn appimage(exe: &Path, image: Option<OsString>, appdir: Option<OsString>) -> Op
     image.map(Into::into)
 }
 
-/// Puts the new data folder and `program` from `from` in place of those in
-/// `dir`, keeping each old one as NAME.old: Windows renames a running program
-/// but will not delete it. The data goes first, since Windows will not move it
-/// while a gw runs from it; on failure the old program offers the update again.
+/// Puts what `from` holds in place of what `dir` has, in `swap_order`. The
+/// old data and `program` stay as NAME.old for tidy(): Windows renames a
+/// running program but will not delete it. On failure the old program
+/// offers the update again.
 fn rename_in(dir: &Path, from: &Path, program: &str) -> Result<(), String> {
-    let names = [tools::DATA, program];
-    if let Some(missing) = names.iter().map(|n| from.join(n)).find(|p| !p.exists()) {
-        return Err(format!("{} is not in the download.", missing.display()));
-    }
-    for name in names {
-        let (old, now, new) = (
-            dir.join(format!("{name}.old")),
-            dir.join(name),
-            from.join(name),
-        );
+    for name in swap_order(listed(from)?, program)? {
+        let (now, new) = (dir.join(&name), from.join(&name));
+        let failed = |e: std::io::Error| format!("{}: {e}", new.display());
+        if name != tools::DATA && name != program {
+            // Nothing runs from the rest.
+            remove(&now);
+            std::fs::rename(&new, &now).map_err(failed)?;
+            continue;
+        }
+        let old = dir.join(format!("{name}.old"));
         remove(&old);
         std::fs::rename(&now, &old).map_err(|e| format!("{}: {e}", now.display()))?;
         if let Err(e) = std::fs::rename(&new, &now) {
             let _ = std::fs::rename(&old, &now);
-            return Err(format!("{}: {e}", new.display()));
+            return Err(failed(e));
         }
     }
     Ok(())
+}
+
+/// The names in `folder`.
+fn listed(folder: &Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    Ok(entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect())
+}
+
+/// The order a folder update puts in place `names`, all that the download
+/// holds: the data first, since Windows will not move it while a gw runs from
+/// it, and `program` last; the rest, such as lib/ and the notices, between.
+/// Why not, if the download lacks either.
+fn swap_order(mut names: Vec<String>, program: &str) -> Result<Vec<String>, String> {
+    for needed in [tools::DATA, program] {
+        if !names.iter().any(|n| n == needed) {
+            return Err(format!("{needed} is not in the download."));
+        }
+    }
+    let rank = |n: &str| match n {
+        n if n == tools::DATA => 0,
+        n if n == program => 2,
+        _ => 1,
+    };
+    names.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    Ok(names)
 }
 
 fn program() -> String {
@@ -792,6 +809,57 @@ mod tests {
         assert_eq!(read(data.join("marker")), "new");
         assert_eq!(read(&program), "new");
         assert_eq!(names(&dir), ["data", "fw", "new"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_folder_update_takes_all_the_download_holds_the_data_first_the_program_last() {
+        let held = [
+            "lib",
+            "fw",
+            tools::DATA,
+            "README.txt",
+            "THIRD-PARTY-NOTICES.txt",
+        ];
+        let names = swap_order(held.map(str::to_owned).to_vec(), "fw").unwrap();
+        let order = [
+            tools::DATA,
+            "README.txt",
+            "THIRD-PARTY-NOTICES.txt",
+            "lib",
+            "fw",
+        ];
+        assert_eq!(names, order);
+        for lacking in ["fw", tools::DATA] {
+            let without = held.into_iter().filter(|n| *n != lacking);
+            let why = swap_order(without.map(str::to_owned).collect(), "fw").unwrap_err();
+            assert!(why.starts_with(lacking), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_folder_update_replaces_and_adds_what_the_download_holds() {
+        let dir = scratch("folder-update");
+        let (new, program) = (dir.join("download"), program());
+        let from = new.join("Ferriteweazle");
+        for (root, text) in [(&dir, "old"), (&from, "new")] {
+            std::fs::create_dir_all(root.join(tools::DATA)).unwrap();
+            for file in [
+                format!("{}/marker", tools::DATA),
+                program.clone(),
+                "README.txt".into(),
+            ] {
+                std::fs::write(root.join(file), text).unwrap();
+            }
+        }
+        // lib/, which a folder from before 1.4.0 lacks.
+        std::fs::create_dir_all(from.join("lib")).unwrap();
+        std::fs::write(from.join("lib/libx.so.1"), "new").unwrap();
+        Install::Folder(dir.clone()).replace(&new).unwrap();
+        let marker = format!("{}/marker", tools::DATA);
+        for file in [marker.as_str(), &program, "README.txt", "lib/libx.so.1"] {
+            assert_eq!(read(dir.join(file)), "new", "{file}");
+        }
         std::fs::remove_dir_all(dir).ok();
     }
 
