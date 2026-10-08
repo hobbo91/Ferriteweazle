@@ -12,7 +12,8 @@
 - Format detection for disks and images
 - Single and batch reads, writes and conversions
 - Further read passes over tracks with sectors still missing after gw's retries
-- Analyse: each side of the disk, track by track, with its sectors and flux as gw decoded them, and the image file as gw lays it out
+- Analyse: a map of each side of the disk, each sector coloured by how gw decoded it, or by flux; click a sector to see its bytes
+- Image analysis: the same map for image files
 - Log of gw's output, saved to a file on request
 - Shows each action's gw command line, and passes extra arguments to gw
 - Drag and drop of image files
@@ -40,7 +41,7 @@ Download the package for your system from the [latest release](https://github.co
 
 macOS 10.15 or newer, Apple Silicon or Intel.
 
-1. Open [`Ferriteweazle-1.3.3-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-macos-universal.dmg).
+1. Open [`Ferriteweazle-1.4.0-macos-universal.dmg`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-macos-universal.dmg).
 2. Drag **Ferriteweazle** to **Applications**.
 3. Open Ferriteweazle. The app isn't notarised, so macOS blocks it the first time.
 4. On macOS 15 or newer, open **System Settings > Privacy & Security** and click **Open Anyway**. On older versions, Control-click Ferriteweazle in **Applications**, choose **Open**, then **Open** again.
@@ -49,33 +50,33 @@ macOS 10.15 or newer, Apple Silicon or Intel.
 
 Windows 10 or newer, x64 or ARM64.
 
-1. Run [`Ferriteweazle-1.3.3-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-x64.msi), or [`Ferriteweazle-1.3.3-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-arm64.msi) on an ARM PC.
+1. Run [`Ferriteweazle-1.4.0-win-x64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-win-x64.msi), or [`Ferriteweazle-1.4.0-win-arm64.msi`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-win-arm64.msi) on an ARM PC.
 2. If SmartScreen warns you, click **More info**, then **Run anyway**.
 3. Follow the installer.
 
-To run without installing, unzip [`Ferriteweazle-1.3.3-win-x64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-x64.zip) or [`Ferriteweazle-1.3.3-win-arm64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-win-arm64.zip) and run `Ferriteweazle.exe`.
+To run without installing, unzip [`Ferriteweazle-1.4.0-win-x64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-win-x64.zip) or [`Ferriteweazle-1.4.0-win-arm64.zip`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-win-arm64.zip) and run `Ferriteweazle.exe`.
 
 ### Linux
 
 x86-64 or ARM64, glibc 2.17 or newer, under Wayland or X11, with Vulkan or OpenGL.
 
-AppImage: [`Ferriteweazle-1.3.3-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-x86_64.AppImage) or [`Ferriteweazle-1.3.3-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-aarch64.AppImage)
+AppImage: [`Ferriteweazle-1.4.0-x86_64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-x86_64.AppImage) or [`Ferriteweazle-1.4.0-aarch64.AppImage`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-aarch64.AppImage)
 
 ```sh
-chmod +x Ferriteweazle-1.3.3-x86_64.AppImage
-./Ferriteweazle-1.3.3-x86_64.AppImage
+chmod +x Ferriteweazle-1.4.0-x86_64.AppImage
+./Ferriteweazle-1.4.0-x86_64.AppImage
 ```
 
 The AppImage needs FUSE to start: `fusermount3` or `fusermount`, from your distribution's FUSE package (usually `fuse3`). Most desktops have it. If it says "Cannot mount AppImage, please check your FUSE setup", run it this way instead, or use the tarball, which needs no FUSE:
 
 ```sh
-./Ferriteweazle-1.3.3-x86_64.AppImage --appimage-extract-and-run
+./Ferriteweazle-1.4.0-x86_64.AppImage --appimage-extract-and-run
 ```
 
-Or the tarball: [`Ferriteweazle-1.3.3-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-linux-x86_64.tar.gz) or [`Ferriteweazle-1.3.3-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.3.3/Ferriteweazle-1.3.3-linux-aarch64.tar.gz)
+Or the tarball: [`Ferriteweazle-1.4.0-linux-x86_64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-linux-x86_64.tar.gz) or [`Ferriteweazle-1.4.0-linux-aarch64.tar.gz`](https://github.com/hobbo91/Ferriteweazle/releases/download/v1.4.0/Ferriteweazle-1.4.0-linux-aarch64.tar.gz)
 
 ```sh
-tar -xzf Ferriteweazle-1.3.3-linux-x86_64.tar.gz
+tar -xzf Ferriteweazle-1.4.0-linux-x86_64.tar.gz
 ./Ferriteweazle/ferriteweazle
 ```
 
