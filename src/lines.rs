@@ -1,7 +1,7 @@
 //! A box of lines to read, such as gw's output or a sector's bytes: drawn as
-//! they scroll into view, each only as far across as shows; selected with
-//! the pointer as text is, a word at a time from a double click and a line
-//! from a triple, scrolling the box on while dragged past its edge; and
+//! they scroll into view, a long one only as far across as shows; selected
+//! with the pointer as text is, a word at a time from a double click and a
+//! line from a triple, scrolling the box on while dragged past its edge; and
 //! copied with Copy on a right click or the keyboard's.
 
 use eframe::egui::{
@@ -28,7 +28,8 @@ const PIECE: usize = 256;
 /// let go once the lines no longer hold them there.
 const MARK: usize = 64;
 
-/// A place in the lines: a line, and a character in it.
+/// A place in the lines: a line, counted from the first the box has held,
+/// and a character in it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct At {
     line: usize,
@@ -88,16 +89,22 @@ struct State {
     pass: Option<u64>,
     /// The font, and the pixels to a point, it measured its lines in.
     metric: Option<(FontId, f32)>,
-    /// How many lines it has measured, the last of which may yet grow, and
-    /// the widest of them; and how the first and that last began.
+    /// The first line it held when it measured its lines, and the line past
+    /// the last it measured, which may yet grow; the widest of them, and the
+    /// last that wide; and how the first and that last began.
+    first: usize,
     measured: usize,
     widest: f32,
+    widest_line: usize,
     marks: (String, String),
     /// The widths of characters past printable ASCII, each laid out alone.
     widths: HashMap<char, f32>,
     /// Whether its lines ran past the box across and down when last shown:
     /// only then does it scroll that way.
     overflow: Vec2b,
+    /// Its area's offset when last shown, and the most it could take.
+    offset: Vec2,
+    most: Vec2,
     /// Its last press: when, where, and how many it made in a row.
     press: Option<(f64, Pos2, u8)>,
 }
@@ -107,16 +114,59 @@ pub struct Lines<'a> {
     pub count: usize,
     /// Line `i`, and the colour it is drawn in.
     pub line: &'a dyn Fn(usize) -> (&'a str, Color32),
+    /// A fixed-width font: its printable ASCII each as wide as '0'.
     pub font: FontId,
     /// Room between one line and the next, beyond the font's own.
     pub gap: f32,
 }
 
+/// A box past the lines it shows: its name to screen readers; how many
+/// lines it has dropped before its first, as the session's log drops its
+/// oldest, so that a selection keeps to the lines it was made on; and
+/// whether it fills its area however few its lines, so that a press
+/// anywhere in it reaches them.
+#[derive(Clone, Copy, Default)]
+pub struct Pane<'a> {
+    pub name: &'a str,
+    pub first: usize,
+    pub fills: bool,
+}
+
 impl Lines<'_> {
     /// Shows the lines in `area`, their selection kept under `id`.
     pub fn show(&self, ui: &mut Ui, id: egui::Id, area: egui::ScrollArea) {
+        self.show_as(ui, id, area, Pane::default());
+    }
+
+    /// Shows the lines in `area` in the box `pane` says, their selection
+    /// kept under `id`.
+    pub fn show_as(&self, ui: &mut Ui, id: egui::Id, area: egui::ScrollArea, pane: Pane) {
+        Held { lines: self, pane }.show(ui, id, area);
+    }
+}
+
+/// A box's lines, each counted from the first it has held, and its pane.
+struct Held<'l, 'a> {
+    lines: &'l Lines<'a>,
+    pane: Pane<'l>,
+}
+
+impl<'a> Held<'_, 'a> {
+    /// Line `n`, and the colour it is drawn in.
+    fn get(&self, n: usize) -> (&'a str, Color32) {
+        (self.lines.line)(n - self.pane.first)
+    }
+
+    /// The line past the last.
+    fn end(&self) -> usize {
+        self.pane.first + self.lines.count
+    }
+
+    /// Shows the lines in `area`, their selection kept under `id`.
+    fn show(&self, ui: &mut Ui, id: egui::Id, area: egui::ScrollArea) {
+        let (lines, pane) = (self.lines, self.pane);
         let pass = ui.ctx().cumulative_pass_nr();
-        let metric = (self.font.clone(), ui.ctx().pixels_per_point());
+        let metric = (lines.font.clone(), ui.ctx().pixels_per_point());
         let mut state = ui.data_mut(|d| std::mem::take(d.get_temp_mut_or_default::<State>(id)));
         // Not shown the pass before, the box may hold other lines now; and
         // in another font, they are another width.
@@ -128,30 +178,41 @@ impl Lines<'_> {
             };
         }
         state.pass = Some(pass);
-        let row = ui.fonts_mut(|f| f.row_height(&self.font));
+        let row = ui.fonts_mut(|f| f.row_height(&lines.font));
         // The font is fixed-width: its printable ASCII characters are each
         // this wide.
-        let advance = ui.fonts_mut(|f| f.glyph_width(&self.font, '0'));
+        let advance = ui.fonts_mut(|f| f.glyph_width(&lines.font, '0'));
         let shape = Shape {
             row,
-            step: row + self.gap,
+            step: row + lines.gap,
             advance,
         };
         self.measure(ui, &mut state, shape);
         let size = vec2(
             state.widest + 1.0,
-            (shape.step * self.count as f32 - self.gap).max(row),
+            (shape.step * lines.count as f32 - lines.gap).max(row),
         );
+        // A box that fills its area keeps all of its room, from where the
+        // area begins, and takes a press anywhere in it.
+        let area = match pane.fills {
+            true => area.auto_shrink(false),
+            false => area,
+        };
+        let corner = ui.available_rect_before_wrap().min;
         let mut drawn_at = Vec2::ZERO;
         let output = area.show_viewport(ui, |ui, viewport| {
             drawn_at = viewport.min.to_vec2();
-            self.contents(ui, id, size, shape, &mut state);
+            let room = pane
+                .fills
+                .then(|| Rect::from_min_size(corner, viewport.size()));
+            self.contents(ui, id, size, shape, room, &mut state);
         });
         let (content, inner) = (output.content_size, output.inner_rect.size());
         state.overflow = Vec2b::new(content.x > inner.x + 0.5, content.y > inner.y + 0.5);
-        // The area moves its lines once they are drawn, as it keeps to the
-        // last of them or within them: drawn where they were, they show
-        // there only in the next frame.
+        state.offset = output.state.offset;
+        state.most = (content - inner).max(Vec2::ZERO);
+        // The area may move once the lines are drawn, to keep to the last or
+        // within them: draw them again where it moved.
         if output.state.offset != drawn_at {
             ui.ctx().request_repaint();
         }
@@ -159,28 +220,37 @@ impl Lines<'_> {
     }
 
     /// Measures the lines new since the box last measured them, and the last
-    /// it measured, which may have grown; or all of them again where its
-    /// first or that last no longer begins as it did, or there are fewer.
-    /// The widest sets how far the box scrolls across.
+    /// it measured, which may have grown; or all of them again where the
+    /// widest went with lines dropped from the start, where the first or
+    /// that last no longer begins as it did, or where there are fewer. The
+    /// widest sets how far the box scrolls across.
     fn measure(&self, ui: &Ui, state: &mut State, shape: Shape) {
-        let measured = state.measured;
-        let same = measured > 0
-            && self.count >= measured
-            && (self.line)(0).0.starts_with(&state.marks.0)
-            && (self.line)(measured - 1).0.starts_with(&state.marks.1);
-        if !same {
-            state.measured = 0;
-            state.widest = 0.0;
+        let (first, end) = (self.pane.first, self.end());
+        // Of the lines it measured, those it still holds, as they began: the
+        // first is gone where lines were dropped from the start.
+        let held = (state.first..state.measured).contains(&first) && state.measured <= end;
+        let same = held
+            && (first > state.first || self.get(first).0.starts_with(&state.marks.0))
+            && self.get(state.measured - 1).0.starts_with(&state.marks.1);
+        let from = match same && state.widest_line >= first {
+            true => state.measured - 1,
+            false => {
+                state.widest = 0.0;
+                first
+            }
+        };
+        for n in from..end {
+            let width = self.width(ui, self.get(n).0, shape, &mut state.widths);
+            if width >= state.widest {
+                (state.widest, state.widest_line) = (width, n);
+            }
         }
-        for i in state.measured.saturating_sub(1)..self.count {
-            let width = self.width(ui, (self.line)(i).0, shape, &mut state.widths);
-            state.widest = state.widest.max(width);
-        }
-        state.measured = self.count;
-        let mark = |i: usize| (self.line)(i).0.chars().take(MARK).collect::<String>();
-        state.marks = match self.count {
+        state.first = first;
+        state.measured = end;
+        let mark = |n: usize| self.get(n).0.chars().take(MARK).collect::<String>();
+        state.marks = match self.lines.count {
             0 => Default::default(),
-            n => (mark(0), mark(n - 1)),
+            _ => (mark(first), mark(end - 1)),
         };
     }
 
@@ -201,20 +271,39 @@ impl Lines<'_> {
         }
         *widths.entry(c).or_insert_with(|| {
             let placeholder = Color32::PLACEHOLDER;
-            let font = self.font.clone();
+            let font = self.lines.font.clone();
             let mut job = LayoutJob::simple(c.to_string(), font, placeholder, f32::INFINITY);
             job.round_output_to_gui = false;
             ui.fonts_mut(|f| f.layout_job(job)).intrinsic_size().x
         })
     }
 
-    fn contents(&self, ui: &mut Ui, id: egui::Id, size: Vec2, shape: Shape, state: &mut State) {
-        let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    fn contents(
+        &self,
+        ui: &mut Ui,
+        id: egui::Id,
+        size: Vec2,
+        shape: Shape,
+        room: Option<Rect>,
+        state: &mut State,
+    ) {
+        let (at, space) = ui.allocate_space(size);
+        let rect = ui.layout().align_size_within_rect(size, space);
+        // The lines take a press where they lie; a box that fills its area,
+        // anywhere in the room it shows, past them too.
+        let reach = room.map_or(space, |room| space.union(room));
+        let mut response = ui.interact(reach, at, Sense::click_and_drag());
+        response.set_intrinsic_size(size);
+        let name = self.pane.name;
+        if !name.is_empty() {
+            let info = || egui::WidgetInfo::labeled(egui::WidgetType::Other, true, name);
+            response.widget_info(info);
+        }
         let laid = Laid { rect, shape };
         let widths = &mut state.widths;
         // Kept only while the lines hold what it selected.
         let mut selection = state.selection.take().and_then(|s| self.kept(s));
-        if self.count == 0 {
+        if self.lines.count == 0 {
             return;
         }
         let (pressed, down, pointer, shift, time) = ui.input(|i| {
@@ -249,7 +338,7 @@ impl Lines<'_> {
                         state.press = None;
                     }
                     self.drag(ui, laid, widths, s, p);
-                    scroll_toward(ui, p, state.overflow);
+                    scroll_toward(ui, p, state.overflow, state.offset, state.most);
                 }
                 None => s.dragging = false,
             }
@@ -296,12 +385,15 @@ impl Lines<'_> {
             }
         });
         if all {
-            let last = self.count - 1;
+            let last = self.end() - 1;
             let end = At {
                 line: last,
                 char: self.chars(last),
             };
-            let start = At::default();
+            let start = At {
+                line: self.pane.first,
+                char: 0,
+            };
             let mut s = Selection::new(start, end, Unit::Char, (start, start));
             s.dragging = false;
             selection = Some(s);
@@ -379,7 +471,7 @@ impl Lines<'_> {
             Ok(line) => line,
             Err(at) => return at,
         };
-        let (text, colour) = (self.line)(line);
+        let (text, colour) = self.get(line);
         let x = p.x - laid.rect.left();
         let piece = self.piece(ui, text, colour, (x, x), laid.shape, widths);
         At {
@@ -391,16 +483,20 @@ impl Lines<'_> {
     /// The line at `p`'s height; or where `p` is above or below them all,
     /// the start of the first or the end of the last.
     fn line_at(&self, laid: Laid, p: Pos2) -> Result<usize, At> {
-        let last = self.count - 1;
+        let first = self.pane.first;
         if p.y < laid.rect.top() {
-            return Err(At::default());
+            return Err(At {
+                line: first,
+                char: 0,
+            });
         }
-        let line = ((p.y - laid.rect.top()) / laid.shape.step).floor() as usize;
-        if line > last {
+        let i = ((p.y - laid.rect.top()) / laid.shape.step).floor() as usize;
+        if i >= self.lines.count {
+            let last = self.end() - 1;
             let char = self.chars(last);
             return Err(At { line: last, char });
         }
-        Ok(line)
+        Ok(first + i)
     }
 
     /// The word or the line at `p`, `unit`, from its start to its end: a
@@ -420,10 +516,10 @@ impl Lines<'_> {
             Err(at) if unit == Unit::Line => at.line,
             Err(at) => return (at, at),
         };
-        let (text, colour) = (self.line)(line);
+        let (text, colour) = self.get(line);
         let start = At { line, char: 0 };
         if unit == Unit::Line {
-            let end = match line + 1 < self.count {
+            let end = match line + 1 < self.end() {
                 true => At {
                     line: line + 1,
                     char: 0,
@@ -446,15 +542,20 @@ impl Lines<'_> {
         }
     }
 
-    /// How many characters line `i` has.
-    fn chars(&self, i: usize) -> usize {
-        count((self.line)(i).0)
+    /// How many characters line `n` has.
+    fn chars(&self, n: usize) -> usize {
+        count(self.get(n).0)
     }
 
-    /// `s` where the lines still hold what it selected: within them, and
-    /// with the text at its ends as it was.
+    /// `s` where the lines still hold what it selected: none of it on lines
+    /// dropped from the start, within them, and with the text at its ends
+    /// as it was.
     fn kept(&self, mut s: Selection) -> Option<Selection> {
-        let last = self.count.checked_sub(1)?;
+        let last = self.pane.first + self.lines.count.checked_sub(1)?;
+        let places = [s.anchor, s.head, s.first.0, s.first.1];
+        if places.iter().any(|at| at.line < self.pane.first) {
+            return None;
+        }
         let within = |at: At| {
             let line = at.line.min(last);
             let char = at.char.min(self.chars(line));
@@ -472,20 +573,20 @@ impl Lines<'_> {
     /// on its last; a line gw is still printing grows only past both.
     fn ends(&self, a: At, b: At) -> (String, String) {
         let to = if a.line == b.line { b.char } else { usize::MAX };
-        let first = (self.line)(a.line).0.chars().skip(a.char);
+        let first = self.get(a.line).0.chars().skip(a.char);
         let start = first.take(to.saturating_sub(a.char).min(MARK)).collect();
         let from = b.char.saturating_sub(MARK);
-        let last = (self.line)(b.line).0.chars().skip(from);
+        let last = self.get(b.line).0.chars().skip(from);
         (start, last.take(b.char - from).collect())
     }
 
     /// The text from `a` to `b`, a line to a line.
     fn text(&self, (a, b): (At, At)) -> String {
         let lines: Vec<String> = (a.line..=b.line)
-            .map(|i| {
-                let text = (self.line)(i).0;
-                let from = if i == a.line { a.char } else { 0 };
-                let to = if i == b.line { b.char } else { usize::MAX };
+            .map(|n| {
+                let text = self.get(n).0;
+                let from = if n == a.line { a.char } else { 0 };
+                let to = if n == b.line { b.char } else { usize::MAX };
                 text.chars()
                     .skip(from)
                     .take(to.saturating_sub(from))
@@ -534,7 +635,7 @@ impl Lines<'_> {
             ((from.0, from.1), to, from.2)
         };
         let laid = text[from.1..to.1].to_owned();
-        let mut job = LayoutJob::simple(laid, self.font.clone(), colour, f32::INFINITY);
+        let mut job = LayoutJob::simple(laid, self.lines.font.clone(), colour, f32::INFINITY);
         job.sections[0].leading_space = lead;
         Piece {
             from: from.0,
@@ -555,37 +656,51 @@ impl Lines<'_> {
     ) {
         let Laid { rect, shape } = laid;
         let shown = ui.clip_rect();
-        let first = ((shown.top() - rect.top()) / shape.step).floor().max(0.0) as usize;
+        let start = ((shown.top() - rect.top()) / shape.step).floor().max(0.0) as usize;
         let past = ((shown.bottom() - rect.top()) / shape.step).ceil().max(0.0) as usize + 1;
         let across = (shown.left() - rect.left(), shown.right() - rect.left());
         let range = selection.filter(|s| !s.is_empty()).map(Selection::range);
         let ppp = ui.ctx().pixels_per_point();
         let painter = ui.painter();
-        for i in first..past.min(self.count) {
-            let top = rect.top() + i as f32 * shape.step;
-            let (text, colour) = (self.line)(i);
+        let marking = ui.visuals().selection;
+        // On a solid fill, as the classic themes' is, a line's own colour may
+        // not read: what is selected is drawn again in the selection's text
+        // colour, as egui draws a selection. A tint, as the Log's is, keeps
+        // the colours gw's lines are told apart by.
+        let recolour = marking.bg_fill.is_opaque();
+        for i in start..past.min(self.lines.count) {
+            let n = self.pane.first + i;
+            let at = pos2(rect.left(), rect.top() + i as f32 * shape.step);
+            let (text, colour) = self.get(n);
             let piece = self.piece(ui, text, colour, across, shape, widths);
-            if let Some((a, b)) = range.filter(|(a, b)| (a.line..=b.line).contains(&i)) {
-                let from = if i == a.line { piece.x(a.char) } else { 0.0 };
-                // A line selected to its end shows its end selected too.
-                let to = match i == b.line {
-                    true => piece.x(b.char),
-                    false => piece.end() + shape.advance,
+            let marked = range.filter(|(a, b)| (a.line..=b.line).contains(&n));
+            let marked = marked.map(|(a, b)| {
+                let from = if n == a.line { piece.x(a.char) } else { 0.0 };
+                // A line selected to its end shows its end selected too, and
+                // the room down to the next line.
+                let (to, bottom) = match n == b.line {
+                    true => (piece.x(b.char), shape.row),
+                    false => (piece.end() + shape.advance, shape.step),
                 };
-                let marked = Rect::from_min_max(
-                    pos2(rect.left() + from, top),
-                    pos2(rect.left() + to, top + shape.row),
-                );
-                let fill = ui.visuals().selection.bg_fill;
-                painter.rect_filled(marked.round_to_pixels(ppp), 0.0, fill);
+                let min = at + vec2(from, 0.0);
+                let max = at + vec2(to, bottom);
+                Rect::from_min_max(min, max).round_to_pixels(ppp)
+            });
+            if let Some(marked) = marked {
+                painter.rect_filled(marked, 0.0, marking.bg_fill);
             }
             let galley = piece.galley;
-            let line = Rect::from_min_size(pos2(rect.left(), top), vec2(rect.width(), shape.row));
-            ui.interact(line, id.with(("line", i)), Sense::hover())
+            let line = Rect::from_min_size(at, vec2(rect.width(), shape.row));
+            ui.interact(line, id.with(("line", n)), Sense::hover())
                 .widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text())
                 });
-            painter.galley(pos2(rect.left(), top), galley, colour);
+            painter.galley(at, galley.clone(), colour);
+            if let Some(marked) = marked.filter(|_| recolour) {
+                let ink = marking.stroke.color;
+                let over = painter.with_clip_rect(marked);
+                over.galley_with_override_text_color(at, galley, ink);
+            }
         }
     }
 }
@@ -695,33 +810,53 @@ fn combining(c: char) -> bool {
 
 /// Where the word, the run of spaces or the other character that `text`'s
 /// character `k` is in begins and ends, in characters, each with the
-/// combining marks after it.
+/// combining marks after it. Found going out from `k`, keeping none of the
+/// line: a line may run to millions of characters.
 fn word(text: &str, k: usize) -> (usize, usize) {
-    let chars: Vec<char> = text.chars().collect();
-    // Each character's class, a mark's its character's.
-    let mut classes = Vec::with_capacity(chars.len());
-    for &c in &chars {
-        let of = match classes.last() {
-            Some(&before) if combining(c) => before,
-            _ => class(c),
-        };
-        classes.push(of);
-    }
-    let Some(&of) = classes.get(k) else {
+    let byte = match text.is_ascii() {
+        true => (k < text.len()).then_some(k),
+        false => text.char_indices().nth(k).map(|(b, _)| b),
+    };
+    let Some(byte) = byte else {
         return (k, k);
     };
-    let marks = |from: usize| from + chars[from..].iter().take_while(|&&c| combining(c)).count();
-    // A mark's own character.
-    let base = chars[..=k]
-        .iter()
-        .rposition(|&c| !combining(c))
-        .unwrap_or(0);
+    let (before, after) = text.split_at(byte);
+    let (mut back, mut ahead) = (before.chars().rev(), after.chars());
+    // A mark goes by the character it follows, back past any marks between;
+    // those the text begins with, by the first of them.
+    let first = || text.chars().next().map_or(Class::Other, class);
+    let c = ahead.next().unwrap_or_default();
+    let (base, of) = match combining(c) {
+        false => (k, class(c)),
+        true => {
+            let found = back.by_ref().enumerate().find(|&(_, b)| !combining(b));
+            found.map_or_else(|| (0, first()), |(j, b)| (k - 1 - j, class(b)))
+        }
+    };
     if of == Class::Other {
-        return (base, marks(base + 1));
+        let marks = ahead.take_while(|&c| combining(c)).count();
+        return (base, k + 1 + marks);
     }
-    let from = classes[..k].iter().rposition(|&c| c != of);
-    let to = classes[k..].iter().position(|&c| c != of);
-    (from.map_or(0, |i| i + 1), to.map_or(chars.len(), |i| k + i))
+    // On and back over each character of its class, with the marks after it.
+    let on = ahead.take_while(|&c| combining(c) || class(c) == of);
+    let to = k + 1 + on.count();
+    let (mut from, mut at) = (base, base);
+    let mut other = false;
+    for b in back {
+        at -= 1;
+        if combining(b) {
+            continue;
+        }
+        if class(b) != of {
+            other = true;
+            break;
+        }
+        from = at;
+    }
+    if !other && from > 0 && first() == of {
+        from = 0;
+    }
+    (from, to)
 }
 
 /// How many presses in a row a press at `p` at `time` makes, the last
@@ -741,10 +876,11 @@ fn presses(ui: &Ui, last: Option<(f64, Pos2, u8)>, time: f64, p: Pos2) -> u8 {
 }
 
 /// Scrolls the box toward `p` while it lies past the box's edge, the faster
-/// the further past: a selection dragged there carries on into what was
-/// hidden. Only the ways the lines run past the box, `overflow`: the box
-/// scrolls no other way, and would leave the rest to another.
-fn scroll_toward(ui: &Ui, p: Pos2, overflow: Vec2b) {
+/// the further past, so a dragged selection carries on. Only the ways the
+/// lines overflow, `overflow`: a scroll the box cannot take goes to the area
+/// around it. Nor toward an end the area is at, its `offset` 0 or `most`:
+/// egui would draw frame after frame for a scroll that goes nowhere.
+fn scroll_toward(ui: &Ui, p: Pos2, overflow: Vec2b, offset: Vec2, most: Vec2) {
     let shown = ui.clip_rect();
     let past = |v: f32, low: f32, high: f32| {
         let d = if v < low {
@@ -764,6 +900,12 @@ fn scroll_toward(ui: &Ui, p: Pos2, overflow: Vec2b) {
         past(p.x, shown.left(), shown.right()),
         past(p.y, shown.top(), shown.bottom()),
     ) * overflow.to_vec2();
+    let open = |d: usize| match speed[d] {
+        s if s < 0.0 && offset[d] > 0.0 => s,
+        s if s > 0.0 && offset[d] < most[d] => s,
+        _ => 0.0,
+    };
+    let speed = vec2(open(0), open(1));
     if speed != Vec2::ZERO {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         let none = egui::style::ScrollAnimation::none();
@@ -775,6 +917,7 @@ fn scroll_toward(ui: &Ui, p: Pos2, overflow: Vec2b) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::{self, Choice};
     use egui::{Event, FullOutput, PointerButton, RawInput, ScrollArea};
     use std::cell::Cell;
 
@@ -798,13 +941,26 @@ mod tests {
         time: f64,
     ) -> FullOutput {
         let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
             time: Some(time),
             events,
             ..Default::default()
         };
+        run(ctx, lines.map(|l| (l, Pane::default())), area, input)
+    }
+
+    /// As `frame` shows them, `lines` in the box `pane` says, from `input`.
+    fn run(
+        ctx: &egui::Context,
+        lines: Option<(&[String], Pane)>,
+        area: impl Fn() -> ScrollArea,
+        input: RawInput,
+    ) -> FullOutput {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            ..input
+        };
         let mut out = ctx.run_ui(input, |ui| {
-            let Some(lines) = lines else { return };
+            let Some((lines, pane)) = lines else { return };
             let line = |i: usize| (lines[i].as_str(), Color32::WHITE);
             let shown = Lines {
                 count: lines.len(),
@@ -812,7 +968,7 @@ mod tests {
                 font: font(),
                 gap: 0.0,
             };
-            shown.show(ui, id(), area().max_height(360.0));
+            shown.show_as(ui, id(), area().max_height(360.0), pane);
         });
         // As a renderer takes them.
         out.textures_delta.clear();
@@ -823,10 +979,12 @@ mod tests {
         ScrollArea::both()
     }
 
-    /// A window's frames, a twentieth of a second apart.
+    /// A window's frames, a twentieth of a second apart, its box's first
+    /// line the `first`th it has held.
     struct Window {
         ctx: egui::Context,
         time: f64,
+        first: usize,
     }
 
     impl Window {
@@ -834,12 +992,25 @@ mod tests {
             Window {
                 ctx: egui::Context::default(),
                 time: 0.0,
+                first: 0,
+            }
+        }
+
+        fn pane(&self) -> Pane<'static> {
+            Pane {
+                first: self.first,
+                ..Pane::default()
             }
         }
 
         fn show(&mut self, lines: &[String], events: Vec<Event>) -> FullOutput {
             self.time += 0.05;
-            frame(&self.ctx, Some(lines), both, events, self.time)
+            let input = RawInput {
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            run(&self.ctx, Some((lines, self.pane())), both, input)
         }
 
         /// The selection the box keeps, as it would copy it.
@@ -853,7 +1024,11 @@ mod tests {
                 font: font(),
                 gap: 0.0,
             };
-            Some(shown.text(s.range()))
+            let held = Held {
+                lines: &shown,
+                pane: self.pane(),
+            };
+            Some(held.text(s.range()))
         }
     }
 
@@ -884,10 +1059,13 @@ mod tests {
         })
     }
 
-    /// The lines a frame drew: where each is, as laid out.
+    /// The lines a frame drew in their own colours: where each is, as laid
+    /// out.
     fn drawn(out: &FullOutput) -> Vec<(Pos2, Arc<Galley>)> {
         let texts = out.shapes.iter().filter_map(|s| match &s.shape {
-            egui::Shape::Text(t) => Some((t.pos, t.galley.clone())),
+            egui::Shape::Text(t) if t.override_text_color.is_none() => {
+                Some((t.pos, t.galley.clone()))
+            }
             _ => None,
         });
         texts.collect()
@@ -914,6 +1092,20 @@ mod tests {
         (0..n).map(|i| format!("{:04X}  {bytes}", i * 16)).collect()
     }
 
+    /// The fills a frame drew in `fill`, top first.
+    fn fills(out: &FullOutput, fill: Color32) -> Vec<Rect> {
+        let mut rects: Vec<Rect> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == fill => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        rects.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        rects
+    }
+
     #[test]
     fn a_selection_is_let_go_once_the_box_holds_other_lines() {
         // Select All in a 1,024-byte sector's 64 rows; then the same box,
@@ -925,7 +1117,7 @@ mod tests {
         click(&mut w, &big, on(&drawn(&out)[0], 2), 1);
         w.show(&big, vec![key(Key::A, Modifiers::COMMAND)]);
         assert_eq!(w.selected(&big).map(|s| s.lines().count()), Some(64));
-        // Copy took the 64 rows' lines, gone, and panicked.
+        // Copy once read the 64 rows, now gone, and panicked.
         let out = w.show(&small, vec![Event::Copy]);
         assert_eq!(copied(&out), None, "nothing selected");
         assert_eq!(w.selected(&small), None);
@@ -968,6 +1160,54 @@ mod tests {
     }
 
     #[test]
+    fn a_log_dropping_its_oldest_lines_keeps_a_selection_on_the_lines_it_was_made_on() {
+        // A log's lines from its `first`, numbered as the session's are.
+        let log = |first: usize| -> Vec<String> {
+            (first..first + 20)
+                .map(|n| format!("T{n}.0: Read track"))
+                .collect()
+        };
+        let mut w = Window::new();
+        let lines = log(0);
+        let out = w.show(&lines, vec![]);
+        let drawn = drawn(&out);
+        // From line 5's "5" to line 7's "T7.".
+        let (from, to) = (on(&drawn[5], 1), on(&drawn[7], 3));
+        w.show(&lines, vec![Event::PointerMoved(from)]);
+        w.show(&lines, vec![press(from, true)]);
+        w.show(&lines, vec![Event::PointerMoved(to)]);
+        w.show(&lines, vec![press(to, false)]);
+        let made = "5.0: Read track\nT6.0: Read track\nT7.";
+        assert_eq!(w.selected(&lines).as_deref(), Some(made));
+        // Full, the log drops its first three lines as three more come.
+        w.first = 3;
+        let lines = log(3);
+        let out = w.show(&lines, vec![Event::Copy]);
+        assert_eq!(copied(&out).as_deref(), Some(made));
+        // Dragged on while it drops two more: from where it was begun, to
+        // the line now under the pointer.
+        let (from, to) = (on(&drawn[2], 1), on(&drawn[4], 3));
+        w.time += 1.0;
+        w.show(&lines, vec![Event::PointerMoved(from)]);
+        w.show(&lines, vec![press(from, true)]);
+        w.show(&lines, vec![Event::PointerMoved(to)]);
+        assert_eq!(w.selected(&lines).as_deref(), Some(made));
+        w.first = 5;
+        let lines = log(5);
+        w.show(&lines, vec![]);
+        let on_to = "5.0: Read track\nT6.0: Read track\nT7.0: Read track\nT8.0: Read track\nT9.";
+        assert_eq!(w.selected(&lines).as_deref(), Some(on_to));
+        w.show(&lines, vec![press(to, false)]);
+        assert_eq!(w.selected(&lines).as_deref(), Some(on_to));
+        // Its first line dropped too, the selection goes with it.
+        w.first = 6;
+        let lines = log(6);
+        let out = w.show(&lines, vec![Event::Copy]);
+        assert_eq!(copied(&out), None);
+        assert_eq!(w.selected(&lines), None);
+    }
+
+    #[test]
     fn escape_lets_go_of_the_selection_and_the_arrows_leave_the_box_its_keys() {
         let lines = rows(8, "00 11 22 33");
         let mut w = Window::new();
@@ -988,6 +1228,31 @@ mod tests {
     }
 
     #[test]
+    fn a_shift_press_carries_the_selection_on_to_it() {
+        let lines = rows(8, "00 11 22 33");
+        let mut w = Window::new();
+        let out = w.show(&lines, vec![]);
+        let drawn = drawn(&out);
+        click(&mut w, &lines, on(&drawn[1], 6), 1);
+        assert_eq!(w.selected(&lines), None, "a place, nothing selected");
+        // On to line 3's ninth character, then back before where it began.
+        w.show(&lines, vec![Event::ModifiersChanged(Modifiers::SHIFT)]);
+        for (to, said) in [
+            (on(&drawn[3], 8), "00 11 22 33\n0020  00 11 22 33\n0030  00"),
+            (on(&drawn[0], 2), "00  00 11 22 33\n0010  "),
+        ] {
+            w.time += 1.0;
+            click(&mut w, &lines, to, 1);
+            assert_eq!(w.selected(&lines).as_deref(), Some(said));
+        }
+        // Without Shift, a press begins another.
+        w.show(&lines, vec![Event::ModifiersChanged(Modifiers::NONE)]);
+        w.time += 1.0;
+        click(&mut w, &lines, on(&drawn[5], 3), 1);
+        assert_eq!(w.selected(&lines), None);
+    }
+
+    #[test]
     fn two_presses_select_a_word_and_three_a_line_and_a_drag_goes_on_by_them() {
         let lines: Vec<String> = ["Write Bandwidth:  7.66", "Read Bandwidth:  8.15"]
             .map(String::from)
@@ -995,7 +1260,7 @@ mod tests {
         let mut w = Window::new();
         let out = w.show(&lines, vec![]);
         let drawn = drawn(&out);
-        // On "Bandwidth"'s second d, nearer its end than its start.
+        // In "Bandwidth"'s t, character 13, past its middle.
         let d = on(&drawn[0], 13) + vec2(4.0, 0.0);
         click(&mut w, &lines, d, 2);
         assert_eq!(w.selected(&lines).as_deref(), Some("Bandwidth"));
@@ -1031,6 +1296,69 @@ mod tests {
     }
 
     #[test]
+    fn held_after_three_presses_a_drag_goes_on_a_line_at_a_time() {
+        let lines: Vec<String> = ["one", "two", "three", "four"].map(String::from).into();
+        let mut w = Window::new();
+        let out = w.show(&lines, vec![]);
+        let drawn = drawn(&out);
+        let two = on(&drawn[1], 1);
+        w.show(&lines, vec![Event::PointerMoved(two)]);
+        for _ in 0..2 {
+            w.show(&lines, vec![press(two, true)]);
+            w.show(&lines, vec![press(two, false)]);
+        }
+        w.show(&lines, vec![press(two, true)]);
+        assert_eq!(w.selected(&lines).as_deref(), Some("two\n"));
+        // Down to the last line, whole; then up to the first, with the line
+        // pressed to its end.
+        for (to, said) in [(3, "two\nthree\nfour"), (0, "one\ntwo\n")] {
+            w.show(&lines, vec![Event::PointerMoved(on(&drawn[to], 2))]);
+            assert_eq!(w.selected(&lines).as_deref(), Some(said));
+        }
+        w.show(&lines, vec![press(on(&drawn[0], 2), false)]);
+        assert_eq!(w.selected(&lines).as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn a_box_that_fills_its_area_takes_a_press_past_its_lines() {
+        let lines: Vec<String> = ["one", "two", "three"].map(String::from).into();
+        for fills in [true, false] {
+            let ctx = egui::Context::default();
+            let pane = Pane {
+                fills,
+                ..Pane::default()
+            };
+            let mut time = 0.0;
+            let mut show = |events: Vec<Event>| {
+                time += 0.05;
+                let input = RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                run(&ctx, Some((&lines, pane)), both, input)
+            };
+            let out = show(vec![]);
+            let drawn = drawn(&out);
+            // Below the last line and right of the widest, in the box's room.
+            let past = pos2(400.0, 300.0);
+            show(vec![Event::PointerMoved(past)]);
+            show(vec![press(past, true)]);
+            show(vec![Event::PointerMoved(on(&drawn[0], 1))]);
+            show(vec![press(on(&drawn[0], 1), false)]);
+            let out = show(vec![Event::Copy]);
+            match fills {
+                true => assert_eq!(copied(&out).as_deref(), Some("ne\ntwo\nthree")),
+                // A box no bigger than its lines has no room past them.
+                false => {
+                    assert_eq!(copied(&out), None);
+                    assert_eq!(ctx.memory(|m| m.focused()), None);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_line_is_selected_where_its_glyphs_lie_whatever_their_widths() {
         // A file name as macOS keeps it, its é an e and a mark that takes
         // no room, and a tab four spaces wide, before the text pressed on.
@@ -1054,18 +1382,134 @@ mod tests {
         w.show(&lines, vec![Event::PointerMoved(end)]);
         let out = w.show(&lines, vec![press(end, false), Event::Copy]);
         assert_eq!(copied(&out).as_deref(), Some("opy"));
-        // Marked from the o, as its glyph lies.
+        // Marked from the o, as its glyph lies, to the pixel.
         let fill = egui::Visuals::dark().selection.bg_fill;
-        let marked = out.shapes.iter().find_map(|s| match &s.shape {
-            egui::Shape::Rect(r) if r.fill == fill => Some(r.rect),
-            _ => None,
-        });
-        assert_eq!(marked.map(|r| r.left()), Some(o.x));
+        let marked = fills(&out, fill);
+        assert!(
+            marked.len() == 1 && (marked[0].left() - o.x).abs() <= 0.5,
+            "{marked:?} from {o:?}"
+        );
         // Two presses on the name's t select its word, marks and all.
         w.time += 1.0;
         let t = lines[0].chars().position(|c| c == 't').unwrap();
         click(&mut w, &lines, on(line, t) + vec2(2.0, 0.0), 2);
         assert_eq!(w.selected(&lines).as_deref(), Some("e\u{301}te\u{301}"));
+    }
+
+    #[test]
+    fn a_selection_down_lines_is_filled_through_the_room_between_them() {
+        // Lines 3 points apart, as the Log's are farther.
+        let lines = rows(6, "00 11 22 33");
+        let ctx = egui::Context::default();
+        let show = |events: Vec<Event>, time: f64| {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let line = |i: usize| (lines[i].as_str(), Color32::WHITE);
+                let shown = Lines {
+                    count: lines.len(),
+                    line: &line,
+                    font: font(),
+                    gap: 3.0,
+                };
+                shown.show(ui, id(), ScrollArea::both());
+            });
+            out.textures_delta.clear();
+            out
+        };
+        let out = show(vec![], 0.0);
+        let at = on(&drawn(&out)[1], 6);
+        show(vec![Event::PointerMoved(at)], 0.05);
+        show(vec![press(at, true)], 0.1);
+        let to = on(&drawn(&out)[4], 9);
+        show(vec![Event::PointerMoved(to)], 0.15);
+        let out = show(vec![press(to, false)], 0.2);
+        let fill = egui::Visuals::dark().selection.bg_fill;
+        let marked = fills(&out, fill);
+        assert_eq!(marked.len(), 4, "{marked:?}");
+        for pair in marked.windows(2) {
+            assert_eq!(pair[0].bottom(), pair[1].top(), "{marked:?}");
+        }
+        // The last only as tall as its line.
+        let row = ctx.fonts_mut(|f| f.row_height(&font()));
+        assert!((marked[3].height() - row).abs() <= 1.0, "{marked:?}");
+    }
+
+    #[test]
+    fn on_a_solid_fill_a_selection_is_drawn_in_its_text_colour_and_the_log_keeps_its_own() {
+        let lines = rows(4, "00 11 22 33");
+        let themes = [
+            Choice::Light,
+            Choice::Dark,
+            Choice::Classic,
+            Choice::Blue,
+            Choice::Vintage,
+            Choice::Greaseweazle,
+        ];
+        for choice in themes {
+            // A sector window's bytes, and gw's output in the Log's box.
+            for log in [false, true] {
+                let ctx = egui::Context::default();
+                theme::install(&ctx);
+                theme::apply(&ctx, choice);
+                let show = |events: Vec<Event>, time: f64| {
+                    let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+                    let input = RawInput {
+                        screen_rect: Some(screen),
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    };
+                    let mut out = ctx.run_ui(input, |ui| {
+                        let line = |i: usize| (lines[i].as_str(), Color32::WHITE);
+                        let shown = Lines {
+                            count: lines.len(),
+                            line: &line,
+                            font: font(),
+                            gap: 0.0,
+                        };
+                        let area = ScrollArea::both().max_height(360.0);
+                        match log {
+                            true => theme::terminal(ui, |ui, _| shown.show(ui, id(), area)),
+                            false => shown.show(ui, id(), area),
+                        }
+                    });
+                    out.textures_delta.clear();
+                    out
+                };
+                let out = show(vec![], 0.0);
+                let at = on(&drawn(&out)[0], 2);
+                show(vec![Event::PointerMoved(at)], 0.05);
+                show(vec![press(at, true)], 0.1);
+                show(vec![press(at, false)], 0.15);
+                let out = show(vec![key(Key::A, Modifiers::COMMAND)], 0.2);
+                let over: Vec<(Rect, Option<Color32>)> = out
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.override_text_color.is_some() => {
+                            Some((s.clip_rect, t.override_text_color))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let selection = ctx.global_style().visuals.selection;
+                let classic = matches!(choice, Choice::Classic | Choice::Blue | Choice::Vintage);
+                let solid = classic && !log;
+                let at = format!("{choice:?}, in the Log's box {log}");
+                assert_eq!(over.len(), if solid { 4 } else { 0 }, "{at}");
+                // Each line's selected part, where the fill lies.
+                let marked = fills(&out, selection.bg_fill);
+                for (clip, ink) in &over {
+                    assert_eq!(*ink, Some(selection.stroke.color), "{at}");
+                    assert!(marked.contains(clip), "{at}: {clip:?} in {marked:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1138,12 +1582,15 @@ mod tests {
             let galley = pieces(offset);
             let chars: Vec<char> = long.chars().collect();
             let glyphs = &galley.rows[0].glyphs;
+            // Only the pieces that show are laid out.
+            assert!(glyphs.len() <= 2 * PIECE, "{offset}: {}", glyphs.len());
             // The piece's first character, as the whole line has it.
             let from = (0..chars.len())
                 .find(|&k| {
                     (whole.pos_from_cursor(CCursor::new(k)).min.x - glyphs[0].pos.x).abs() < 1.0
                 })
                 .expect("where the piece begins");
+            assert_eq!(from > 0, offset > 0.0, "{offset}: from {from}");
             for (i, g) in glyphs.iter().enumerate() {
                 assert_eq!(g.chr, chars[from + i]);
                 let x = whole.pos_from_cursor(CCursor::new(from + i)).min.x;
@@ -1157,46 +1604,81 @@ mod tests {
         }
     }
 
+    /// Shows `lines` as a box from its `first`th line, counting in `calls`
+    /// the lines it asks for; gives the widest it measured.
+    fn measured(
+        ctx: &egui::Context,
+        lines: &[String],
+        first: usize,
+        time: f64,
+        calls: &Cell<usize>,
+    ) -> f32 {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            time: Some(time),
+            ..Default::default()
+        };
+        calls.set(0);
+        let mut out = ctx.run_ui(input, |ui| {
+            let line = |i: usize| {
+                calls.set(calls.get() + 1);
+                (lines[i].as_str(), Color32::WHITE)
+            };
+            let shown = Lines {
+                count: lines.len(),
+                line: &line,
+                font: font(),
+                gap: 0.0,
+            };
+            let pane = Pane {
+                first,
+                ..Pane::default()
+            };
+            shown.show_as(ui, id(), ScrollArea::both().max_height(360.0), pane);
+        });
+        out.textures_delta.clear();
+        ctx.data(|d| d.get_temp::<State>(id())).unwrap().widest
+    }
+
     #[test]
     fn only_new_lines_are_measured_and_all_again_once_they_move_up() {
         let mut lines: Vec<String> = (0..20_000).map(|i| format!("T{i}.0: read")).collect();
         lines[0] = "A line wider than any after it".repeat(4);
         let calls = Cell::new(0);
         let ctx = egui::Context::default();
-        let run = |lines: &[String], time: f64| -> f32 {
-            let input = RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-                time: Some(time),
-                ..Default::default()
-            };
-            calls.set(0);
-            let mut out = ctx.run_ui(input, |ui| {
-                let line = |i: usize| {
-                    calls.set(calls.get() + 1);
-                    (lines[i].as_str(), Color32::WHITE)
-                };
-                let shown = Lines {
-                    count: lines.len(),
-                    line: &line,
-                    font: font(),
-                    gap: 0.0,
-                };
-                shown.show(ui, id(), ScrollArea::both().max_height(360.0));
-            });
-            out.textures_delta.clear();
-            ctx.data(|d| d.get_temp::<State>(id())).unwrap().widest
-        };
-        let widest = run(&lines, 0.0);
+        let widest = measured(&ctx, &lines, 0, 0.0, &calls);
         assert!(calls.get() >= 20_000);
-        assert_eq!(run(&lines, 0.05), widest);
+        assert_eq!(measured(&ctx, &lines, 0, 0.05, &calls), widest);
         assert!(calls.get() < 100, "{} lines asked for", calls.get());
         // A line more, as a log takes one.
         lines.push("T20000.0: read".into());
-        assert_eq!(run(&lines, 0.1), widest);
+        assert_eq!(measured(&ctx, &lines, 0, 0.1, &calls), widest);
         assert!(calls.get() < 100, "{} lines asked for", calls.get());
-        // The widest dropped, as a log past its most lines drops its oldest.
+        // The widest gone, the lines after it moved up with no word of it.
         lines.remove(0);
-        let narrower = run(&lines, 0.15);
+        let narrower = measured(&ctx, &lines, 0, 0.15, &calls);
+        assert!(calls.get() >= 20_000, "measured again");
+        assert!(narrower < widest / 2.0, "{narrower} of {widest}");
+    }
+
+    #[test]
+    fn a_log_dropping_its_oldest_measures_only_its_new_lines_until_the_widest_goes() {
+        let log = |first: usize| -> Vec<String> {
+            let line = |n: usize| match n {
+                10 => "A line wider than any after it".repeat(4),
+                n => format!("T{n}.0: read"),
+            };
+            (first..first + 20_000).map(line).collect()
+        };
+        let calls = Cell::new(0);
+        let ctx = egui::Context::default();
+        let widest = measured(&ctx, &log(0), 0, 0.0, &calls);
+        assert!(calls.get() >= 20_000);
+        // Five dropped and five more: the widest still held.
+        assert_eq!(measured(&ctx, &log(5), 5, 0.05, &calls), widest);
+        assert!(calls.get() < 100, "{} lines asked for", calls.get());
+        // The widest dropped too: all of them again.
+        let narrower = measured(&ctx, &log(11), 11, 0.1, &calls);
         assert!(calls.get() >= 20_000, "measured again");
         assert!(narrower < widest / 2.0, "{narrower} of {widest}");
     }
@@ -1247,5 +1729,111 @@ mod tests {
         let state = ctx.data(|d| d.get_temp::<State>(id())).unwrap();
         let s = state.selection.unwrap();
         assert_eq!(s.range().1.line, 63, "the box scrolled down");
+    }
+
+    #[test]
+    fn held_past_its_end_a_dragged_selection_asks_for_no_more_frames() {
+        let lines = rows(64, "00 11 22 33");
+        let mut w = Window::new();
+        let out = w.show(&lines, vec![]);
+        let from = on(&drawn(&out)[0], 2);
+        w.show(&lines, vec![Event::PointerMoved(from)]);
+        w.show(&lines, vec![press(from, true)]);
+        // Held below the box: it scrolls to its end, then waits.
+        w.show(&lines, vec![Event::PointerMoved(pos2(100.0, 500.0))]);
+        let waits = |out: &FullOutput| {
+            let root = &out.viewport_output[&egui::ViewportId::ROOT];
+            !root.repaint_delay.is_zero()
+        };
+        let mut frames = 0;
+        while !waits(&w.show(&lines, vec![])) {
+            frames += 1;
+            assert!(frames < 200, "still scrolling");
+        }
+        let state = w.ctx.data(|d| d.get_temp::<State>(id())).unwrap();
+        assert!(state.most.y > 0.0);
+        assert_eq!(state.offset.y, state.most.y, "at its end");
+        assert_eq!(state.selection.unwrap().range().1.line, 63);
+        assert!(waits(&w.show(&lines, vec![])), "and stays");
+    }
+
+    #[test]
+    fn a_named_box_is_named_to_screen_readers() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let lines = rows(3, "00 11 22 33");
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(400.0, 200.0))
+            .build_ui(|ui| {
+                let line = |i: usize| (lines[i].as_str(), Color32::WHITE);
+                let shown = Lines {
+                    count: lines.len(),
+                    line: &line,
+                    font: font(),
+                    gap: 0.0,
+                };
+                let pane = Pane {
+                    name: "Sector bytes",
+                    ..Pane::default()
+                };
+                shown.show_as(ui, id(), ScrollArea::both(), pane);
+            });
+        harness.run();
+        let named = harness.get_by_label("Sector bytes");
+        let role = named.accesskit_node().role();
+        assert_eq!(role, egui::accesskit::Role::Unknown);
+        // Its lines, each a label.
+        harness.get_by_label("0010  00 11 22 33");
+    }
+
+    /// `word` as it was: from the line's characters and their classes, all
+    /// of them collected.
+    fn collected(text: &str, k: usize) -> (usize, usize) {
+        let chars: Vec<char> = text.chars().collect();
+        let mut classes = Vec::with_capacity(chars.len());
+        for &c in &chars {
+            let of = match classes.last() {
+                Some(&before) if combining(c) => before,
+                _ => class(c),
+            };
+            classes.push(of);
+        }
+        let Some(&of) = classes.get(k) else {
+            return (k, k);
+        };
+        let marks =
+            |from: usize| from + chars[from..].iter().take_while(|&&c| combining(c)).count();
+        let base = chars[..=k]
+            .iter()
+            .rposition(|&c| !combining(c))
+            .unwrap_or(0);
+        if of == Class::Other {
+            return (base, marks(base + 1));
+        }
+        let from = classes[..k].iter().rposition(|&c| c != of);
+        let to = classes[k..].iter().position(|&c| c != of);
+        (from.map_or(0, |i| i + 1), to.map_or(chars.len(), |i| k + i))
+    }
+
+    #[test]
+    fn a_word_is_found_going_out_from_its_character_as_from_the_whole_line() {
+        let texts = [
+            "",
+            "a",
+            "Write Bandwidth:  7.66",
+            "  x  ",
+            "e\u{301}te\u{301}.adf",
+            "\u{301}\u{301}ab cd",
+            "\u{301}",
+            "\u{301} \u{301}",
+            "a\u{301}\u{301} b\u{20D0}",
+            ":\u{301}:x_y",
+            "日本語 🙂 é \u{FE20}x",
+            "T0.0 <- Image 1.0: AmigaDOS (2/2 sectors)",
+        ];
+        for text in texts {
+            for k in 0..=count(text) + 1 {
+                assert_eq!(word(text, k), collected(text, k), "{text:?} at {k}");
+            }
+        }
     }
 }

@@ -406,6 +406,12 @@ impl SessionLog {
         self.trimmed
     }
 
+    /// How many lines have gone from the log's start, dropped or cleared:
+    /// the first line's number, counted from the session's first.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
     /// Empties the log. A job still running goes on under its heading again.
     pub fn clear(&mut self) {
         self.dropped += self.lines.len();

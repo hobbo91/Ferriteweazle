@@ -6,7 +6,7 @@ use crate::diskmap;
 use crate::filemap;
 use crate::form::{self, Form, Output};
 use crate::job::{DETECT, Job, Outcome, SessionLog};
-use crate::lines::Lines;
+use crate::lines::{Lines, Pane};
 use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
@@ -5129,12 +5129,22 @@ fn output(ui: &mut Ui, shown: Shown) -> (bool, Option<String>) {
             let area = egui::ScrollArea::both()
                 .id_salt("log")
                 .stick_to_bottom(true)
-                .auto_shrink([false, false])
                 .max_height(height)
                 // A drawer's sideways bar fits inside its height: added to
                 // it, the drawer would open that much taller every frame.
                 .min_scrolled_height(if drawer { 0.0 } else { height });
-            lines.show(ui, ui.id().with("log lines"), area);
+            // The Log's lines are numbered past those it dropped, so that a
+            // selection keeps to its lines as the oldest go.
+            let first = match shown {
+                Shown::Log(log, _) => log.dropped(),
+                Shown::Job(_) => 0,
+            };
+            let pane = Pane {
+                name: heading,
+                first,
+                fills: true,
+            };
+            lines.show_as(ui, ui.id().with("log lines"), area, pane);
         });
     });
     (clear, unsaved)

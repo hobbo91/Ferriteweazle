@@ -5068,7 +5068,7 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
     w.run();
     w.get_by_label("Sector 3 · 512 bytes");
     w.get_by_label("31E00–31FFF · cylinder 18, side 0");
-    w.get_by_label("gw's filler: the sector did not read");
+    w.get_by_label("gw's filler: the sector did not decode");
     // A click shows the filler as the file holds it, numbered from where it lies.
     w.drag_at(lost);
     w.run();
@@ -5119,7 +5119,9 @@ fn image_analysis_says_where_gw_is_with_the_file_and_counts_what_its_sectors_hol
     running.ended = None;
     running.progress.current = Some((41, 0));
     let w = shown("read", running);
-    w.get_by_label("Workbench.adf · 901,120 bytes · Being made: gw writes it when it finishes");
+    w.get_by_label(
+        "Workbench.adf · 901,120 bytes as laid out · Being made: gw writes it when it finishes",
+    );
     w.get_by_label("Data 913");
     w.get_by_label("To do 847");
     // The track gw last reported marked, as the disk view rings it.

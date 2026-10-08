@@ -22,8 +22,8 @@ pub struct Map<'a> {
     pub converts: bool,
 }
 
-/// A row's height, at most and at least, in points: past that, the file
-/// runs on in another column.
+/// A row's height at most, in points, and the least before the file runs
+/// on in another column, where the width holds one.
 const ROW_MOST: f32 = 12.0;
 const ROW_LEAST: f32 = 4.0;
 /// A column's rows' width at least, in points, and in pixels for each of
@@ -88,8 +88,8 @@ fn extension(file: &str) -> Option<String> {
 pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     let p = theme::palette(ui);
     let look = Look::of(p, Media::Fit);
-    let job = job(map);
-    let Some(placed) = map.image.placed(job.as_ref()) else {
+    let work = job(map);
+    let Some(placed) = map.image.placed(work.as_ref()) else {
         ui.label(RichText::new(header(map)).small().color(p.dim));
         let text = "Not as laid out: gw wrote the file another way.";
         ui.label(RichText::new(text).color(p.partial));
@@ -104,7 +104,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     let legend = ui.data(|d| d.get_temp(legend_id)).unwrap_or(LEGEND);
     let room = ui.available_size();
     let under = ui.spacing().item_spacing.y + legend;
-    let digits = hex_digits(map.image.bytes().unwrap_or(0));
+    let digits = offset_digits(map.image, &placed);
     let font = FontId::monospace(OFFSET_SIZE);
     let label = ui.fonts_mut(|f| f.glyph_width(&font, '0')) * digits as f32 + OFFSET_GAP;
     // The disks' room, or with none, as wide and tall as there is.
@@ -148,18 +148,18 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
     let marks = ui.painter_at(area.expand(2.0));
     // An offset's digits from the top of the row it names.
     let ink = offset_ink(ui, &font);
-    for (grid, opacity) in &layers {
+    for (layer, opacity) in &layers {
         for (i, track) in placed.iter().enumerate() {
-            let row = grid.row(i);
+            let row = layer.row(i);
             for (part, at, state) in &track.parts {
                 let cell = drawn(row, track, *at, part.len, widest, ppp);
-                let mut colour = colour(*state, &look, p);
+                let mut fill = colour(*state, &look, p);
                 if !track.kept {
-                    colour = colour.gamma_multiply(0.5);
+                    fill = fill.gamma_multiply(0.5);
                 }
-                painter.rect_filled(cell, 0.0, colour.gamma_multiply(*opacity));
+                painter.rect_filled(cell, 0.0, fill.gamma_multiply(*opacity));
             }
-            if (i % grid.rows).is_multiple_of(grid.every) {
+            if (i % layer.rows).is_multiple_of(layer.every) {
                 let at = egui::pos2(row.left() - OFFSET_GAP, row.top() - ink);
                 let text = format!("{:0digits$X}", track.start);
                 let colour = p.dim.gamma_multiply(*opacity);
@@ -168,7 +168,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         }
     }
     // Where gw is in the image while it works, as the disk view rings it.
-    let current = job.as_ref().and_then(|j| j.current(map.image.role));
+    let current = work.as_ref().and_then(|j| j.current(map.image.role));
     let reported = placed
         .iter()
         .zip(&rows)
@@ -209,22 +209,21 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         }
     }
     window(ui.ctx(), map, &placed, digits);
-    // The legend where the disk view's is, under the rows' first column; as
-    // wide as from there with a column for each side, however many more
-    // the room gives the rows: its height sets the rows' room, which sets
-    // how many columns there are, and they where the legend begins.
+    // The legend under the first column, as wide as a column a side would
+    // reach: its height sets the rows' room, so its width must not hang on
+    // the columns that room gives.
     let top = area.bottom();
     let fewest = Grid::with(&plan, picture, ppp, plan.sides);
     let wide = area.right() - fewest.origin.x;
-    let left = grid.origin.x.min(area.right() - wide);
-    let drawn = ui.scope_builder(
+    let left = grid.origin.x.min(fewest.origin.x);
+    let key = ui.scope_builder(
         egui::UiBuilder::new().max_rect(Rect::from_min_max(
             egui::pos2(left, top + 6.0),
             egui::pos2(left + wide, top + 6.0 + ui.available_height().max(0.0)),
         )),
         |ui| legend_rows(ui, map, &placed, reported.is_some(), &look, p),
     );
-    let height = drawn.response.rect.bottom() - top;
+    let height = key.response.rect.bottom() - top;
     if (height - legend).abs() > 0.5 {
         ui.data_mut(|d| d.insert_temp(legend_id, height));
         ui.ctx().request_repaint();
@@ -258,9 +257,18 @@ fn header_parts(map: &Map) -> (String, String) {
                 .map_or(f.to_owned(), |n| n.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| image.kind.clone());
-    let size = image
-        .bytes()
-        .map(|b| format!("{} bytes", surface::grouped(b)));
+    // gw empties a file it makes as it begins and fills it as it finishes,
+    // or on an error deletes it: till then its size is only the layout's,
+    // while gw works, and none once it stops.
+    let unwritten = image.role == Role::Made && image.written.is_none();
+    let size = image.bytes().and_then(|b| {
+        let bytes = surface::grouped(b);
+        match (unwritten, map.running) {
+            (false, _) => Some(format!("{bytes} bytes")),
+            (true, true) => Some(format!("{bytes} bytes as laid out")),
+            (true, false) => None,
+        }
+    });
     let unread = image
         .unread()
         .map(|n| format!("{} past the layout", surface::grouped(n)));
@@ -411,10 +419,9 @@ impl Grid {
     }
 }
 
-/// `width` on whole pixels, as many as a whole number for each of `units`
-/// where it has a pixel for each: then each part, as many units, is a
-/// whole number of pixels wide, and parts alike are alike. Fewer, unless
-/// that is narrower than `least` and more is no wider than `most`.
+/// `width` cut to whole pixels, a whole number for each of `units` where
+/// there is a pixel for each, so parts alike are drawn alike; a unit's
+/// worth more where the cut is under `least` and that fits `most`.
 fn uniform(width: f32, (least, most): (f32, f32), units: u64, ppp: f32) -> f32 {
     let pixels = (width * ppp).floor().max(1.0);
     let units = units.max(1) as f32;
@@ -429,8 +436,7 @@ fn uniform(width: f32, (least, most): (f32, f32), units: u64, ppp: f32) -> f32 {
     }
 }
 
-/// How many units the widest track's bytes, `widest`, make: of the most
-/// bytes every part's length is a multiple of.
+/// `widest` in units of the parts' lengths' greatest common divisor.
 fn units(placed: &[Placed], widest: u64) -> u64 {
     let gcd = |mut a: u64, mut b: u64| {
         while b != 0 {
@@ -547,7 +553,9 @@ fn state_text(state: State, map: &Map) -> &'static str {
         State::Data if converts => "Data from the input",
         State::Data => "Data from the disk",
         State::Filler if source => "gw's filler, in the file",
+        State::Filler if converts => "gw's filler: the sector did not decode",
         State::Filler => "gw's filler: the sector did not read",
+        State::Unread if converts => "gw's filler: the track was not converted",
         State::Unread => "gw's filler: the track was not read",
         State::ToDo if converts => "To convert",
         State::ToDo => "To read",
@@ -689,6 +697,14 @@ fn hex_digits(size: u64) -> usize {
     ((u64::BITS - last.leading_zeros()).div_ceil(4).max(4)) as usize
 }
 
+/// How many hex digits the offsets into `image` need: to the end of its
+/// file or of its tracks as `placed`, whichever is further, as a source
+/// shorter than its layout has tracks past its end.
+fn offset_digits(image: &Image, placed: &[Placed]) -> usize {
+    let end = placed.iter().map(|t| t.start + t.len).max().unwrap_or(0);
+    hex_digits(end.max(image.bytes().unwrap_or(0)))
+}
+
 /// The key to what the parts hold, with how many of each, and while gw
 /// works, the mark on the track it last reported, where it is drawn.
 fn legend_rows(
@@ -722,6 +738,7 @@ fn legend_rows(
             let name = match state {
                 State::Data => "Data",
                 State::Filler => "Filler",
+                State::Unread if map.converts => "Not converted",
                 State::Unread => "Not read",
                 State::PastEnd => "Past the end",
                 State::ToDo => "To do",
@@ -731,25 +748,36 @@ fn legend_rows(
                 Mark::Swatch(colour(state, look, p)),
                 &format!("{name} {n}"),
             );
+            // Its fillers found only once the tip shows.
             if state == State::Filler {
-                let text = fillers(map.image, placed);
-                entry.on_hover_text(match map.image.role {
-                    Role::Made => format!("gw's {text} in place of a sector it could not read"),
-                    Role::Source => format!("gw's {text}: gw takes it as the sector's data"),
+                entry.on_hover_ui(|ui| {
+                    ui.set_max_width(ui.spacing().tooltip_width);
+                    ui.label(filler_tip(map, placed));
                 });
             }
         }
         if reported {
             surface::key(ui, Mark::Frame(look.last), "Last reported");
         }
-        if placed.iter().any(|t| !t.kept) {
-            ui.label(
-                RichText::new("Faint: written up to the last cylinder holding data")
-                    .small()
-                    .weak(),
+        let least = map.image.layout.as_ref().and_then(|l| l.min_cyls);
+        if let Some(least) = least.filter(|_| placed.iter().any(|t| !t.kept)) {
+            let text = format!(
+                "Faint: left out: gw writes cylinders past the first {least} only up to the last holding data"
             );
+            ui.label(RichText::new(text).small().weak());
         }
     });
+}
+
+/// What the legend's Filler says on hover: the fillers the parts of gw's
+/// filler hold, and why they hold them.
+fn filler_tip(map: &Map, placed: &[Placed]) -> String {
+    let text = fillers(map.image, placed);
+    match (map.image.role, map.converts) {
+        (Role::Made, false) => format!("gw's {text} in place of a sector it could not read"),
+        (Role::Made, true) => format!("gw's {text} in place of a sector it could not decode"),
+        (Role::Source, _) => format!("gw's {text}: gw takes it as the sector's data"),
+    }
 }
 
 /// The fillers the image's parts of gw's filler hold, in turn, each as its
@@ -911,7 +939,7 @@ mod tests {
 
     #[test]
     fn parts_alike_are_drawn_alike() {
-        // 18 parts in 660 pixels: 36 and 37 wide by turns, drawn as they fell.
+        // A disk 660 pixels across: the column takes 648, 36 for each part.
         let plan = Plan {
             tracks: 160,
             sides: 2,
@@ -956,8 +984,8 @@ mod tests {
 
     #[test]
     fn the_legends_filler_names_each_filler_the_parts_hold() {
-        // Sectors of two sizes, gw's filler for each; the second filler
-        // held by no part of gw's filler.
+        // Sectors of three sizes, each its filler; the third's read, so its
+        // filler goes unnamed.
         let hex = |b: &[u8]| -> String { b.iter().map(|b| format!("{b:02x}")).collect() };
         let bad = b"-=[BAD SECTOR]=-";
         let open = serde_json::json!({
@@ -1020,19 +1048,22 @@ mod tests {
         progress
     }
 
+    /// The texts a frame drew, and where.
+    type Texts = Vec<(String, Rect)>;
+
     /// The image view of `map` in a drawer's room `size`, the disks
     /// `disks` across, for `frames` frames a 60th of a second apart: the
-    /// texts the last drew, and where, and whether any of its last five
-    /// asked for more.
+    /// texts the last drew, and where, and those the one before it drew;
+    /// and whether any of its last five asked for more.
     fn view(
         map: &Map,
         size: egui::Vec2,
         disks: Option<Place>,
         frames: usize,
-    ) -> (Vec<(String, Rect)>, bool) {
+    ) -> (Texts, Texts, bool) {
         let ctx = egui::Context::default();
         let mut busy = Vec::new();
-        let mut texts = Vec::new();
+        let (mut texts, mut before) = (Vec::new(), Vec::new());
         for frame in 0..frames {
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1200.0))),
@@ -1048,6 +1079,7 @@ mod tests {
             out.textures_delta.clear();
             let root = &out.viewport_output[&egui::ViewportId::ROOT];
             busy.push(root.repaint_delay.is_zero());
+            before = std::mem::take(&mut texts);
             texts = out
                 .shapes
                 .iter()
@@ -1059,16 +1091,14 @@ mod tests {
                 })
                 .collect();
         }
-        (texts, busy.iter().rev().take(5).any(|&b| b))
+        (texts, before, busy.iter().rev().take(5).any(|&b| b))
     }
 
     #[test]
     fn the_columns_and_the_legend_settle_whatever_the_room() {
-        // The legend's height sets the rows' room, which sets how many
-        // columns they run in, which set where the legend begins. Wrapped
-        // in what was left across from there, the legend took another line
-        // with each column fewer and gave it back with one more: in these
-        // rooms, each frame. Single-sided files, as a D64 is.
+        // The legend's height sets the columns, which set where the legend
+        // wraps: in these rooms they once changed each other every frame.
+        // Single-sided files, as a D64 is.
         let rooms = [
             (40, 1, 30, 800.0, 160.0, 200.0),
             (40, 1, 30, 600.0, 330.0, 204.0),
@@ -1093,11 +1123,10 @@ mod tests {
                 width: sides as f32 * diameter + 32.0 * (sides as f32 - 1.0),
             };
             let size = vec2(width, height);
-            let (_, busy) = view(&map, size, Some(disks), 30);
-            assert!(
-                !busy,
-                "{tracks} tracks in {size:?}, disks {diameter} across"
-            );
+            let (texts, before, busy) = view(&map, size, Some(disks), 30);
+            let room = format!("{tracks} tracks in {size:?}, disks {diameter} across");
+            assert!(!busy, "{room}");
+            assert_eq!(texts, before, "{room}");
         }
     }
 
@@ -1113,17 +1142,19 @@ mod tests {
                 running: true,
                 converts: false,
             };
-            let (texts, _) = view(&map, size, None, 3);
+            let (texts, _, _) = view(&map, size, None, 3);
             let named_it = texts.iter().any(|(t, _)| t == "Last reported");
             assert_eq!(named_it, named, "{texts:?}");
-            assert!(texts.iter().any(|(t, _)| t.starts_with("Faint: ")));
+            // Cylinders 40 on hold no data yet: gw would leave them out.
+            let faint = "Faint: left out: gw writes cylinders past the first 40 only up to the last holding data";
+            assert!(texts.iter().any(|(t, _)| t == faint), "{texts:?}");
         }
     }
 
     #[test]
     fn a_name_too_long_for_the_line_over_the_rows_is_cut_in_the_middle() {
         let mut image = made(160, 2, 40);
-        let name = format!("{}Disk 1.adf", "Workbench 3.1 Install ".repeat(6));
+        let name = format!("{}Disk 1.adf", "A Long Name for a Floppy ".repeat(6));
         image.file = Some(format!("/Users/you/Floppies/{name}"));
         let progress = reading(&image, (5, 0));
         let map = Map {
@@ -1133,14 +1164,14 @@ mod tests {
             converts: false,
         };
         let size = vec2(700.0, 400.0);
-        let (texts, _) = view(&map, size, None, 3);
+        let (texts, _, _) = view(&map, size, None, 3);
         // 40 cylinders: those gw writes at least, holding data past none of them.
-        let rest = " · 450,560 bytes · Being made: gw writes it when it finishes";
+        let rest = " · 450,560 bytes as laid out · Being made: gw writes it when it finishes";
         let (line, at) = texts
             .iter()
             .find(|(t, _)| t.ends_with(rest))
             .expect("the line over the rows");
-        let ends = line.starts_with("Workbench 3.1") && line.contains("Disk 1.adf · ");
+        let ends = line.starts_with("A Long Name") && line.contains("Disk 1.adf · ");
         assert!(ends && line.contains('…'), "{line}");
         assert!(at.right() <= size.x, "{at:?}");
         // A name that fits is whole.
@@ -1150,7 +1181,7 @@ mod tests {
             image: &short,
             ..map
         };
-        let (texts, _) = view(&map, size, None, 3);
+        let (texts, _, _) = view(&map, size, None, 3);
         let whole = format!("Workbench.adf{rest}");
         assert!(texts.iter().any(|(t, _)| *t == whole));
     }
@@ -1186,6 +1217,245 @@ mod tests {
         ] {
             progress.image(&open(file, kind));
             assert_eq!(shown(&progress).err().as_deref(), Some(said));
+        }
+    }
+
+    #[test]
+    fn the_view_shows_the_image_a_job_makes_where_gw_lays_it_out_else_the_one_it_takes() {
+        let open = |role: &str, file: &str, laid: bool| {
+            let layout = laid.then(|| {
+                let sector = serde_json::json!({"i": 0, "id": null, "len": 512, "fill": 0});
+                let track = serde_json::json!({"c": 0, "h": 0, "sectors": [sector]});
+                serde_json::json!({"tracks": [track], "fillers": ["e5"], "min_cyls": null})
+            });
+            let open = serde_json::json!({
+                "event": "open", "role": role, "file": file, "type": "IMG", "layout": layout
+            });
+            open.to_string()
+        };
+        let file = |progress: &Progress| shown(progress).map(|i| i.file.clone().unwrap());
+        // A conversion's two images, both laid out: the one it makes.
+        let mut progress = Progress::default();
+        progress.image(&open("source", "In.img", true));
+        progress.image(&open("made", "Out.img", true));
+        assert_eq!(file(&progress).as_deref(), Ok("Out.img"));
+        // The one it makes kept as flux: the one it takes its tracks from.
+        progress.image(&open("made", "Out.scp", false));
+        assert_eq!(file(&progress).as_deref(), Ok("In.img"));
+        // Neither laid out: why not, of the one it makes.
+        progress.image(&open("source", "In.ipf", false));
+        let why = "Not mapped: .scp holds flux, not sectors.";
+        assert_eq!(file(&progress), Err(why.to_owned()));
+        // A write's: only the one it takes them from.
+        let mut progress = Progress::default();
+        progress.image(&open("source", "In.img", true));
+        assert_eq!(file(&progress).as_deref(), Ok("In.img"));
+    }
+
+    #[test]
+    fn a_point_names_the_part_under_it_as_the_rows_are_drawn() {
+        // A track of two sectors, then one of one, rows 100 points wide.
+        let first = alike(2);
+        let mut second = alike(1);
+        second.key = (1, 0);
+        second.start = 1024;
+        second.parts[0].1 = 1024;
+        let placed = [first, second];
+        let rows = [
+            Rect::from_min_size(egui::pos2(10.0, 0.0), vec2(100.0, 6.0)),
+            Rect::from_min_size(egui::pos2(10.0, 6.0), vec2(100.0, 6.0)),
+        ];
+        let under = |x: f32, y: f32| hit(&rows, &placed, 1024, egui::pos2(x, y));
+        assert_eq!(under(10.0, 3.0), Some((0, 0)));
+        assert_eq!(under(59.9, 3.0), Some((0, 0)));
+        assert_eq!(
+            under(60.0, 3.0),
+            Some((0, 1)),
+            "the second sector's first byte"
+        );
+        assert_eq!(under(30.0, 9.0), Some((1, 0)));
+        // Past the shorter track's bytes, before the rows, and below them.
+        assert_eq!(under(70.0, 9.0), None);
+        assert_eq!(under(5.0, 3.0), None);
+        assert_eq!(under(30.0, 20.0), None);
+        // In a file's rows as the view lays them out, each part's middle as
+        // drawn names that part.
+        let image = made(160, 2, 40);
+        let placed = image.placed(None).unwrap();
+        let widest = placed.iter().map(|t| t.len).max().unwrap();
+        let plan = Plan {
+            units: units(&placed, widest),
+            ..layout(None)
+        };
+        let room = Rect::from_min_size(Pos2::ZERO, vec2(700.0, 400.0));
+        let grid = Grid::new(&plan, room, 2.0);
+        let rows: Vec<Rect> = (0..placed.len()).map(|i| grid.row(i)).collect();
+        for (t, track) in placed.iter().enumerate() {
+            for (k, (part, at, _)) in track.parts.iter().enumerate() {
+                let cell = drawn(rows[t], track, *at, part.len, widest, 2.0);
+                let named = hit(&rows, &placed, widest, cell.center());
+                assert_eq!(named, Some((t, k)), "{cell:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_line_over_the_rows_gives_a_size_only_for_a_file_there_is() {
+        let image = made(160, 2, 40);
+        let progress = reading(&image, (5, 0));
+        let running = Map {
+            progress: Some(&progress),
+            image: &image,
+            running: true,
+            converts: false,
+        };
+        // gw makes the file as it finishes: till then the size is the
+        // layout's, and once it stops, none.
+        assert_eq!(
+            header(&running),
+            "Disk.adf · 450,560 bytes as laid out · Being made: gw writes it when it finishes"
+        );
+        let stopped = Map {
+            running: false,
+            ..running
+        };
+        assert_eq!(header(&stopped), "Disk.adf · Not written");
+        let mut written = image.clone();
+        written.take(&serde_json::json!({"event": "written", "size": 450_560, "tracks": null}));
+        let done = Map {
+            image: &written,
+            ..stopped
+        };
+        assert_eq!(header(&done), "Disk.adf · 450,560 bytes · Written by gw");
+        // A source's is its file's.
+        let mut source = image.clone();
+        source.role = Role::Source;
+        source.size = Some(901_120);
+        let before = Map {
+            progress: None,
+            image: &source,
+            running: false,
+            converts: false,
+        };
+        assert_eq!(header(&before), "Disk.adf · 901,120 bytes · As gw reads it");
+    }
+
+    #[test]
+    fn a_source_shorter_than_its_layout_has_offsets_as_long_as_the_layouts_end_needs() {
+        // An ADF's 901,120 bytes laid out over a file of 61,440.
+        let mut image = made(160, 2, 40);
+        image.role = Role::Source;
+        image.size = Some(61_440);
+        let placed = image.placed(None).unwrap();
+        assert_eq!(hex_digits(61_440), 4);
+        assert_eq!(offset_digits(&image, &placed), 5);
+        // Each drawn whole in the room, track 12's 10800 too.
+        let map = Map {
+            progress: None,
+            image: &image,
+            running: false,
+            converts: false,
+        };
+        let (texts, _, _) = view(&map, vec2(500.0, 400.0), None, 3);
+        let offsets: Vec<&(String, Rect)> = texts
+            .iter()
+            .filter(|(t, _)| t.len() == 5 && u64::from_str_radix(t, 16).is_ok())
+            .collect();
+        assert!(offsets.iter().any(|(t, _)| t == "10800"), "{texts:?}");
+        for (text, at) in offsets {
+            assert!(at.left() >= -0.5, "{text} at {at:?}");
+        }
+    }
+
+    #[test]
+    fn a_conversion_says_its_filler_is_for_what_it_did_not_decode_or_convert() {
+        let image = made(160, 2, 40);
+        let progress = reading(&image, (5, 0));
+        let placed = image.placed(None).unwrap();
+        let said = [
+            (
+                false,
+                "did not read",
+                "was not read",
+                "could not read",
+                "Not read ",
+            ),
+            (
+                true,
+                "did not decode",
+                "was not converted",
+                "could not decode",
+                "Not converted ",
+            ),
+        ];
+        for (converts, sector, track, could, legend) in said {
+            let map = Map {
+                progress: Some(&progress),
+                image: &image,
+                running: false,
+                converts,
+            };
+            let filler = format!("gw's filler: the sector {sector}");
+            assert_eq!(state_text(State::Filler, &map), filler);
+            let unread = format!("gw's filler: the track {track}");
+            assert_eq!(state_text(State::Unread, &map), unread);
+            let tip = format!("gw's -=[BAD SECTOR]=- × 32 in place of a sector it {could}");
+            assert_eq!(filler_tip(&map, &placed), tip);
+            let (texts, _, _) = view(&map, vec2(900.0, 400.0), None, 3);
+            assert!(
+                texts.iter().any(|(t, _)| t.starts_with(legend)),
+                "{texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_legends_filler_names_its_fillers_once_hovered() {
+        let image = made(160, 2, 40);
+        let progress = reading(&image, (5, 0));
+        let map = Map {
+            progress: Some(&progress),
+            image: &image,
+            running: false,
+            converts: false,
+        };
+        let tip = "gw's -=[BAD SECTOR]=- × 32 in place of a sector it could not read";
+        let ctx = egui::Context::default();
+        let mut entry = None;
+        for frame in 0..60 {
+            let events = match (frame, entry) {
+                (5, Some(at)) => vec![egui::Event::PointerMoved(at)],
+                _ => vec![],
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1200.0))),
+                time: Some(frame as f64 / 30.0),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let room = Rect::from_min_size(Pos2::ZERO, vec2(900.0, 400.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
+                    show(ui, &map, None)
+                });
+            });
+            out.textures_delta.clear();
+            let texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_owned(), t.visual_bounding_rect()))
+                }
+                _ => None,
+            });
+            let texts: Texts = texts.collect();
+            let tipped = texts.iter().any(|(t, _)| t == tip);
+            match frame {
+                ..=5 => assert!(!tipped, "not before it is hovered"),
+                59 => assert!(tipped, "{texts:?}"),
+                _ => {}
+            }
+            // Where the entry lies once the legend has settled.
+            let filler = texts.iter().find(|(t, _)| t.starts_with("Filler "));
+            entry = filler.map(|(_, at)| at.center());
         }
     }
 }
