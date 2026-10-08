@@ -2798,7 +2798,7 @@ impl App {
             }
         }
         Err(match DISK_COMMANDS.contains(&page) {
-            true => idle_status(page),
+            true => unanalysed(page),
             false => NO_DISK_JOB,
         }
         .to_owned())
@@ -4518,6 +4518,16 @@ fn idle_status(page: &str) -> &'static str {
         "erase" => "No disk erased yet",
         "convert" => "No image converted yet",
         _ => "No disk read yet",
+    }
+}
+
+/// Why Analyse is greyed on `page` before any job: on a write's and a
+/// conversion's page, the image the page names would show too.
+fn unanalysed(page: &str) -> &'static str {
+    match page {
+        "write" => "No disk written or image chosen yet",
+        "convert" => "No image chosen or converted yet",
+        _ => idle_status(page),
     }
 }
 

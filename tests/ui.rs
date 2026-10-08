@@ -4456,6 +4456,33 @@ fn analyse_is_greyed_with_the_status_panes_line_until_it_has_a_disk_to_show() {
 }
 
 #[test]
+fn analyse_greyed_on_a_write_or_a_conversion_says_an_image_would_show_too() {
+    for (page, said, status) in [
+        (
+            "write",
+            "No disk written or image chosen yet",
+            "No disk written yet",
+        ),
+        (
+            "convert",
+            "No image chosen or converted yet",
+            "No image converted yet",
+        ),
+    ] {
+        let mut w = window(Settings {
+            page: Page::Command(page.into()),
+            ..chosen()
+        });
+        let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+        assert!(analyse.accesskit_node().is_disabled(), "{page}");
+        analyse.hover();
+        w.run();
+        w.get_by_label(said);
+        w.get_by_label(status);
+    }
+}
+
+#[test]
 fn analyse_shows_the_disk_under_the_page_and_the_status_pane_leaves_out_its_grid() {
     let builder = Harness::builder()
         .with_size(egui::vec2(1240.0, 780.0))
