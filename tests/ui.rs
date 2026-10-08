@@ -3689,6 +3689,50 @@ fn every_themes_button_fits_settings_at_the_smallest_window() {
 }
 
 #[test]
+fn the_stop_button_is_lights_red_in_a_light_theme_and_darks_in_a_dark_one() {
+    let mut w = window(Settings {
+        page: Page::Command("clean".into()),
+        ..Settings::default()
+    });
+    let mut job = Job::replay("clean", "");
+    job.ended = None;
+    app_mut(&mut w).tool = Some(job);
+    let (light, dark) = (&theme::LIGHT, &theme::DARK);
+    for (choice, p) in [
+        (Choice::Light, light),
+        (Choice::Classic, light),
+        (Choice::Blue, light),
+        (Choice::Vintage, light),
+        (Choice::Dark, dark),
+        (Choice::Greaseweazle, dark),
+        (Choice::PcbGreen, dark),
+    ] {
+        theme::apply(&w.ctx, choice);
+        // Stepped, not run: a running job keeps the window repainting.
+        w.run_steps(2);
+        let stop = w.get_by_role_and_label(Role::Button, "Stop").rect();
+        let shapes = &w.output().shapes;
+        let red = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => r.fill == p.bad && r.rect.contains_rect(stop.shrink(1.0)),
+            _ => false,
+        });
+        assert!(red, "{choice:?}: not {:?}", p.bad);
+        let white = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                t.galley.text() == "Stop"
+                    && t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|s| s.format.color == p.on_accent)
+            }
+            _ => false,
+        });
+        assert!(white, "{choice:?}: its text");
+    }
+}
+
+#[test]
 fn the_classic_theme_is_light_in_90s_gui_grey_blue_at_first_and_keeps_its_accent() {
     let mut w = settings_from(Choice::Light, Harness::builder());
     let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();

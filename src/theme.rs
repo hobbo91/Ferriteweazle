@@ -317,6 +317,17 @@ impl Palette {
     }
 }
 
+/// A button's fill and text where it stops or destroys: Light's red in a
+/// light theme and Dark's in a dark one, whatever the palette's own red.
+pub fn red_button(ui: &egui::Ui) -> (Color32, Color32) {
+    let p = if ui.visuals().dark_mode {
+        &DARK
+    } else {
+        &LIGHT
+    };
+    (p.bad, p.on_accent)
+}
+
 pub const RADIUS: u8 = 6;
 /// The height of every field, list and button in a form row.
 pub const FIELD_HEIGHT: f32 = 28.0;

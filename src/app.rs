@@ -2042,7 +2042,7 @@ impl App {
                 } else {
                     "Stop"
                 };
-                let stop = big_button(label, p.bad, wide, p);
+                let stop = big_button(label, theme::red_button(ui), wide);
                 let stop = ui.add_enabled(!job.stopping(), stop);
                 let tip = match self.runs_motor(job) {
                     true => "Stop Greaseweazle Tools and the drive's motor.",
@@ -2084,7 +2084,7 @@ impl App {
                     _ if sets => "Set delays",
                     _ => run_label(&cmd.name),
                 };
-                let run = big_button(label, p.accent, wide, p);
+                let run = big_button(label, (p.accent, p.on_accent), wide);
                 let run = ui.add_enabled(why.is_none(), run);
                 match why {
                     Some(why) => {
@@ -3571,12 +3571,11 @@ impl App {
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
                         let text = match disks {
                             1 => run_label(command).to_owned(),
                             _ => format!("{} 1", run_label(command)),
                         };
-                        if ui.add(dialog_button(&text, p.bad, p)).clicked() {
+                        if ui.add(dialog_button(&text, theme::red_button(ui))).clicked() {
                             let (ctx, command, args) = (ctx.clone(), command.clone(), args.clone());
                             action = Some(match disks {
                                 1 => Box::new(move |app: &mut App| {
@@ -3615,8 +3614,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Overwrite", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Overwrite", theme::red_button(ui))).clicked() {
                             let (ctx, command, runs) = (ctx.clone(), command.clone(), runs.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.begin(&ctx, &command, runs)
@@ -3706,7 +3704,7 @@ impl App {
                             let ready = named.as_ref().is_none_or(|n| !n.is_empty());
                             let enter = ready && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             let button = ui
-                                .add_enabled(ready, dialog_button(&next, p.accent, p))
+                                .add_enabled(ready, dialog_button(&next, (p.accent, p.on_accent)))
                                 .on_disabled_hover_text("Type a name.");
                             if button.clicked() || (enter && named.is_some()) {
                                 let ctx = ctx.clone();
@@ -3724,7 +3722,7 @@ impl App {
                             let again = format!("{verb} {failed} again");
                             let button = match disk {
                                 Some(_) => dialog_plain(&again),
-                                None => dialog_button(&again, p.accent, p),
+                                None => dialog_button(&again, (p.accent, p.on_accent)),
                             };
                             if ui
                                 .add(button)
@@ -3794,7 +3792,7 @@ impl App {
                         let p = theme::palette(ui);
                         let text = if exists { "Replace" } else { "Save" };
                         if ui
-                            .add_enabled(!name.is_empty(), dialog_button(text, p.accent, p))
+                            .add_enabled(!name.is_empty(), dialog_button(text, (p.accent, p.on_accent)))
                             .on_disabled_hover_text("Type a name.")
                             .clicked()
                         {
@@ -3818,8 +3816,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Delete", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Delete", theme::red_button(ui))).clicked() {
                             let (command, path) = (command.clone(), path.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.delete_preset(&command, &path)
@@ -3861,8 +3858,7 @@ impl App {
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        let p = theme::palette(ui);
-                        if ui.add(dialog_button("Stop and quit", p.bad, p)).clicked() {
+                        if ui.add(dialog_button("Stop and quit", theme::red_button(ui))).clicked() {
                             action = Some(Box::new(|app: &mut App| {
                                 app.quitting = true;
                                 app.stop();
@@ -4680,8 +4676,9 @@ const DRAWERS: [(Drawer, &str, &str, &str); 3] = [
     ),
 ];
 
-fn big_button<'a>(text: &'a str, fill: Color32, wide: f32, p: &Palette) -> egui::Button<'a> {
-    egui::Button::new(RichText::new(text).color(p.on_accent).strong().size(14.0))
+/// A page's run button, `wide` points wide, in `fill` with its text in `ink`.
+fn big_button(text: &str, (fill, ink): (Color32, Color32), wide: f32) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(ink).strong().size(14.0))
         .fill(fill)
         .stroke(Stroke::NONE)
         .corner_radius(RUN_RADIUS)
@@ -4696,8 +4693,9 @@ fn dialog_heading(ui: &mut Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-fn dialog_button<'a>(text: &'a str, fill: Color32, p: &Palette) -> egui::Button<'a> {
-    egui::Button::new(RichText::new(text).color(p.on_accent).strong())
+/// A dialog's button that acts, in `fill` with its text in `ink`.
+fn dialog_button(text: &str, (fill, ink): (Color32, Color32)) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(ink).strong())
         .fill(fill)
         .stroke(Stroke::NONE)
         .min_size(vec2(120.0, DIALOG_BUTTON))
