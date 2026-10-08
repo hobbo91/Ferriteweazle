@@ -39,6 +39,44 @@ pub const SPOILT: &str = include_str!("../data/convert-kinds-spoilt.log");
 /// from its centre to its edge, as ECMA-125 has it: 39.5 mm of 42.9 mm.
 pub const TRACK_0: f32 = 39.5 / 42.9;
 
+/// DETECTED as Detect read its tracks, before it found the format: each
+/// track's line and its flux, up to the first it reports again, decoded.
+pub fn detect_reads() -> String {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = String::new();
+    for line in DETECTED.lines() {
+        if let Some(json) = line.strip_prefix("@ferriteweazle track ") {
+            let v: serde_json::Value = serde_json::from_str(json).expect("a report");
+            if !seen.insert((v["c"].as_u64(), v["h"].as_u64())) {
+                break;
+            }
+        }
+        out += line;
+        out.push('\n');
+    }
+    out
+}
+
+/// AKAI_TRACK's report, as the bridge prints it after its prefix.
+pub fn akai_report() -> &'static str {
+    AKAI_TRACK
+        .trim()
+        .strip_prefix("@ferriteweazle track ")
+        .expect("a track report")
+}
+
+/// A `command` job replaying `log` as it reaches track 41.0, gw still at it.
+pub fn reaching_41(command: &str, log: &str) -> ferriteweazle::job::Job {
+    let reached = log
+        .split_inclusive('\n')
+        .take_while(|l| !l.starts_with("T41.1"))
+        .collect::<String>();
+    let mut job = ferriteweazle::job::Job::replay(command, &reached);
+    job.ended = None;
+    job.progress.current = Some((41, 0));
+    job
+}
+
 /// Gives track `key` of the image `job` makes made-up bytes, as the bridge
 /// reports the bytes gw holds: gw's filler where gw lacks a sector, else
 /// byte i of the track i % 251. The recordings keep no disk's data.
@@ -47,19 +85,32 @@ pub fn held(job: &mut ferriteweazle::job::Job, key: (u32, u32)) {
     let layout = made.layout.as_ref().expect("laid out");
     let laid = layout.tracks.iter().find(|t| t.key == key).unwrap();
     let has = made.tracks[&key].has.clone();
-    let mut bytes = Vec::new();
-    for part in &laid.sectors {
-        let at = bytes.len();
-        match has[part.index] {
-            true => bytes.extend((at..at + part.len as usize).map(|i| (i % 251) as u8)),
-            false => bytes.extend(&layout.fillers[part.filler]),
-        }
-    }
+    let bytes = made_up(laid, &has, &layout.fillers, 0);
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let has = serde_json::to_string(&has).unwrap();
     let (c, h) = key;
     let line = format!(r#"{{"event":"track","c":{c},"h":{h},"has":{has},"bytes":"{hex}"}}"#);
     job.progress.image(&line);
+}
+
+/// Track `laid`'s bytes as the recordings stand in for them: gw's filler
+/// where `has` says gw lacks the sector, else byte i, counted from `from`,
+/// i % 251.
+fn made_up(
+    laid: &ferriteweazle::image::Laid,
+    has: &[bool],
+    fillers: &[Vec<u8>],
+    from: usize,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for part in &laid.sectors {
+        let at = from + bytes.len();
+        match has[part.index] {
+            true => bytes.extend((at..at + part.len as usize).map(|i| (i % 251) as u8)),
+            false => bytes.extend(&fillers[part.filler]),
+        }
+    }
+    bytes
 }
 
 /// Where in the image map sector `sector` of track `track` lies, the file in
@@ -95,13 +146,7 @@ pub fn scratched_adf() -> ferriteweazle::image::Image {
     let mut content = Vec::new();
     for laid in &layout.tracks {
         let has = &image.tracks[&laid.key].has;
-        for part in &laid.sectors {
-            let at = content.len();
-            match has[part.index] {
-                true => content.extend((at..at + part.len as usize).map(|i| (i % 251) as u8)),
-                false => content.extend(&layout.fillers[part.filler]),
-            }
-        }
+        content.extend(made_up(laid, has, &layout.fillers, content.len()));
     }
     image.role = Role::Source;
     image.size = Some(content.len() as u64);

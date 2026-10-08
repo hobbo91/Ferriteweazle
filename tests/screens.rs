@@ -8,9 +8,9 @@
 mod common;
 
 use common::{
-    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN,
-    Window, app_mut, damaged_read, greaseweazle, held, image_part, on_disk, run_button,
-    scratched_adf,
+    DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN, Window,
+    akai_report, app_mut, damaged_read, detect_reads, greaseweazle, held, image_part, on_disk,
+    reaching_41, run_button, scratched_adf,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
@@ -453,8 +453,7 @@ fn converted(log: &str) -> Job {
 /// The Akai conversion, its track 0.0 with its sectors' data.
 fn akai_job() -> Job {
     let mut job = converted(AKAI);
-    let line = AKAI_TRACK.trim().strip_prefix("@ferriteweazle track ");
-    job.progress.report(line.expect("a track report"));
+    job.progress.report(akai_report());
     job
 }
 
@@ -549,13 +548,7 @@ fn analyse() {
             |_| {},
         );
         // The read as it reaches track 41.0, ringed.
-        let reached = WORKBENCH
-            .split_inclusive('\n')
-            .take_while(|l| !l.starts_with("T41.1"))
-            .collect::<String>();
-        let mut running = Job::replay("read", &reached);
-        running.ended = None;
-        running.progress.current = Some((41, 0));
+        let running = reaching_41("read", WORKBENCH);
         let read = open("read", theme, Media::ThreeHalf);
         render_sized(
             "analyse-running",
@@ -673,13 +666,7 @@ fn images() {
             |_| {},
         );
         // The read as it reaches track 41.0.
-        let reached = WORKBENCH
-            .split_inclusive('\n')
-            .take_while(|l| !l.starts_with("T41.1"))
-            .collect::<String>();
-        let mut running = Job::replay("read", &reached);
-        running.ended = None;
-        running.progress.current = Some((41, 0));
+        let running = reaching_41("read", WORKBENCH);
         render_sized(
             "image-running",
             DEFAULT,
@@ -721,13 +708,7 @@ fn images() {
         );
         // A write as it reaches track 41.0: the file as it is, gw's place in
         // it marked.
-        let reached = WRITTEN
-            .split_inclusive('\n')
-            .take_while(|l| !l.starts_with("T41.1"))
-            .collect::<String>();
-        let mut writing = Job::replay("write", &reached);
-        writing.ended = None;
-        writing.progress.current = Some((41, 0));
+        let writing = reaching_41("write", WRITTEN);
         render_sized(
             "image-writing",
             DEFAULT,
@@ -825,11 +806,7 @@ fn about(theme: egui::Theme) {
 
 /// A Detect on `page` that found no format, with the bridge's `message`.
 fn undetected(page: &str, message: &str) -> Job {
-    let read: String = DETECTED
-        .lines()
-        .take(7)
-        .map(|l| l.to_owned() + "\n")
-        .collect();
+    let read = detect_reads();
     let log =
         read + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n** FATAL ERROR:\n" + message;
     let mut job = Job::replay(DETECT, &log);

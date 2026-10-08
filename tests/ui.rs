@@ -3,9 +3,9 @@
 mod common;
 
 use common::{
-    AKAI_TRACK, DAMAGED, DEFAULT, DETECTED, FOUND, KINDS, REFUSED, SCRATCHED, SPOILT, TRACK_0,
-    WORKBENCH, WRITTEN, Window, app, app_mut, damaged_read, every_entry, greaseweazle, held,
-    image_part, line, on_disk, run_button, scratched_adf, squares,
+    DAMAGED, DEFAULT, DETECTED, FOUND, KINDS, REFUSED, SCRATCHED, SPOILT, TRACK_0, WORKBENCH,
+    WRITTEN, Window, akai_report, app, app_mut, damaged_read, detect_reads, every_entry,
+    greaseweazle, held, image_part, line, on_disk, reaching_41, run_button, scratched_adf, squares,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -1972,16 +1972,7 @@ fn text_dragged_across_the_log_is_copied() {
     w.step();
     w.event(egui::Event::Copy);
     w.step();
-    let copied = w
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .find_map(|c| match c {
-            egui::OutputCommand::CopyText(text) => Some(text.clone()),
-            _ => None,
-        });
-    let copied = copied.expect("something was copied");
+    let copied = copied(&w).expect("something was copied");
     assert!(
         copied.contains("Write Bandwidth:") && copied.contains("Read Bandwidth:"),
         "{copied:?}"
@@ -2400,12 +2391,7 @@ fn every_entry_of_the_disks_legend_fits_in_the_drawer_at_its_least_in_the_smalle
     );
     // Stepped, not run: a running job keeps the window repainting.
     w.run_steps(4);
-    let id = egui::Id::new("analyse");
-    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
-    // No height at all: the drawer takes its least.
-    state.outer_rect.min.y = state.outer_rect.max.y;
-    w.ctx.data_mut(|d| d.insert_persisted(id, state));
-    w.run_steps(4);
+    let id = least_drawer(&mut w);
     let drawer = egui::PanelState::load(&w.ctx, id).unwrap().outer_rect;
     let legend: Vec<(&str, egui::Rect)> = [
         "Good 1183",
@@ -2497,7 +2483,9 @@ fn every_entry_of_the_grids_legend_fits_under_its_squares_in_the_smallest_window
             track += 1;
         }
     }
-    log.push(
+    // A retry, at once after the track's first read, as gw prints it.
+    log.insert(
+        2,
         "T0.1: IBM MFM (9/9 sectors) from Raw Flux (100000 flux in 400.00ms) (Retry #1.1)".into(),
     );
     let small = ferriteweazle::SMALLEST;
@@ -2616,11 +2604,7 @@ fn a_sectors_tip_says_how_gw_read_it_in_each_revolution_of_the_disk() {
 #[test]
 fn a_detect_that_finds_no_format_shows_the_flux_it_read_whatever_the_pages_format() {
     // The three tracks Detect read, and no format that reads them all.
-    let read: String = DETECTED
-        .lines()
-        .take(7)
-        .map(|l| l.to_owned() + "\n")
-        .collect();
+    let read = detect_reads();
     let failed = read
         + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n"
         + "** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this disk in full.";
@@ -2673,12 +2657,7 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
         Some(running(40)),
     );
     w.run_steps(4);
-    let id = egui::Id::new("analyse");
-    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
-    // No height at all: the drawer takes its least.
-    state.outer_rect.min.y = state.outer_rect.max.y;
-    w.ctx.data_mut(|d| d.insert_persisted(id, state));
-    w.run_steps(4);
+    least_drawer(&mut w);
     let disks = |w: &Window| w.get_by_label("Disk map").rect().size();
     let first = disks(&w);
     for n in 40..120 {
@@ -2696,13 +2675,7 @@ fn a_running_jobs_disks_keep_their_size_as_its_legend_counts_change() {
 
 #[test]
 fn the_disks_legend_counts_tracks_to_do_as_tracks() {
-    let reached = WORKBENCH
-        .split_inclusive('\n')
-        .take_while(|l| !l.starts_with("T41.1"))
-        .collect::<String>();
-    let mut running = Job::replay("read", &reached);
-    running.ended = None;
-    running.progress.current = Some((41, 0));
+    let running = reaching_41("read", WORKBENCH);
     let settings = Settings {
         drawer: Some(Drawer::Analyse),
         ..chosen()
@@ -4608,10 +4581,7 @@ fn pictures(w: &Window) -> usize {
 
 #[test]
 fn analyse_lets_go_of_its_pictures_and_its_sector_window_when_it_is_not_drawn() {
-    let line = AKAI_TRACK
-        .trim()
-        .strip_prefix("@ferriteweazle track ")
-        .unwrap();
+    let line = akai_report();
     let [start, _, end] = Facts::parse(line).unwrap().1.sectors[0].at.unwrap();
     let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
     job.progress.report(line);
@@ -4901,17 +4871,15 @@ fn analyse_shuts_on_a_page_it_has_no_disk_for() {
 
 #[test]
 fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_its_data() {
-    let line = AKAI_TRACK
-        .trim()
-        .strip_prefix("@ferriteweazle track ")
-        .unwrap();
+    let line = akai_report();
     let (_, facts) = Facts::parse(line).unwrap();
     let first = &facts.sectors[0];
     assert_eq!(first.id, Id::Ibm([0, 0, 7, 3]));
     let [start, _, end] = first.at.unwrap();
     let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
-    job.progress
-        .feed("T0.0: IBM MFM (10/10 sectors) from Raw Flux (157042 flux in 401.41ms)");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
     job.progress.report(line);
     let settings = Settings {
         page: Page::Command("convert".into()),
@@ -5112,13 +5080,7 @@ fn image_analysis_says_where_gw_is_with_the_file_and_counts_what_its_sectors_hol
         w
     };
     // A read as it reaches track 41.0: 83 tracks of 11 sectors read.
-    let reached = WORKBENCH
-        .split_inclusive('\n')
-        .take_while(|l| !l.starts_with("T41.1"))
-        .collect::<String>();
-    let mut running = Job::replay("read", &reached);
-    running.ended = None;
-    running.progress.current = Some((41, 0));
+    let running = reaching_41("read", WORKBENCH);
     let w = shown("read", running);
     w.get_by_label(
         "Workbench.adf · 901,120 bytes as laid out · Being made: gw writes it when it finishes",
@@ -5293,6 +5255,17 @@ fn right_click(w: &mut Window, at: egui::Pos2) {
 }
 
 /// What the last frame put on the clipboard, if anything.
+/// Pulls the Analyse drawer down to no height at all, so that it takes its
+/// least: its id.
+fn least_drawer(w: &mut Window) -> egui::Id {
+    let id = egui::Id::new("analyse");
+    let mut state = egui::PanelState::load(&w.ctx, id).expect("the drawer");
+    state.outer_rect.min.y = state.outer_rect.max.y;
+    w.ctx.data_mut(|d| d.insert_persisted(id, state));
+    w.run_steps(4);
+    id
+}
+
 fn copied(w: &Window) -> Option<String> {
     w.output()
         .platform_output
@@ -5325,15 +5298,13 @@ fn select(w: &mut Window, from: egui::Pos2, to: egui::Pos2, seconds: usize) -> S
 #[test]
 fn a_selection_dragged_past_a_boxs_edge_scrolls_it_on_in_the_sectors_bytes_and_the_log() {
     // A sector's 64 rows of bytes, which show 24 or so at once.
-    let line = AKAI_TRACK
-        .trim()
-        .strip_prefix("@ferriteweazle track ")
-        .unwrap();
+    let line = akai_report();
     let (_, facts) = Facts::parse(line).unwrap();
     let [start, _, end] = facts.sectors[0].at.unwrap();
     let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
-    job.progress
-        .feed("T0.0: IBM MFM (10/10 sectors) from Raw Flux (157042 flux in 401.41ms)");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
     job.progress.report(line);
     let settings = Settings {
         page: Page::Command("convert".into()),

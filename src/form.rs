@@ -253,10 +253,12 @@ const FLUX: &[&str] = &[".scp", ".hfe", ".raw", ".a2r", ".ipf", ".ctr"];
 /// What a flux image of extension `ext`, such as `.scp`, holds of each
 /// track: flux as read, or bitcells. None for other types.
 pub fn track_holds(ext: &str) -> Option<&'static str> {
-    match ext {
-        _ if RAW_FLUX.contains(&ext) => Some("flux"),
-        _ if FLUX.contains(&ext) => Some("bitcells"),
-        _ => None,
+    if RAW_FLUX.contains(&ext) {
+        Some("flux")
+    } else if FLUX.contains(&ext) {
+        Some("bitcells")
+    } else {
+        None
     }
 }
 
@@ -429,15 +431,14 @@ fn menu_box(ui: &mut Ui, id: egui::Id, edit: TextEdit<'_>, editable: bool) -> eg
     // A paste goes in at the cursor or over the selection.
     response.context_menu(|ui| {
         let selected = selection().is_some();
+        // A box that cannot be edited has nothing to cut or paste.
         let items = [
-            ("Cut", selected, ViewportCommand::RequestCut),
-            ("Copy", selected, ViewportCommand::RequestCopy),
-            ("Paste", true, ViewportCommand::RequestPaste),
+            ("Cut", selected, ViewportCommand::RequestCut, editable),
+            ("Copy", selected, ViewportCommand::RequestCopy, true),
+            ("Paste", true, ViewportCommand::RequestPaste, editable),
         ];
-        let shown = items
-            .into_iter()
-            .filter(|&(name, ..)| editable || name == "Copy");
-        for (name, can, command) in shown {
+        let shown = items.into_iter().filter(|&(.., shows)| shows);
+        for (name, can, command, _) in shown {
             let item = ui.add_enabled(can, egui::Button::new(name));
             if item.on_disabled_hover_text("Nothing selected.").clicked() {
                 // Back in the box for the cut or paste the next frame brings.
