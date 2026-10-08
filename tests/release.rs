@@ -678,7 +678,10 @@ fn a_packages_notices_hold_each_licence_text_once_under_all_that_carry_it() {
     once("pyserial 3.5\n");
     once("pyserial's text.");
     once("The SPS licence.");
-    once("commit c1), which is free");
+    // The sentence as folded into lines.
+    let words = notices.split_whitespace().collect::<Vec<_>>().join(" ");
+    let caps = "commit c1), which is free for non-commercial use only.";
+    assert_eq!(words.matches(caps).count(), 1, "{notices}");
     assert!(!notices.contains("capsimage-source"), "{notices}");
     std::fs::remove_dir_all(dir).ok();
 }

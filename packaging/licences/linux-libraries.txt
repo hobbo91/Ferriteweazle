@@ -4,9 +4,9 @@
 The libraries in lib/
 ======================================================================
 
-lib/ holds libxkbcommon and libxkbcommon-x11 1.13.2, built from their
-source, and libxcb-xkb 1.13 (libxcb's), CentOS Linux 7.9.2009's build,
-under the licences below.
+lib/ holds libxkbcommon and libxkbcommon-x11 1.13.2, built from source,
+and libxcb-xkb 1.13 from CentOS Linux 7.9.2009's libxcb package, under
+the licences below.
 
 ----------------------------------------------------------------------
 libxkbcommon and libxkbcommon-x11 1.13.2

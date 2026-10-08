@@ -1,8 +1,8 @@
 #!/bin/sh
 # Writes OUT, the source of the LGPL code in the Linux packages, to publish
 # beside them: wayland-protocols-plasma's crate, whose KDE protocol
-# descriptions the program's Wayland code is generated from, and the
-# AppImage runtime with the libfuse and squashfuse it links.
+# descriptions the program's Wayland code is generated from, and the AppImage
+# runtime with the libfuse and squashfuse it links.
 #
 #   packaging/linux/lgpl-sources.sh dist/LGPL-sources-VERSION.tar
 set -eu
@@ -37,11 +37,11 @@ cat >"$work/README.txt" <<EOF
 The source of the LGPL code in Ferriteweazle's Linux packages.
 
 $crate
-    winit's crate for KDE's Wayland protocols. Its code is under the MIT
-    licence; its plasma-wayland-protocols folder holds the protocol
-    descriptions, under the GNU LGPL 2.1 or later, from which the
-    program's Wayland code is generated. To build the program with
-    changed descriptions, use Ferriteweazle's source:
+    wayland-rs's crate for KDE's Wayland protocols, which winit uses.
+    Its code is under the MIT licence; its plasma-wayland-protocols
+    folder holds the protocol descriptions, under the GNU LGPL 2.1 or
+    later, from which the program's Wayland code is generated. To build
+    the program with changed descriptions, use Ferriteweazle's source:
     https://github.com/hobbo91/Ferriteweazle
 
 type2-runtime-$RUNTIME_COMMIT.tar.gz
