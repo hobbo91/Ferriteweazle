@@ -505,6 +505,15 @@ fn a_release_builds_every_package_at_once_from_one_gw_release() {
             "cmd.exe ends a command at a line break"
         );
     }
+    // The Linux packages' AppStream release is dated by the commit.
+    let epoch = Command::new("git")
+        .args(["log", "-1", "--format=%ct"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let epoch = String::from_utf8(epoch.stdout).unwrap();
+    let dated = format!(" SOURCE_DATE_EPOCH={} ", epoch.trim());
+    assert!(builds[0].contains(&dated), "{}", builds[0]);
     std::fs::remove_dir_all(dir).ok();
 }
 

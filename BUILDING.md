@@ -62,7 +62,7 @@ release. `VERSION` is the one in `Cargo.toml`.
 | --- | --- | --- |
 | macOS | `packaging/macos/bundle.sh` | `Ferriteweazle-VERSION-macos-universal.dmg` |
 | Windows | `packaging/windows/bundle.sh x64` or `arm64` | `Ferriteweazle-VERSION-win-ARCH.zip` and `.msi` |
-| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz` and `Ferriteweazle-VERSION-ARCH.AppImage` |
+| Linux | `packaging/linux/bundle.sh x86_64` or `aarch64` | `Ferriteweazle-VERSION-linux-ARCH.tar.gz`, `Ferriteweazle-VERSION-ARCH.AppImage` and its `.zsync` |
 
 ### macOS
 
@@ -93,12 +93,14 @@ version by it. Neither is code-signed.
 ### Linux
 
 glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
-zig, meson 1.4 or newer, ninja, bison, bsdtar, patchelf and objdump (on Debian and Ubuntu:
-`ninja-build`, `bison`, `libarchive-tools`, `patchelf` and `binutils`, with meson from
-`pipx install meson`). Downloads appimagetool, the AppImage runtime, and the source and
-libraries of what a package carries in `lib/` (`packaging/linux/libraries.sh`), checked
-against `packaging/linux/appimage.sha256`. Building for the other processor runs its
-Python emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
+zig, meson 1.4 or newer, ninja, bison, bsdtar, patchelf, objdump and appstreamcli (on
+Debian and Ubuntu: `ninja-build`, `bison`, `libarchive-tools`, `patchelf`, `binutils` and
+`appstream`, with meson from `pipx install meson`). Downloads appimagetool, the AppImage
+runtime, and the source and libraries of what a package carries in `lib/`
+(`packaging/linux/libraries.sh`), checked against `packaging/linux/appimage.sha256`.
+Building for the other processor runs its Python emulated: qemu-user with that
+processor's libraries, or Rosetta in a Linux VM. The AppImage carries update information
+for AppImageUpdate, which reads the `.zsync` file published beside it.
 
 ## Releases
 

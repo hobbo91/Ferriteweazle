@@ -11,9 +11,11 @@ cd "$(dirname "$0")/.."
 . packaging/release.env
 . bundle/greaseweazle.sh
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-# Every machine builds the same gw release.
+# Every machine builds the same gw release, and the Linux packages' AppStream
+# release takes the commit's date.
 GREASEWEAZLE=$(wanted)
 export GREASEWEAZLE
+epoch=$(git log -1 --format=%ct)
 rm -rf dist
 mkdir -p target
 
@@ -21,8 +23,9 @@ mkdir -p target
 # comes back in a call of its own, clear of what the build prints.
 linux() {
     git archive --format=tar HEAD | ssh $LINUX_SSH "mkdir -p $LINUX_DIR && tar -xf - -C $LINUX_DIR"
-    ssh $LINUX_SSH "cd $LINUX_DIR && $LINUX_SETUP && export GREASEWEAZLE=$GREASEWEAZLE && \
-        rm -rf dist && packaging/linux/bundle.sh x86_64 && packaging/linux/bundle.sh aarch64"
+    ssh $LINUX_SSH "cd $LINUX_DIR && $LINUX_SETUP && export GREASEWEAZLE=$GREASEWEAZLE \
+        SOURCE_DATE_EPOCH=$epoch && rm -rf dist && packaging/linux/bundle.sh x86_64 && \
+        packaging/linux/bundle.sh aarch64"
     ssh $LINUX_SSH "cd $LINUX_DIR && tar -cf - dist" >target/linux-dist.tar
     tar -xf target/linux-dist.tar
 }

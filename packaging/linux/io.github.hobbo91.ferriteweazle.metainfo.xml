@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The AppImage's AppStream metadata; bundle.sh fills in the release. -->
+<component type="desktop-application">
+  <id>io.github.hobbo91.ferriteweazle</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Ferriteweazle</name>
+  <summary>A desktop app for Greaseweazle, the floppy disk flux reader and writer</summary>
+  <developer id="io.github.hobbo91">
+    <name>Lee Hobson</name>
+  </developer>
+  <description>
+    <p>
+      Cross-platform GUI front end for Greaseweazle, Keir Fraser's floppy disk flux reader
+      and writer.
+    </p>
+    <ul>
+      <li>Full feature parity with Greaseweazle Tools</li>
+      <li>Detects the most likely disk formats for reading and writing images</li>
+      <li>Single or batched reads, writes and image conversions</li>
+      <li>Multiple passes over disks with failed reads which exceed the retries</li>
+      <li>Analyses each side of the disk as Greaseweazle Tools found it: its sectors, its flux
+        and the image file</li>
+      <li>Shows the command line of an action, and passes extra arguments</li>
+      <li>Bundles Greaseweazle Tools unmodified, or uses your own gw</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">ferriteweazle.desktop</launchable>
+  <url type="homepage">https://github.com/hobbo91/Ferriteweazle</url>
+  <url type="bugtracker">https://github.com/hobbo91/Ferriteweazle/issues</url>
+  <url type="vcs-browser">https://github.com/hobbo91/Ferriteweazle</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Read</caption>
+      <image>https://raw.githubusercontent.com/hobbo91/Ferriteweazle/main/docs/images/read_image.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Write</caption>
+      <image>https://raw.githubusercontent.com/hobbo91/Ferriteweazle/main/docs/images/write_image.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Analyse: sectors</caption>
+      <image>https://raw.githubusercontent.com/hobbo91/Ferriteweazle/main/docs/images/analyse_sector_view.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Analyse: flux</caption>
+      <image>https://raw.githubusercontent.com/hobbo91/Ferriteweazle/main/docs/images/analyse_flux_view.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

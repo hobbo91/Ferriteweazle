@@ -1,11 +1,11 @@
 #!/bin/sh
 # Builds, for ARCH (x86_64 or aarch64, this computer's if none), a tarball
 # dist/Ferriteweazle-VERSION-linux-ARCH.tar.gz and an AppImage
-# dist/Ferriteweazle-VERSION-ARCH.AppImage that run on glibc 2.17 or newer.
-# The bundle is rebuilt first if gw has a newer release. Needs cargo-zigbuild,
-# zig, meson, ninja, bison, bsdtar, patchelf and objdump; downloads
-# appimagetool, the AppImage runtime, and the source and libraries of lib/
-# (libraries.sh).
+# dist/Ferriteweazle-VERSION-ARCH.AppImage that run on glibc 2.17 or newer,
+# and the AppImage's zsync file, for AppImageUpdate. The bundle is rebuilt
+# first if gw has a newer release. Needs cargo-zigbuild, zig, meson, ninja,
+# bison, bsdtar, patchelf, objdump and appstreamcli; downloads appimagetool,
+# the AppImage runtime, and the source and libraries of lib/ (libraries.sh).
 #
 #   packaging/linux/bundle.sh           # this computer
 #   packaging/linux/bundle.sh x86_64    # another processor
@@ -65,19 +65,32 @@ tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$stage" Ferriteweazl
 # The same as one file. AppRun is the program, which finds its bundle beside
 # it, and its libraries in usr/lib by lib/ beside it.
 appdir=$stage/AppDir
-mkdir -p "$appdir/usr/bin" "$appdir/usr/share/doc/ferriteweazle"
+share=$appdir/usr/share
+mkdir -p "$appdir/usr/bin" "$share/doc/ferriteweazle" "$share/applications" \
+    "$share/icons/hicolor/256x256/apps" "$share/metainfo"
 cp "$program" "$appdir/usr/bin/ferriteweazle"
 cp -a "$data" "$appdir/usr/bin/greaseweazle"
 cp -a "$top/lib" "$appdir/usr/lib"
 ln -s ../lib "$appdir/usr/bin/lib"
-cp LICENSE "$appdir/usr/share/doc/ferriteweazle/"
+cp LICENSE "$share/doc/ferriteweazle/"
 # The AppImage also carries the runtime at its front.
 { cat "$notices"; sed "s/@VERSION@/$version/g" "packaging/licences/appimage-runtime-$RUNTIME.txt"; } \
-    >"$appdir/usr/share/doc/ferriteweazle/THIRD-PARTY-NOTICES.txt"
+    >"$share/doc/ferriteweazle/THIRD-PARTY-NOTICES.txt"
 ln -s usr/bin/ferriteweazle "$appdir/AppRun"
 cp packaging/linux/ferriteweazle.desktop "$appdir/"
+cp packaging/linux/ferriteweazle.desktop "$share/applications/"
 cp assets/logo.png "$appdir/ferriteweazle.png"
+cp assets/logo.png "$share/icons/hicolor/256x256/apps/ferriteweazle.png"
 ln -s ferriteweazle.png "$appdir/.DirIcon"
+# AppStream's release is dated by SOURCE_DATE_EPOCH, as release.sh sets it,
+# or else today.
+date=$(date -u ${SOURCE_DATE_EPOCH:+-d "@$SOURCE_DATE_EPOCH"} +%Y-%m-%d)
+metainfo=io.github.hobbo91.ferriteweazle.metainfo.xml
+sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$date/" "packaging/linux/$metainfo" \
+    >"$share/metainfo/$metainfo"
+# appimagetool's own check also fetches each screenshot, which for a release
+# is on GitHub only once its branch is merged.
+appstreamcli validate-tree --no-net "$appdir"
 
 cache=target/appimage-cache
 host=$(uname -m)
@@ -95,6 +108,11 @@ if [ ! -d "$unpacked" ]; then
     mv "$cache/squashfs-root" "$unpacked"
 fi
 image=dist/Ferriteweazle-$version-$arch.AppImage
-rm -f "$image"
-ARCH=$arch "$unpacked/AppRun" --no-appstream --runtime-file "$cache/$runtime" "$appdir" "$image"
-du -sh "$tarball" "$image"
+zsync=Ferriteweazle-$version-$arch.AppImage.zsync
+rm -f "$image" "dist/$zsync" "$zsync"
+update="gh-releases-zsync|hobbo91|Ferriteweazle|latest|Ferriteweazle-*-$arch.AppImage.zsync"
+ARCH=$arch "$unpacked/AppRun" --no-appstream --runtime-file "$cache/$runtime" -u "$update" \
+    "$appdir" "$image"
+# appimagetool leaves the zsync file in the folder it runs in.
+mv "$zsync" dist/
+du -sh "$tarball" "$image" "dist/$zsync"
