@@ -2456,9 +2456,11 @@ enum Step {
     /// So many sectors on round the track, back where fewer than none.
     Round(i32),
     /// The track's sector at this place among them.
-    To(usize),
+    ToSector(usize),
     /// So many cylinders on, of those gw reported on the side.
     Cylinder(i32),
+    /// The cylinder gw reported on the side nearest this one, typed.
+    ToCylinder(u32),
     /// The other side.
     Side,
 }
@@ -2492,8 +2494,11 @@ impl Inspected {
         };
         match step {
             Step::Round(by) => round(self.open, here.sectors.len(), by).map(found),
-            Step::To(i) => (i < here.sectors.len()).then(|| found(i)),
+            Step::ToSector(i) => (i < here.sectors.len()).then(|| found(i)),
             Step::Cylinder(by) => next_cylinder(&cylinders(progress, side), cyl, by)
+                .and_then(|c| elsewhere((c, side))),
+            Step::ToCylinder(to) => nearest(&cylinders(progress, side), to)
+                .filter(|&c| c != cyl)
                 .and_then(|c| elsewhere((c, side))),
             Step::Side => (side < 2).then(|| elsewhere((cyl, 1 - side))).flatten(),
         }
@@ -2536,6 +2541,11 @@ fn next_cylinder(cyls: &[u32], cyl: u32, by: i32) -> Option<u32> {
     let from = i64::try_from(cyls.iter().position(|&c| c == cyl)?).ok()?;
     let to = usize::try_from((from + i64::from(by)).rem_euclid(count)).ok()?;
     cyls.get(to).copied()
+}
+
+/// The cylinder among `cyls` nearest `cyl`, the lower of two as near.
+fn nearest(cyls: &[u32], cyl: u32) -> Option<u32> {
+    cyls.iter().copied().min_by_key(|&c| (c.abs_diff(cyl), c))
 }
 
 /// What opens on a track gw reported `f` of, for a sector with `id` on
@@ -2733,10 +2743,19 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
         let room = galley.size().x + 2.0 * TITLE_BAR + 2.0;
         let (bar, _) = ui.allocate_exact_size(vec2(room, TITLE_BAR), Sense::hover());
         let margin = egui::Margin::symmetric(12, 10);
-        egui::Frame::new()
+        let way_at = egui::Frame::new()
             .inner_margin(margin)
-            .show(ui, |ui| asked.step = sector_text(ui, shown, right, p));
+            .show(ui, |ui| sector_text(ui, shown, right, p))
+            .inner;
         let bar = Rect::from_min_size(bar.min, vec2(ui.min_rect().width(), TITLE_BAR));
+        // The way round the disk where the text keeps room for it, its last
+        // arrow under the close button.
+        if let (Some(nav), Some(at)) = (&shown.nav, way_at) {
+            let right = bar.right() - TITLE_BAR / 2.0 + ARROW / 2.0;
+            let rect = Rect::from_x_y_ranges(right - at.width()..=right, at.y_range());
+            let builder = egui::UiBuilder::new().max_rect(rect);
+            asked.step = ui.scope_builder(builder, |ui| way(ui, nav, p)).inner;
+        }
         let named = RichText::new(title).size(TITLE_SIZE).color(p.strong);
         ui.put(bar.shrink2(vec2(TITLE_BAR, 0.0)), egui::Label::new(named));
         let line = Stroke::new(1.0, p.line);
@@ -2767,10 +2786,10 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
 }
 
 /// The sector window's text, to select and copy: what is said of the
-/// sector, beside the way round the disk, then its data, which scrolls; in
-/// a window whose right edge stays at `right` once measured. What the way
-/// round the disk is asked this frame.
-fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette) -> Option<Step> {
+/// sector, with room beside it for the way round the disk, then its data,
+/// which scrolls; in a window whose right edge stays at `right` once
+/// measured. The room it keeps for the way round the disk.
+fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette) -> Option<Rect> {
     let lines = shown.lines;
     let text = lines
         .iter()
@@ -2865,20 +2884,24 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette
     let top_id = ui.id().with("top");
     let least = ui.data(|d| d.get_temp::<f32>(top_id)).unwrap_or(0.0);
     let least = least.max(reserved.lines as f32 * spaced);
-    let mut step = None;
+    let mut way_at = None;
     let top = ui.horizontal_top(|ui| {
         ui.set_min_height(least);
         form::read_only_box(ui, said_id, said);
-        if let Some(nav) = &shown.nav {
+        if shown.nav.is_some() {
             let layout = egui::Layout::right_to_left(egui::Align::Min);
-            step = ui.with_layout(layout, |ui| way(ui, nav, p)).inner;
+            let size = vec2(way_width(ui), DIAL);
+            way_at = Some(
+                ui.with_layout(layout, |ui| ui.allocate_exact_size(size, Sense::hover()).0)
+                    .inner,
+            );
         }
     });
     let height = top.response.rect.height();
     ui.data_mut(|d| d.insert_temp(top_id, least.max(height)));
     let rows = dumped.rows.len().max(reserved.bytes.div_ceil(16));
     if rows == 0 {
-        return step;
+        return way_at;
     }
     ui.separator();
     let row = ui.fonts_mut(|f| f.row_height(&mono));
@@ -2903,7 +2926,7 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette
             lines.show_as(ui, ui.id().with("bytes"), area, pane);
         }
     });
-    step
+    way_at
 }
 
 /// What the sector window keeps room for, whichever sector it goes to: the
@@ -2997,12 +3020,13 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
         let steppers = egui::Layout::top_down(egui::Align::Max);
         ui.allocate_ui_with_layout(vec2(column, DIAL), steppers, |ui| {
             ui.add_space((DIAL - 2.0 * ARROW - ROW_GAP) / 2.0);
-            let by = stepper(ui, "Cylinder", &cyl.to_string(), nav.cylinder, true, p);
-            if by != 0 {
-                asked.push(Step::Cylinder(by));
+            match stepper(ui, "Cylinder", cyl, nav.cylinder, true, p) {
+                (_, Some(to)) => asked.push(Step::ToCylinder(to)),
+                (0, None) => {}
+                (by, None) => asked.push(Step::Cylinder(by)),
             }
             ui.add_space(ROW_GAP);
-            if stepper(ui, "Side", &side.to_string(), nav.side, false, p) != 0 {
+            if stepper(ui, "Side", side, nav.side, false, p).0 != 0 {
                 asked.push(Step::Side);
             }
         });
@@ -3014,7 +3038,7 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
             by -= arrow(ui, false, nav.round, true, "sector", p);
         });
         if let Some(i) = dial(ui, nav, p) {
-            asked.push(Step::To(i));
+            asked.push(Step::ToSector(i));
         }
         ui.allocate_ui_with_layout(vec2(ARROW, DIAL), beside, |ui| {
             ui.add_space((DIAL - ARROW) / 2.0);
@@ -3046,38 +3070,122 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
 }
 
 /// Whether the keyboard's arrows are the sector window's: nothing has the
-/// keyboard, or something in the window has.
+/// keyboard, or something in the window does that is not a box of text.
 fn keys_free(ui: &egui::Ui) -> bool {
+    let ctx = ui.ctx();
     ui.memory(|m| m.focused()).is_none_or(|id| {
-        ui.ctx()
-            .read_response(id)
-            .is_some_and(|r| r.layer_id == ui.layer_id())
+        !ctx.text_edit_focused()
+            && ctx
+                .read_response(id)
+                .is_some_and(|r| r.layer_id == ui.layer_id())
     })
 }
 
 /// A stepper's row from the right: its value between arrows, then its name.
-/// How many steps it is asked for this frame, back as fewer than none.
+/// One of `many` values has arrows that repeat as they are held, and opens
+/// to typing at a click. How many steps it is asked for this frame, back as
+/// fewer than none, and the value typed.
 fn stepper(
     ui: &mut egui::Ui,
     name: &str,
-    value: &str,
+    value: u32,
     live: bool,
-    repeats: bool,
+    many: bool,
     p: &Palette,
-) -> i32 {
-    let mut by = 0;
+) -> (i32, Option<u32>) {
+    let (mut by, mut typed) = (0, None);
     let row = vec2(ui.available_width(), ARROW);
     let layout = egui::Layout::right_to_left(egui::Align::Center);
     ui.allocate_ui_with_layout(row, layout, |ui| {
         let what = name.to_lowercase();
-        by += arrow(ui, true, live, repeats, &what, p);
-        let value = RichText::new(value).color(p.strong);
-        ui.add_sized(vec2(VALUE, ARROW), egui::Label::new(value));
-        by -= arrow(ui, false, live, repeats, &what, p);
+        by += arrow(ui, true, live, many, &what, p);
+        typed = value_box(ui, name, value, live && many, p);
+        by -= arrow(ui, false, live, many, &what, p);
         ui.add_space(NAME_GAP);
         ui.label(RichText::new(name).color(p.dim));
     });
-    by
+    (by, typed)
+}
+
+/// A stepper's value, which a click opens to typing where it `types`: Enter
+/// takes the number typed; Escape, a click elsewhere, or anything else that
+/// takes the keyboard leaves it as it was. The number Enter takes.
+fn value_box(ui: &mut egui::Ui, name: &str, value: u32, types: bool, p: &Palette) -> Option<u32> {
+    let size = vec2(VALUE, ARROW);
+    if !types {
+        let shown = RichText::new(value.to_string()).color(p.strong);
+        ui.add_sized(size, egui::Label::new(shown));
+        return None;
+    }
+    let id = ui.id().with(("typing", name));
+    let box_id = id.with("box");
+    let typing = ui.data(|d| d.get_temp::<Typing>(id));
+    let sense = match typing {
+        Some(_) => Sense::hover(),
+        None => Sense::click(),
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let Some(mut typing) = typing else {
+        let named = format!("{name} {value}");
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 4.0, p.hover);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let painter = ui.painter();
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            value.to_string(),
+            font,
+            p.strong,
+        );
+        if response.clicked() {
+            // The box opens the next frame, clear of this click.
+            let opening = Typing {
+                text: value.to_string(),
+                fresh: true,
+            };
+            ui.data_mut(|d| d.insert_temp(id, opening));
+            ui.ctx().request_repaint();
+        }
+        return None;
+    };
+    if typing.fresh {
+        // All of it selected, to type over; focused before it shows, as egui
+        // keeps a selection only in a box with the keyboard.
+        let mut state = egui::text_edit::TextEditState::default();
+        let ends = [0, typing.text.len()].map(egui::text::CCursor::new);
+        let all = egui::text::CCursorRange::two(ends[0], ends[1]);
+        state.cursor.set_char_range(Some(all));
+        state.store(ui.ctx(), box_id);
+        ui.memory_mut(|m| m.request_focus(box_id));
+    }
+    // In the value's own room, which the row has given it.
+    let mut room = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let edit = egui::TextEdit::singleline(&mut typing.text)
+        .horizontal_align(egui::Align::Center)
+        .char_limit(3)
+        .desired_width(VALUE);
+    let edited = form::text_box_with(&mut room, box_id, edit);
+    typing.text.retain(|c| c.is_ascii_digit());
+    if edited.lost_focus() || !(typing.fresh || edited.has_focus()) {
+        ui.data_mut(|d| d.remove::<Typing>(id));
+        let enter = edited.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        return typing.text.parse().ok().filter(|_| enter);
+    }
+    typing.fresh = false;
+    ui.data_mut(|d| d.insert_temp(id, typing));
+    None
+}
+
+/// A value being typed: what has been typed, and whether its box has yet to
+/// show.
+#[derive(Clone, Debug)]
+struct Typing {
+    text: String,
+    fresh: bool,
 }
 
 /// An arrow, ‹ or › as it steps back or `on`, greyed unless `live`, named for
@@ -4363,6 +4471,15 @@ mod tests {
         assert_eq!(next_cylinder(&cyls, 1, 8), Some(79));
         assert_eq!(next_cylinder(&[4], 4, 1), None, "no other");
         assert_eq!(next_cylinder(&cyls, 3, 1), None, "not reported");
+    }
+
+    #[test]
+    fn a_cylinder_typed_is_the_nearest_gw_reported() {
+        let cyls = [0, 2, 4, 79];
+        assert_eq!(nearest(&cyls, 4), Some(4));
+        assert_eq!(nearest(&cyls, 3), Some(2), "the lower of two as near");
+        assert_eq!(nearest(&cyls, 500), Some(79));
+        assert_eq!(nearest(&[], 3), None);
     }
 
     #[test]

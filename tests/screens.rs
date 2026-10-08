@@ -623,8 +623,8 @@ fn analyse() {
 
 /// The sector window in each state its way round the disk has, cropped to
 /// it: R3 of the Akai disk's track 0.0; Sector 3 of the scratched Workbench
-/// disk gone to on cylinder 18, where gw found it missing; and a sector of
-/// the ring under the pointer.
+/// disk gone to on cylinder 18, where gw found it missing; a cylinder being
+/// typed; and a sector of the ring under the pointer.
 #[test]
 #[ignore = "writes pictures for people to look at"]
 fn sector_window() {
@@ -663,6 +663,13 @@ fn sector_window() {
                 w.run_steps(20);
             },
         );
+        crop_to_sector("sector-typing", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+            w.get_by_role_and_label(Role::Button, "Cylinder 0").click();
+            w.run_steps(2);
+            w.event(egui::Event::Text("4".into()));
+            w.run_steps(4);
+        });
         crop_to_sector("sector-hover", theme, settings(), akai_job(), |w| {
             open(w, Id::Ibm([0, 0, 3, 3]));
             // Over R5, two sectors on round the track, in the track's middle:

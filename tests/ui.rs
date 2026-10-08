@@ -5136,6 +5136,52 @@ fn across_cylinders_and_sides_the_window_keeps_its_sector_or_says_gw_found_it_mi
 }
 
 #[test]
+fn a_cylinder_typed_opens_its_sector_there_or_on_the_nearest_gw_reported() {
+    let job = Job::replay("convert", SCRATCHED);
+    let mut w = sector_open(job, DEFAULT, 0.25, Id::Number(3));
+    let open = |w: &Window, cyl: u32| {
+        let title = format!("Sector 3 · cylinder {cyl}, side 0");
+        w.get_by_role_and_label(Role::Label, &title);
+    };
+    let type_in = |w: &mut Window, from: u32, text: &str, key: egui::Key| {
+        let value = format!("Cylinder {from}");
+        w.get_by_role_and_label(Role::Button, &value).click();
+        w.run();
+        w.event(egui::Event::Text(text.into()));
+        w.run();
+        w.key_press(key);
+        w.run();
+    };
+    // Typed over what it shows.
+    type_in(&mut w, 0, "29", egui::Key::Enter);
+    open(&w, 29);
+    type_in(&mut w, 29, "7", egui::Key::Enter);
+    open(&w, 7);
+    // Past the last cylinder gw reported, the last.
+    type_in(&mut w, 7, "500", egui::Key::Enter);
+    open(&w, 79);
+    // Escape leaves it as it was.
+    type_in(&mut w, 79, "5", egui::Key::Escape);
+    open(&w, 79);
+    // Only digits are taken.
+    type_in(&mut w, 79, "1a2", egui::Key::Enter);
+    open(&w, 12);
+}
+
+#[test]
+fn the_sector_windows_last_arrow_is_under_its_close_button() {
+    for size in [DEFAULT, ferriteweazle::SMALLEST] {
+        let w = sector_open(akai_track(), size, 0.25, Id::Ibm([0, 0, 7, 3]));
+        let next = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+        let close = w.get_by_role_and_label(Role::Button, "Close").rect();
+        assert!(
+            (next.center().x - close.center().x).abs() < 0.5,
+            "{next:?} under {close:?}"
+        );
+    }
+}
+
+#[test]
 fn an_arrow_held_down_steps_again_and_again_faster_and_faster() {
     let mut w = sector_open(
         Job::replay("convert", SCRATCHED),
