@@ -621,6 +621,116 @@ fn analyse() {
     }
 }
 
+/// The sector window in each state its way round the disk has, cropped to
+/// it: R3 of the Akai disk's track 0.0; Sector 3 of the scratched Workbench
+/// disk gone to on cylinder 18, where gw found it missing; and a sector of
+/// the ring under the pointer.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn sector_window() {
+    use ferriteweazle::track::Id;
+    let open = |w: &mut Window, id: Id| {
+        w.run_steps(4);
+        let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+        let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
+        let [a, _, b] = s.at.unwrap();
+        let at = on_disk(w, TRACK_0, 90.0 - 360.0 * (a + b) / 2.0);
+        w.drag_at(at);
+        w.run_steps(2);
+        w.drop_at(at);
+        w.run_steps(6);
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        let settings = || Settings {
+            drawer: Some(Drawer::Analyse),
+            media: Media::ThreeHalf,
+            ..settings("convert", theme)
+        };
+        crop_to_sector("sector-found", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+        });
+        crop_to_sector(
+            "sector-missing",
+            theme,
+            settings(),
+            converted(SCRATCHED),
+            |w| {
+                open(w, Id::Number(3));
+                for _ in 0..18 {
+                    w.key_press(egui::Key::ArrowDown);
+                    w.run_steps(2);
+                }
+                w.run_steps(20);
+            },
+        );
+        crop_to_sector("sector-hover", theme, settings(), akai_job(), |w| {
+            open(w, Id::Ibm([0, 0, 3, 3]));
+            // Over R5, two sectors on round the track, in the track's middle:
+            // the ring's half width less the notch and the raised track's half.
+            let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+            let s = facts
+                .sectors
+                .iter()
+                .find(|s| s.id == Id::Ibm([0, 0, 5, 3]))
+                .unwrap();
+            let [a, _, b] = s.at.unwrap();
+            let share = std::f32::consts::TAU * (a + b) / 2.0;
+            let ring = w.get_by_label("Track").rect();
+            let r = ring.width() / 2.0 - 6.0 - 7.0;
+            w.hover_at(ring.center() + r * egui::vec2(share.sin(), -share.cos()));
+            w.run_steps(4);
+        });
+    }
+}
+
+/// Renders the window after `act`, which opens a sector's window, and crops
+/// the picture to that window.
+fn crop_to_sector(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window),
+) {
+    let full = format!("{name}-full");
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
+    let rect_file = format!("{dir}/{name}-rect.txt");
+    let kept = rect_file.clone();
+    render_sized(&full, DEFAULT, theme, settings, Some(job), move |w| {
+        act(w);
+        let id = egui::Id::new("disk sector window").with(1u64);
+        let rect = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+        let text = format!(
+            "{} {} {} {}",
+            rect.min.x, rect.min.y, rect.max.x, rect.max.y
+        );
+        std::fs::write(&kept, text).unwrap();
+    });
+    let suffix = match theme {
+        egui::Theme::Dark => "dark",
+        egui::Theme::Light => "light",
+    };
+    let r: Vec<f32> = std::fs::read_to_string(&rect_file)
+        .unwrap()
+        .split(' ')
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let img = image::open(format!("{dir}/{full}-{suffix}.png"))
+        .unwrap()
+        .to_rgba8();
+    let margin = 16.0;
+    let x = ((r[0] - margin) * 2.0).max(0.0) as u32;
+    let y = ((r[1] - margin) * 2.0).max(0.0) as u32;
+    let w = (((r[2] - r[0] + 2.0 * margin) * 2.0) as u32).min(img.width() - x);
+    let h = (((r[3] - r[1] + 2.0 * margin) * 2.0) as u32).min(img.height() - y);
+    image::imageops::crop_imm(&img, x, y, w, h)
+        .to_image()
+        .save(format!("{dir}/{name}-{suffix}.png"))
+        .unwrap();
+    std::fs::remove_file(format!("{dir}/{full}-{suffix}.png")).ok();
+    std::fs::remove_file(&rect_file).ok();
+}
+
 /// The Analyse drawer's image view: the file gw makes of a disk, or writes
 /// one from, as gw lays it out.
 #[test]

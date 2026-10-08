@@ -4967,6 +4967,281 @@ fn analyse_says_what_gw_found_of_the_sector_under_the_pointer_and_a_click_shows_
     assert!(rows.starts_with("0000  ") && rows.lines().last().unwrap().starts_with("03F0  "));
 }
 
+/// Track 0.0 of the Akai disk alone, as converted: R7 to R10, then R1 to
+/// R6, round from the index.
+fn akai_track() -> Job {
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.feed(
+        "T0.0: IBM MFM (10/10 sectors) from Bitcells (200704 bits, 1000.0 kbit/s, 298.9 rpm)",
+    );
+    job.progress.report(akai_report());
+    job
+}
+
+/// The Akai track with every sector's ID R1: each has nine twins, which its
+/// window lists in one long line.
+fn twinned_track() -> Job {
+    let mut report: serde_json::Value = serde_json::from_str(akai_report()).unwrap();
+    for found in report["codec"]["found"].as_array_mut().unwrap() {
+        found["id"] = serde_json::json!([0, 0, 1, 3]);
+    }
+    let mut job = Job::replay("convert", "Converting c=0-79:h=0-1 -> c=0-79:h=0-1");
+    job.progress.report(&report.to_string());
+    job
+}
+
+/// The app at `size`, its frames `step` seconds apart, `job`'s tracks on the
+/// disk, and the window of track 0.0's sector `id` open.
+fn sector_open(job: Job, size: egui::Vec2, step: f32, id: Id) -> Window {
+    let facts = &job.progress.facts[&(0, 0)];
+    let s = facts
+        .sectors
+        .iter()
+        .find(|s| s.id == id)
+        .expect("the sector");
+    let [start, _, end] = s.at.expect("its place");
+    let settings = Settings {
+        page: Page::Command("convert".into()),
+        drawer: Some(Drawer::Analyse),
+        media: Media::ThreeHalf,
+        ..Settings::default()
+    };
+    let builder = Harness::builder().with_size(size).with_step_dt(step);
+    let mut w = build(builder, settings, Some(job));
+    let at = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w
+}
+
+/// Presses the sector window's button `name`.
+fn press(w: &mut Window, name: &str) {
+    w.get_by_role_and_label(Role::Button, name).click();
+    w.run();
+}
+
+/// What the sector window says of its sector.
+fn said_of_sector(w: &Window) -> String {
+    let said = w.get_by(|n| n.role() == Role::MultilineTextInput);
+    said.value().unwrap_or_default()
+}
+
+#[test]
+fn the_sector_window_steps_round_the_track_and_on_from_the_last_sector_to_the_first() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = |r: u8| format!("C0 H0 R{r} N3 · cylinder 0, side 0");
+    // In the middle of the app's window.
+    let opened = w.get_by_role_and_label(Role::Label, &title(7)).rect();
+    assert!(
+        (opened.center().x - DEFAULT.x / 2.0).abs() < 1.0,
+        "{opened:?}"
+    );
+    press(&mut w, "Next sector");
+    w.get_by_role_and_label(Role::Label, &title(8));
+    press(&mut w, "Previous sector");
+    press(&mut w, "Previous sector");
+    w.get_by_role_and_label(Role::Label, &title(6));
+    // The keyboard's arrows step round too.
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(7));
+    // A click on the ring opens the sector there: R2, sixth round the track.
+    let facts = &app(&w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+    let [start, _, end] = facts.sectors[5].at.unwrap();
+    let share = std::f32::consts::TAU * (start + end) / 2.0;
+    // The track's middle: the ring's half width less the notch and the
+    // track's own half, raised.
+    let ring = w.get_by_label("Track").rect();
+    let r = ring.width() / 2.0 - 6.0 - 7.0;
+    let at = ring.center() + r * egui::vec2(share.sin(), -share.cos());
+    w.hover_at(at);
+    w.run();
+    w.drag_at(at);
+    w.run();
+    w.drop_at(at);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(2));
+    // No other track reported: nowhere across to go.
+    for name in [
+        "Previous cylinder",
+        "Next cylinder",
+        "Previous side",
+        "Next side",
+    ] {
+        let arrow = w.get_by_role_and_label(Role::Button, name);
+        assert!(arrow.accesskit_node().is_disabled(), "{name}");
+    }
+    // Shut and opened again, it is in the middle again.
+    press(&mut w, "Close");
+    assert!(w.query_by_role_and_label(Role::Label, &title(2)).is_none());
+}
+
+#[test]
+fn across_cylinders_and_sides_the_window_keeps_its_sector_or_says_gw_found_it_missing() {
+    let job = Job::replay("convert", SCRATCHED);
+    let first_on_18 = job.progress.facts[&(18, 0)].sectors[0].id;
+    let mut w = sector_open(job, DEFAULT, 0.25, Id::Number(3));
+    let open = |w: &Window, cyl: u32, side: u32| {
+        let title = format!("Sector 3 · cylinder {cyl}, side {side}");
+        w.get_by_role_and_label(Role::Label, &title);
+    };
+    w.key_press(egui::Key::ArrowDown);
+    w.run();
+    open(&w, 1, 0);
+    press(&mut w, "Next side");
+    open(&w, 1, 1);
+    press(&mut w, "Previous side");
+    open(&w, 1, 0);
+    // Back from the first cylinder, on round from the last.
+    for _ in 0..2 {
+        w.key_press(egui::Key::ArrowUp);
+        w.run();
+    }
+    open(&w, 79, 0);
+    // On to cylinder 18, where gw found it missing: the window says so,
+    // with gw's own line on the track, and has no data to show.
+    for _ in 0..19 {
+        w.key_press(egui::Key::ArrowDown);
+        w.run();
+    }
+    open(&w, 18, 0);
+    assert_eq!(
+        said_of_sector(&w),
+        "Sector 3\nMissing\nAmigaDOS (10/11 sectors)"
+    );
+    assert!(w.query_by_label("Sector bytes").is_none());
+    // On to where gw found it again.
+    for _ in 0..11 {
+        w.key_press(egui::Key::ArrowDown);
+        w.run();
+    }
+    open(&w, 29, 0);
+    assert_eq!(said_of_sector(&w).lines().nth(1), Some("Checks OK"));
+    // Round the track from where it was missing: from the index.
+    for _ in 0..11 {
+        w.key_press(egui::Key::ArrowUp);
+        w.run();
+    }
+    open(&w, 18, 0);
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    let Id::Number(n) = first_on_18 else {
+        panic!("{first_on_18:?}")
+    };
+    w.get_by_role_and_label(Role::Label, &format!("Sector {n} · cylinder 18, side 0"));
+}
+
+#[test]
+fn an_arrow_held_down_steps_again_and_again_faster_and_faster() {
+    let mut w = sector_open(
+        Job::replay("convert", SCRATCHED),
+        DEFAULT,
+        0.05,
+        Id::Number(3),
+    );
+    let next = w
+        .get_by_role_and_label(Role::Button, "Next cylinder")
+        .rect()
+        .center();
+    w.hover_at(next);
+    w.step();
+    w.drag_at(next);
+    w.step();
+    let open = |w: &Window| {
+        (0..80).find(|c| {
+            let title = format!("Sector 3 · cylinder {c}, side 0");
+            w.query_by_role_and_label(Role::Label, &title).is_some()
+        })
+    };
+    // Each frame shows the steps of the frame before.
+    w.step();
+    assert_eq!(open(&w), Some(1), "one step as it is pressed");
+    // 0.4 s on, another; then six a second, faster and faster.
+    for _ in 0..7 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(1));
+    w.step();
+    assert_eq!(open(&w), Some(2));
+    // Held 2 s: 2 + 6 × 1.6 + 12 × 1.6² ÷ 2 = 26.96 steps due, 26 made.
+    for _ in 0..32 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(26));
+    // Let go, it stops: at the 28 due as it was held 2.05 s, shown a frame on.
+    w.drop_at(next);
+    w.step();
+    assert_eq!(open(&w), Some(28));
+    for _ in 0..10 {
+        w.step();
+    }
+    assert_eq!(open(&w), Some(28));
+}
+
+#[test]
+fn what_is_said_of_a_sector_never_reaches_the_way_round_the_disk_and_its_arrows_stay_put() {
+    let smallest = ferriteweazle::SMALLEST;
+    let kinds = || Job::replay("convert", KINDS);
+    let first_placed = |job: &Job| {
+        let f = &job.progress.facts[&(0, 0)];
+        f.sectors.iter().find(|s| s.at.is_some()).unwrap().id
+    };
+    let jobs: [(Job, egui::Vec2); 5] = [
+        (kinds(), DEFAULT),
+        (kinds(), smallest),
+        (twinned_track(), DEFAULT),
+        (twinned_track(), smallest),
+        (Job::replay("convert", SCRATCHED), smallest),
+    ];
+    for (job, size) in jobs {
+        let first = first_placed(&job);
+        let count = job.progress.facts[&(0, 0)].sectors.len();
+        let mut w = sector_open(job, size, 0.25, first);
+        let arrows = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+        let check = |w: &Window| {
+            let said = w.get_by(|n| n.role() == Role::MultilineTextInput).rect();
+            let name = w.get_by_role_and_label(Role::Label, "Cylinder").rect();
+            assert!(
+                said.right() <= name.left(),
+                "{said:?} reaches {name:?} at {size:?}"
+            );
+            let now = w.get_by_role_and_label(Role::Button, "Next sector").rect();
+            assert_eq!(now, arrows, "the arrows stay put at {size:?}");
+            let id = egui::Id::new("disk sector window").with(1u64);
+            let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+            let app = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            assert!(
+                app.contains_rect(window),
+                "{window:?} in the app at {size:?}"
+            );
+        };
+        // Every frame as it steps, not only once it has settled.
+        check(&w);
+        for key in std::iter::repeat_n(egui::Key::ArrowRight, count)
+            .chain(std::iter::repeat_n(egui::Key::ArrowDown, 3))
+        {
+            w.key_press(key);
+            for _ in 0..4 {
+                w.step();
+                check(&w);
+            }
+        }
+    }
+    // The twins' line, too long beside the arrows at the smallest, wraps.
+    let mut w = sector_open(twinned_track(), smallest, 0.25, Id::Ibm([0, 0, 1, 3]));
+    let said = w.get_by(|n| n.role() == Role::MultilineTextInput).rect();
+    let lines = said_of_sector(&w).lines().count() as f32;
+    assert!(
+        said.height() > lines * 16.0 + 8.0,
+        "wrapped: {said:?} for {lines} lines"
+    );
+    w.run();
+}
+
 /// Analyse open on `page`, showing the image.
 fn image_open(page: &str) -> Settings {
     Settings {

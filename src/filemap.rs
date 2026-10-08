@@ -696,8 +696,9 @@ fn window(ctx: &egui::Context, map: &Map, placed: &[Placed], digits: usize) {
         lines: &lines,
         bytes: &bytes,
         base: *at as usize,
+        nav: None,
     };
-    if !surface::sector_window(ctx, egui::Id::new("image part window"), &shown) {
+    if surface::sector_window(ctx, egui::Id::new("image part window"), &shown).close {
         ctx.data_mut(|d| d.remove::<Opened>(opened_id()));
     }
 }

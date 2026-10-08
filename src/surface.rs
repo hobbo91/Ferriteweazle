@@ -245,6 +245,42 @@ const TITLE_SIZE: f32 = 13.0;
 /// The sector window's bytes, and the first rows of them a sector's tip
 /// shows, in 12-point monospace.
 const DUMP_SIZE: f32 = 12.0;
+/// The sector window's way round the disk: the ring, its track's width and
+/// how much wider the sector under the pointer and the open one's mark are,
+/// how far the index's notch reaches, the name in its middle; the arrows,
+/// the values between them and the gap before a stepper's name; the gaps
+/// between the steppers' rows, before the ring, and before it all; and the
+/// most height the bytes take.
+const DIAL: f32 = 72.0;
+const DIAL_TRACK: f32 = 10.0;
+const DIAL_RAISE: f32 = 4.0;
+const DIAL_NOTCH: f32 = 5.0;
+const DIAL_NAME: f32 = 12.0;
+const ARROW: f32 = 22.0;
+const VALUE: f32 = 34.0;
+const NAME_GAP: f32 = 6.0;
+const ROW_GAP: f32 = 4.0;
+const RING_GAP: f32 = 12.0;
+const WAY_GAP: f32 = 20.0;
+const BYTES_MOST: f32 = 360.0;
+/// The room the sector window keeps from the app's edges, its own margins
+/// and edges, and the least what is said takes.
+const APP_EDGE: f32 = 16.0;
+const WINDOW_EDGES: f32 = 26.0;
+const SAID_LEAST: f32 = 160.0;
+/// How long the open sector's mark takes to move round to the next, and to
+/// fade where a sector has no place; and the ring to fade from one track's
+/// sectors to another's, in seconds.
+const GLIDE: f64 = 0.18;
+const MARK_FADE: f32 = 0.12;
+const RING_SWAP: f64 = 0.12;
+/// A held arrow steps again REPEAT_AFTER seconds after its press, then
+/// REPEAT_LEAST times a second, faster and faster to REPEAT_MOST over
+/// REPEAT_RAMP seconds.
+const REPEAT_AFTER: f64 = 0.4;
+const REPEAT_LEAST: f64 = 6.0;
+const REPEAT_MOST: f64 = 30.0;
+const REPEAT_RAMP: f64 = 2.0;
 /// The legend: the room above it and after each marked entry.
 const LEGEND_GAP: f32 = 6.0;
 const SIDE_GAP: f32 = 32.0;
@@ -616,7 +652,16 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
             d.outline_arc(&painter, cyl, start, end, stroke);
         }
         if let Some((i, f)) = index.zip(found).filter(|_| response.clicked()) {
-            ui.data_mut(|d| d.insert_temp(inspected(), (key, i, f.revision)));
+            let opened = ui
+                .data(|d| d.get_temp::<Inspected>(inspected()))
+                .map_or_else(|| opening(ui.ctx()), |was| was.opened);
+            let open = Inspected {
+                key,
+                revision: f.revision,
+                open: Open::Found(i),
+                opened,
+            };
+            ui.data_mut(|d| d.insert_temp(inspected(), open));
         }
         response
             .clone()
@@ -631,6 +676,33 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         response
             .clone()
             .on_hover_ui_at_pointer(|ui| side_tip(ui, map, &room, d.side, d.head));
+    }
+    // The sector open in its window, outlined where it lies, its mark moving
+    // with the ring's.
+    if let Some(open) = ui.data(|d| d.get_temp::<Inspected>(inspected()))
+        && room.fits
+        && let Some(d) = disks.iter().find(|d| d.side == open.key.1)
+    {
+        let (cyl, _) = open.key;
+        let target = match open.open {
+            Open::Found(i) => track(progress, open.key).and_then(|f| f.sectors.get(i)?.at),
+            Open::Missing { .. } => {
+                d.outline(
+                    &painter,
+                    cyl,
+                    Stroke::new(1.0, look.ink.gamma_multiply(0.45)),
+                );
+                None
+            }
+        };
+        let target = target.map(|[a, _, b]| (f64::from(a), f64::from(b)));
+        if let Some((span, lit)) = mark(ui.ctx(), open, target) {
+            let (outer, inner) = d.ring(cyl);
+            let least = d.line / (TAU * ((outer + inner) / 2.0).max(1.0));
+            let (from, to) = widened(span, least);
+            let stroke = Stroke::new(1.5, look.ink.gamma_multiply(lit));
+            d.outline_arc(&painter, cyl, from, to, stroke);
+        }
     }
     inspector(ui.ctx(), map);
     let top = ui.cursor().top();
@@ -769,13 +841,6 @@ fn share_at(dx: f64, dy: f64) -> f64 {
 }
 
 impl Disk {
-    /// Where a share of a revolution from the index lies, `r` pixels from the
-    /// centre.
-    fn at(&self, share: f64, r: f64) -> Pos2 {
-        let (x, y) = heading(share);
-        self.centre + self.scale * vec2((r * x) as f32, (r * y) as f32)
-    }
-
     /// The track's outer and inner radii as drawn, in pixels: the width
     /// recorded, in the middle of its room.
     fn ring(&self, cyl: u32) -> (f64, f64) {
@@ -887,10 +952,8 @@ impl Disk {
         let Some((base, tip)) = self.geometry.notch(self.head, self.line) else {
             return;
         };
-        let half = (base - tip) * 0.7;
-        let corner = |x: f64| self.centre + self.scale * vec2(x as f32, -base as f32);
-        let points = vec![self.at(0.0, tip), corner(half), corner(-half)];
-        painter.add(Shape::convex_polygon(points, look.index, Stroke::NONE));
+        let (tip, base) = (tip as f32 * self.scale, base as f32 * self.scale);
+        painter.add(notch(self.centre, (tip, base), look.index));
     }
 
     /// Rings track `cyl` at its edges.
@@ -906,15 +969,8 @@ impl Disk {
     /// Outlines track `cyl` from share `from` to `to` of a revolution.
     fn outline_arc(&self, painter: &egui::Painter, cyl: u32, from: f64, to: f64, stroke: Stroke) {
         let (outer, inner) = self.ring(cyl);
-        let half = f64::from(stroke.width / 2.0 / self.scale);
-        let (outer, inner) = (outer + half, (inner - half).max(0.0));
-        // Steps a point long round the outer edge, at least eight.
-        let length = TAU * outer * (to - from) * f64::from(self.scale);
-        let steps = (length.ceil() as usize).clamp(8, 2048);
-        let along = |i: usize| from + (to - from) * i as f64 / steps as f64;
-        let mut points: Vec<Pos2> = (0..=steps).map(|i| self.at(along(i), outer)).collect();
-        points.extend((0..=steps).rev().map(|i| self.at(along(i), inner)));
-        painter.add(Shape::closed_line(points, stroke));
+        let edges = (outer as f32 * self.scale, inner as f32 * self.scale);
+        painter.add(outline(self.centre, edges, (from, to), stroke));
     }
 }
 
@@ -2371,115 +2427,350 @@ fn sums<'a>(
     (sums.join(" · "), encodings)
 }
 
-/// The sector whose data is open: its track, its place among the track's
-/// sectors, and the track's facts' revision.
-type Inspected = ((u32, u32), usize, u64);
+/// The sector whose data is open: its track, the track's facts' revision,
+/// which sector, and which opening of its window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Inspected {
+    key: (u32, u32),
+    revision: u64,
+    open: Open,
+    /// Counts the window's openings: each is measured and centred afresh,
+    /// and its mark starts where its sector lies.
+    opened: u64,
+}
+
+/// Which sector of a track is open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Open {
+    /// The track's sector at this place among them, round from the index.
+    Found(usize),
+    /// None that gw found, stepped to from a sector with this ID on another
+    /// track: the ID the format gives it here where the format lays it out
+    /// on the track (`laid`), else the one it had there.
+    Missing { id: Id, laid: bool },
+}
+
+/// A step the sector window's arrows, ring or keys ask for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    /// So many sectors on round the track, back where fewer than none.
+    Round(i32),
+    /// The track's sector at this place among them.
+    To(usize),
+    /// So many cylinders on, of those gw reported on the side.
+    Cylinder(i32),
+    /// The other side.
+    Side,
+}
+
+impl Inspected {
+    /// Where `step` leads from here over the tracks `progress` holds; None
+    /// where it leads to no other sector.
+    fn stepped(self, progress: &Progress, step: Step) -> Option<Inspected> {
+        let here = track(progress, self.key)?;
+        let (cyl, side) = self.key;
+        let found = |i| Inspected {
+            open: Open::Found(i),
+            ..self
+        };
+        // On another track, the sector with this one's ID, where it lies.
+        let elsewhere = |key| {
+            let there = track(progress, key)?;
+            let (id, near) = match self.open {
+                Open::Found(i) => {
+                    let s = here.sectors.get(i)?;
+                    (s.id, s.at.map(|[start, ..]| start))
+                }
+                Open::Missing { id, .. } => (id, None),
+            };
+            Some(Inspected {
+                key,
+                revision: there.revision,
+                open: find(there, id, near),
+                opened: self.opened,
+            })
+        };
+        match step {
+            Step::Round(by) => round(self.open, here.sectors.len(), by).map(found),
+            Step::To(i) => (i < here.sectors.len()).then(|| found(i)),
+            Step::Cylinder(by) => next_cylinder(&cylinders(progress, side), cyl, by)
+                .and_then(|c| elsewhere((c, side))),
+            Step::Side => (side < 2).then(|| elsewhere((cyl, 1 - side))).flatten(),
+        }
+    }
+}
+
+/// What gw reported of track `key`, where its image holds the track.
+fn track(progress: &Progress, key: (u32, u32)) -> Option<&Facts> {
+    progress.facts.get(&key).filter(|f| !f.absent)
+}
+
+/// The cylinders of `side` that gw reported a track of, in order.
+fn cylinders(progress: &Progress, side: u32) -> Vec<u32> {
+    progress
+        .facts
+        .iter()
+        .filter(|&(&(_, h), f)| h == side && !f.absent)
+        .map(|(&(c, _), _)| c)
+        .collect()
+}
+
+/// The place among a track's `count` sectors that `by` steps round lead to
+/// from `open`, on from the last to the first and back, and from a sector
+/// gw did not find, from the index. None with no other to go to.
+fn round(open: Open, count: usize, by: i32) -> Option<usize> {
+    let count = i64::try_from(count).ok().filter(|&n| n > 0)?;
+    let from = match open {
+        Open::Found(_) if count == 1 => return None,
+        Open::Found(i) => i64::try_from(i).ok()?,
+        Open::Missing { .. } if by > 0 => -1,
+        Open::Missing { .. } => count,
+    };
+    usize::try_from((from + i64::from(by)).rem_euclid(count)).ok()
+}
+
+/// The cylinder `by` on from `cyl` among `cyls`, on from the last to the
+/// first and back. None with no other.
+fn next_cylinder(cyls: &[u32], cyl: u32, by: i32) -> Option<u32> {
+    let count = i64::try_from(cyls.len()).ok().filter(|&n| n > 1)?;
+    let from = i64::try_from(cyls.iter().position(|&c| c == cyl)?).ok()?;
+    let to = usize::try_from((from + i64::from(by)).rem_euclid(count)).ok()?;
+    cyls.get(to).copied()
+}
+
+/// What opens on a track gw reported `f` of, for a sector with `id` on
+/// another, which starts `near` its index there: the sector with that ID
+/// whose header's checks hold, the nearest of two; with no ID, the nearest
+/// sector; else the ID, missing.
+fn find(f: &Facts, id: Id, near: Option<f32>) -> Open {
+    let apart = |i: usize| match (near, f.sectors[i].at) {
+        (Some(near), Some([start, ..])) => {
+            let d = (start - near).rem_euclid(1.0);
+            d.min(1.0 - d)
+        }
+        _ => f32::INFINITY,
+    };
+    let same = |i: &usize| {
+        let s = &f.sectors[*i];
+        id == Id::None || (s.header == Header::Good && alike(&s.id, &id))
+    };
+    let nearest = (0..f.sectors.len())
+        .filter(same)
+        .min_by(|&a, &b| apart(a).total_cmp(&apart(b)));
+    if let Some(i) = nearest {
+        return Open::Found(i);
+    }
+    match f.missing.iter().find(|m| alike(m, &id)) {
+        Some(&laid) => Open::Missing {
+            id: laid,
+            laid: true,
+        },
+        None => Open::Missing { id, laid: false },
+    }
+}
+
+/// Whether two IDs name the same sector, each of its own track: an IBM-style
+/// header's R, or a number.
+fn alike(a: &Id, b: &Id) -> bool {
+    match (a, b) {
+        (Id::Ibm([.., a, _]), Id::Ibm([.., b, _])) => a == b,
+        (Id::Number(a), Id::Number(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// A sector gw did not find, as its window names it: its ID as the format
+/// lays it out on the track, or its R alone.
+fn missing_name(id: Id, laid: bool) -> String {
+    match id {
+        Id::Ibm(_) if !laid => short_id(&id),
+        _ => id_text(&id),
+    }
+}
+
+/// What is said of a sector gw did not find on a track it reported `f` of:
+/// its name, whether the format lays it out there, and gw's line on the
+/// track.
+fn missing_lines(f: &Facts, id: Id, laid: bool) -> Vec<(String, Tone)> {
+    let name = missing_name(id, laid);
+    let name = match id {
+        Id::Ibm(_) => format!("Sector {name}"),
+        _ => name,
+    };
+    let said = if laid { "Missing" } else { "Not found" };
+    let mut lines = vec![(name, Tone::Strong), (said.to_owned(), Tone::Plain)];
+    lines.extend(f.summary.clone().map(|s| (s, Tone::Weak)));
+    lines
+}
 
 /// The id under which the sector whose data is open is kept.
 fn inspected() -> egui::Id {
     egui::Id::new("disk sector")
 }
 
-/// The window a click on a sector opens: all gw decoded of it, and its
-/// data in full.
+/// A new opening of the sector window, counted.
+fn opening(ctx: &egui::Context) -> u64 {
+    ctx.data_mut(|d| {
+        let opened = d.get_temp_mut_or_default::<u64>(egui::Id::new("disk sector openings"));
+        *opened += 1;
+        *opened
+    })
+}
+
+/// The window a click on a sector opens: all gw decoded of it, its data in
+/// full, and the way to the others: round the track, on the other cylinders
+/// and on the other side.
 fn inspector(ctx: &egui::Context, map: &Map) {
-    let Some((key, index, revision)) = ctx.data(|d| d.get_temp::<Inspected>(inspected())) else {
+    let Some(open) = ctx.data(|d| d.get_temp::<Inspected>(inspected())) else {
         return;
     };
+    let shut = || ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
     // Gone once the track is reported again, or another job's shows.
-    let facts = map
-        .progress
-        .facts
-        .get(&key)
-        .filter(|f| f.revision == revision);
-    let Some((f, s)) = facts.and_then(|f| Some((f, f.sectors.get(index)?))) else {
-        ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
-        return;
+    let Some(f) = track(map.progress, open.key).filter(|f| f.revision == open.revision) else {
+        return shut();
     };
-    let (cyl, side) = key;
-    let title = format!("{} · cylinder {cyl}, side {side}", id_text(&s.id));
-    let id = egui::Id::new("disk sector window");
+    let (cyl, side) = open.key;
+    let (name, lines, bytes) = match open.open {
+        Open::Found(i) => {
+            let Some(s) = f.sectors.get(i) else {
+                return shut();
+            };
+            (id_text(&s.id), sector_lines(s, &f.sectors), &s.bytes[..])
+        }
+        Open::Missing { id, laid } => (missing_name(id, laid), missing_lines(f, id, laid), &[][..]),
+    };
+    let title = format!("{name} · cylinder {cyl}, side {side}");
+    let goes = |step| open.stepped(map.progress, step).is_some();
+    let nav = Nav {
+        progress: map.progress,
+        facts: f,
+        open,
+        round: goes(Step::Round(1)),
+        cylinder: goes(Step::Cylinder(1)),
+        side: goes(Step::Side),
+    };
     let shown = Shown {
         title: &title,
-        lines: &sector_lines(s, &f.sectors),
-        bytes: &s.bytes,
+        lines: &lines,
+        bytes,
         base: 0,
+        nav: Some(nav),
     };
-    if !sector_window(ctx, id, &shown) {
-        ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
+    let id = egui::Id::new("disk sector window").with(open.opened);
+    let asked = sector_window(ctx, id, &shown);
+    if asked.close {
+        shut();
+    } else if let Some(next) = asked.step.and_then(|step| open.stepped(map.progress, step)) {
+        ctx.data_mut(|d| d.insert_temp(inspected(), next));
     }
 }
 
-/// What a sector window shows: its title, what is said of the sector, and
-/// its data, the first byte numbered `base`.
+/// What a sector window shows: its title, what is said of the sector, its
+/// data, the first byte numbered `base`, and the way round the disk.
 pub(crate) struct Shown<'a> {
     pub title: &'a str,
     pub lines: &'a [(String, Tone)],
     pub bytes: &'a [u8],
     pub base: usize,
+    pub nav: Option<Nav<'a>>,
 }
 
-/// A sector's window, first in the middle of the app's: a title bar as tall
-/// as a macOS window's, what is said of the sector, and its data in full.
-/// Whether it is still open.
-pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) -> bool {
-    let mut open = true;
+/// The way from the open sector to the others: its track, on the ring, and
+/// whether each arrow has another to go to: round the track, to another
+/// cylinder, to the other side.
+pub(crate) struct Nav<'a> {
+    progress: &'a Progress,
+    facts: &'a Facts,
+    open: Inspected,
+    round: bool,
+    cylinder: bool,
+    side: bool,
+}
+
+/// What a sector window is asked this frame: to shut, or to step.
+#[derive(Default)]
+pub(crate) struct Asked {
+    pub close: bool,
+    step: Option<Step>,
+}
+
+/// A sector's window: a title bar as tall as a macOS window's, what is said
+/// of the sector, its data in full, and the way round the disk. It opens in
+/// the middle of the app's, once measured, then grows from its top right
+/// corner, never smaller than it has been: the arrows there stay put as
+/// what it shows changes.
+pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) -> Asked {
+    let mut asked = Asked::default();
     let title = shown.title;
     let frame = egui::Frame::window(&ctx.global_style()).inner_margin(0);
-    egui::Window::new(title)
+    let window = egui::Window::new(title)
         .id(id)
         .title_bar(false)
         .frame(frame)
-        .resizable(false)
-        .pivot(Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
-        .show(ctx, |ui| {
-            let p = theme::palette(ui);
-            let font = FontId::proportional(TITLE_SIZE);
-            let galley = ui
-                .painter()
-                .layout_no_wrap(title.to_owned(), font, p.strong);
-            // The title's room, between a button's each side, so it centres.
-            let least = galley.size().x + 2.0 * TITLE_BAR + 2.0;
-            let (bar, _) = ui.allocate_exact_size(vec2(least, TITLE_BAR), Sense::hover());
-            let margin = egui::Margin::symmetric(12, 10);
-            egui::Frame::new()
-                .inner_margin(margin)
-                .show(ui, |ui| sector_text(ui, shown, p));
-            let bar = Rect::from_min_size(bar.min, vec2(ui.min_rect().width(), TITLE_BAR));
-            let named = RichText::new(title).size(TITLE_SIZE).color(p.strong);
-            ui.put(bar.shrink2(vec2(TITLE_BAR, 0.0)), egui::Label::new(named));
-            let line = Stroke::new(1.0, p.line);
-            ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, line);
-            let cross = Rect::from_center_size(
-                egui::pos2(bar.right() - TITLE_BAR / 2.0, bar.center().y),
-                vec2(18.0, 18.0),
-            );
-            let close = ui.interact(cross, ui.id().with("close"), Sense::click());
-            close
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
-            let colour = if close.hovered() {
-                ui.painter().rect_filled(cross, 4.0, p.hover);
-                p.strong
-            } else {
-                p.dim
-            };
-            let arm = cross.shrink(5.0);
-            let stroke = Stroke::new(1.5, colour);
-            ui.painter()
-                .line_segment([arm.left_top(), arm.right_bottom()], stroke);
-            ui.painter()
-                .line_segment([arm.right_top(), arm.left_bottom()], stroke);
-            if close.clicked() {
-                open = false;
-            }
-        });
-    open
+        .resizable(false);
+    let state = egui::AreaState::load(ctx, id);
+    // Once measured, where its right edge stays.
+    let right = state.filter(|s| s.size.is_some()).map(|s| s.rect().right());
+    let window = match state {
+        Some(state) if state.pivot == Align2::RIGHT_TOP => window.pivot(Align2::RIGHT_TOP),
+        Some(state) if state.size.is_some() => window
+            .pivot(Align2::RIGHT_TOP)
+            .current_pos(state.rect().right_top()),
+        _ => window
+            .pivot(Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center()),
+    };
+    window.show(ctx, |ui| {
+        let p = theme::palette(ui);
+        let least_id = ui.id().with("least");
+        let least = ui.data(|d| d.get_temp::<egui::Vec2>(least_id));
+        ui.set_min_size(least.unwrap_or_default());
+        let font = FontId::proportional(TITLE_SIZE);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(title.to_owned(), font, p.strong);
+        // The title's room, between a button's each side, so it centres.
+        let room = galley.size().x + 2.0 * TITLE_BAR + 2.0;
+        let (bar, _) = ui.allocate_exact_size(vec2(room, TITLE_BAR), Sense::hover());
+        let margin = egui::Margin::symmetric(12, 10);
+        egui::Frame::new()
+            .inner_margin(margin)
+            .show(ui, |ui| asked.step = sector_text(ui, shown, right, p));
+        let bar = Rect::from_min_size(bar.min, vec2(ui.min_rect().width(), TITLE_BAR));
+        let named = RichText::new(title).size(TITLE_SIZE).color(p.strong);
+        ui.put(bar.shrink2(vec2(TITLE_BAR, 0.0)), egui::Label::new(named));
+        let line = Stroke::new(1.0, p.line);
+        ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, line);
+        let cross = Rect::from_center_size(
+            egui::pos2(bar.right() - TITLE_BAR / 2.0, bar.center().y),
+            vec2(18.0, 18.0),
+        );
+        let close = ui.interact(cross, ui.id().with("close"), Sense::click());
+        close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+        let colour = if close.hovered() {
+            ui.painter().rect_filled(cross, 4.0, p.hover);
+            p.strong
+        } else {
+            p.dim
+        };
+        let arm = cross.shrink(5.0);
+        let stroke = Stroke::new(1.5, colour);
+        ui.painter()
+            .line_segment([arm.left_top(), arm.right_bottom()], stroke);
+        ui.painter()
+            .line_segment([arm.right_top(), arm.left_bottom()], stroke);
+        asked.close = close.clicked();
+        let size = ui.min_rect().size();
+        ui.data_mut(|d| d.insert_temp(least_id, least.map_or(size, |l| l.max(size))));
+    });
+    asked
 }
 
 /// The sector window's text, to select and copy: what is said of the
-/// sector, then its data, which scrolls.
-fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
+/// sector, beside the way round the disk, then its data, which scrolls; in
+/// a window whose right edge stays at `right` once measured. What the way
+/// round the disk is asked this frame.
+fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette) -> Option<Step> {
     let lines = shown.lines;
     let text = lines
         .iter()
@@ -2496,12 +2787,12 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
             Tone::Weak => p.dim,
         })
         .collect();
-    // Lines the type's size and the spacing between widgets apart, none
-    // wrapped.
+    // Lines the type's size and the spacing between widgets apart, wrapped
+    // only at `wrap`.
     let spaced = body.size + ui.spacing().item_spacing.y;
-    let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _: f32| {
+    let lay = |ui: &egui::Ui, text: &str, wrap: f32| {
         let mut job = egui::text::LayoutJob::default();
-        for (i, line) in buffer.as_str().split('\n').enumerate() {
+        for (i, line) in text.split('\n').enumerate() {
             let format = egui::TextFormat {
                 font_id: body.clone(),
                 color: colours.get(i).copied().unwrap_or(plain),
@@ -2515,18 +2806,43 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
             };
             job.append(&line, 0.0, format);
         }
-        job.wrap.max_width = f32::INFINITY;
+        job.wrap.max_width = wrap;
         ui.fonts_mut(|f| f.layout_job(job))
     };
-    let said_width = layouter(ui, &text.as_str(), 0.0).size().x;
+    // Room for any sector the window can go to, so it keeps its size.
+    let reserved = shown
+        .nav
+        .as_ref()
+        .map(|nav| reserve(ui, nav.progress, &body))
+        .unwrap_or_default();
+    let natural = lay(ui, &text, f32::INFINITY).size().x.max(reserved.widest);
     let dumped = Dumped::kept(ui, ui.id().with("dumped"), shown.bytes, shown.base);
     let mono = FontId::monospace(DUMP_SIZE);
     let advance = ui.fonts_mut(|f| f.glyph_width(&mono, '0'));
-    let rows_width = dumped.widest as f32 * advance;
+    let full = match reserved.bytes {
+        0..16 => 0,
+        _ => Dumped::of(&[0; 16], shown.base).widest,
+    };
+    let rows_width = dumped.widest.max(full) as f32 * advance;
     // A text view's bars, as the Log's: beside the rows, not over them.
     theme::solid_bars(ui, p);
     let bar = ui.spacing().scroll.allocated_width();
-    ui.set_min_width(said_width.max(rows_width + bar).ceil() + 1.0);
+    let beside = shown.nav.as_ref().map_or(0.0, |_| WAY_GAP + way_width(ui));
+    // Beside the way round the disk, what is said wraps only where its longest
+    // line would take the window past the app's, growing from its right edge.
+    let app = ui.ctx().content_rect();
+    let mut room = app.width() - 2.0 * APP_EDGE - WINDOW_EDGES - beside;
+    if let Some(right) = right {
+        room = room.min(right - app.left() - APP_EDGE - WINDOW_EDGES - beside);
+    }
+    let room = room.max(rows_width + bar - beside).max(SAID_LEAST);
+    let (said_width, wrap) = match natural > room {
+        true => (room, room),
+        false => (natural, f32::INFINITY),
+    };
+    ui.set_min_width((said_width + beside).max(rows_width + bar).ceil() + 1.0);
+    let mut layouter =
+        |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _: f32| lay(ui, buffer.as_str(), wrap);
     let mut buffer = text.as_str();
     let said = egui::TextEdit::multiline(&mut buffer)
         .layouter(&mut layouter)
@@ -2534,11 +2850,41 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
         .margin(0)
         .desired_rows(1)
         .desired_width(said_width.ceil() + 1.0);
-    form::read_only_box(ui, ui.id().with("said"), said);
-    if dumped.rows.is_empty() {
-        return;
+    let said_id = ui.id().with("said");
+    // Another sector's text: none of it selected.
+    let of = ui.id().with("said of");
+    if ui.data(|d| d.get_temp::<String>(of)).as_deref() != Some(shown.title) {
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), said_id) {
+            state.cursor.set_char_range(None);
+            state.store(ui.ctx(), said_id);
+        }
+        ui.data_mut(|d| d.insert_temp(of, shown.title.to_owned()));
+    }
+    // What is said and the way round the disk, never shorter than they have
+    // been, so the data below stays put.
+    let top_id = ui.id().with("top");
+    let least = ui.data(|d| d.get_temp::<f32>(top_id)).unwrap_or(0.0);
+    let least = least.max(reserved.lines as f32 * spaced);
+    let mut step = None;
+    let top = ui.horizontal_top(|ui| {
+        ui.set_min_height(least);
+        form::read_only_box(ui, said_id, said);
+        if let Some(nav) = &shown.nav {
+            let layout = egui::Layout::right_to_left(egui::Align::Min);
+            step = ui.with_layout(layout, |ui| way(ui, nav, p)).inner;
+        }
+    });
+    let height = top.response.rect.height();
+    ui.data_mut(|d| d.insert_temp(top_id, least.max(height)));
+    let rows = dumped.rows.len().max(reserved.bytes.div_ceil(16));
+    if rows == 0 {
+        return step;
     }
     ui.separator();
+    let row = ui.fonts_mut(|f| f.row_height(&mono));
+    // At most BYTES_MOST, and as much as the app's height has room for.
+    let fits = app.height() - 2.0 * APP_EDGE - TITLE_BAR - WINDOW_EDGES - least.max(height);
+    let room = (rows as f32 * row).min(BYTES_MOST).min(fits.max(4.0 * row));
     let line = |i: usize| (&dumped.text[dumped.rows[i].clone()], plain);
     let lines = Lines {
         count: dumped.rows.len(),
@@ -2546,12 +2892,542 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, p: &Palette) {
         font: mono,
         gap: 0.0,
     };
-    let area = egui::ScrollArea::vertical().max_height(360.0);
-    let pane = Pane {
-        name: "Sector bytes",
-        ..Pane::default()
+    ui.allocate_ui(vec2(ui.available_width(), room), |ui| {
+        ui.set_min_height(room);
+        if lines.count > 0 {
+            let area = egui::ScrollArea::vertical().max_height(room);
+            let pane = Pane {
+                name: "Sector bytes",
+                ..Pane::default()
+            };
+            lines.show_as(ui, ui.id().with("bytes"), area, pane);
+        }
+    });
+    step
+}
+
+/// What the sector window keeps room for, whichever sector it goes to: the
+/// widest line said of any sector gw reported, or of one gw did not find,
+/// each digit as wide as the widest; the most lines; the most bytes.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reserved {
+    widest: f32,
+    lines: usize,
+    bytes: usize,
+}
+
+/// The room the sector window keeps for every sector of `progress`, said in
+/// `font`, worked out again only once gw reports more.
+fn reserve(ui: &egui::Ui, progress: &Progress, font: &FontId) -> Reserved {
+    let id = egui::Id::new("disk sector room");
+    if let Some((revision, reserved)) = ui.data(|d| d.get_temp::<(u64, Reserved)>(id))
+        && revision == progress.revision
+    {
+        return reserved;
+    }
+    let width = |c: char| ui.fonts_mut(|f| f.glyph_width(font, c));
+    let digit = ('0'..='9')
+        .max_by(|&a, &b| width(a).total_cmp(&width(b)))
+        .unwrap_or('0');
+    let shape = |line: &str| -> String {
+        line.chars()
+            .map(|c| if c.is_ascii_digit() { digit } else { c })
+            .collect()
     };
-    lines.show_as(ui, ui.id().with("bytes"), area, pane);
+    let mut shapes = std::collections::HashSet::new();
+    // A sector gw did not find: its name, whether its format lays it out
+    // there, and gw's line on the track.
+    let mut reserved = Reserved {
+        lines: 3,
+        ..Reserved::default()
+    };
+    for f in progress.facts.values().filter(|f| !f.absent) {
+        shapes.extend(f.summary.as_deref().map(shape));
+        for &id in &f.missing {
+            shapes.extend(missing_lines(f, id, true).iter().map(|(l, _)| shape(l)));
+        }
+        for s in &f.sectors {
+            let lines = sector_lines(s, &f.sectors);
+            reserved.lines = reserved.lines.max(lines.len());
+            reserved.bytes = reserved.bytes.max(s.bytes.len());
+            shapes.extend(lines.iter().map(|(l, _)| shape(l)));
+        }
+    }
+    reserved.widest = shapes
+        .into_iter()
+        .map(|t| {
+            let laid = ui.fonts_mut(|f| f.layout_no_wrap(t, font.clone(), Color32::PLACEHOLDER));
+            laid.size().x
+        })
+        .fold(0.0, f32::max);
+    ui.data_mut(|d| d.insert_temp(id, (progress.revision, reserved)));
+    reserved
+}
+
+/// The way round the disk's width: the steppers, the gap, and the ring
+/// between its arrows.
+fn way_width(ui: &egui::Ui) -> f32 {
+    steppers_width(ui) + RING_GAP + 2.0 * ARROW + DIAL
+}
+
+/// The steppers' width: the longer name, its gap, and the value between
+/// two arrows.
+fn steppers_width(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let name = ui.fonts_mut(|f| {
+        f.layout_no_wrap("Cylinder".to_owned(), font, Color32::PLACEHOLDER)
+            .size()
+            .x
+    });
+    name.ceil() + NAME_GAP + 2.0 * ARROW + VALUE
+}
+
+/// The way round the disk, right of what is said: the cylinder and the side
+/// each between arrows, and the track as a ring between the arrows round
+/// it; the keyboard's arrows step round and across too. What it is asked
+/// this frame.
+fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
+    let column = steppers_width(ui);
+    let size = vec2(way_width(ui), DIAL);
+    let (cyl, side) = nav.open.key;
+    let mut asked = Vec::new();
+    let row = egui::Layout::left_to_right(egui::Align::Min);
+    ui.allocate_ui_with_layout(size, row, |ui| {
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let steppers = egui::Layout::top_down(egui::Align::Max);
+        ui.allocate_ui_with_layout(vec2(column, DIAL), steppers, |ui| {
+            ui.add_space((DIAL - 2.0 * ARROW - ROW_GAP) / 2.0);
+            let by = stepper(ui, "Cylinder", &cyl.to_string(), nav.cylinder, true, p);
+            if by != 0 {
+                asked.push(Step::Cylinder(by));
+            }
+            ui.add_space(ROW_GAP);
+            if stepper(ui, "Side", &side.to_string(), nav.side, false, p) != 0 {
+                asked.push(Step::Side);
+            }
+        });
+        ui.add_space(RING_GAP);
+        let beside = egui::Layout::top_down(egui::Align::Center);
+        let mut by = 0;
+        ui.allocate_ui_with_layout(vec2(ARROW, DIAL), beside, |ui| {
+            ui.add_space((DIAL - ARROW) / 2.0);
+            by -= arrow(ui, false, nav.round, true, "sector", p);
+        });
+        if let Some(i) = dial(ui, nav, p) {
+            asked.push(Step::To(i));
+        }
+        ui.allocate_ui_with_layout(vec2(ARROW, DIAL), beside, |ui| {
+            ui.add_space((DIAL - ARROW) / 2.0);
+            by += arrow(ui, true, nav.round, true, "sector", p);
+        });
+        if by != 0 {
+            asked.push(Step::Round(by));
+        }
+    });
+    if keys_free(ui) {
+        let none = egui::Modifiers::NONE;
+        let [left, right, up, down] = ui.input_mut(|i| {
+            [
+                egui::Key::ArrowLeft,
+                egui::Key::ArrowRight,
+                egui::Key::ArrowUp,
+                egui::Key::ArrowDown,
+            ]
+            .map(|key| i32::try_from(i.count_and_consume_key(none, key)).unwrap_or(0))
+        });
+        if nav.round && right != left {
+            asked.push(Step::Round(right - left));
+        }
+        if nav.cylinder && down != up {
+            asked.push(Step::Cylinder(down - up));
+        }
+    }
+    asked.first().copied()
+}
+
+/// Whether the keyboard's arrows are the sector window's: nothing has the
+/// keyboard, or something in the window has.
+fn keys_free(ui: &egui::Ui) -> bool {
+    ui.memory(|m| m.focused()).is_none_or(|id| {
+        ui.ctx()
+            .read_response(id)
+            .is_some_and(|r| r.layer_id == ui.layer_id())
+    })
+}
+
+/// A stepper's row from the right: its value between arrows, then its name.
+/// How many steps it is asked for this frame, back as fewer than none.
+fn stepper(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: &str,
+    live: bool,
+    repeats: bool,
+    p: &Palette,
+) -> i32 {
+    let mut by = 0;
+    let row = vec2(ui.available_width(), ARROW);
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.allocate_ui_with_layout(row, layout, |ui| {
+        let what = name.to_lowercase();
+        by += arrow(ui, true, live, repeats, &what, p);
+        let value = RichText::new(value).color(p.strong);
+        ui.add_sized(vec2(VALUE, ARROW), egui::Label::new(value));
+        by -= arrow(ui, false, live, repeats, &what, p);
+        ui.add_space(NAME_GAP);
+        ui.label(RichText::new(name).color(p.dim));
+    });
+    by
+}
+
+/// An arrow, ‹ or › as it steps back or `on`, greyed unless `live`, named for
+/// the access tree as the previous or next `what`. How many steps it is
+/// asked for this frame: one as it is pressed, then while it is held on it,
+/// if it `repeats`, more and more often (held_steps).
+fn arrow(ui: &mut egui::Ui, on: bool, live: bool, repeats: bool, what: &str, p: &Palette) -> i32 {
+    // Its own drags, so a hand that moves as it holds the arrow does not
+    // move the window.
+    let sense = if live {
+        Sense::click_and_drag()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(ARROW, ARROW), sense);
+    let name = format!("{} {what}", if on { "Next" } else { "Previous" });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, live, &name));
+    let id = response.id;
+    let down = live && response.is_pointer_button_down_on();
+    let held = ui.data(|d| d.get_temp::<Held>(id));
+    let mut steps = 0;
+    if down {
+        let now = ui.input(|i| i.time);
+        let Held { since, made } = held.unwrap_or(Held {
+            since: now,
+            made: 0,
+        });
+        let due = if repeats { held_steps(now - since) } else { 1 };
+        // Held off the arrow, it waits, and goes on from there.
+        if response.contains_pointer() {
+            steps = due.saturating_sub(made);
+        }
+        ui.data_mut(|d| d.insert_temp(id, Held { since, made: due }));
+        if repeats {
+            ui.ctx().request_repaint();
+        }
+    } else {
+        // A click with no press held before it: the keyboard's, the access
+        // tree's, or a press and its release in one frame.
+        if response.clicked() && held.is_none() {
+            steps = 1;
+        }
+        ui.data_mut(|d| d.remove::<Held>(id));
+    }
+    let colour = if !live {
+        theme::lerp(p.card, p.dim, 0.35)
+    } else if response.hovered() || down {
+        let fill = if down { p.line } else { p.hover };
+        ui.painter().rect_filled(rect, 4.0, fill);
+        p.strong
+    } else {
+        p.text
+    };
+    let c = rect.center();
+    let x = if on { -2.5 } else { 2.5 };
+    let points = vec![c + vec2(x, -5.0), c + vec2(-x, 0.0), c + vec2(x, 5.0)];
+    ui.painter()
+        .add(Shape::line(points, Stroke::new(1.5, colour)));
+    i32::try_from(steps).unwrap_or(i32::MAX)
+}
+
+/// An arrow held down: since when, and the steps it has made.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    since: f64,
+    made: u32,
+}
+
+/// The steps an arrow held for `held` seconds has asked for: one as it was
+/// pressed, another REPEAT_AFTER on, then REPEAT_LEAST a second, faster and
+/// faster to REPEAT_MOST a second over REPEAT_RAMP seconds.
+fn held_steps(held: f64) -> u32 {
+    let t = held - REPEAT_AFTER;
+    if t < 0.0 {
+        return 1;
+    }
+    let ramp = t.min(REPEAT_RAMP);
+    let gain = (REPEAT_MOST - REPEAT_LEAST) / REPEAT_RAMP;
+    let more = REPEAT_LEAST * ramp + gain * ramp * ramp / 2.0 + REPEAT_MOST * (t - ramp);
+    // A step due as `held` is reached counts, whatever the rounding.
+    2 + (more + 1e-9) as u32
+}
+
+/// The open track as a ring, drawn as the disk view draws a track: the
+/// index's notch at the top, the track running on clockwise, each sector gw
+/// placed in its colour on the colour of the track's gaps, and the open one
+/// outlined, the outline moving round to the next. From one track to another
+/// the ring fades. The sector under the pointer stands out and is named in
+/// the middle; a click on it asks for it, which this returns.
+fn dial(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<usize> {
+    let f = nav.facts;
+    let look = Look::of(p, Media::Fit);
+    let (rect, response) = ui.allocate_exact_size(vec2(DIAL, DIAL), Sense::click_and_drag());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Track"));
+    let centre = rect.center();
+    // The track's middle and its edges, with room above for the notch.
+    let r = DIAL / 2.0 - DIAL_NOTCH - 1.0 - (DIAL_TRACK + DIAL_RAISE) / 2.0;
+    let edges = (r + DIAL_TRACK / 2.0, r - DIAL_TRACK / 2.0);
+    // A length round the track's middle, as a share of a revolution.
+    let share = |points: f32| f64::from(points) / (TAU * f64::from(r));
+    let hovered = response
+        .hover_pos()
+        .filter(|at| ((*at - centre).length() - r).abs() <= (DIAL_TRACK + DIAL_RAISE) / 2.0)
+        .and_then(|at| {
+            let d = at - centre;
+            let pointed = share_at(f64::from(d.x), f64::from(d.y));
+            under(&f.sectors, pointed, share(4.0))
+        });
+    if hovered.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let least = share(1.5);
+    let arcs = f
+        .sectors
+        .iter()
+        .filter_map(|s| Some((extent(s, least)?, look.status(s))))
+        .collect();
+    let ground = match Shortfall::of(f) {
+        Shortfall::None => look.gap,
+        Shortfall::Missing => look.missing_gap,
+        Shortfall::Bad => look.bad_gap,
+    };
+    let (was, face, shown) = faded(ui, nav.open, Face { ground, arcs });
+    let painter = ui.painter();
+    let window = ui.visuals().window_fill;
+    let paint = |face: &Face, strength: f32| {
+        // epaint strokes a circle outside it.
+        let ground = Stroke::new(DIAL_TRACK, face.ground.gamma_multiply(strength));
+        painter.circle_stroke(centre, edges.1, ground);
+        for &(span, colour) in &face.arcs {
+            painter.add(arc(
+                centre,
+                r,
+                span,
+                DIAL_TRACK,
+                colour.gamma_multiply(strength),
+            ));
+        }
+        // Each sector's ends cut in the window's colour, so those that meet
+        // show apart, and the gaps' colour only where gw found none.
+        let cut = Stroke::new(1.0, window.gamma_multiply(strength));
+        for &((from, to), _) in &face.arcs {
+            for end in [from, to] {
+                let across = [edges.0, edges.1].map(|r| point_at(centre, end, r));
+                painter.line_segment(across, cut);
+            }
+        }
+    };
+    if let Some(was) = &was {
+        paint(was, 1.0);
+    }
+    paint(&face, shown);
+    if let Some(s) = hovered.map(|i| &f.sectors[i])
+        && let Some(span) = extent(s, least)
+    {
+        painter.add(arc(
+            centre,
+            r,
+            span,
+            DIAL_TRACK + DIAL_RAISE,
+            look.status(s),
+        ));
+    }
+    let target = match nav.open.open {
+        Open::Found(i) => f.sectors.get(i).and_then(|s| s.at),
+        Open::Missing { .. } => None,
+    };
+    let target = target.map(|[a, _, b]| (f64::from(a), f64::from(b)));
+    if let Some((span, lit)) = mark(ui.ctx(), nav.open, target) {
+        let stroke = Stroke::new(1.5, look.ink.gamma_multiply(lit));
+        painter.add(outline(centre, edges, widened(span, share(3.0)), stroke));
+    }
+    let tip = edges.0 + DIAL_RAISE / 2.0 + 1.0;
+    painter.add(notch(centre, (tip, tip + DIAL_NOTCH), look.index));
+    let (name, colour) = match (hovered, nav.open.open) {
+        (Some(i), _) => (short_id(&f.sectors[i].id), p.text),
+        (None, Open::Found(i)) => (
+            f.sectors
+                .get(i)
+                .map_or_else(String::new, |s| short_id(&s.id)),
+            p.strong,
+        ),
+        (None, Open::Missing { id, .. }) => (short_id(&id), p.partial),
+    };
+    let font = FontId::proportional(DIAL_NAME);
+    painter.text(centre, Align2::CENTER_CENTER, name, font, colour);
+    hovered.filter(|_| response.clicked())
+}
+
+/// Where share `share` of a revolution from the index lies, `r` from
+/// `centre`, as `heading` points.
+fn point_at(centre: Pos2, share: f64, r: f32) -> Pos2 {
+    let (x, y) = heading(share);
+    centre + vec2(x as f32, y as f32) * r
+}
+
+/// Points round `centre`, `r` from it, from share `from` to `to` of a
+/// revolution from the index, in `steps` steps.
+fn arc_points(
+    centre: Pos2,
+    r: f32,
+    (from, to): (f64, f64),
+    steps: usize,
+) -> impl DoubleEndedIterator<Item = Pos2> {
+    (0..=steps).map(move |i| point_at(centre, from + (to - from) * i as f64 / steps as f64, r))
+}
+
+/// How many steps a point long round `r` from the centre take from share
+/// `from` to `to`, at least eight.
+fn steps_round(r: f32, (from, to): (f64, f64)) -> usize {
+    ((TAU * f64::from(r) * (to - from)).ceil() as usize).clamp(8, 2048)
+}
+
+/// A stroke `width` wide round `centre`, `r` from it, from share `from` to
+/// `to` of a revolution from the index.
+fn arc(centre: Pos2, r: f32, span: (f64, f64), width: f32, colour: Color32) -> Shape {
+    let points = arc_points(centre, r, span, steps_round(r, span)).collect();
+    Shape::line(points, Stroke::new(width, colour))
+}
+
+/// The outline of a track's part between its `edges`, outer and inner, from
+/// share `from` to `to` of a revolution: half its width outside them, so it
+/// touches what it rings.
+fn outline(centre: Pos2, (outer, inner): (f32, f32), span: (f64, f64), stroke: Stroke) -> Shape {
+    let half = stroke.width / 2.0;
+    let (outer, inner) = (outer + half, (inner - half).max(0.0));
+    let steps = steps_round(outer, span);
+    let mut points: Vec<Pos2> = arc_points(centre, outer, span, steps).collect();
+    points.extend(arc_points(centre, inner, span, steps).rev());
+    Shape::closed_line(points, stroke)
+}
+
+/// The index's mark at the top of a disk or a track about `centre`: a notch
+/// from its tip, `tip` from the centre, out to its base, `base` from it.
+fn notch(centre: Pos2, (tip, base): (f32, f32), colour: Color32) -> Shape {
+    let half = (base - tip) * 0.7;
+    let points = vec![
+        centre - vec2(0.0, tip),
+        centre + vec2(half, -base),
+        centre + vec2(-half, -base),
+    ];
+    Shape::convex_polygon(points, colour, Stroke::NONE)
+}
+
+/// How a track looks on the ring: the colour of its gaps, and each sector's
+/// start, end and colour.
+#[derive(Clone, Debug, Default)]
+struct Face {
+    ground: Color32,
+    arcs: Vec<((f64, f64), Color32)>,
+}
+
+/// The ring as it goes from one track to another: the track it shows, how
+/// it looks, how the last looked, and since when it has shown this one.
+#[derive(Clone, Debug)]
+struct Swap {
+    key: (u32, u32),
+    face: Face,
+    was: Option<Face>,
+    since: f64,
+}
+
+/// The ring's look for the open track, `face`, and for RING_SWAP seconds
+/// after it goes to another track, the last's under it: how strongly the
+/// new one shows over it.
+fn faded(ui: &egui::Ui, open: Inspected, face: Face) -> (Option<Face>, Face, f32) {
+    let id = egui::Id::new("disk sector ring").with(open.opened);
+    let now = ui.input(|i| i.time);
+    let swap = match ui.data(|d| d.get_temp::<Swap>(id)) {
+        Some(swap) if swap.key == open.key => Swap { face, ..swap },
+        Some(swap) => Swap {
+            key: open.key,
+            face,
+            was: Some(swap.face),
+            since: now,
+        },
+        None => Swap {
+            key: open.key,
+            face,
+            was: None,
+            since: f64::NEG_INFINITY,
+        },
+    };
+    ui.data_mut(|d| d.insert_temp(id, swap.clone()));
+    let t = ((now - swap.since) / RING_SWAP).clamp(0.0, 1.0);
+    if t < 1.0 {
+        ui.ctx().request_repaint();
+    }
+    (swap.was.filter(|_| t < 1.0), swap.face, t as f32)
+}
+
+/// The open sector's mark moving round its track: from where, to where,
+/// each its start and end as shares of a revolution, and since when.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    from: [f64; 2],
+    to: [f64; 2],
+    since: f64,
+}
+
+impl Glide {
+    /// Where the mark is at `now`, easing out to `to` over GLIDE seconds.
+    fn at(&self, now: f64) -> [f64; 2] {
+        let t = ((now - self.since) / GLIDE).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        [0, 1].map(|i| self.from[i] + (self.to[i] - self.from[i]) * eased)
+    }
+
+    /// Going to `to` from where it is at `now`: the shorter way round, unless
+    /// it is going there already.
+    fn toward(self, to: [f64; 2], now: f64) -> Glide {
+        let turns = (self.to[0] - to[0]).round();
+        if (0..2).all(|i| (to[i] + turns - self.to[i]).abs() < 1e-9) {
+            return self;
+        }
+        let from = self.at(now);
+        let turns = (from[0] - to[0]).round();
+        Glide {
+            from,
+            to: to.map(|x| x + turns),
+            since: now,
+        }
+    }
+}
+
+/// The mark of the sector open in the window opened `open.opened`, on its
+/// ring and on the disk, moving to `to`, its start and end, and how
+/// strongly it shows: where the open sector has no place, it fades where
+/// it was.
+fn mark(ctx: &egui::Context, open: Inspected, to: Option<(f64, f64)>) -> Option<((f64, f64), f32)> {
+    let id = egui::Id::new("disk sector mark").with(open.opened);
+    let now = ctx.input(|i| i.time);
+    let lit = ctx.animate_bool_with_time(id.with("lit"), to.is_some(), MARK_FADE);
+    let kept = ctx.data(|d| d.get_temp::<Glide>(id));
+    let glide = match (kept, to.map(|(a, b)| [a, b])) {
+        (Some(glide), Some(to)) => glide.toward(to, now),
+        (None, Some(to)) => Glide {
+            from: to,
+            to,
+            since: f64::NEG_INFINITY,
+        },
+        (Some(glide), None) => glide,
+        (None, None) => return None,
+    };
+    ctx.data_mut(|d| d.insert_temp(id, glide));
+    if now - glide.since < GLIDE {
+        ctx.request_repaint();
+    }
+    let [from, to] = glide.at(now);
+    (lit > 0.0).then_some(((from, to), lit))
 }
 
 /// A sector window's bytes as dump writes them out, and what of: kept while
@@ -2657,11 +3533,15 @@ fn holds(s: &Sector, share: f64, least: f64) -> bool {
 /// or one shorter than `least`, that much about its middle.
 fn extent(s: &Sector, least: f64) -> Option<(f64, f64)> {
     let [start, _, end] = s.at?.map(f64::from);
-    if end - start >= least {
-        return Some((start, end));
+    Some(widened((start, end), least))
+}
+
+/// From `from` to `to`, or `least` long round its middle where shorter.
+fn widened((from, to): (f64, f64), least: f64) -> (f64, f64) {
+    match to - from >= least {
+        true => (from, to),
+        false => ((from + to - least) / 2.0, (from + to + least) / 2.0),
     }
-    let middle = (start + end) / 2.0;
-    Some((middle - least / 2.0, middle + least / 2.0))
 }
 
 pub(crate) fn id_text(id: &Id) -> String {
@@ -3452,6 +4332,131 @@ pub(crate) fn key(ui: &mut egui::Ui, mark: Mark, text: &str) -> egui::Response {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_step_round_the_track_goes_on_from_the_last_sector_to_the_first() {
+        let found = Open::Found;
+        assert_eq!(round(found(0), 10, 1), Some(1));
+        assert_eq!(round(found(9), 10, 1), Some(0));
+        assert_eq!(round(found(0), 10, -1), Some(9));
+        assert_eq!(round(found(3), 10, 25), Some(8));
+        assert_eq!(round(found(0), 1, 1), None, "no other sector");
+        let missing = Open::Missing {
+            id: Id::Number(3),
+            laid: true,
+        };
+        assert_eq!(round(missing, 10, 1), Some(0), "on from the index");
+        assert_eq!(round(missing, 10, -1), Some(9), "back from it");
+        assert_eq!(round(missing, 0, 1), None);
+    }
+
+    #[test]
+    fn a_step_across_goes_on_from_the_last_cylinder_gw_reported_to_the_first() {
+        let cyls = [0, 1, 2, 5, 79];
+        assert_eq!(next_cylinder(&cyls, 0, 1), Some(1));
+        assert_eq!(
+            next_cylinder(&cyls, 2, 1),
+            Some(5),
+            "past those not reported"
+        );
+        assert_eq!(next_cylinder(&cyls, 79, 1), Some(0));
+        assert_eq!(next_cylinder(&cyls, 0, -1), Some(79));
+        assert_eq!(next_cylinder(&cyls, 1, 8), Some(79));
+        assert_eq!(next_cylinder(&[4], 4, 1), None, "no other");
+        assert_eq!(next_cylinder(&cyls, 3, 1), None, "not reported");
+    }
+
+    #[test]
+    fn across_tracks_a_sector_is_found_by_its_id_where_its_header_holds() {
+        let at = |r, start: f32, header| Sector {
+            id: Id::Ibm([1, 0, r, 2]),
+            header,
+            ..sector([start, start + 0.01, start + 0.05], None)
+        };
+        let f = Facts {
+            sectors: vec![
+                at(1, 0.1, Header::Good),
+                at(2, 0.3, Header::Bad),
+                at(2, 0.5, Header::Good),
+                at(2, 0.9, Header::Good),
+            ],
+            missing: vec![Id::Ibm([1, 0, 3, 2])],
+            ..Facts::default()
+        };
+        // By R alone: C and H are each track's own.
+        assert_eq!(find(&f, Id::Ibm([0, 0, 1, 2]), Some(0.7)), Open::Found(0));
+        // Of two, the nearer where it lay, round past the index too; never
+        // one whose header's checks fail.
+        let r2 = Id::Ibm([0, 0, 2, 2]);
+        assert_eq!(find(&f, r2, Some(0.6)), Open::Found(2));
+        assert_eq!(find(&f, r2, Some(0.05)), Open::Found(3));
+        assert_eq!(find(&f, r2, Some(0.31)), Open::Found(2));
+        assert_eq!(
+            find(&f, r2, None),
+            Open::Found(2),
+            "with no place, the first"
+        );
+        // Not found: the format's ID where it lays the sector out there.
+        let laid = Open::Missing {
+            id: Id::Ibm([1, 0, 3, 2]),
+            laid: true,
+        };
+        assert_eq!(find(&f, Id::Ibm([0, 0, 3, 2]), Some(0.2)), laid);
+        let r9 = Id::Ibm([0, 0, 9, 2]);
+        let unlaid = Open::Missing {
+            id: r9,
+            laid: false,
+        };
+        assert_eq!(find(&f, r9, None), unlaid);
+        // Data found with no header goes to the sector nearest it.
+        assert_eq!(find(&f, Id::None, Some(0.45)), Open::Found(2));
+        let none = Open::Missing {
+            id: Id::Number(4),
+            laid: false,
+        };
+        assert_eq!(find(&Facts::default(), Id::Number(4), None), none);
+    }
+
+    #[test]
+    fn a_held_arrow_steps_once_then_again_and_again_faster_and_faster() {
+        assert_eq!(held_steps(0.0), 1);
+        assert_eq!(held_steps(REPEAT_AFTER - 0.01), 1);
+        assert_eq!(held_steps(REPEAT_AFTER), 2);
+        let in_a_second = |from: f64| held_steps(from + 1.0) - held_steps(from);
+        assert_eq!(in_a_second(REPEAT_AFTER), 12);
+        assert!(in_a_second(REPEAT_AFTER + 1.0) > in_a_second(REPEAT_AFTER));
+        assert_eq!(in_a_second(REPEAT_AFTER + REPEAT_RAMP), 30);
+        assert_eq!(in_a_second(REPEAT_AFTER + 10.0), 30, "no faster");
+    }
+
+    #[test]
+    fn the_mark_moves_round_the_shorter_way_and_eases_out() {
+        let near =
+            |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+        let still = |at| Glide {
+            from: at,
+            to: at,
+            since: f64::NEG_INFINITY,
+        };
+        // On from the last sector to the first, on past the index.
+        let on = still([0.9, 0.95]).toward([0.01, 0.05], 0.0);
+        assert!(near(on.to, [1.01, 1.05]), "{:?}", on.to);
+        let half = on.at(GLIDE / 2.0)[0];
+        assert!(
+            (0.9 + 0.11 * 0.5..1.01).contains(&half),
+            "more than half way: {half}"
+        );
+        assert!(near(on.at(GLIDE), [1.01, 1.05]));
+        // Back from the first to the last, back past it.
+        let back = still([0.01, 0.05]).toward([0.9, 0.95], 0.0);
+        assert!(near(back.to, [-0.1, -0.05]), "{:?}", back.to);
+        // Asked again where it goes, it goes on as it was going.
+        assert_eq!(on.toward([0.01, 0.05], 0.05).since, 0.0);
+        // Asked elsewhere on its way, it goes from where it is.
+        let turned = on.toward([0.2, 0.25], GLIDE / 2.0);
+        assert!(near(turned.from, on.at(GLIDE / 2.0)));
+        assert!(near(turned.to, [1.2, 1.25]), "{:?}", turned.to);
+    }
+
     fn disk(head: u32, media: Media) -> Disk {
         let geometry = Geometry::new(media, 80, 600.0);
         let centre = egui::pos2(300.0, 300.0);
@@ -3513,10 +4518,10 @@ mod tests {
     #[test]
     fn the_index_is_at_the_top_and_each_track_runs_on_clockwise() {
         for d in [disk(0, Media::Fit), disk(1, Media::Fit)] {
-            let index = d.at(0.0, 200.0);
+            let index = point_at(d.centre, 0.0, 200.0 * d.scale);
             assert!((index.x - d.centre.x).abs() < 1e-3 && index.y < d.centre.y);
             // A quarter turn on, at the right.
-            let quarter = d.at(0.25, 200.0);
+            let quarter = point_at(d.centre, 0.25, 200.0 * d.scale);
             assert!(quarter.x > d.centre.x && (quarter.y - d.centre.y).abs() < 1e-3);
         }
     }
@@ -3528,7 +4533,8 @@ mod tests {
                 for cyl in [0, 1, 40, 76] {
                     for share in [0.0, 0.1, 0.5, 0.9] {
                         let (outer, inner) = d.ring(cyl);
-                        let at = d.at(share, (outer + inner) / 2.0);
+                        let middle = (outer + inner) as f32 / 2.0;
+                        let at = point_at(d.centre, share, middle * d.scale);
                         let (found, at_share) = d.track_at(at).unwrap();
                         assert_eq!(found, cyl, "{media:?}");
                         assert!((at_share - share).abs() < 1e-6, "{at_share} for {share}");
