@@ -544,6 +544,11 @@ fn a_release_signs_with_the_key_the_linux_machine_holds_unlocked() {
     );
     assert!(remote_builds(&dir).is_empty(), "nothing built while locked");
     run(&dir, &env(""), "", "packaging/release.sh");
+    let asked = std::fs::read_to_string(dir.join("ssh-linux.log")).unwrap();
+    assert!(
+        asked.contains("--pinentry-mode error --local-user ABC123 "),
+        "{asked}"
+    );
     let builds = remote_builds(&dir);
     assert!(builds[0].contains(" SIGN_KEY=ABC123 "), "{}", builds[0]);
     std::fs::remove_dir_all(dir).ok();

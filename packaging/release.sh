@@ -28,10 +28,15 @@ fi
 rm -rf dist
 mkdir -p target
 
-# The commit, not the working tree, goes to each machine, and its dist folder
-# comes back in a call of its own, clear of what the build prints.
+# The commit, not the working tree, goes to each machine, in place of what an
+# earlier one left there but target/, the builds and their downloads. Only a
+# Ferriteweazle checkout is cleared.
+clear='if [ -e Cargo.toml ]; then [ -e packaging/release.sh ] && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +; fi'
+
+# Each dist folder comes back in a call of its own, clear of what the build
+# prints.
 linux() {
-    git archive --format=tar HEAD | ssh $LINUX_SSH "mkdir -p $LINUX_DIR && tar -xf - -C $LINUX_DIR"
+    git archive --format=tar HEAD | ssh $LINUX_SSH "mkdir -p $LINUX_DIR && cd $LINUX_DIR && $clear && tar -xf -"
     ssh $LINUX_SSH "cd $LINUX_DIR && $LINUX_SETUP && export GREASEWEAZLE=$GREASEWEAZLE \
         SOURCE_DATE_EPOCH=$epoch SIGN_KEY=$sign && rm -rf dist && \
         packaging/linux/bundle.sh x86_64 && packaging/linux/bundle.sh aarch64"
@@ -41,8 +46,9 @@ linux() {
 
 # Windows' sshd runs the command with cmd.exe, which ends it at a line break.
 windows() {
-    git archive --format=tar HEAD | ssh $WINDOWS_SSH "tar -xf - -C $WINDOWS_DIR"
     git_bash="\"C:\\Program Files\\Git\\bin\\bash.exe\" -lc"
+    ssh $WINDOWS_SSH "$git_bash \"cd \$(cygpath '$WINDOWS_DIR') && $clear\""
+    git archive --format=tar HEAD | ssh $WINDOWS_SSH "tar -xf - -C $WINDOWS_DIR"
     ssh $WINDOWS_SSH "$git_bash \"cd \$(cygpath '$WINDOWS_DIR') && export GREASEWEAZLE=$GREASEWEAZLE && \
         rm -rf dist && packaging/windows/bundle.sh x64 && packaging/windows/bundle.sh arm64\""
     ssh $WINDOWS_SSH "$git_bash \"cd \$(cygpath '$WINDOWS_DIR') && tar -cf - dist\"" >target/windows-dist.tar
