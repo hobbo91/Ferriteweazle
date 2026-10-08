@@ -728,6 +728,30 @@ fn images() {
             w.get_by_role_and_label(Role::Button, "Analyse").click();
             w.run_steps(30);
         });
+        // Before a conversion, no output named: its input, as gw reads it.
+        let mut input = settings("convert", theme);
+        let convert = input.values.entry("convert".into()).or_default();
+        convert.set("in_file", "/Users/you/Floppies/Workbench.adf");
+        render_sized("convert-input-before", DEFAULT, theme, input, None, |w| {
+            app_mut(w).pin_image(scratched_adf());
+            w.run_steps(2);
+            w.get_by_role_and_label(Role::Button, "Analyse").click();
+            w.run_steps(30);
+        });
+        // A conversion from flux: its input's tracks as gw took them.
+        let tracks = Settings {
+            drawer: Some(Drawer::Analyse),
+            analysis: Analysis::Disk,
+            ..settings("convert", theme)
+        };
+        render_sized(
+            "convert-input-tracks",
+            DEFAULT,
+            theme,
+            tracks,
+            Some(converted(SCRATCHED)),
+            |_| {},
+        );
         // A read to flux: nothing laid out to show.
         let mut flux = workbench();
         let line = r#"{"event":"open","role":"made","file":"Disk.scp","type":"SCP","layout":null}"#;

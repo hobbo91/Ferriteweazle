@@ -4647,7 +4647,7 @@ fn analyse_lets_go_of_its_pictures_and_its_sector_window_when_it_is_not_drawn() 
     let job = Job::replay("convert", SCRATCHED);
     let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
     assert_eq!(pictures(&w), 2);
-    w.get_by_role_and_label(Role::Button, "Image analysis")
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
         .click();
     w.run();
     assert_eq!(pictures(&w), 0);
@@ -5043,7 +5043,7 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
     held(&mut job, (18, 0));
     held(&mut job, (24, 1));
     let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
-    w.get_by_role_and_label(Role::Button, "Image analysis")
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
         .click();
     w.run();
     assert_eq!(app(&w).settings.analysis, Analysis::Image);
@@ -5243,29 +5243,119 @@ fn after_a_write_image_analysis_shows_the_file_the_page_names_next() {
 }
 
 #[test]
-fn going_from_disk_to_image_analysis_leaves_the_drawer_as_tall_as_it_was() {
+fn going_from_tracks_to_a_map_leaves_the_drawer_as_tall_as_it_was() {
+    // A conversion from flux: its input's tracks, and its output's map.
     let settings = Settings {
         analysis: Analysis::Disk,
         ..image_open("convert")
     };
     let job = Job::replay("convert", SCRATCHED);
     let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
-    let top = |w: &Window| {
-        w.get_by_role_and_label(Role::Button, "Disk analysis")
-            .rect()
-            .top()
-    };
+    let (input, output) = ("Image analysis (Input)", "Image analysis (Output)");
+    let top = |w: &Window| w.get_by_role_and_label(Role::Button, input).rect().top();
     let disks = top(&w);
     w.get_by_label("Disk map");
-    w.get_by_role_and_label(Role::Button, "Image analysis")
-        .click();
+    w.get_by_role_and_label(Role::Button, output).click();
     w.run();
     w.get_by_label("Image map");
     assert_eq!(top(&w), disks, "the drawer as tall as for the disks");
-    w.get_by_role_and_label(Role::Button, "Disk analysis")
-        .click();
+    w.get_by_role_and_label(Role::Button, input).click();
     w.run();
     assert_eq!(top(&w), disks);
+}
+
+#[test]
+fn before_a_conversion_analyse_shows_its_input_with_no_output_named() {
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..chosen()
+    };
+    set(
+        &mut settings,
+        "convert",
+        "in_file",
+        "/Users/you/Floppies/Workbench.adf",
+    );
+    let mut w = start(Harness::builder().with_size(DEFAULT), settings, None);
+    app_mut(&mut w).pin_image(scratched_adf());
+    w.run();
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(!analyse.accesskit_node().is_disabled());
+    analyse.click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · As gw reads it");
+    let output = w.get_by_role_and_label(Role::Button, "Image analysis (Output)");
+    assert!(output.accesskit_node().is_disabled());
+    output.hover();
+    w.run();
+    assert_eq!(
+        w.get_all_by_label("No image converted yet").count(),
+        2,
+        "the status pane's line, and the tab's"
+    );
+}
+
+#[test]
+fn a_conversions_input_and_output_each_show_as_gw_lays_them_out() {
+    let mut settings = Settings {
+        analysis: Analysis::Disk,
+        ..image_open("convert")
+    };
+    let input = "/Users/you/Floppies/Input.adf";
+    set(&mut settings, "convert", "in_file", input);
+    // A conversion from an ADF: its input laid out, as its output is.
+    let mut job = Job::replay("convert", SCRATCHED);
+    let mut source = scratched_adf();
+    source.file = Some(input.into());
+    job.progress.source = Some(source);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Input.adf · 901,120 bytes · As gw read it");
+    assert!(
+        w.query_by_label("Disk map").is_none(),
+        "its map, not its tracks"
+    );
+    w.get_by_role_and_label(Role::Button, "Image analysis (Output)")
+        .click();
+    w.run();
+    w.get_by_label("Workbench.adf · 901,120 bytes · Written by gw");
+}
+
+#[test]
+fn a_conversions_input_kept_as_tracks_shows_them_as_gw_takes_them() {
+    let tracks_later = "Not mapped: .scp holds flux, not sectors. \
+        Its tracks show as gw converts or detects them.";
+    // Before any job, Analyse says when they show.
+    let mut settings = Settings {
+        page: Page::Command("convert".into()),
+        ..chosen()
+    };
+    set(&mut settings, "convert", "in_file", "/d/Game.scp");
+    let mut w = window(settings.clone());
+    let analyse = w.get_by_role_and_label(Role::Button, "Analyse");
+    assert!(analyse.accesskit_node().is_disabled());
+    analyse.hover();
+    w.run();
+    w.get_by_label(tracks_later);
+    // Detect reads them, of the input the page names.
+    let failed = detect_reads()
+        + "@ferriteweazle result {\"formats\": [], \"step\": 1}\n"
+        + "** FATAL ERROR:\nNo format Greaseweazle Tools knows reads this image in full.";
+    let mut job = Job::replay(DETECT, &failed);
+    job.page = "convert".into();
+    job.args = vec!["/d/Game.scp".into()];
+    settings.drawer = Some(Drawer::Analyse);
+    let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
+    w.get_by_label("Disk map");
+    // Another input named: not its tracks.
+    set(
+        &mut app_mut(&mut w).settings,
+        "convert",
+        "in_file",
+        "/d/Other.scp",
+    );
+    w.run();
+    assert!(w.query_by_label("Disk map").is_none());
+    w.get_by_label(tracks_later);
 }
 
 /// A right-click at `at`.

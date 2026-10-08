@@ -2781,8 +2781,13 @@ impl App {
         if job.is_some_and(|j| shows(j, page, format.as_deref(), &blank)) {
             return Ok(());
         }
+        // A conversion's input with no layout shows its tracks once gw takes them.
+        let unlaid = |why: String| match page {
+            "convert" => tracks_later(why),
+            _ => why,
+        };
         if let Some(path) = self.page_image(page).filter(|p| filemap::holds_tracks(p)) {
-            return Err(filemap::not_mapped(&path));
+            return Err(unlaid(filemap::not_mapped(&path)));
         }
         if let Some(ask) = self.preview_args(page) {
             // While gw opens the file, as when its options change, the
@@ -2790,7 +2795,7 @@ impl App {
             match self.service.image(&ask) {
                 Load::Ready(p) if p.0.layout.is_some() => return Ok(()),
                 Load::Ready(p) => {
-                    return Err(filemap::not_laid_out(&p.0));
+                    return Err(unlaid(filemap::not_laid_out(&p.0)));
                 }
                 Load::Failed(e) => return Err(e.clone()),
                 Load::Waiting(_) if self.settings.drawer == Some(Drawer::Analyse) => return Ok(()),
@@ -2902,21 +2907,82 @@ impl App {
             Err(_) if opening => Err(OPENING.to_owned()),
             image => image,
         };
+        let command = job.map_or(page, |j| j.command.as_str());
+        let running = job.is_some_and(Job::running);
         let analysis = &mut self.settings.analysis;
-        let showing = match (job, &image) {
-            (None, _) => Analysis::Image,
-            (Some(_), Ok(_)) => *analysis,
-            // As chosen, until gw says what it is.
-            (Some(_), Err(_)) if opening => *analysis,
-            (Some(_), Err(_)) => Analysis::Disk,
+        // A conversion has no disk: its input, as gw lays it out or else its
+        // tracks as gw takes them, and the output it makes.
+        let (views, showing) = if page == "convert" {
+            // Its tracks are the input's the page names: the job took that
+            // file, as Detect takes its last argument.
+            let input_tracks =
+                job.is_some_and(|j| owns || j.command == DETECT && j.args.last() == named.as_ref());
+            let source = job
+                .filter(|_| owns)
+                .and_then(|j| j.progress.source.as_ref());
+            let input = match (source.filter(|i| i.layout.is_some()), previewed) {
+                (Some(image), _) => Ok(Draws::Map(image, job.map(|j| &j.progress))),
+                (None, Some(image)) => Ok(Draws::Map(image, None)),
+                _ if opening => Err(OPENING.to_owned()),
+                _ if input_tracks => Ok(Draws::Tracks),
+                _ => Err(match (&named, opened) {
+                    (None, _) => "No image chosen yet".to_owned(),
+                    (Some(path), _) if filemap::holds_tracks(path) => {
+                        tracks_later(filemap::not_mapped(path))
+                    }
+                    (_, Some(p)) => tracks_later(filemap::not_laid_out(&p.0)),
+                    _ => unshown(),
+                }),
+            };
+            let output = match job.filter(|j| owns && j.command == "convert") {
+                Some(j) => match &j.progress.made {
+                    Some(made) if made.layout.is_some() => Ok(Draws::Map(made, Some(&j.progress))),
+                    Some(made) => Err(filemap::not_laid_out(made)),
+                    None if j.running() => Err(OPENING.to_owned()),
+                    None => Err(idle_status(page).to_owned()),
+                },
+                None => Err(idle_status(page).to_owned()),
+            };
+            let showing = match (&input, &output) {
+                (Ok(_), Ok(_)) => *analysis,
+                (Ok(_), Err(_)) => Analysis::Disk,
+                (Err(_), Ok(_)) => Analysis::Image,
+                // As chosen, until gw says what they are.
+                (Err(_), Err(_)) => *analysis,
+            };
+            let views = [
+                (Analysis::Disk, "Image analysis (Input)", input),
+                (Analysis::Image, "Image analysis (Output)", output),
+            ];
+            (views, showing)
+        } else {
+            let showing = match (job, &image) {
+                (None, _) => Analysis::Image,
+                (Some(_), Ok(_)) => *analysis,
+                // As chosen, until gw says what it is.
+                (Some(_), Err(_)) if opening => *analysis,
+                (Some(_), Err(_)) => Analysis::Disk,
+            };
+            let disk = job
+                .map(|_| Draws::Tracks)
+                .ok_or_else(|| idle_status(page).to_owned());
+            let image = image.map(|i| Draws::Map(i, job.filter(|_| owns).map(|j| &j.progress)));
+            let [(_, disk_name, _), (_, image_name, _)] = ANALYSES;
+            let views = [
+                (Analysis::Disk, disk_name, disk),
+                (Analysis::Image, image_name, image),
+            ];
+            (views, showing)
         };
+        let shown = views
+            .iter()
+            .find(|(view, ..)| *view == showing)
+            .map(|(.., d)| d);
+        let tracks = matches!(shown, Some(Ok(Draws::Tracks)));
         let (media, shows) = (&mut self.settings.media, &mut self.settings.shows);
         ui.horizontal(|ui| {
-            for (view, name, _) in ANALYSES {
-                let why = match view {
-                    Analysis::Disk => job.is_none().then(|| idle_status(page).to_owned()),
-                    Analysis::Image => image.as_ref().err().cloned(),
-                };
+            for (view, name, draws) in &views {
+                let (view, name, why) = (*view, *name, draws.as_ref().err().cloned());
                 // A chosen one's name in the selection's colour, as every
                 // selectable's is; the other's as a heading's.
                 let selected = showing == view;
@@ -2933,7 +2999,7 @@ impl App {
                     *analysis = view;
                 }
             }
-            if showing == Analysis::Image {
+            if !tracks {
                 return;
             }
             right(ui, |ui| {
@@ -2958,14 +3024,12 @@ impl App {
             });
         });
         let args = job.map_or(&[][..], |j| &j.args[..]);
-        if let Some(note) = undrawn(args).filter(|_| showing == Analysis::Disk) {
+        if let Some(note) = undrawn(args).filter(|_| tracks) {
             ui.add(egui::Label::new(RichText::new(note).small().color(p.partial)).wrap());
         }
         ui.add_space(6.0);
         // The sides as the job took them, whatever its page says now.
-        let tracks = args.iter().find_map(|a| a.strip_prefix("--tracks="));
-        let command = job.map_or(page, |j| j.command.as_str());
-        let running = job.is_some_and(Job::running);
+        let sides = args.iter().find_map(|a| a.strip_prefix("--tracks="));
         // A conversion takes its tracks from an image, as Detect does on any
         // page but Read.
         let file = job.is_some_and(|j| j.page != "read");
@@ -2973,7 +3037,7 @@ impl App {
             progress,
             image: command == "convert" || (command == DETECT && file),
             disk,
-            swapped: tracks.is_some_and(form::swapped),
+            swapped: sides.is_some_and(form::swapped),
             verifying: running && job.is_some_and(|j| j.progress.verifying()),
             media: *media,
             shows: *shows,
@@ -2985,23 +3049,22 @@ impl App {
         // view to the other leaves the drawer as it is.
         let most = surface::most(ui, &map);
         let place = surface::place(ui, &map);
-        match (showing, image) {
-            (Analysis::Image, Ok(image)) => {
+        match shown {
+            Some(Ok(Draws::Map(image, progress))) => {
                 let map = filemap::Map {
-                    progress: job.filter(|_| owns).map(|j| &j.progress),
+                    progress: *progress,
                     image,
-                    running: running && owns,
+                    running: running && progress.is_some(),
                     converts: command == "convert",
                 };
                 filemap::show(ui, &map, place);
             }
+            Some(Ok(Draws::Tracks)) => surface::show(ui, &map),
             // Nothing gw has opened yet: why.
-            (Analysis::Image, Err(why)) => {
+            Some(Err(why)) => {
                 ui.label(RichText::new(why).weak());
             }
-            _ => {
-                surface::show(ui, &map);
-            }
+            None => {}
         }
         if let Some(most) = most {
             self.analyse_most = Some(above + most);
@@ -4467,6 +4530,15 @@ const NO_DISK_JOB: &str = "No disk job running";
 /// finished one shows on its own page until that page takes other tracks,
 /// or for Detect another format; one that found none, with the flux it
 /// read, whatever the page's.
+/// What a view of the Analyse drawer draws.
+enum Draws<'a> {
+    /// The job's tracks, round the disk, or the image, they come from.
+    Tracks,
+    /// An image as gw lays it out, with the progress of the job that has
+    /// it, if one has.
+    Map(&'a crate::image::Image, Option<&'a Progress>),
+}
+
 fn shows(job: &Job, page: &str, format: Option<&str>, blank: &Progress) -> bool {
     let preview = (&blank.cyls, &blank.heads);
     job.running()
@@ -4522,6 +4594,11 @@ fn idle_status(page: &str) -> &'static str {
         "convert" => "No image converted yet",
         _ => "No disk read yet",
     }
+}
+
+/// Why a conversion's input shows no layout, and when its tracks show.
+fn tracks_later(why: String) -> String {
+    format!("{why} Its tracks show as gw converts or detects them.")
 }
 
 /// Why Analyse is greyed on `page` before any job: on a write's and a
