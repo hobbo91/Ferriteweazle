@@ -12,7 +12,8 @@
 - Format detection for disks and images
 - Single and batch reads, writes and conversions
 - Further read passes over tracks with sectors still missing after gw's retries
-- Analyse: each side of the disk, track by track, with its sectors and flux as gw decoded them, and the image file as gw lays it out
+- Analyse: a map of each side of the disk, each sector coloured by how gw decoded it, or by flux; click a sector to see its bytes
+- Image analysis: the same map for image files
 - Log of gw's output, saved to a file on request
 - Shows each action's gw command line, and passes extra arguments to gw
 - Drag and drop of image files
