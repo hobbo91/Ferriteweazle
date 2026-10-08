@@ -11,7 +11,7 @@ use crate::presets::{self, Preset};
 use crate::progress::Progress;
 use crate::schema::{Command, Port, Schema};
 use crate::service::{ImageAsk, Load, Repaint, Service};
-use crate::surface::{self, ANALYSES, Analysis, MEDIA, Media, SHOWS, Shows};
+use crate::surface::{self, ANALYSES, Analysis, MEDIA, Media, Shows};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Origin, Tools};
 use crate::udev;
@@ -415,8 +415,8 @@ pub struct App {
     /// The theme as last kept in theme_file().
     kept_theme: theme::Choice,
     /// How Analyse draws the disk and which analysis it shows, as last kept
-    /// in analyse_file().
-    kept_analyse: (Media, Shows, Analysis),
+    /// in analyse_file(). What the tracks show starts as Sectors each run.
+    kept_analyse: (Media, Analysis),
     /// Classic in the accent it opened in or was last given while the app
     /// runs: Blue otherwise, or Classic itself (teal).
     classic: theme::Choice,
@@ -481,7 +481,7 @@ impl App {
         let (kind, port) = kept_device(&device_file());
         let tools = kept_tools(&tools_file());
         let theme = kept_theme(&theme_file());
-        let (media, shows, analysis) = kept_analyse(&analyse_file());
+        let (media, analysis) = kept_analyse(&analyse_file());
         let settings = Settings {
             drive: drive.clone(),
             kind,
@@ -489,7 +489,6 @@ impl App {
             tools: tools.clone(),
             theme,
             media,
-            shows,
             analysis,
             ..Settings::default()
         };
@@ -499,7 +498,7 @@ impl App {
         app.kept_device = (kind, port);
         app.kept_tools = tools;
         app.kept_theme = theme;
-        app.kept_analyse = (media, shows, analysis);
+        app.kept_analyse = (media, analysis);
         app.copy = Install::this();
         app.stuck = app.copy.as_ref().map_or(Some(FROM_SOURCE), Install::stuck);
         app.dismissed = kept_dismissed(&dismissed_file()).map(|tag| (tag, f64::NEG_INFINITY));
@@ -790,11 +789,7 @@ impl App {
             self.kept_theme = self.settings.theme;
             keep_theme(&theme_file(), self.kept_theme);
         }
-        let analyse = (
-            self.settings.media,
-            self.settings.shows,
-            self.settings.analysis,
-        );
+        let analyse = (self.settings.media, self.settings.analysis);
         if self.live && analyse != self.kept_analyse {
             self.kept_analyse = analyse;
             keep_analyse(&analyse_file(), analyse);
@@ -5364,37 +5359,33 @@ fn analyse_file() -> PathBuf {
     crate::data_folder().join("analyse.txt")
 }
 
-fn kept_analyse(file: &Path) -> (Media, Shows, Analysis) {
+/// Each word keep_analyse() writes, on a line of its own; one an earlier
+/// 1.4.0 kept between them, of what the tracks showed, is passed over.
+fn kept_analyse(file: &Path) -> (Media, Analysis) {
     let text = std::fs::read_to_string(file).unwrap_or_default();
-    let mut words = text.lines().map(str::trim);
-    let (media, shows, analysis) = (words.next(), words.next(), words.next());
+    let kept = |word: &str| text.lines().any(|l| l.trim() == word);
     (
         MEDIA
             .iter()
-            .find(|m| Some(m.2) == media)
+            .find(|m| kept(m.2))
             .map_or_else(Media::default, |m| m.0),
-        SHOWS
-            .iter()
-            .find(|v| Some(v.2) == shows)
-            .map_or_else(Shows::default, |v| v.0),
         ANALYSES
             .iter()
-            .find(|a| Some(a.2) == analysis)
+            .find(|a| kept(a.2))
             .map_or_else(Analysis::default, |a| a.0),
     )
 }
 
-fn keep_analyse(file: &Path, (media, shows, analysis): (Media, Shows, Analysis)) {
+fn keep_analyse(file: &Path, (media, analysis): (Media, Analysis)) {
     let media_word = MEDIA.iter().find(|m| m.0 == media).map_or("", |m| m.2);
-    let shows_word = SHOWS.iter().find(|v| v.0 == shows).map_or("", |v| v.2);
     let analysis_word = ANALYSES
         .iter()
         .find(|a| a.0 == analysis)
         .map_or("", |a| a.2);
-    let changed = (media, shows, analysis) != Default::default();
+    let changed = (media, analysis) != Default::default();
     keep(
         file,
-        changed.then(|| format!("{media_word}\n{shows_word}\n{analysis_word}\n")),
+        changed.then(|| format!("{media_word}\n{analysis_word}\n")),
     );
 }
 
@@ -6130,14 +6121,12 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ferriteweazle-analyse-{}", std::process::id()));
         let file = dir.join("analyse.txt");
-        let defaults = (Media::Fit, Shows::Sectors, Analysis::Disk);
+        let defaults = (Media::Fit, Analysis::Disk);
         assert_eq!(kept_analyse(&file), defaults);
         for (media, ..) in MEDIA {
-            for (shows, ..) in SHOWS {
-                for (analysis, ..) in ANALYSES {
-                    keep_analyse(&file, (media, shows, analysis));
-                    assert_eq!(kept_analyse(&file), (media, shows, analysis));
-                }
+            for (analysis, ..) in ANALYSES {
+                keep_analyse(&file, (media, analysis));
+                assert_eq!(kept_analyse(&file), (media, analysis));
             }
         }
         keep_analyse(&file, defaults);
@@ -6145,6 +6134,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&file, "round\nsquare\n").unwrap();
         assert_eq!(kept_analyse(&file), defaults);
+        // As an earlier 1.4.0 kept them, with what the tracks showed.
+        std::fs::write(&file, "3.5\nflux\nimage\n").unwrap();
+        assert_eq!(kept_analyse(&file), (Media::ThreeHalf, Analysis::Image));
         std::fs::remove_dir_all(&dir).ok();
     }
 

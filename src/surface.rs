@@ -50,11 +50,8 @@ pub enum Shows {
     Flux,
 }
 
-/// Each: its name, and the word analyse.txt keeps.
-pub const SHOWS: [(Shows, &str, &str); 2] = [
-    (Shows::Sectors, "Sectors", "sectors"),
-    (Shows::Flux, "Flux", "flux"),
-];
+/// Each: its name. analyse.txt keeps neither: each run starts in Sectors.
+pub const SHOWS: [(Shows, &str); 2] = [(Shows::Sectors, "Sectors"), (Shows::Flux, "Flux")];
 
 impl Shows {
     /// What the tracks show with this chosen: their flux only where a track
@@ -221,7 +218,7 @@ fn fluxed(progress: &Progress, span: u32, sides: u32) -> bool {
 pub fn choose_shows(ui: &mut egui::Ui, shows: &mut Shows, progress: &Progress, disk: (u32, u32)) {
     let fluxed = fluxed(progress, span(progress, disk), sides(progress, disk));
     let showing = shows.given(fluxed);
-    for (view, name, _) in SHOWS.into_iter().rev() {
+    for (view, name) in SHOWS.into_iter().rev() {
         let why = (view == Shows::Flux && !fluxed).then_some("No flux reported.");
         let button = egui::Button::new(name);
         let chosen = ui
