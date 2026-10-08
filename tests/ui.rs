@@ -2591,7 +2591,12 @@ fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out(
     w.get_by_label("772 bytes from the index · 52 bytes after R1");
     w.get_by_label_contains(", 34 bytes after the ID");
     w.get_by_label_contains("At ");
-    assert!(w.query_by_label_contains("0000  ").is_none());
+    for sectors_only in ["0000  ", "Click for"] {
+        assert!(
+            w.query_by_label_contains(sectors_only).is_none(),
+            "{sectors_only}"
+        );
+    }
     w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r7));
     w.run();
     w.get_by_label_contains("Its ID also at ");
@@ -2623,6 +2628,8 @@ fn a_sectors_tip_says_how_gw_read_it_in_each_revolution_of_the_disk() {
     w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
     // An SCP's 25 ns ticks, two to a bin.
     w.get_by_label("Flux intervals in µs, bins of 50.0 ns");
+    w.get_by_label_contains("flux/rev");
+    w.get_by_label_contains(" rpm");
 }
 
 #[test]
@@ -3674,22 +3681,26 @@ fn the_pcb_green_theme_is_dark_in_a_boards_green_with_gold_and_a_green_console()
 
 #[test]
 fn every_themes_button_fits_settings_at_the_smallest_window() {
-    let w = settings_from(
-        Choice::System,
-        Harness::builder().with_size(ferriteweazle::SMALLEST),
-    );
-    let page = egui::Rect::from_min_size(egui::Pos2::ZERO, ferriteweazle::SMALLEST);
+    let settings = Settings {
+        page: Page::Settings,
+        ..Settings::default()
+    };
+    let small = ferriteweazle::SMALLEST;
+    let w = build(Harness::builder().with_size(small), settings, None);
+    let first = w.get_by_label("System").rect();
     for (choice, name, ..) in theme::CHOICES {
-        // Blue is Classic's other accent, in its right-click menu.
+        // Blue is Classic in the accent it starts in, in Classic's menu.
         if choice != Choice::Blue {
             let button = w.get_by_label(name).rect();
-            assert!(page.contains_rect(button), "{name} at {button:?}");
+            assert_eq!(button.top(), first.top(), "{name} on a row of its own");
+            // Clear of the page's scroll bar, 20 points at its right.
+            assert!(button.right() <= small.x - 20.0, "{name} at {button:?}");
         }
     }
 }
 
 #[test]
-fn the_stop_button_is_lights_red_in_a_light_theme_and_darks_in_a_dark_one() {
+fn the_stop_button_is_one_red_in_every_theme_its_text_white() {
     let mut w = window(Settings {
         page: Page::Command("clean".into()),
         ..Settings::default()
@@ -3697,38 +3708,30 @@ fn the_stop_button_is_lights_red_in_a_light_theme_and_darks_in_a_dark_one() {
     let mut job = Job::replay("clean", "");
     job.ended = None;
     app_mut(&mut w).tool = Some(job);
-    let (light, dark) = (&theme::LIGHT, &theme::DARK);
-    for (choice, p) in [
-        (Choice::Light, light),
-        (Choice::Classic, light),
-        (Choice::Blue, light),
-        (Choice::Vintage, light),
-        (Choice::Dark, dark),
-        (Choice::Greaseweazle, dark),
-        (Choice::PcbGreen, dark),
-    ] {
+    let (red, white) = theme::RED_BUTTON;
+    for (choice, ..) in theme::CHOICES {
         theme::apply(&w.ctx, choice);
         // Stepped, not run: a running job keeps the window repainting.
         w.run_steps(2);
         let stop = w.get_by_role_and_label(Role::Button, "Stop").rect();
         let shapes = &w.output().shapes;
-        let red = shapes.iter().any(|c| match &c.shape {
-            egui::Shape::Rect(r) => r.fill == p.bad && r.rect.contains_rect(stop.shrink(1.0)),
+        let filled = shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Rect(r) => r.fill == red && r.rect.contains_rect(stop.shrink(1.0)),
             _ => false,
         });
-        assert!(red, "{choice:?}: not {:?}", p.bad);
-        let white = shapes.iter().any(|c| match &c.shape {
+        assert!(filled, "{choice:?}");
+        let named = shapes.iter().any(|c| match &c.shape {
             egui::Shape::Text(t) => {
                 t.galley.text() == "Stop"
                     && t.galley
                         .job
                         .sections
                         .iter()
-                        .all(|s| s.format.color == p.on_accent)
+                        .all(|s| s.format.color == white)
             }
             _ => false,
         });
-        assert!(white, "{choice:?}: its text");
+        assert!(named, "{choice:?}: its text");
     }
 }
 
@@ -3871,6 +3874,7 @@ fn the_vintage_themes_links_are_blue_and_its_selections_stay_slate() {
         &theme::CLASSIC,
         &theme::BLUE,
         &theme::GREASEWEAZLE,
+        &theme::PCB_GREEN,
     ] {
         assert_eq!(other.link(), other.accent);
     }
@@ -4678,6 +4682,12 @@ fn analyse_greys_flux_with_why_where_no_track_has_any_and_shows_the_sectors() {
     // The sectors show, as the image lays them out.
     w.get_by_label("Good 4");
     assert_eq!(app(&w).settings.shows, Shows::Flux, "kept for flux");
+    // And their tooltip is Sectors': the first bytes, not where it lies.
+    let r1 = middle(app(&w).disk.as_ref().unwrap(), 0);
+    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r1));
+    w.run();
+    w.get_by_label_contains("0000  00 FF 00 FF");
+    assert!(w.query_by_label_contains("At ").is_none());
 }
 
 #[test]
@@ -5181,6 +5191,43 @@ fn the_sector_window_steps_round_the_track_and_on_from_the_last_sector_to_the_fi
     // Shut and opened again, it is in the middle again.
     press(&mut w, "Close");
     assert!(w.query_by_role_and_label(Role::Label, &title(2)).is_none());
+    let on = on_disk(&w, TRACK_0, 90.0 - 360.0 * (start + end) / 2.0);
+    w.hover_at(on);
+    w.run();
+    w.drag_at(on);
+    w.run();
+    w.drop_at(on);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(2));
+    let id = egui::Id::new("disk sector window").with(2u64);
+    let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+    let middle = w.ctx.content_rect().center();
+    assert!(
+        (window.center() - middle).length() < 1.0,
+        "{window:?}, {middle:?}"
+    );
+}
+
+#[test]
+fn the_keyboards_arrows_step_the_window_and_leave_its_focus_and_a_box_elsewhere_alone() {
+    let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
+    let title = |r: u8| format!("C0 H0 R{r} N3 · cylinder 0, side 0");
+    // With the keyboard on an arrow of the window's, ← steps back once and
+    // the arrow keeps the keyboard.
+    w.get_by_role_and_label(Role::Button, "Next sector").focus();
+    w.run();
+    w.key_press(egui::Key::ArrowLeft);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(6));
+    let next = w.get_by_role_and_label(Role::Button, "Next sector");
+    assert!(next.is_focused(), "the keyboard moved on");
+    // With it in a box of the page's, the arrows are the box's.
+    let page = w.get_all_by_role(Role::TextInput).next().expect("a box");
+    page.focus();
+    w.run();
+    w.key_press(egui::Key::ArrowRight);
+    w.run();
+    w.get_by_role_and_label(Role::Label, &title(6));
 }
 
 #[test]
@@ -5288,7 +5335,7 @@ fn the_sector_windows_last_arrow_is_under_its_close_button() {
 fn a_sector_windows_title_bar_is_in_the_sidebars_colour_in_every_theme() {
     let mut w = sector_open(akai_track(), DEFAULT, 0.25, Id::Ibm([0, 0, 7, 3]));
     let title = "C0 H0 R7 N3 · cylinder 0, side 0";
-    for (choice, p) in [
+    let themes = [
         (Choice::Light, &theme::LIGHT),
         (Choice::Dark, &theme::DARK),
         (Choice::Classic, &theme::CLASSIC),
@@ -5296,7 +5343,9 @@ fn a_sector_windows_title_bar_is_in_the_sidebars_colour_in_every_theme() {
         (Choice::Vintage, &theme::VINTAGE),
         (Choice::Greaseweazle, &theme::GREASEWEAZLE),
         (Choice::PcbGreen, &theme::PCB_GREEN),
-    ] {
+    ];
+    assert_eq!(themes.len(), theme::CHOICES.len() - 1, "every named theme");
+    for (choice, p) in themes {
         theme::apply(&w.ctx, choice);
         w.run();
         let close = w.get_by_role_and_label(Role::Button, "Close").rect();
@@ -5538,17 +5587,17 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
     w.run();
     w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 18, side 0");
     w.get_by_label("31E00  2D 3D 5B 42 41 44 20 53 45 43 54 4F 52 5D 3D 2D  -=[BAD SECTOR]=-");
-    // Its window in the middle of the app's.
-    let id = egui::Id::new("image part window");
-    let window = w
-        .ctx
-        .memory(|m| m.area_rect(id))
-        .expect("the sector's window");
+    // Its window in the middle of the app's, as each opening's is.
     let middle = w.ctx.content_rect().center();
-    assert!(
-        (window.center() - middle).length() < 1.0,
-        "{window:?}, {middle:?}"
-    );
+    let centred = |w: &Window, opening: u64| {
+        let id = egui::Id::new("image part window").with(opening);
+        let window = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
+        assert!(
+            (window.center() - middle).length() < 1.0,
+            "{window:?}, {middle:?}"
+        );
+    };
+    centred(&w, 1);
     // Shut, a sector's data, as gw put it in the file: from byte 1,536 of
     // its track.
     w.get_by_role_and_label(Role::Button, "Close").click();
@@ -5562,6 +5611,7 @@ fn image_analysis_lays_out_the_file_gw_makes_and_says_what_each_sector_holds_the
     w.run();
     w.get_by_role_and_label(Role::Label, "Sector 3 · cylinder 24, side 1");
     w.get_by_label_contains("43C00  1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D");
+    centred(&w, 2);
 }
 
 #[test]

@@ -53,7 +53,9 @@ cargo test --test screens -- --ignored       # draws the window to target/screen
 The end-to-end tests run real gw conversions through the bridge, and skip when
 there is no gw; with `FERRITEWEAZLE_REQUIRE_GW=1` they fail instead.
 `FERRITEWEAZLE_STANDALONE_GW` names a standalone gw to test as well, such as the
-`gw.exe` of gw's Windows download. No test opens a device.
+`gw.exe` of gw's Windows download, and `FERRITEWEAZLE_BUNDLE` a bundle to test in
+place of `target/greaseweazle-bundle`, such as another processor's, run emulated.
+No test opens a device.
 
 ## Packages
 

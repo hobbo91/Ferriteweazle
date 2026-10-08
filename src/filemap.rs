@@ -202,19 +202,18 @@ pub fn show(ui: &mut egui::Ui, map: &Map, disks: Option<Place>) {
         let lines = said(map, track, part, *at, *state, digits);
         response.clone().on_hover_ui_at_pointer(|ui| {
             for (text, tone) in &lines {
-                match tone {
-                    Tone::Strong => ui.strong(text),
-                    Tone::Plain => ui.label(text),
-                    Tone::Weak => ui.weak(text),
-                };
+                tone.label(ui, text);
             }
         });
         if response.clicked() {
+            // Another part in the window open keeps its place and size.
+            let was = ui.data(|d| d.get_temp::<Opened>(opened_id()));
             let opened = Opened {
                 key: track.key,
                 part: k,
                 at: *at,
                 held: held(map, track, k),
+                opened: was.map_or_else(|| surface::opening(ui.ctx()), |was| was.opened),
             };
             ui.data_mut(|d| d.insert_temp(opened_id(), opened));
         }
@@ -632,13 +631,15 @@ fn sector_name(part: &Part) -> String {
 }
 
 /// The part a click opened a window on: its track, by key, its place in
-/// the track, and where it lies in the file; and what it held then.
+/// the track, and where it lies in the file; what it held then; and which
+/// opening of the window it is in.
 #[derive(Clone, PartialEq)]
 struct Opened {
     key: (u32, u32),
     part: usize,
     at: u64,
     held: Held,
+    opened: u64,
 }
 
 /// What a part holds: the image it is part of, by what the job does with
@@ -682,9 +683,12 @@ fn window(ctx: &egui::Context, map: &Map, placed: &[Placed], digits: usize) {
         .filter(|t| t.parts.get(opened.part).is_some_and(|p| p.1 == opened.at))
         .map(|t| (t, held(map, t, opened.part)))
         .filter(|(_, now)| *now == opened.held);
-    let Some((track, now)) = found else {
+    let shut = || {
         ctx.data_mut(|d| d.remove::<Opened>(opened_id()));
-        return;
+        surface::forget(ctx);
+    };
+    let Some((track, now)) = found else {
+        return shut();
     };
     let (part, at, state) = &track.parts[opened.part];
     let (cyl, side) = track.key;
@@ -698,8 +702,9 @@ fn window(ctx: &egui::Context, map: &Map, placed: &[Placed], digits: usize) {
         base: *at as usize,
         nav: None,
     };
-    if surface::sector_window(ctx, egui::Id::new("image part window"), &shown).close {
-        ctx.data_mut(|d| d.remove::<Opened>(opened_id()));
+    let id = egui::Id::new("image part window").with(opened.opened);
+    if surface::sector_window(ctx, id, &shown).close {
+        shut();
     }
 }
 

@@ -1,5 +1,5 @@
-//! Colours, type and spacing: light, dark, the Greaseweazle's purple, a board's green, and
-//! 90s GUI grey.
+//! Colours, type and spacing: light, dark, the Greaseweazle's purple, a board's green, 90s
+//! GUI grey and 80s beige.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
@@ -64,10 +64,11 @@ impl From<Theme> for Choice {
     }
 }
 
-/// Shows `choice`: Greaseweazle and PCB Green are egui's dark theme, and
-/// Classic and Vintage its light one, with their own colours in them.
-pub fn apply(ctx: &egui::Context, choice: Choice) {
-    let (dark, light, shown) = match choice {
+/// What `choice` shows: its dark palette and its light one, and which.
+/// Greaseweazle and PCB Green are egui's dark theme, and Classic and Vintage
+/// its light one, with their own colours in them.
+fn palettes(choice: Choice) -> (&'static Palette, &'static Palette, ThemePreference) {
+    match choice {
         Choice::System => (&DARK, &LIGHT, ThemePreference::System),
         Choice::Light => (&DARK, &LIGHT, ThemePreference::Light),
         Choice::Dark => (&DARK, &LIGHT, ThemePreference::Dark),
@@ -76,7 +77,12 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
         Choice::Vintage => (&DARK, &VINTAGE, ThemePreference::Light),
         Choice::Greaseweazle => (&GREASEWEAZLE, &LIGHT, ThemePreference::Dark),
         Choice::PcbGreen => (&PCB_GREEN, &LIGHT, ThemePreference::Dark),
-    };
+    }
+}
+
+/// Shows `choice`.
+pub fn apply(ctx: &egui::Context, choice: Choice) {
+    let (dark, light, shown) = palettes(choice);
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
     ctx.set_visuals_of(Theme::Light, visuals(light, Visuals::light()));
     ctx.style_mut_of(Theme::Dark, |s| s.spacing.scroll = bars(dark));
@@ -136,7 +142,8 @@ pub struct Palette {
     /// gw's command lines and output on black in this colour, as a console
     /// (terminal()).
     pub console: Option<Color32>,
-    /// Scroll bars in the text's colour at full strength: white on the purple.
+    /// Scroll bars in the text's colour at full strength: white on the purple
+    /// and on the green.
     pub bold_bars: bool,
 }
 
@@ -220,7 +227,9 @@ pub const GREASEWEAZLE: Palette = Palette {
 /// From the green of a board's solder mask, rgb(0, 140, 74): darker for the
 /// window, so that its text reads clearly; gold for what is chosen, as its
 /// pads are, white and silver for text, as its silkscreen and solder are, and
-/// Vintage's green console.
+/// gw's text green on black, as in Vintage. Its red and orange are lighter
+/// than Dark's, to read on the green, and the orange redder, away from the
+/// gold.
 pub const PCB_GREEN: Palette = Palette {
     bg: Color32::from_rgb(8, 50, 30),
     sidebar: Color32::from_rgb(4, 38, 22),
@@ -235,16 +244,19 @@ pub const PCB_GREEN: Palette = Palette {
     on_accent: Color32::from_rgb(34, 34, 34),
     link: None,
     good: Color32::from_rgb(61, 214, 140),
-    partial: Color32::from_rgb(255, 150, 60),
-    bad: Color32::from_rgb(255, 99, 112),
+    partial: Color32::from_rgb(255, 136, 44),
+    bad: Color32::from_rgb(255, 134, 140),
     flux: Color32::from_rgb(79, 182, 240),
     written: Color32::from_rgb(176, 150, 255),
     erased: Color32::from_rgb(128, 142, 134),
     pending: Color32::from_rgb(16, 62, 40),
     classic: false,
-    console: VINTAGE.console,
+    console: Some(PHOSPHOR),
     bold_bars: true,
 };
+
+/// A green phosphor screen's green, for gw's text on black.
+const PHOSPHOR: Color32 = Color32::from_rgb(51, 255, 102);
 
 /// 90s GUIs standard scheme, on rgb(195, 199, 203): silver-grey
 /// with lighter grey fields, and the teal of the 1990s.
@@ -306,7 +318,7 @@ pub const VINTAGE: Palette = Palette {
     erased: Color32::from_rgb(124, 127, 130),
     pending: Color32::from_rgb(227, 225, 201),
     classic: true,
-    console: Some(Color32::from_rgb(51, 255, 102)),
+    console: Some(PHOSPHOR),
     bold_bars: false,
 };
 
@@ -315,18 +327,16 @@ impl Palette {
     pub fn link(&self) -> Color32 {
         self.link.unwrap_or(self.accent)
     }
+
+    /// A filled button's fill and text: the accent, and its text on it.
+    pub fn accent_button(&self) -> (Color32, Color32) {
+        (self.accent, self.on_accent)
+    }
 }
 
-/// A button's fill and text where it stops or destroys: Light's red in a
-/// light theme and Dark's in a dark one, whatever the palette's own red.
-pub fn red_button(ui: &egui::Ui) -> (Color32, Color32) {
-    let p = if ui.visuals().dark_mode {
-        &DARK
-    } else {
-        &LIGHT
-    };
-    (p.bad, p.on_accent)
-}
+/// A filled button's fill and text where it stops, erases, writes over or
+/// replaces: one red in every theme, white reading on it at 4.7:1.
+pub const RED_BUTTON: (Color32, Color32) = (Color32::from_rgb(214, 54, 62), Color32::WHITE);
 
 pub const RADIUS: u8 = 6;
 /// The height of every field, list and button in a form row.
@@ -339,21 +349,23 @@ pub const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 /// The floppy from the icon, large, for the About window.
 pub const ABOUT: &[u8] = include_bytes!("../assets/about.png");
 
-/// The colours the window has, known by its links': each palette apply()
-/// shows has a link colour of its own.
+/// Each palette apply() shows, as palette() knows it: by its links' colour,
+/// which is its own.
+const SHOWN: [&Palette; 7] = [
+    &LIGHT,
+    &DARK,
+    &GREASEWEAZLE,
+    &PCB_GREEN,
+    &CLASSIC,
+    &BLUE,
+    &VINTAGE,
+];
+
+/// The colours the window has, known by its links'.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    let shown = [
-        &LIGHT,
-        &DARK,
-        &GREASEWEAZLE,
-        &PCB_GREEN,
-        &CLASSIC,
-        &BLUE,
-        &VINTAGE,
-    ];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
-    shown
+    SHOWN
         .into_iter()
         .find(|p| p.link() == v.hyperlink_color)
         .unwrap_or(unthemed)
@@ -514,4 +526,21 @@ fn visuals(p: &Palette, mut v: Visuals) -> Visuals {
         state.expansion = 0.0;
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_palette_a_theme_shows_is_known_by_its_links_colour_alone() {
+        for (choice, ..) in CHOICES {
+            let (dark, light, _) = palettes(choice);
+            for p in [dark, light] {
+                let known: Vec<_> = SHOWN.iter().filter(|s| s.link() == p.link()).collect();
+                assert_eq!(known.len(), 1, "{choice:?}");
+                assert!(*known[0] == p, "{choice:?}");
+            }
+        }
+    }
 }

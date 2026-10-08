@@ -2042,7 +2042,7 @@ impl App {
                 } else {
                     "Stop"
                 };
-                let stop = big_button(label, theme::red_button(ui), wide);
+                let stop = big_button(label, theme::RED_BUTTON, wide);
                 let stop = ui.add_enabled(!job.stopping(), stop);
                 let tip = match self.runs_motor(job) {
                     true => "Stop Greaseweazle Tools and the drive's motor.",
@@ -2084,7 +2084,7 @@ impl App {
                     _ if sets => "Set delays",
                     _ => run_label(&cmd.name),
                 };
-                let run = big_button(label, (p.accent, p.on_accent), wide);
+                let run = big_button(label, p.accent_button(), wide);
                 let run = ui.add_enabled(why.is_none(), run);
                 match why {
                     Some(why) => {
@@ -3575,7 +3575,7 @@ impl App {
                             1 => run_label(command).to_owned(),
                             _ => format!("{} 1", run_label(command)),
                         };
-                        if ui.add(dialog_button(&text, theme::red_button(ui))).clicked() {
+                        if ui.add(dialog_button(&text, theme::RED_BUTTON)).clicked() {
                             let (ctx, command, args) = (ctx.clone(), command.clone(), args.clone());
                             action = Some(match disks {
                                 1 => Box::new(move |app: &mut App| {
@@ -3614,7 +3614,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        if ui.add(dialog_button("Overwrite", theme::red_button(ui))).clicked() {
+                        if ui.add(dialog_button("Overwrite", theme::RED_BUTTON)).clicked() {
                             let (ctx, command, runs) = (ctx.clone(), command.clone(), runs.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.begin(&ctx, &command, runs)
@@ -3637,6 +3637,11 @@ impl App {
                 } => {
                     let (disk, failed) = (*disk, *failed);
                     let (verb, p) = (run_label(command), theme::palette(ui));
+                    // Red where the disk is written or erased.
+                    let colours = match destructive(command) {
+                        true => theme::RED_BUTTON,
+                        false => p.accent_button(),
+                    };
                     let heading = match disk {
                         Some(disk) => format!("Insert disk {disk} of {total}"),
                         None => format!("{verb} {total} again?"),
@@ -3704,7 +3709,7 @@ impl App {
                             let ready = named.as_ref().is_none_or(|n| !n.is_empty());
                             let enter = ready && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             let button = ui
-                                .add_enabled(ready, dialog_button(&next, (p.accent, p.on_accent)))
+                                .add_enabled(ready, dialog_button(&next, colours))
                                 .on_disabled_hover_text("Type a name.");
                             if button.clicked() || (enter && named.is_some()) {
                                 let ctx = ctx.clone();
@@ -3722,7 +3727,7 @@ impl App {
                             let again = format!("{verb} {failed} again");
                             let button = match disk {
                                 Some(_) => dialog_plain(&again),
-                                None => dialog_button(&again, (p.accent, p.on_accent)),
+                                None => dialog_button(&again, colours),
                             };
                             if ui
                                 .add(button)
@@ -3790,9 +3795,12 @@ impl App {
                         let name = name.trim().to_owned();
                         let description = description.trim().to_owned();
                         let p = theme::palette(ui);
-                        let text = if exists { "Replace" } else { "Save" };
+                        let (text, colours) = match exists {
+                            true => ("Replace", theme::RED_BUTTON),
+                            false => ("Save", p.accent_button()),
+                        };
                         if ui
-                            .add_enabled(!name.is_empty(), dialog_button(text, (p.accent, p.on_accent)))
+                            .add_enabled(!name.is_empty(), dialog_button(text, colours))
                             .on_disabled_hover_text("Type a name.")
                             .clicked()
                         {
@@ -3816,7 +3824,7 @@ impl App {
                     ui.label("This cannot be undone.");
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        if ui.add(dialog_button("Delete", theme::red_button(ui))).clicked() {
+                        if ui.add(dialog_button("Delete", theme::RED_BUTTON)).clicked() {
                             let (command, path) = (command.clone(), path.clone());
                             action = Some(Box::new(move |app: &mut App| {
                                 app.delete_preset(&command, &path)
@@ -3858,7 +3866,7 @@ impl App {
                     }
                     ui.add_space(10.0);
                     right(ui, |ui| {
-                        if ui.add(dialog_button("Stop and quit", theme::red_button(ui))).clicked() {
+                        if ui.add(dialog_button("Stop and quit", theme::RED_BUTTON)).clicked() {
                             action = Some(Box::new(|app: &mut App| {
                                 app.quitting = true;
                                 app.stop();
@@ -5351,14 +5359,14 @@ fn keep_theme(file: &Path, choice: theme::Choice) {
     keep(file, word.filter(|w| !w.is_empty()).map(String::from));
 }
 
-/// Where how Analyse draws the disk is kept between runs, a word a line;
-/// the defaults keep no file.
+/// Where how Analyse draws the disk, and which analysis it shows, are kept
+/// between runs, a word a line; the defaults keep no file.
 fn analyse_file() -> PathBuf {
     crate::data_folder().join("analyse.txt")
 }
 
-/// Each word keep_analyse() writes, on a line of its own; one an earlier
-/// 1.4.0 kept between them, of what the tracks showed, is passed over.
+/// The words keep_analyse() writes, each on a line of its own; any other
+/// line is passed over.
 fn kept_analyse(file: &Path) -> (Media, Analysis) {
     let text = std::fs::read_to_string(file).unwrap_or_default();
     let kept = |word: &str| text.lines().any(|l| l.trim() == word);
@@ -6126,7 +6134,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&file, "round\nsquare\n").unwrap();
         assert_eq!(kept_analyse(&file), defaults);
-        // As an earlier 1.4.0 kept them, with what the tracks showed.
+        // A line it does not keep, between those it does, is passed over.
         std::fs::write(&file, "3.5\nflux\nimage\n").unwrap();
         assert_eq!(kept_analyse(&file), (Media::ThreeHalf, Analysis::Image));
         std::fs::remove_dir_all(&dir).ok();
@@ -7269,6 +7277,83 @@ mod tests {
         assert!(app.session.is_none());
         app.dialogs(&ctx);
         assert!(app.quitting, "no Insert disk 2 of 2");
+    }
+
+    #[test]
+    fn every_dialog_button_that_erases_writes_over_replaces_or_stops_is_one_red() {
+        let (red, white) = theme::RED_BUTTON;
+        let erase = run_label("erase");
+        let dialogs = [
+            (
+                Dialog::Confirm {
+                    command: "erase".into(),
+                    args: Vec::new(),
+                    disks: 1,
+                },
+                erase.to_owned(),
+            ),
+            (
+                Dialog::Overwrite {
+                    files: vec!["/Images/Floppy.img".into()],
+                    command: "read".into(),
+                    runs: Runs::default(),
+                },
+                "Overwrite".to_owned(),
+            ),
+            (
+                Dialog::NextDisk {
+                    command: "erase".into(),
+                    disk: Some(2),
+                    total: 2,
+                    failed: None,
+                    image: None,
+                    name: None,
+                    default: String::new(),
+                },
+                format!("{erase} 2"),
+            ),
+            (
+                Dialog::DeletePreset {
+                    command: "read".into(),
+                    name: "Mine".into(),
+                    path: "/Presets/read/Mine.txt".into(),
+                },
+                "Delete".to_owned(),
+            ),
+            (Dialog::Quit, "Stop and quit".to_owned()),
+        ];
+        for (dialog, name) in dialogs {
+            let mut app = offline();
+            app.disk = Some(running("erase"));
+            app.dialog = Some(dialog);
+            let w = window(app);
+            // The dialog's, of those so named, as the sidebar's page.
+            let role = egui::accesskit::Role::Button;
+            let named: Vec<egui::Rect> = w
+                .get_all_by_role_and_label(role, &name)
+                .map(|n| n.rect())
+                .collect();
+            let shapes = &w.output().shapes;
+            let filled = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(r) => {
+                    r.fill == red && named.iter().any(|b| r.rect.contains_rect(b.shrink(1.0)))
+                }
+                _ => false,
+            });
+            assert!(filled, "{name}");
+            let named = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    t.galley.text() == name
+                        && t.galley
+                            .job
+                            .sections
+                            .iter()
+                            .all(|s| s.format.color == white)
+                }
+                _ => false,
+            });
+            assert!(named, "{name}: its text");
+        }
     }
 
     /// A file dropped on the window.

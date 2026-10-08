@@ -37,7 +37,10 @@ pub fn strip(source: &str) -> String {
                     .unwrap_or(s.len());
                 let prefix = source[i..word].to_ascii_lowercase();
                 let quoted = matches!(s.get(word), Some(b'\'' | b'"'))
-                    && matches!(prefix.as_str(), "" | "r" | "b" | "u" | "f" | "rb" | "br" | "fr" | "rf");
+                    && matches!(
+                        prefix.as_str(),
+                        "" | "r" | "b" | "u" | "f" | "rb" | "br" | "fr" | "rf"
+                    );
                 if !quoted {
                     (fresh, i) = (false, word);
                     continue;
@@ -68,7 +71,10 @@ fn string_end(s: &[u8], at: usize) -> usize {
     while i < s.len() {
         match s[i] {
             b'\\' => i += 2,
-            c if c == quote && s.get(i..i + close).is_some_and(|q| q.iter().all(|&b| b == quote)) => {
+            c if c == quote
+                && s.get(i..i + close)
+                    .is_some_and(|q| q.iter().all(|&b| b == quote)) =>
+            {
                 return i + close;
             }
             _ => i += 1,
@@ -79,6 +85,8 @@ fn string_end(s: &[u8], at: usize) -> usize {
 
 /// Whether nothing but spaces and a comment follow `at` on its line.
 fn blank_after(s: &[u8], at: usize) -> bool {
-    let rest = s[at.min(s.len())..].iter().skip_while(|&&c| c == b' ' || c == b'\t');
+    let rest = s[at.min(s.len())..]
+        .iter()
+        .skip_while(|&&c| c == b' ' || c == b'\t');
     matches!(rest.copied().next(), None | Some(b'\n' | b'\r' | b'#'))
 }

@@ -119,10 +119,12 @@ fn render_part(
 ) {
     let mut part = egui::Rect::NOTHING;
     let image = picture(DEFAULT, theme, settings, Some(job), |w| part = act(w));
-    let part = part.expand(16.0);
-    let [x, y] = [part.min.x, part.min.y].map(|v| (v * 2.0).max(0.0) as u32);
-    let width = ((part.width() * 2.0) as u32).min(image.width() - x);
-    let height = ((part.height() * 2.0) as u32).min(image.height() - y);
+    // Two pixels a point, within the picture.
+    let size = egui::vec2(image.width() as f32, image.height() as f32);
+    let picture = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let kept = (part.expand(16.0) * 2.0).intersect(picture);
+    let [x, y, width, height] =
+        [kept.min.x, kept.min.y, kept.width(), kept.height()].map(|v| v as u32);
     let kept = image::imageops::crop_imm(&image, x, y, width, height).to_image();
     save(name, theme, &kept);
 }

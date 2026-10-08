@@ -3988,9 +3988,11 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
         let fill = theme::lerp(p.line_strong, p.accent, t);
         ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
         let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
-        // Round by its corners, not a circle, so Classic squares it.
+        // Round by its corners, not a circle, so Classic squares it; white,
+        // and on the accent the accent's text colour.
         let knob = egui::Rect::from_center_size(pos2(x, rect.center().y), vec2(14.0, 14.0));
-        ui.painter().rect_filled(knob, 7, Color32::WHITE);
+        let colour = theme::lerp(Color32::WHITE, p.on_accent, t);
+        ui.painter().rect_filled(knob, 7, colour);
     }
     response
 }

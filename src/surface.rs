@@ -243,11 +243,10 @@ const TITLE_SIZE: f32 = 13.0;
 /// shows, in 12-point monospace.
 const DUMP_SIZE: f32 = 12.0;
 /// The sector window's way round the disk: the ring, its track's width and
-/// how much wider the sector under the pointer and the open one's mark are,
-/// how far the index's notch reaches, the name in its middle; the arrows,
-/// the values between them and the gap before a stepper's name; the gaps
-/// between the steppers' rows, before the ring, and before it all; and the
-/// most height the bytes take.
+/// how much wider the sector under the pointer is, how far the index's notch
+/// reaches, the name in its middle; the arrows, the values between them and
+/// the gap before a stepper's name; the gaps between the steppers' rows,
+/// before the ring, and before it all.
 const DIAL: f32 = 72.0;
 const DIAL_TRACK: f32 = 10.0;
 const DIAL_RAISE: f32 = 4.0;
@@ -259,6 +258,11 @@ const NAME_GAP: f32 = 6.0;
 const ROW_GAP: f32 = 4.0;
 const RING_GAP: f32 = 12.0;
 const WAY_GAP: f32 = 20.0;
+/// On the ring, the least length round its track's middle a sector is drawn
+/// and outlined, and pointed at, in points.
+const RING_SECTOR: f32 = 3.0;
+const RING_POINT: f32 = 4.0;
+/// The most height the sector window's bytes take.
 const BYTES_MOST: f32 = 360.0;
 /// The room the sector window keeps from the app's edges, its own margins
 /// and edges, and the least what is said takes.
@@ -270,7 +274,7 @@ const SAID_LEAST: f32 = 160.0;
 /// sectors to another's, in seconds.
 const GLIDE: f64 = 0.18;
 const MARK_FADE: f32 = 0.12;
-const RING_SWAP: f64 = 0.12;
+const TRACK_FADE: f64 = 0.12;
 /// A held arrow steps again REPEAT_AFTER seconds after its press, then
 /// REPEAT_LEAST times a second, faster and faster to REPEAT_MOST over
 /// REPEAT_RAMP seconds.
@@ -384,6 +388,18 @@ impl Look {
             index: p.dim,
             ink: p.strong,
             covered: media.size().map_or(1.0, |s| (s.width / s.pitch) as f32),
+        }
+    }
+
+    /// Track `f`'s colour where gw found no sector, with its `shortfall`:
+    /// the gaps' where gw decoded flux, toned where sectors are missing or
+    /// bad; else the disk's.
+    fn ground(&self, f: &Facts, shortfall: Shortfall) -> Color32 {
+        match (f.flux.is_some(), shortfall) {
+            (false, _) => self.body,
+            (true, Shortfall::None) => self.gap,
+            (true, Shortfall::Missing) => self.missing_gap,
+            (true, Shortfall::Bad) => self.bad_gap,
         }
     }
 
@@ -630,6 +646,9 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         }
     }
     let pointer = response.hover_pos();
+    // A track ringed faintly: the one under the pointer, or the open one's
+    // where its sector is missing.
+    let faint = Stroke::new(1.0, look.ink.gamma_multiply(0.45));
     let hovered = pointer.and_then(|at| {
         let d = disks
             .iter()
@@ -642,7 +661,6 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         let least = d.line_at(at);
         let index = found.and_then(|f| under(&f.sectors, share, least));
         let sector = index.zip(found).map(|(i, f)| &f.sectors[i]);
-        let faint = Stroke::new(1.0, look.ink.gamma_multiply(0.45));
         d.outline(&painter, cyl, faint);
         if let Some((start, end)) = sector.and_then(|s| extent(s, least)) {
             let stroke = Stroke::new(1.5, look.ink);
@@ -662,7 +680,7 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         }
         response
             .clone()
-            .on_hover_ui_at_pointer(|ui| tip(ui, map, key, share, index));
+            .on_hover_ui_at_pointer(|ui| tip(ui, map, &room.drawn, key, share, index));
     }
     let over_title = pointer.and_then(|at| {
         disks
@@ -684,19 +702,14 @@ pub fn show(ui: &mut egui::Ui, map: &Map) {
         let target = match open.open {
             Open::Found(i) => track(progress, open.key).and_then(|f| f.sectors.get(i)?.at),
             Open::Missing { .. } => {
-                d.outline(
-                    &painter,
-                    cyl,
-                    Stroke::new(1.0, look.ink.gamma_multiply(0.45)),
-                );
+                d.outline(&painter, cyl, faint);
                 None
             }
         };
         let target = target.map(|[a, _, b]| (f64::from(a), f64::from(b)));
         if let Some((span, lit)) = mark(ui.ctx(), open, target) {
             let (outer, inner) = d.ring(cyl);
-            let least = d.line / (TAU * ((outer + inner) / 2.0).max(1.0));
-            let (from, to) = widened(span, least);
+            let (from, to) = widened(span, d.line_round((outer + inner) / 2.0));
             let stroke = Stroke::new(1.5, look.ink.gamma_multiply(lit));
             d.outline_arc(&painter, cyl, from, to, stroke);
         }
@@ -849,7 +862,11 @@ impl Disk {
     /// A line's length as a share of a revolution, at `at`: the least a
     /// sector is drawn.
     fn line_at(&self, at: Pos2) -> f64 {
-        let r = f64::from(((at - self.centre) / self.scale).length());
+        self.line_round(f64::from(((at - self.centre) / self.scale).length()))
+    }
+
+    /// A line's length as a share of a revolution `r` from the centre.
+    fn line_round(&self, r: f64) -> f64 {
         self.line / (TAU * r.max(1.0))
     }
 
@@ -953,14 +970,16 @@ impl Disk {
         painter.add(notch(self.centre, (tip, base), look.index));
     }
 
-    /// Rings track `cyl` at its edges.
+    /// Rings track `cyl` at its edges, each line on its edge, as outline()
+    /// draws.
     fn outline(&self, painter: &egui::Painter, cyl: u32, stroke: Stroke) {
         let (outer, inner) = self.ring(cyl);
+        // epaint strokes a circle outside it.
         let half = stroke.width / 2.0;
-        let outer = outer as f32 * self.scale + half;
-        let inner = (inner as f32 * self.scale - half).max(0.0);
-        painter.circle_stroke(self.centre, outer, stroke);
-        painter.circle_stroke(self.centre, inner, stroke);
+        for edge in [outer, inner] {
+            let r = (edge as f32 * self.scale - half).max(0.0);
+            painter.circle_stroke(self.centre, r, stroke);
+        }
     }
 
     /// Outlines track `cyl` from share `from` to `to` of a revolution.
@@ -1028,7 +1047,6 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
     {
         return Ring::ToDo;
     }
-    let placed = facts.is_some_and(|f| f.sectors.iter().any(|s| s.at.is_some()));
     match (drawn.shows, facts) {
         (
             Shows::Flux,
@@ -1036,13 +1054,17 @@ fn ring<'a>(map: &Map<'a>, key: (u32, u32), drawn: &Drawn, fits: bool, p: &Palet
                 flux: Some(spin), ..
             }),
         ) => Ring::Spin(spin),
-        (Shows::Sectors, Some(f)) if placed || (f.summary.is_some() && f.sectors.is_empty()) => {
-            Ring::Sectors(f, Shortfall::of(f))
-        }
+        (Shows::Sectors, Some(f)) if decoded(f) => Ring::Sectors(f, Shortfall::of(f)),
         (Shows::Sectors, Some(f)) if f.summary.is_none() && f.flux.is_some() => Ring::Flux,
         (_, None) if track.is_some_and(|t| t.status == Status::Skipped) => Ring::Bare,
         _ => Ring::Unknown,
     }
+}
+
+/// Whether gw decoded track `f` as the disk draws it: some sectors found
+/// where they lie, or none where gw's codec looked.
+fn decoded(f: &Facts) -> bool {
+    f.sectors.iter().any(|s| s.at.is_some()) || (f.summary.is_some() && f.sectors.is_empty())
 }
 
 /// What a ring shows round it: in the Sectors view, each sector where it
@@ -1058,13 +1080,7 @@ fn row(ring: Ring, look: &Look) -> Row {
         Ring::Status(colour) => Row::new(colour),
         Ring::Spin(spin) => Row::pieces(spin.relative().iter().map(|&d| look.flux_at(d))),
         Ring::Sectors(f, shortfall) => {
-            let background = match (f.flux.is_some(), shortfall) {
-                (false, _) => look.body,
-                (true, Shortfall::None) => look.gap,
-                (true, Shortfall::Missing) => look.missing_gap,
-                (true, Shortfall::Bad) => look.bad_gap,
-            };
-            let mut row = Row::new(background);
+            let mut row = Row::new(look.ground(f, shortfall));
             for s in &f.sectors {
                 row.sector(s, look);
             }
@@ -2077,9 +2093,16 @@ impl Origin {
 /// What is known of the hovered track, at `share` of a revolution from the
 /// index, and of its sector there, `index` of its sectors: what gw read,
 /// with in Sectors the sector's first bytes, and in Flux where the pointer
-/// and the sector lie and the track's flux.
-fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index: Option<usize>) {
-    let flux = map.shows == Shows::Flux;
+/// and the sector lie and the track's flux, as `drawn` shows the tracks.
+fn tip(
+    ui: &mut egui::Ui,
+    map: &Map,
+    drawn: &Drawn,
+    (cyl, side): (u32, u32),
+    share: f64,
+    index: Option<usize>,
+) {
+    let flux = drawn.shows == Shows::Flux;
     let progress = map.progress;
     let reported = progress.facts.get(&(cyl, side));
     let absent = reported.is_some_and(|f| f.absent);
@@ -2119,7 +2142,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
     // Where the pointer is, and when, in each revolution read whole.
     let spin = facts.and_then(|f| f.flux.as_ref());
     if flux {
-        let zero = match spin.is_some_and(|s| s.holes) {
+        let zero = match spin.map_or(drawn.holes, |s| s.holes) {
             true => "sector 0's hole",
             false => "the index",
         };
@@ -2133,7 +2156,7 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
     };
     if let Some(s) = index.and_then(|i| f.sectors.get(i)) {
         ui.separator();
-        sector_tip(ui, s, &f.sectors, flux);
+        sector_tip(ui, s, &f.sectors, drawn.shows);
     }
     let unplaced = f.sectors.iter().filter(|s| s.at.is_none()).count();
     let order = order(&f.sectors);
@@ -2502,18 +2525,16 @@ impl Inspected {
     }
 }
 
-/// What gw reported of track `key`, where its image holds the track.
+/// What gw decoded of track `key`, where its image holds the track.
 fn track(progress: &Progress, key: (u32, u32)) -> Option<&Facts> {
-    progress.facts.get(&key).filter(|f| !f.absent)
+    progress.facts.get(&key).filter(|f| !f.absent && decoded(f))
 }
 
-/// The cylinders of `side` that gw reported a track of, in order.
+/// The cylinders of `side` with a track gw decoded, in order.
 fn cylinders(progress: &Progress, side: u32) -> Vec<u32> {
-    progress
-        .facts
-        .iter()
-        .filter(|&(&(_, h), f)| h == side && !f.absent)
-        .map(|(&(c, _), _)| c)
+    let keys = progress.facts.keys().filter(|&&(_, h)| h == side);
+    keys.filter(|&&key| track(progress, key).is_some())
+        .map(|&(c, _)| c)
         .collect()
 }
 
@@ -2532,12 +2553,12 @@ fn round(open: Open, count: usize, by: i32) -> Option<usize> {
 }
 
 /// The cylinder `by` on from `cyl` among `cyls`, on from the last to the
-/// first and back. None with no other.
+/// first and back. None with no other, or where `by` leads round to `cyl`.
 fn next_cylinder(cyls: &[u32], cyl: u32, by: i32) -> Option<u32> {
     let count = i64::try_from(cyls.len()).ok().filter(|&n| n > 1)?;
     let from = i64::try_from(cyls.iter().position(|&c| c == cyl)?).ok()?;
     let to = usize::try_from((from + i64::from(by)).rem_euclid(count)).ok()?;
-    cyls.get(to).copied()
+    cyls.get(to).copied().filter(|&c| c != cyl)
 }
 
 /// The cylinder among `cyls` nearest `cyl`, the lower of two as near.
@@ -2615,13 +2636,24 @@ fn inspected() -> egui::Id {
     egui::Id::new("disk sector")
 }
 
-/// A new opening of the sector window, counted.
-fn opening(ctx: &egui::Context) -> u64 {
+/// A new opening of a sector window, counted: each is measured and centred
+/// afresh, under an id of its own.
+pub(crate) fn opening(ctx: &egui::Context) -> u64 {
     ctx.data_mut(|d| {
-        let opened = d.get_temp_mut_or_default::<u64>(egui::Id::new("disk sector openings"));
+        let opened = d.get_temp_mut_or_default::<u64>(egui::Id::new("sector window openings"));
         *opened += 1;
         *opened
     })
+}
+
+/// Lets go of what shut sector windows kept: their bytes as laid out, and
+/// the ring's look and mark; a window still open lays its own out again.
+pub(crate) fn forget(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.remove_by_type::<Arc<Dumped>>();
+        d.remove_by_type::<Swap>();
+        d.remove_by_type::<Glide>();
+    });
 }
 
 /// The window a click on a sector opens: all gw decoded of it, its data in
@@ -2631,7 +2663,10 @@ fn inspector(ctx: &egui::Context, map: &Map) {
     let Some(open) = ctx.data(|d| d.get_temp::<Inspected>(inspected())) else {
         return;
     };
-    let shut = || ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
+    let shut = || {
+        ctx.data_mut(|d| d.remove::<Inspected>(inspected()));
+        forget(ctx);
+    };
     // Gone once the track is reported again, or another job's shows.
     let Some(f) = track(map.progress, open.key).filter(|f| f.revision == open.revision) else {
         return shut();
@@ -2737,7 +2772,8 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
         let fill = ui.painter().add(Shape::Noop);
         let least_id = ui.id().with("least");
         let least = ui.data(|d| d.get_temp::<egui::Vec2>(least_id));
-        ui.set_min_size(least.unwrap_or_default());
+        let most = ctx.content_rect().shrink(APP_EDGE).size();
+        ui.set_min_size(least.unwrap_or_default().min(most));
         let font = FontId::proportional(TITLE_SIZE);
         let galley = ui
             .painter()
@@ -2759,13 +2795,13 @@ pub(crate) fn sector_window(ctx: &egui::Context, id: egui::Id, shown: &Shown) ->
             let builder = egui::UiBuilder::new().max_rect(rect);
             asked.step = ui.scope_builder(builder, |ui| way(ui, nav, p)).inner;
         }
-        // Its top corners the window's, as its frame rounds them.
-        let r = ui.visuals().window_corner_radius.nw;
+        // Its top corners the window's, inside its edge.
+        let v = ui.visuals();
+        let inside = v.window_corner_radius - v.window_stroke.width.round() as u8;
         let top = egui::CornerRadius {
-            nw: r,
-            ne: r,
             sw: 0,
             se: 0,
+            ..inside
         };
         let filled = egui::epaint::RectShape::filled(bar, top, p.sidebar);
         ui.painter().set(fill, filled);
@@ -2883,14 +2919,14 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette
         .desired_rows(1)
         .desired_width(said_width.ceil() + 1.0);
     let said_id = ui.id().with("said");
-    // Another sector's text: none of it selected.
+    // Other text, as another sector's: none of it selected.
     let of = ui.id().with("said of");
-    if ui.data(|d| d.get_temp::<String>(of)).as_deref() != Some(shown.title) {
+    if ui.data(|d| d.get_temp::<String>(of)).as_deref() != Some(text.as_str()) {
         if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), said_id) {
             state.cursor.set_char_range(None);
             state.store(ui.ctx(), said_id);
         }
-        ui.data_mut(|d| d.insert_temp(of, shown.title.to_owned()));
+        ui.data_mut(|d| d.insert_temp(of, text.clone()));
     }
     // What is said and the way round the disk, never shorter than they have
     // been, so the data below stays put.
@@ -2942,6 +2978,10 @@ fn sector_text(ui: &mut egui::Ui, shown: &Shown, right: Option<f32>, p: &Palette
     way_at
 }
 
+/// What gw has reported, as the room reserved goes by: how many tracks,
+/// and the last report's revision.
+type Reported = (usize, Option<u64>);
+
 /// What the sector window keeps room for, whichever sector it goes to: the
 /// widest line said of any sector gw reported, or of one gw did not find,
 /// each digit as wide as the widest; the most lines; the most bytes.
@@ -2956,8 +2996,13 @@ struct Reserved {
 /// `font`, worked out again only once gw reports more.
 fn reserve(ui: &egui::Ui, progress: &Progress, font: &FontId) -> Reserved {
     let id = egui::Id::new("disk sector room");
-    if let Some((revision, reserved)) = ui.data(|d| d.get_temp::<(u64, Reserved)>(id))
-        && revision == progress.revision
+    // What gw has reported: how many tracks, and the last report's revision.
+    let reported = (
+        progress.facts.len(),
+        progress.facts.values().map(|f| f.revision).max(),
+    );
+    if let Some((was, reserved)) = ui.data(|d| d.get_temp::<(Reported, Reserved)>(id))
+        && was == reported
     {
         return reserved;
     }
@@ -3026,7 +3071,8 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
     let column = steppers_width(ui);
     let size = vec2(way_width(ui), DIAL);
     let (cyl, side) = nav.open.key;
-    let mut asked = Vec::new();
+    // The first step asked.
+    let mut asked = None;
     let row = egui::Layout::left_to_right(egui::Align::Min);
     ui.allocate_ui_with_layout(size, row, |ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -3034,13 +3080,13 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
         ui.allocate_ui_with_layout(vec2(column, DIAL), steppers, |ui| {
             ui.add_space((DIAL - 2.0 * ARROW - ROW_GAP) / 2.0);
             match stepper(ui, "Cylinder", cyl, nav.cylinder, true, p) {
-                (_, Some(to)) => asked.push(Step::ToCylinder(to)),
+                (_, Some(to)) => _ = asked.get_or_insert(Step::ToCylinder(to)),
                 (0, None) => {}
-                (by, None) => asked.push(Step::Cylinder(by)),
+                (by, None) => _ = asked.get_or_insert(Step::Cylinder(by)),
             }
             ui.add_space(ROW_GAP);
             if stepper(ui, "Side", side, nav.side, false, p).0 != 0 {
-                asked.push(Step::Side);
+                asked.get_or_insert(Step::Side);
             }
         });
         ui.add_space(RING_GAP);
@@ -3051,17 +3097,27 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
             by -= arrow(ui, false, nav.round, true, "sector", p);
         });
         if let Some(i) = dial(ui, nav, p) {
-            asked.push(Step::ToSector(i));
+            asked.get_or_insert(Step::ToSector(i));
         }
         ui.allocate_ui_with_layout(vec2(ARROW, DIAL), beside, |ui| {
             ui.add_space((DIAL - ARROW) / 2.0);
             by += arrow(ui, true, nav.round, true, "sector", p);
         });
         if by != 0 {
-            asked.push(Step::Round(by));
+            asked.get_or_insert(Step::Round(by));
         }
     });
     if keys_free(ui) {
+        // The arrows step, and do not move the keyboard on from what in the
+        // window has it.
+        if let Some(id) = ui.memory(|m| m.focused()) {
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..Default::default()
+            };
+            ui.memory_mut(|m| m.set_focus_lock_filter(id, arrows));
+        }
         let none = egui::Modifiers::NONE;
         let [left, right, up, down] = ui.input_mut(|i| {
             [
@@ -3073,13 +3129,13 @@ fn way(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<Step> {
             .map(|key| i32::try_from(i.count_and_consume_key(none, key)).unwrap_or(0))
         });
         if nav.round && right != left {
-            asked.push(Step::Round(right - left));
+            asked.get_or_insert(Step::Round(right - left));
         }
         if nav.cylinder && down != up {
-            asked.push(Step::Cylinder(down - up));
+            asked.get_or_insert(Step::Cylinder(down - up));
         }
     }
-    asked.first().copied()
+    asked
 }
 
 /// Whether the keyboard's arrows are the sector window's: nothing has the
@@ -3127,7 +3183,9 @@ fn value_box(ui: &mut egui::Ui, name: &str, value: u32, types: bool, p: &Palette
     let size = vec2(VALUE, ARROW);
     if !types {
         let shown = RichText::new(value.to_string()).color(p.strong);
-        ui.add_sized(size, egui::Label::new(shown));
+        let named = format!("{name} {value}");
+        ui.add_sized(size, egui::Label::new(shown))
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &named));
         return None;
     }
     let id = ui.id().with(("typing", name));
@@ -3271,15 +3329,15 @@ struct Held {
 /// pressed, another REPEAT_AFTER on, then REPEAT_LEAST a second, faster and
 /// faster to REPEAT_MOST a second over REPEAT_RAMP seconds.
 fn held_steps(held: f64) -> u32 {
-    let t = held - REPEAT_AFTER;
+    // A step due as `held` is reached counts, whatever the rounding.
+    let t = held - REPEAT_AFTER + 1e-9;
     if t < 0.0 {
         return 1;
     }
     let ramp = t.min(REPEAT_RAMP);
     let gain = (REPEAT_MOST - REPEAT_LEAST) / REPEAT_RAMP;
     let more = REPEAT_LEAST * ramp + gain * ramp * ramp / 2.0 + REPEAT_MOST * (t - ramp);
-    // A step due as `held` is reached counts, whatever the rounding.
-    2 + (more + 1e-9) as u32
+    2 + more as u32
 }
 
 /// The open track as a ring, drawn as the disk view draws a track: the
@@ -3291,7 +3349,10 @@ fn held_steps(held: f64) -> u32 {
 fn dial(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<usize> {
     let f = nav.facts;
     let look = Look::of(p, Media::Fit);
-    let (rect, response) = ui.allocate_exact_size(vec2(DIAL, DIAL), Sense::click_and_drag());
+    // The pointer's, as the arrows are the keyboard's; its own drags, so a
+    // hand that moves as it clicks does not move the window.
+    let sense = Sense::CLICK | Sense::DRAG;
+    let (rect, response) = ui.allocate_exact_size(vec2(DIAL, DIAL), sense);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Track"));
     let centre = rect.center();
     // The track's middle and its edges, with room above for the notch.
@@ -3305,22 +3366,18 @@ fn dial(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<usize> {
         .and_then(|at| {
             let d = at - centre;
             let pointed = share_at(f64::from(d.x), f64::from(d.y));
-            under(&f.sectors, pointed, share(4.0))
+            under(&f.sectors, pointed, share(RING_POINT))
         });
     if hovered.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let least = share(1.5);
+    let least = share(RING_SECTOR);
     let arcs = f
         .sectors
         .iter()
         .filter_map(|s| Some((extent(s, least)?, look.status(s))))
         .collect();
-    let ground = match Shortfall::of(f) {
-        Shortfall::None => look.gap,
-        Shortfall::Missing => look.missing_gap,
-        Shortfall::Bad => look.bad_gap,
-    };
+    let ground = look.ground(f, Shortfall::of(f));
     let (was, face, shown) = faded(ui, nav.open, Face { ground, arcs });
     let painter = ui.painter();
     let window = ui.visuals().window_fill;
@@ -3369,7 +3426,7 @@ fn dial(ui: &mut egui::Ui, nav: &Nav, p: &Palette) -> Option<usize> {
     let target = target.map(|[a, _, b]| (f64::from(a), f64::from(b)));
     if let Some((span, lit)) = mark(ui.ctx(), nav.open, target) {
         let stroke = Stroke::new(1.5, look.ink.gamma_multiply(lit));
-        painter.add(outline(centre, edges, widened(span, share(3.0)), stroke));
+        painter.add(outline(centre, edges, widened(span, least), stroke));
     }
     let tip = edges.0 + DIAL_RAISE / 2.0 + 1.0;
     painter.add(notch(centre, (tip, tip + DIAL_NOTCH), look.index));
@@ -3445,7 +3502,7 @@ fn notch(centre: Pos2, (tip, base): (f32, f32), colour: Color32) -> Shape {
 
 /// How a track looks on the ring: the colour of its gaps, and each sector's
 /// start, end and colour.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Face {
     ground: Color32,
     arcs: Vec<((f64, f64), Color32)>,
@@ -3461,7 +3518,7 @@ struct Swap {
     since: f64,
 }
 
-/// The ring's look for the open track, `face`, and for RING_SWAP seconds
+/// The ring's look for the open track, `face`, and for TRACK_FADE seconds
 /// after it goes to another track, the last's under it: how strongly the
 /// new one shows over it.
 fn faded(ui: &egui::Ui, open: Inspected, face: Face) -> (Option<Face>, Face, f32) {
@@ -3483,7 +3540,7 @@ fn faded(ui: &egui::Ui, open: Inspected, face: Face) -> (Option<Face>, Face, f32
         },
     };
     ui.data_mut(|d| d.insert_temp(id, swap.clone()));
-    let t = ((now - swap.since) / RING_SWAP).clamp(0.0, 1.0);
+    let t = ((now - swap.since) / TRACK_FADE).clamp(0.0, 1.0);
     if t < 1.0 {
         ui.ctx().request_repaint();
     }
@@ -3690,11 +3747,22 @@ pub(crate) enum Tone {
     Weak,
 }
 
+impl Tone {
+    /// Shows `text` in `ui` this strongly.
+    pub(crate) fn label(self, ui: &mut egui::Ui, text: &str) {
+        match self {
+            Tone::Strong => ui.strong(text),
+            Tone::Plain => ui.label(text),
+            Tone::Weak => ui.weak(text),
+        };
+    }
+}
+
 /// What is said of a sector of a track's `sectors`, line by line: its ID
-/// and size, its checks and mark, with `placed` its place, in degrees and in
-/// bytes, how gw found it in each revolution, any other sector with its ID,
-/// and notes.
-fn sector_lines(s: &Sector, sectors: &[Sector], placed: bool) -> Vec<(String, Tone)> {
+/// and size, its checks and mark, where it lies, in degrees and in bytes,
+/// how gw found it in each revolution, any other sector with its ID, and
+/// notes. Without `with_place`, nothing of where it or the other lies.
+fn sector_lines(s: &Sector, sectors: &[Sector], with_place: bool) -> Vec<(String, Tone)> {
     let size = match (s.id, s.data) {
         _ if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
         // A header alone has no data: its N is in its ID.
@@ -3743,7 +3811,7 @@ fn sector_lines(s: &Sector, sectors: &[Sector], placed: bool) -> Vec<(String, To
     }
     lines.push((checks.join(" · "), Tone::Plain));
     let deg = |x: f32| x * 360.0;
-    if let Some([start, data, end]) = s.at.filter(|_| placed) {
+    if let Some([start, data, end]) = s.at.filter(|_| with_place) {
         let mut place = format!("{:.1}°–{:.1}°", deg(start), deg(end));
         // A header with no data after it has none to place.
         if data > start && s.data != Data::None {
@@ -3754,7 +3822,7 @@ fn sector_lines(s: &Sector, sectors: &[Sector], placed: bool) -> Vec<(String, To
         }
         lines.push((place, Tone::Weak));
     }
-    if let Some(layout) = s.layout.as_ref().filter(|_| placed) {
+    if let Some(layout) = s.layout.as_ref().filter(|_| with_place) {
         lines.push((layout_line(layout), Tone::Weak));
     }
     if let Some(turns) = s.turns.as_ref().and_then(turns_line) {
@@ -3765,7 +3833,7 @@ fn sector_lines(s: &Sector, sectors: &[Sector], placed: bool) -> Vec<(String, To
         .filter(|t| !std::ptr::eq(*t, s) && same_id(s, t))
         .filter_map(|t| t.at.map(|[start, ..]| format!("{:.1}°", deg(start))))
         .collect();
-    if !twins.is_empty() {
+    if with_place && !twins.is_empty() {
         lines.push((format!("Its ID also at {}", twins.join(", ")), Tone::Plain));
     }
     let notes: Vec<&str> = [
@@ -3865,15 +3933,12 @@ fn turns_line(t: &Turns) -> Option<String> {
     )
 }
 
-/// A sector of a track's `sectors`: what is said of it, with in Flux where
-/// it lies, and in Sectors its data's first rows.
-fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector], flux: bool) {
+/// A sector of a track's `sectors` as `shows` has it: what is said of it,
+/// with in Flux where it lies, and in Sectors its data's first rows.
+fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector], shows: Shows) {
+    let flux = shows == Shows::Flux;
     for (text, tone) in sector_lines(s, sectors, flux) {
-        match tone {
-            Tone::Strong => ui.strong(text),
-            Tone::Plain => ui.label(text),
-            Tone::Weak => ui.weak(text),
-        };
+        tone.label(ui, &text);
     }
     if !flux && !s.bytes.is_empty() {
         let rows = RichText::new(dump(&s.bytes, 4, 0)).font(FontId::monospace(DUMP_SIZE));
@@ -4485,6 +4550,34 @@ mod tests {
         assert_eq!(next_cylinder(&cyls, 1, 8), Some(79));
         assert_eq!(next_cylinder(&[4], 4, 1), None, "no other");
         assert_eq!(next_cylinder(&cyls, 3, 1), None, "not reported");
+        assert_eq!(next_cylinder(&[3, 5], 3, 2), None, "round to itself");
+    }
+
+    #[test]
+    fn across_cylinders_and_sides_the_window_goes_only_to_tracks_gw_decoded() {
+        let decoded = || Facts {
+            summary: Some("IBM MFM (0/9 sectors)".into()),
+            ..Facts::default()
+        };
+        let mut progress = Progress::default();
+        let tracks = [
+            ((0, 0), decoded()),
+            // Read as flux, not decoded, as a track past a format's.
+            ((1, 0), Facts::default()),
+            (
+                (2, 0),
+                Facts {
+                    absent: true,
+                    ..decoded()
+                },
+            ),
+            ((3, 0), decoded()),
+            ((3, 1), decoded()),
+        ];
+        progress.facts.extend(tracks);
+        assert_eq!(cylinders(&progress, 0), [0, 3]);
+        assert_eq!(cylinders(&progress, 1), [3]);
+        assert!(track(&progress, (1, 0)).is_none());
     }
 
     #[test]
@@ -4560,6 +4653,20 @@ mod tests {
     }
 
     #[test]
+    fn a_tracks_ground_is_the_gaps_only_where_gw_decoded_flux() {
+        let look = Look::of(&theme::DARK, Media::Fit);
+        let image = Facts::default();
+        let read = Facts {
+            flux: Some(Spin::default()),
+            ..Facts::default()
+        };
+        assert_eq!(look.ground(&image, Shortfall::Missing), look.body);
+        assert_eq!(look.ground(&read, Shortfall::None), look.gap);
+        assert_eq!(look.ground(&read, Shortfall::Missing), look.missing_gap);
+        assert_eq!(look.ground(&read, Shortfall::Bad), look.bad_gap);
+    }
+
+    #[test]
     fn the_mark_moves_round_the_shorter_way_and_eases_out() {
         let near =
             |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
@@ -4571,11 +4678,9 @@ mod tests {
         // On from the last sector to the first, on past the index.
         let on = still([0.9, 0.95]).toward([0.01, 0.05], 0.0);
         assert!(near(on.to, [1.01, 1.05]), "{:?}", on.to);
+        // Half its time gone, seven eighths of its way: cubic, easing out.
         let half = on.at(GLIDE / 2.0)[0];
-        assert!(
-            (0.9 + 0.11 * 0.5..1.01).contains(&half),
-            "more than half way: {half}"
-        );
+        assert!((half - (0.9 + 0.11 * 0.875)).abs() < 1e-9, "{half}");
         assert!(near(on.at(GLIDE), [1.01, 1.05]));
         // Back from the first to the last, back past it.
         let back = still([0.01, 0.05]).toward([0.9, 0.95], 0.0);
@@ -5432,7 +5537,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sectors_place_is_said_after_its_checks_only_where_asked_for() {
+    fn a_sectors_place_and_its_ids_others_are_said_only_where_asked_for() {
         let s = Sector {
             id: Id::Ibm([0, 0, 1, 2]),
             mark: Some(0xfb),
@@ -5447,19 +5552,29 @@ mod tests {
             }),
             ..sector([0.1, 0.11, 0.2], None)
         };
-        let said = |placed| -> Vec<String> {
-            let lines = sector_lines(&s, std::slice::from_ref(&s), placed);
+        // Another with its ID, half a revolution on.
+        let twin = Sector {
+            at: Some([0.6, 0.61, 0.7]),
+            ..s.clone()
+        };
+        let sectors = [s, twin];
+        let said = |with_place| -> Vec<String> {
+            let lines = sector_lines(&sectors[0], &sectors, with_place);
             lines.into_iter().map(|(l, _)| l).collect()
         };
         let full = said(true);
-        assert_eq!(
-            full[2..4],
-            [
-                "36.0°–72.0° · data 39.6°, 34 bytes after the ID",
-                "158 bytes from the index · 62 bytes after the index mark"
-            ]
-        );
-        assert_eq!([&full[..2], &full[4..]].concat(), said(false));
+        let place = [
+            "36.0°–72.0° · data 39.6°, 34 bytes after the ID",
+            "158 bytes from the index · 62 bytes after the index mark",
+            "Its ID also at 216.0°",
+        ];
+        assert_eq!(full[2..4], place[..2]);
+        assert!(full.iter().any(|l| l == place[2]), "{full:?}");
+        let rest: Vec<String> = full
+            .into_iter()
+            .filter(|l| !place.contains(&l.as_str()))
+            .collect();
+        assert_eq!(rest, said(false));
     }
 
     #[test]
