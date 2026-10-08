@@ -663,17 +663,7 @@ fn analyse() {
 #[ignore = "writes pictures for people to look at"]
 fn sector_window() {
     use ferriteweazle::track::Id;
-    let open = |w: &mut Window, id: Id| {
-        w.run_steps(4);
-        let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
-        let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
-        let [a, _, b] = s.at.unwrap();
-        let at = on_disk(w, TRACK_0, 90.0 - 360.0 * (a + b) / 2.0);
-        w.drag_at(at);
-        w.run_steps(2);
-        w.drop_at(at);
-        w.run_steps(6);
-    };
+    let open = open_sector;
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         let settings = || Settings {
             drawer: Some(Drawer::Analyse),
@@ -722,6 +712,19 @@ fn sector_window() {
             w.run_steps(4);
         });
     }
+}
+
+/// Opens the window of sector `id` of track 0.0, the disks drawn to scale.
+fn open_sector(w: &mut Window, id: ferriteweazle::track::Id) {
+    w.run_steps(4);
+    let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(0, 0)];
+    let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
+    let [a, _, b] = s.at.unwrap();
+    let at = on_disk(w, TRACK_0, 90.0 - 360.0 * (a + b) / 2.0);
+    w.drag_at(at);
+    w.run_steps(2);
+    w.drop_at(at);
+    w.run_steps(6);
 }
 
 /// Renders the window after `act`, which opens a sector's window, and keeps
@@ -1059,4 +1062,39 @@ fn crop_to_tip(
             })
             .expect("a tooltip")
     });
+}
+
+/// Each named theme: the Akai disk in Analyse with R3's window open, and a
+/// read's Log, at the window's first size.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn themes() {
+    use ferriteweazle::track::Id;
+    for (choice, _, _, word) in ferriteweazle::theme::CHOICES {
+        // egui's own theme under the named one.
+        let theme = match choice {
+            Choice::System => continue,
+            Choice::Light | Choice::Classic | Choice::Blue | Choice::Vintage => egui::Theme::Light,
+            Choice::Dark | Choice::Greaseweazle | Choice::PcbGreen => egui::Theme::Dark,
+        };
+        let disk = Settings {
+            theme: choice,
+            drawer: Some(Drawer::Analyse),
+            media: Media::ThreeHalf,
+            ..settings("convert", theme)
+        };
+        let name = format!("theme-{word}");
+        render_sized(&name, DEFAULT, theme, disk, Some(akai_job()), |w| {
+            open_sector(w, Id::Ibm([0, 0, 3, 3]));
+        });
+        let read = Settings {
+            theme: choice,
+            ..settings("read", theme)
+        };
+        let name = format!("theme-{word}-log");
+        render_sized(&name, DEFAULT, theme, read, Some(read_job()), |w| {
+            session(w);
+            w.get_by_role_and_label(Role::Button, "Log").click();
+        });
+    }
 }

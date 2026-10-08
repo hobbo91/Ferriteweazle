@@ -1,4 +1,5 @@
-//! Colours, type and spacing: light, dark, the Greaseweazle's purple and 90s GUI grey.
+//! Colours, type and spacing: light, dark, the Greaseweazle's purple, a board's green, and
+//! 90s GUI grey.
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Margin, Shadow, Shape, Stroke, TextStyle, Theme,
@@ -18,11 +19,12 @@ pub enum Choice {
     Blue,
     Vintage,
     Greaseweazle,
+    PcbGreen,
 }
 
 /// Each choice in Settings' order: its name, its hover, and the word theme.txt
 /// keeps. Blue is Classic in the accent it starts in, under Classic's button.
-pub const CHOICES: [(Choice, &str, &str, &str); 7] = [
+pub const CHOICES: [(Choice, &str, &str, &str); 8] = [
     (Choice::System, "System", "Follow the system.", ""),
     (Choice::Light, "Light", "Always light.", "light"),
     (Choice::Dark, "Dark", "Always dark.", "dark"),
@@ -45,6 +47,12 @@ pub const CHOICES: [(Choice, &str, &str, &str); 7] = [
         "Always purple (dark).",
         "greaseweazle",
     ),
+    (
+        Choice::PcbGreen,
+        "PCB Green",
+        "Always green (dark).",
+        "pcb-green",
+    ),
 ];
 
 impl From<Theme> for Choice {
@@ -56,8 +64,8 @@ impl From<Theme> for Choice {
     }
 }
 
-/// Shows `choice`: Greaseweazle is egui's dark theme, and Classic and Vintage
-/// its light one, with their own colours in them.
+/// Shows `choice`: Greaseweazle and PCB Green are egui's dark theme, and
+/// Classic and Vintage its light one, with their own colours in them.
 pub fn apply(ctx: &egui::Context, choice: Choice) {
     let (dark, light, shown) = match choice {
         Choice::System => (&DARK, &LIGHT, ThemePreference::System),
@@ -67,6 +75,7 @@ pub fn apply(ctx: &egui::Context, choice: Choice) {
         Choice::Blue => (&DARK, &BLUE, ThemePreference::Light),
         Choice::Vintage => (&DARK, &VINTAGE, ThemePreference::Light),
         Choice::Greaseweazle => (&GREASEWEAZLE, &LIGHT, ThemePreference::Dark),
+        Choice::PcbGreen => (&PCB_GREEN, &LIGHT, ThemePreference::Dark),
     };
     ctx.set_visuals_of(Theme::Dark, visuals(dark, Visuals::dark()));
     ctx.set_visuals_of(Theme::Light, visuals(light, Visuals::light()));
@@ -208,6 +217,35 @@ pub const GREASEWEAZLE: Palette = Palette {
     bold_bars: true,
 };
 
+/// From the green of a board's solder mask, rgb(0, 140, 74): darker for the
+/// window, so that its text reads clearly; gold for what is chosen, as its
+/// pads are, white and silver for text, as its silkscreen and solder are, and
+/// Vintage's green console.
+pub const PCB_GREEN: Palette = Palette {
+    bg: Color32::from_rgb(8, 50, 30),
+    sidebar: Color32::from_rgb(4, 38, 22),
+    card: Color32::from_rgb(14, 70, 43),
+    hover: Color32::from_rgb(20, 86, 54),
+    line: Color32::from_rgb(30, 98, 64),
+    line_strong: Color32::from_rgb(58, 128, 92),
+    text: Color32::from_rgb(232, 240, 234),
+    strong: Color32::WHITE,
+    dim: Color32::from_rgb(192, 192, 192),
+    accent: Color32::from_rgb(212, 175, 55),
+    on_accent: Color32::from_rgb(34, 34, 34),
+    link: None,
+    good: Color32::from_rgb(61, 214, 140),
+    partial: Color32::from_rgb(255, 150, 60),
+    bad: Color32::from_rgb(255, 99, 112),
+    flux: Color32::from_rgb(79, 182, 240),
+    written: Color32::from_rgb(176, 150, 255),
+    erased: Color32::from_rgb(128, 142, 134),
+    pending: Color32::from_rgb(16, 62, 40),
+    classic: false,
+    console: VINTAGE.console,
+    bold_bars: true,
+};
+
 /// 90s GUIs standard scheme, on rgb(195, 199, 203): silver-grey
 /// with lighter grey fields, and the teal of the 1990s.
 pub const CLASSIC: Palette = Palette {
@@ -294,7 +332,15 @@ pub const ABOUT: &[u8] = include_bytes!("../assets/about.png");
 /// shows has a link colour of its own.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     let v = ui.visuals();
-    let shown = [&LIGHT, &DARK, &GREASEWEAZLE, &CLASSIC, &BLUE, &VINTAGE];
+    let shown = [
+        &LIGHT,
+        &DARK,
+        &GREASEWEAZLE,
+        &PCB_GREEN,
+        &CLASSIC,
+        &BLUE,
+        &VINTAGE,
+    ];
     let unthemed = if v.dark_mode { &DARK } else { &LIGHT };
     shown
         .into_iter()

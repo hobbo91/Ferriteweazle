@@ -6098,14 +6098,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ferriteweazle-theme-{}", std::process::id()));
         let file = dir.join("theme.txt");
         assert_eq!(kept_theme(&file), theme::Choice::System);
-        for theme in [
-            theme::Choice::Light,
-            theme::Choice::Dark,
-            theme::Choice::Classic,
-            theme::Choice::Blue,
-            theme::Choice::Vintage,
-            theme::Choice::Greaseweazle,
-        ] {
+        let named = theme::CHOICES.map(|c| c.0);
+        for theme in named.into_iter().filter(|&c| c != theme::Choice::System) {
             keep_theme(&file, theme);
             assert_eq!(kept_theme(&file), theme);
         }

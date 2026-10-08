@@ -1437,15 +1437,8 @@ mod tests {
     #[test]
     fn on_a_solid_fill_a_selection_is_drawn_in_its_text_colour_and_the_log_keeps_its_own() {
         let lines = rows(4, "00 11 22 33");
-        let themes = [
-            Choice::Light,
-            Choice::Dark,
-            Choice::Classic,
-            Choice::Blue,
-            Choice::Vintage,
-            Choice::Greaseweazle,
-        ];
-        for choice in themes {
+        let named = theme::CHOICES.map(|c| c.0);
+        for choice in named.into_iter().filter(|&c| c != Choice::System) {
             // A sector window's bytes, and gw's output in the Log's box.
             for log in [false, true] {
                 let ctx = egui::Context::default();

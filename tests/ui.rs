@@ -3654,6 +3654,41 @@ fn the_greaseweazle_theme_is_dark_in_the_boards_purple() {
 }
 
 #[test]
+fn the_pcb_green_theme_is_dark_in_a_boards_green_with_gold_and_a_green_console() {
+    let mut w = settings_from(Choice::Dark, Harness::builder());
+    let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
+    let after = w.get_by_label("Greaseweazle v4.1").rect();
+    assert!(after.right() < w.get_by_label("PCB Green").rect().left());
+    w.get_by_label("PCB Green").click();
+    w.run();
+    assert_eq!(visuals(&w).panel_fill, theme::PCB_GREEN.bg);
+    assert_eq!(visuals(&w).hyperlink_color, theme::PCB_GREEN.accent);
+    assert_eq!(app(&w).settings.theme, Choice::PcbGreen);
+    let log = window(Settings {
+        theme: Choice::PcbGreen,
+        drawer: Some(Drawer::Cli),
+        ..chosen()
+    });
+    assert!(on_black(&log, theme::VINTAGE.console.unwrap()));
+}
+
+#[test]
+fn every_themes_button_fits_settings_at_the_smallest_window() {
+    let w = settings_from(
+        Choice::System,
+        Harness::builder().with_size(ferriteweazle::SMALLEST),
+    );
+    let page = egui::Rect::from_min_size(egui::Pos2::ZERO, ferriteweazle::SMALLEST);
+    for (choice, name, ..) in theme::CHOICES {
+        // Blue is Classic's other accent, in its right-click menu.
+        if choice != Choice::Blue {
+            let button = w.get_by_label(name).rect();
+            assert!(page.contains_rect(button), "{name} at {button:?}");
+        }
+    }
+}
+
+#[test]
 fn the_classic_theme_is_light_in_90s_gui_grey_blue_at_first_and_keeps_its_accent() {
     let mut w = settings_from(Choice::Light, Harness::builder());
     let visuals = |w: &Window| w.ctx.style_of(w.ctx.theme()).visuals.clone();
