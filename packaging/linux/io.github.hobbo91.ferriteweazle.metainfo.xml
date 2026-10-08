@@ -25,7 +25,7 @@
       <li>Bundles Greaseweazle Tools unmodified, or uses your own gw</li>
     </ul>
   </description>
-  <launchable type="desktop-id">ferriteweazle.desktop</launchable>
+  <launchable type="desktop-id">io.github.hobbo91.ferriteweazle.desktop</launchable>
   <url type="homepage">https://github.com/hobbo91/Ferriteweazle</url>
   <url type="bugtracker">https://github.com/hobbo91/Ferriteweazle/issues</url>
   <url type="vcs-browser">https://github.com/hobbo91/Ferriteweazle</url>

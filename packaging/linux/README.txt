@@ -6,9 +6,9 @@ glibc 2.17 or newer, under Wayland or X11, with Vulkan or OpenGL.
 
     ferriteweazle            the program
     greaseweazle/            Greaseweazle Tools and its Python; keep it beside the program
-    lib/                     libraries the program opens that some systems lack; keep it
-                             beside the program too
-    ferriteweazle.desktop    a menu entry, with ferriteweazle.png its icon
+    lib/                     libraries some systems lack; keep it beside the program
+    io.github.hobbo91.ferriteweazle.desktop
+                             a menu entry, with ferriteweazle.png its icon
 
 Running
 -------
@@ -21,9 +21,12 @@ In this folder, run:
     mkdir -p ~/.local/share/applications
     sed -e "s|^Exec=.*|Exec=\"$PWD/ferriteweazle\"|" \
         -e "s|^Icon=.*|Icon=$PWD/ferriteweazle.png|" \
-        ferriteweazle.desktop >~/.local/share/applications/ferriteweazle.desktop
+        io.github.hobbo91.ferriteweazle.desktop \
+        >~/.local/share/applications/io.github.hobbo91.ferriteweazle.desktop
 
-Run it again after moving the folder.
+Run it again after moving the folder. Remove an entry made before 1.4.0:
+
+    rm -f ~/.local/share/applications/ferriteweazle.desktop
 
 Serial port access
 ------------------

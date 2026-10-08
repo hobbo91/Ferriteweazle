@@ -22,6 +22,9 @@ case "$arch" in
     *) echo "linux: no build for $arch" >&2; exit 1 ;;
 esac
 triple=$arch-unknown-linux-gnu
+# The desktop entry, its icon and its AppStream metadata are named for the
+# window's app id (src/main.rs).
+id=io.github.hobbo91.ferriteweazle
 
 refresh "$triple"
 data=$(bundle_dir "$triple")
@@ -45,7 +48,7 @@ mkdir -p "$top" dist
 cp "$program" "$top/ferriteweazle"
 cp -a "$data" "$top/greaseweazle"
 libraries "$top/lib" "$arch"
-cp packaging/linux/ferriteweazle.desktop packaging/linux/README.txt "$top/"
+cp "packaging/linux/$id.desktop" packaging/linux/README.txt "$top/"
 cp assets/logo.png "$top/ferriteweazle.png"
 cp LICENSE "$top/LICENSE.txt"
 notices=$top/THIRD-PARTY-NOTICES.txt
@@ -77,17 +80,16 @@ cp LICENSE "$share/doc/ferriteweazle/"
 { cat "$notices"; sed "s/@VERSION@/$version/g" "packaging/licences/appimage-runtime-$RUNTIME.txt"; } \
     >"$share/doc/ferriteweazle/THIRD-PARTY-NOTICES.txt"
 ln -s usr/bin/ferriteweazle "$appdir/AppRun"
-cp packaging/linux/ferriteweazle.desktop "$appdir/"
-cp packaging/linux/ferriteweazle.desktop "$share/applications/"
-cp assets/logo.png "$appdir/ferriteweazle.png"
-cp assets/logo.png "$share/icons/hicolor/256x256/apps/ferriteweazle.png"
-ln -s ferriteweazle.png "$appdir/.DirIcon"
+cp "packaging/linux/$id.desktop" "$appdir/"
+cp "packaging/linux/$id.desktop" "$share/applications/"
+cp assets/logo.png "$appdir/$id.png"
+cp assets/logo.png "$share/icons/hicolor/256x256/apps/$id.png"
+ln -s "$id.png" "$appdir/.DirIcon"
 # AppStream's release is dated by SOURCE_DATE_EPOCH, as release.sh sets it,
 # or else today.
 date=$(date -u ${SOURCE_DATE_EPOCH:+-d "@$SOURCE_DATE_EPOCH"} +%Y-%m-%d)
-metainfo=io.github.hobbo91.ferriteweazle.metainfo.xml
-sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$date/" "packaging/linux/$metainfo" \
-    >"$share/metainfo/$metainfo"
+sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$date/" "packaging/linux/$id.metainfo.xml" \
+    >"$share/metainfo/$id.metainfo.xml"
 # appimagetool's own check also fetches each screenshot, which for a release
 # is on GitHub only once its branch is merged.
 appstreamcli validate-tree --no-net "$appdir"
