@@ -6,6 +6,8 @@ glibc 2.17 or newer, under Wayland or X11, with Vulkan or OpenGL.
 
     ferriteweazle            the program
     greaseweazle/            Greaseweazle Tools and its Python; keep it beside the program
+    lib/                     libraries the program opens that some systems lack; keep it
+                             beside the program too
     ferriteweazle.desktop    a menu entry, with ferriteweazle.png its icon
 
 Running

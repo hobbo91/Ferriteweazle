@@ -251,9 +251,21 @@ impl Install {
             }
             Install::Folder(dir) => {
                 let from = new.join("Ferriteweazle");
-                // The data first, as on Windows.
-                let pairs = [tools::DATA.to_owned(), program()]
-                    .map(|name| (dir.join(&name), from.join(&name)));
+                // The data first, as on Windows, and the program last. lib/
+                // holds libraries the program opens, with their licences in
+                // the notices; a folder from before 1.4.0 has no lib/.
+                let mut names = vec![tools::DATA.to_owned()];
+                names.extend(
+                    ["lib", "THIRD-PARTY-NOTICES.txt"]
+                        .into_iter()
+                        .filter(|name| from.join(name).exists())
+                        .map(str::to_owned),
+                );
+                names.push(program());
+                let pairs: Vec<_> = names
+                    .iter()
+                    .map(|name| (dir.join(name), from.join(name)))
+                    .collect();
                 shell(&swap_script(&pairs), !writable(dir))
             }
         }
@@ -365,15 +377,18 @@ fn program() -> String {
         .unwrap_or_default()
 }
 
-/// Replaces each `now` with a copy of its `new`, in order. Every `now` stays
-/// until all the copies are whole, and a partial copy is removed.
+/// Replaces each `now` with a copy of its `new`, in order, or adds it where
+/// there is none. Every `now` stays until all the copies are whole, and a
+/// partial copy is removed.
 fn swap_script(pairs: &[(PathBuf, PathBuf)]) -> String {
     let beside = |now: &Path, suffix| quote(Path::new(&format!("{}.{suffix}", now.display())));
     let (mut copies, mut moves, mut temps, mut olds) = (vec![], vec![], vec![], vec![]);
     for (now, new) in pairs {
         let (old, temp, now) = (beside(now, "old"), beside(now, "new"), quote(now));
         copies.push(format!("cp -R {} {temp}", quote(new)));
-        moves.push(format!("mv {now} {old} && mv {temp} {now}"));
+        moves.push(format!(
+            "{{ [ ! -e {now} ] || mv {now} {old}; }} && mv {temp} {now}"
+        ));
         temps.push(temp);
         olds.push(old);
     }
@@ -777,6 +792,27 @@ mod tests {
         assert_eq!(read(data.join("marker")), "new");
         assert_eq!(read(&program), "new");
         assert_eq!(names(&dir), ["data", "fw", "new"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swap_adds_what_the_folder_lacks() {
+        // A folder from before 1.4.0, with no lib/.
+        let dir = scratch("folder-adds");
+        let (lib, program, new) = (dir.join("lib"), dir.join("fw"), dir.join("new"));
+        std::fs::create_dir_all(new.join("lib")).unwrap();
+        std::fs::write(new.join("lib/libx.so.1"), "new").unwrap();
+        std::fs::write(new.join("fw"), "new").unwrap();
+        std::fs::write(&program, "old").unwrap();
+        let pairs = [
+            (lib.clone(), new.join("lib")),
+            (program.clone(), new.join("fw")),
+        ];
+        shell(&swap_script(&pairs), false).unwrap();
+        assert_eq!(read(lib.join("libx.so.1")), "new");
+        assert_eq!(read(&program), "new");
+        assert_eq!(names(&dir), ["fw", "lib", "new"], "no .old or .new left");
         std::fs::remove_dir_all(dir).ok();
     }
 

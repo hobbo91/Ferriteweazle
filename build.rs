@@ -1,9 +1,15 @@
-//! Packs the bridge for the command line, and gives the Windows program its
-//! icon and version and marks it as needing Windows 10.
+//! Packs the bridge for the command line, points the Linux program at the
+//! libraries beside it, and gives the Windows program its icon and version
+//! and marks it as needing Windows 10.
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     bridge();
+    // A Linux package's lib/, beside the program, holds the libraries some
+    // systems lack (packaging/linux/libraries.sh).
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux") {
+        println!("cargo::rustc-link-arg-bins=-Wl,-rpath,$ORIGIN/lib");
+    }
     // cfg(windows) is the computer building: winresource runs the Windows
     // SDK's rc.exe, and Cargo.toml adds it only on Windows.
     #[cfg(windows)]

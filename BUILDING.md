@@ -92,10 +92,13 @@ version by it. Neither is code-signed.
 
 ### Linux
 
-glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)
-and zig. Downloads appimagetool and the AppImage runtime, checked against
-`packaging/linux/appimage.sha256`. Building for the other processor runs its Python
-emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
+glibc 2.17 or newer. Needs [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild),
+zig, meson 1.4 or newer, ninja, bison, bsdtar, patchelf and objdump (on Debian and Ubuntu:
+`ninja-build`, `bison`, `libarchive-tools`, `patchelf` and `binutils`, with meson from
+`pipx install meson`). Downloads appimagetool, the AppImage runtime, and the source and
+libraries of what a package carries in `lib/` (`packaging/linux/libraries.sh`), checked
+against `packaging/linux/appimage.sha256`. Building for the other processor runs its
+Python emulated: qemu-user with that processor's libraries, or Rosetta in a Linux VM.
 
 ## Releases
 
