@@ -2078,8 +2078,11 @@ impl Origin {
 }
 
 /// What is known of the hovered track, at `share` of a revolution from the
-/// index, and of its sector there, `index` of its sectors.
+/// index, and of its sector there, `index` of its sectors: what gw read,
+/// with in Sectors the sector's first bytes, and in Flux where the pointer
+/// and the sector lie and the track's flux.
 fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index: Option<usize>) {
+    let flux = map.shows == Shows::Flux;
     let progress = map.progress;
     let reported = progress.facts.get(&(cyl, side));
     let absent = reported.is_some_and(|f| f.absent);
@@ -2118,23 +2121,22 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
     }
     // Where the pointer is, and when, in each revolution read whole.
     let spin = facts.and_then(|f| f.flux.as_ref());
-    let zero = match spin.is_some_and(|s| s.holes) {
-        true => "sector 0's hole",
-        false => "the index",
-    };
-    ui.weak(match spin.map(|spin| from_index(spin, share)) {
-        Some(ms) => format!("At {:.1}° · {ms} ms from {zero}", share * 360.0),
-        None => format!("At {:.1}° from {zero}", share * 360.0),
-    });
+    if flux {
+        let zero = match spin.is_some_and(|s| s.holes) {
+            true => "sector 0's hole",
+            false => "the index",
+        };
+        ui.weak(match spin.map(|spin| from_index(spin, share)) {
+            Some(ms) => format!("At {:.1}° · {ms} ms from {zero}", share * 360.0),
+            None => format!("At {:.1}° from {zero}", share * 360.0),
+        });
+    }
     let Some(f) = facts else {
         return;
     };
     if let Some(s) = index.and_then(|i| f.sectors.get(i)) {
         ui.separator();
-        sector_tip(ui, s, &f.sectors);
-        if s.bytes.len() > 64 {
-            ui.weak(format!("Click for all {} bytes.", s.bytes.len()));
-        }
+        sector_tip(ui, s, &f.sectors, flux);
     }
     let unplaced = f.sectors.iter().filter(|s| s.at.is_none()).count();
     let order = order(&f.sectors);
@@ -2158,12 +2160,10 @@ fn tip(ui: &mut egui::Ui, map: &Map, (cyl, side): (u32, u32), share: f64, index:
             n => format!("{n} sectors not placed"),
         });
     }
-    if let Some(spin) = &f.flux {
+    if let Some(spin) = spin.filter(|_| flux) {
         ui.separator();
-        if map.shows == Shows::Flux {
-            let here = (relative_at(spin, share) * 100.0).round();
-            ui.label(format!("Flux here: {here}% of the track's average"));
-        }
+        let here = (relative_at(spin, share) * 100.0).round();
+        ui.label(format!("Flux here: {here}% of the track's average"));
         spin_tip(ui, f, spin, Origin::of(map.image, f.source));
         if let Some(intervals) = &spin.intervals {
             intervals_chart(ui, intervals);
@@ -2645,7 +2645,11 @@ fn inspector(ctx: &egui::Context, map: &Map) {
             let Some(s) = f.sectors.get(i) else {
                 return shut();
             };
-            (id_text(&s.id), sector_lines(s, &f.sectors), &s.bytes[..])
+            (
+                id_text(&s.id),
+                sector_lines(s, &f.sectors, true),
+                &s.bytes[..],
+            )
         }
         Open::Missing { id, laid } => (missing_name(id, laid), missing_lines(f, id, laid), &[][..]),
     };
@@ -2970,7 +2974,7 @@ fn reserve(ui: &egui::Ui, progress: &Progress, font: &FontId) -> Reserved {
             shapes.extend(missing_lines(f, id, true).iter().map(|(l, _)| shape(l)));
         }
         for s in &f.sectors {
-            let lines = sector_lines(s, &f.sectors);
+            let lines = sector_lines(s, &f.sectors, true);
             reserved.lines = reserved.lines.max(lines.len());
             reserved.bytes = reserved.bytes.max(s.bytes.len());
             shapes.extend(lines.iter().map(|(l, _)| shape(l)));
@@ -3678,9 +3682,10 @@ pub(crate) enum Tone {
 }
 
 /// What is said of a sector of a track's `sectors`, line by line: its ID
-/// and size, its checks and mark, its place, in degrees and in bytes, how gw
-/// found it in each revolution, any other sector with its ID, and notes.
-fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
+/// and size, its checks and mark, with `placed` its place, in degrees and in
+/// bytes, how gw found it in each revolution, any other sector with its ID,
+/// and notes.
+fn sector_lines(s: &Sector, sectors: &[Sector], placed: bool) -> Vec<(String, Tone)> {
     let size = match (s.id, s.data) {
         _ if !s.bytes.is_empty() => Some(s.bytes.len() as u32),
         // A header alone has no data: its N is in its ID.
@@ -3729,7 +3734,7 @@ fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
     }
     lines.push((checks.join(" · "), Tone::Plain));
     let deg = |x: f32| x * 360.0;
-    if let Some([start, data, end]) = s.at {
+    if let Some([start, data, end]) = s.at.filter(|_| placed) {
         let mut place = format!("{:.1}°–{:.1}°", deg(start), deg(end));
         // A header with no data after it has none to place.
         if data > start && s.data != Data::None {
@@ -3740,7 +3745,7 @@ fn sector_lines(s: &Sector, sectors: &[Sector]) -> Vec<(String, Tone)> {
         }
         lines.push((place, Tone::Weak));
     }
-    if let Some(layout) = &s.layout {
+    if let Some(layout) = s.layout.as_ref().filter(|_| placed) {
         lines.push((layout_line(layout), Tone::Weak));
     }
     if let Some(turns) = s.turns.as_ref().and_then(turns_line) {
@@ -3851,17 +3856,17 @@ fn turns_line(t: &Turns) -> Option<String> {
     )
 }
 
-/// A sector of a track's `sectors`: what is said of it, and its data's
-/// first rows.
-fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector]) {
-    for (text, tone) in sector_lines(s, sectors) {
+/// A sector of a track's `sectors`: what is said of it, with in Flux where
+/// it lies, and in Sectors its data's first rows.
+fn sector_tip(ui: &mut egui::Ui, s: &Sector, sectors: &[Sector], flux: bool) {
+    for (text, tone) in sector_lines(s, sectors, flux) {
         match tone {
             Tone::Strong => ui.strong(text),
             Tone::Plain => ui.label(text),
             Tone::Weak => ui.weak(text),
         };
     }
-    if !s.bytes.is_empty() {
+    if !flux && !s.bytes.is_empty() {
         let rows = RichText::new(dump(&s.bytes, 4, 0)).font(FontId::monospace(DUMP_SIZE));
         ui.add(egui::Label::new(rows).extend());
     }
@@ -5418,6 +5423,37 @@ mod tests {
     }
 
     #[test]
+    fn a_sectors_place_is_said_after_its_checks_only_where_asked_for() {
+        let s = Sector {
+            id: Id::Ibm([0, 0, 1, 2]),
+            mark: Some(0xfb),
+            turns: Some(Turns {
+                seen: vec![Seen::Good, Seen::BadData],
+                reads: 1,
+            }),
+            layout: Some(Layout {
+                from_index: 2528.0,
+                after: Some((992.0, Before::IndexMark)),
+                id_to_data: Some(544.0),
+            }),
+            ..sector([0.1, 0.11, 0.2], None)
+        };
+        let said = |placed| -> Vec<String> {
+            let lines = sector_lines(&s, std::slice::from_ref(&s), placed);
+            lines.into_iter().map(|(l, _)| l).collect()
+        };
+        let full = said(true);
+        assert_eq!(
+            full[2..4],
+            [
+                "36.0°–72.0° · data 39.6°, 34 bytes after the ID",
+                "158 bytes from the index · 62 bytes after the index mark"
+            ]
+        );
+        assert_eq!([&full[..2], &full[4..]].concat(), said(false));
+    }
+
+    #[test]
     fn a_tracks_order_and_its_repeated_ids_are_of_ids_gw_read_from_good_headers() {
         let at = |share: f32, r: u8, header| Sector {
             id: Id::Ibm([0, 0, r, 2]),
@@ -5458,7 +5494,7 @@ mod tests {
             ["C0 H0 R3 N2 ×2", "C1 H0 R3 N2 ×2", "R7 ×2"]
         );
         let said = |s: &Sector| -> Vec<String> {
-            sector_lines(s, &sectors)
+            sector_lines(s, &sectors, true)
                 .into_iter()
                 .map(|(l, _)| l)
                 .collect()
@@ -5484,7 +5520,7 @@ mod tests {
     #[test]
     fn a_sector_is_said_to_pass_the_checks_gw_made_of_it_and_no_more() {
         let said = |s: &Sector| -> Vec<String> {
-            let lines = sector_lines(s, std::slice::from_ref(s));
+            let lines = sector_lines(s, std::slice::from_ref(s), true);
             lines.into_iter().map(|(l, _)| l).collect()
         };
         // gw adds a sector by number only once its checks pass.

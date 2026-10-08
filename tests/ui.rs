@@ -2564,19 +2564,34 @@ fn the_disks_legend_and_tips_tell_each_kind_of_sector_apart_as_gw_lays_them_out(
         w.get_by_label(entry);
     }
     assert!(w.query_by_label_contains("Bad header").is_none());
-    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r2));
+    let r2_at = on_disk(&w, TRACK_0, 90.0 - 360.0 * r2);
+    w.hover_at(r2_at);
     w.run();
     w.get_by_label("Sector C0 H0 R2 N2 · 512 bytes");
     w.get_by_label("Header OK · Data OK · Mark F8 (deleted)");
-    // As gw writes an EDSK's track: gap 3, 40 bytes, and 12 of 00.
-    w.get_by_label("772 bytes from the index · 52 bytes after R1");
-    w.get_by_label_contains(", 34 bytes after the ID");
     // R5's header's CRC fails: its R is not known for sure.
     w.get_by_label("Order: 1 2 3 4 ? 6 7 7 8");
     w.get_by_label("ID repeated: R7 ×2");
-    w.get_by_label_contains("At ");
     // Not the disk's turns: nothing of revolutions.
     assert!(w.query_by_label_contains("revolution").is_none());
+    // Sectors: what gw read, its first bytes, and not where it lies.
+    w.get_by_label_contains("0000  ");
+    for elsewhere in ["bytes from the index", "after the ID", "At ", "Click for"] {
+        assert!(
+            w.query_by_label_contains(elsewhere).is_none(),
+            "{elsewhere}"
+        );
+    }
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.hover_at(r2_at);
+    w.run();
+    w.get_by_label("Header OK · Data OK · Mark F8 (deleted)");
+    w.get_by_label("Order: 1 2 3 4 ? 6 7 7 8");
+    // As gw writes an EDSK's track: gap 3, 40 bytes, and 12 of 00.
+    w.get_by_label("772 bytes from the index · 52 bytes after R1");
+    w.get_by_label_contains(", 34 bytes after the ID");
+    w.get_by_label_contains("At ");
+    assert!(w.query_by_label_contains("0000  ").is_none());
     w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r7));
     w.run();
     w.get_by_label_contains("Its ID also at ");
@@ -2592,10 +2607,19 @@ fn a_sectors_tip_says_how_gw_read_it_in_each_revolution_of_the_disk() {
         ..image_open("convert")
     };
     let mut w = build(Harness::builder().with_size(DEFAULT), settings, Some(job));
-    w.hover_at(on_disk(&w, TRACK_0, 90.0 - 360.0 * r1));
+    let r1_at = on_disk(&w, TRACK_0, 90.0 - 360.0 * r1);
+    w.hover_at(r1_at);
     w.run();
     // gw keeps the good copy; the second revolution spoilt its data.
     w.get_by_label("Header OK · Data OK · Mark FB");
+    w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
+    // The track's flux is Flux's to say.
+    for flux in ["Flux intervals", "flux/rev", "rpm"] {
+        assert!(w.query_by_label_contains(flux).is_none(), "{flux}");
+    }
+    w.get_by_role_and_label(Role::Button, "Flux").click();
+    w.hover_at(r1_at);
+    w.run();
     w.get_by_label("Good in 1 of 2 revolutions · data bad in 1");
     // An SCP's 25 ns ticks, two to a bin.
     w.get_by_label("Flux intervals in µs, bins of 50.0 ns");

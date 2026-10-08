@@ -8,9 +8,9 @@
 mod common;
 
 use common::{
-    DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, TRACK_0, WORKBENCH, WRITTEN, Window,
-    akai_report, app_mut, damaged_read, detect_reads, greaseweazle, held, image_part, on_disk,
-    reaching_41, run_button, scratched_adf,
+    DAMAGED, DEFAULT, DETECTED, FOUND, REFUSED, SCRATCHED, SPOILT, TRACK_0, WORKBENCH, WRITTEN,
+    Window, akai_report, app_mut, damaged_read, detect_reads, greaseweazle, held, image_part,
+    on_disk, reaching_41, run_button, scratched_adf,
 };
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
@@ -53,9 +53,20 @@ fn render_sized(
     size: egui::Vec2,
     theme: egui::Theme,
     settings: Settings,
-    mut job: Option<Job>,
+    job: Option<Job>,
     act: impl FnOnce(&mut Window),
 ) {
+    save(name, theme, &picture(size, theme, settings, job, act));
+}
+
+/// The window after `act`, two pixels to a point.
+fn picture(
+    size: egui::Vec2,
+    theme: egui::Theme,
+    settings: Settings,
+    mut job: Option<Job>,
+    act: impl FnOnce(&mut Window),
+) -> image::RgbaImage {
     let mut harness = Harness::builder()
         .with_size(size)
         .with_pixels_per_point(2.0)
@@ -83,14 +94,37 @@ fn render_sized(
     }
     act(&mut harness);
     harness.run_steps(20);
+    harness.render().expect("the window renders")
+}
+
+/// Saves `image` to target/screens, named for `theme`.
+fn save(name: &str, theme: egui::Theme, image: &image::RgbaImage) {
     let suffix = match theme {
         egui::Theme::Dark => "dark",
         egui::Theme::Light => "light",
     };
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
     std::fs::create_dir_all(dir).unwrap();
-    let image = harness.render().expect("the window renders");
     image.save(format!("{dir}/{name}-{suffix}.png")).unwrap();
+}
+
+/// Renders the window after `act`, which gives the part of it to keep, and
+/// saves that part with 16 points round it.
+fn render_part(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window) -> egui::Rect,
+) {
+    let mut part = egui::Rect::NOTHING;
+    let image = picture(DEFAULT, theme, settings, Some(job), |w| part = act(w));
+    let part = part.expand(16.0);
+    let [x, y] = [part.min.x, part.min.y].map(|v| (v * 2.0).max(0.0) as u32);
+    let width = ((part.width() * 2.0) as u32).min(image.width() - x);
+    let height = ((part.height() * 2.0) as u32).min(image.height() - y);
+    let kept = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    save(name, theme, &kept);
 }
 
 fn settings(page: &str, theme: egui::Theme) -> Settings {
@@ -690,8 +724,8 @@ fn sector_window() {
     }
 }
 
-/// Renders the window after `act`, which opens a sector's window, and crops
-/// the picture to that window.
+/// Renders the window after `act`, which opens a sector's window, and keeps
+/// that window.
 fn crop_to_sector(
     name: &str,
     theme: egui::Theme,
@@ -699,43 +733,11 @@ fn crop_to_sector(
     job: Job,
     act: impl FnOnce(&mut Window),
 ) {
-    let full = format!("{name}-full");
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/target/screens");
-    let rect_file = format!("{dir}/{name}-rect.txt");
-    let kept = rect_file.clone();
-    render_sized(&full, DEFAULT, theme, settings, Some(job), move |w| {
+    render_part(name, theme, settings, job, |w| {
         act(w);
         let id = egui::Id::new("disk sector window").with(1u64);
-        let rect = w.ctx.memory(|m| m.area_rect(id)).expect("the window");
-        let text = format!(
-            "{} {} {} {}",
-            rect.min.x, rect.min.y, rect.max.x, rect.max.y
-        );
-        std::fs::write(&kept, text).unwrap();
+        w.ctx.memory(|m| m.area_rect(id)).expect("the window")
     });
-    let suffix = match theme {
-        egui::Theme::Dark => "dark",
-        egui::Theme::Light => "light",
-    };
-    let r: Vec<f32> = std::fs::read_to_string(&rect_file)
-        .unwrap()
-        .split(' ')
-        .map(|v| v.parse().unwrap())
-        .collect();
-    let img = image::open(format!("{dir}/{full}-{suffix}.png"))
-        .unwrap()
-        .to_rgba8();
-    let margin = 16.0;
-    let x = ((r[0] - margin) * 2.0).max(0.0) as u32;
-    let y = ((r[1] - margin) * 2.0).max(0.0) as u32;
-    let w = (((r[2] - r[0] + 2.0 * margin) * 2.0) as u32).min(img.width() - x);
-    let h = (((r[3] - r[1] + 2.0 * margin) * 2.0) as u32).min(img.height() - y);
-    image::imageops::crop_imm(&img, x, y, w, h)
-        .to_image()
-        .save(format!("{dir}/{name}-{suffix}.png"))
-        .unwrap();
-    std::fs::remove_file(format!("{dir}/{full}-{suffix}.png")).ok();
-    std::fs::remove_file(&rect_file).ok();
 }
 
 /// The Analyse drawer's image view: the file gw makes of a disk, or writes
@@ -983,4 +985,78 @@ fn detect_failed() {
             }
         }
     }
+}
+
+/// The disks' tooltip over a sector in Sectors and in Flux, kept to it: R3
+/// of the Akai disk's track 0.0; R1 of the kinds of sector's track, its
+/// second revolution spoilt; Sector 6 of the scratched Workbench disk's
+/// 40.0, where gw found two missing; Sector 5 of the read disk's 40.0.
+#[test]
+#[ignore = "writes pictures for people to look at"]
+fn tips() {
+    use ferriteweazle::track::Id;
+    // Each: its name, its page, its job, and the sector's cylinder and ID.
+    type Case = (&'static str, &'static str, fn() -> Job, u32, Id);
+    let cases: [Case; 4] = [
+        ("akai", "convert", akai_job, 0, Id::Ibm([0, 0, 3, 3])),
+        (
+            "spoilt",
+            "convert",
+            || converted(SPOILT),
+            0,
+            Id::Ibm([0, 0, 1, 2]),
+        ),
+        (
+            "scratched",
+            "convert",
+            || converted(SCRATCHED),
+            40,
+            Id::Number(6),
+        ),
+        ("workbench", "read", workbench, 40, Id::Number(5)),
+    ];
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        for (case, page, job, cyl, id) in cases {
+            for (view, shows) in [("sectors", Shows::Sectors), ("flux", Shows::Flux)] {
+                let settings = Settings {
+                    drawer: Some(Drawer::Analyse),
+                    media: Media::ThreeHalf,
+                    shows,
+                    ..settings(page, theme)
+                };
+                let name = format!("tip-{case}-{view}");
+                crop_to_tip(&name, theme, settings, job(), |w| {
+                    w.run_steps(4);
+                    let facts = &app_mut(w).disk.as_ref().unwrap().progress.facts[&(cyl, 0)];
+                    let s = facts.sectors.iter().find(|s| s.id == id).unwrap();
+                    let [a, _, b] = s.at.unwrap();
+                    // ECMA-125's tracks, 0.1875 mm apart, in from track 0.
+                    let share = TRACK_0 - cyl as f32 * 0.1875 / 42.9;
+                    w.hover_at(on_disk(w, share, 90.0 - 360.0 * (a + b) / 2.0));
+                    w.run_steps(6);
+                });
+            }
+        }
+    }
+}
+
+/// Renders the window after `act`, which hovers over something, and keeps
+/// the tooltip.
+fn crop_to_tip(
+    name: &str,
+    theme: egui::Theme,
+    settings: Settings,
+    job: Job,
+    act: impl FnOnce(&mut Window),
+) {
+    render_part(name, theme, settings, job, |w| {
+        act(w);
+        w.ctx
+            .memory(|m| {
+                let tips = m.areas().visible_layer_ids().into_iter();
+                tips.filter(|l| l.order == egui::Order::Tooltip)
+                    .find_map(|l| m.area_rect(l.id))
+            })
+            .expect("a tooltip")
+    });
 }
