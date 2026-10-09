@@ -27,6 +27,12 @@ Greaseweazle Tools has no format detection, so Ferriteweazle uses gw's own codec
 
 Detection can be wrong: formats and image types are grouped for choosing one by hand.
 
+## How does disk analysis work?
+
+Greaseweazle Tools prints one line per track, so Ferriteweazle runs gw's own code and has its decoders note what they find, without changing what gw does. For each track gw reads, converts or writes, it records the flux, revolution by revolution from the index, and what gw decoded: each sector's ID, where it lies from the index, its checks and any deleted-data mark, and for IBM-style formats how each revolution read it, including headers and data gw found apart and dropped. Sectors colours each sector by that result, where gw found it; Flux shades each track by the flux gw read along it. A sector's window shows its bytes as gw's image holds them. To scale, tracks sit at the radii the ECMA standards give for 3½", 5¼" and 8" disks. A write shows the track gw writes, then, where gw verifies it, the track read back. Image analysis lays out a sector image as gw does: its tracks in the file's order, the bytes each sector takes, and the filler gw writes for any it lacks.
+
+The decoding is gw's and nothing is guessed: no weak bits from comparing revolutions, no best revolution. Tracks read with `--reverse` or `--fake-index` aren't drawn, since gw doesn't take them round from the index.
+
 ## Why bundle Greaseweazle Tools in the releases?
 
 Greaseweazle Tools is a command-line program that runs on Python. The packages include it, unmodified, with its own Python, so the app runs without [gw's installation steps](https://github.com/keirf/greaseweazle/wiki/Software-Installation).
