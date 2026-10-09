@@ -1,6 +1,6 @@
 # Ferriteweazle
 
-**GUI front end for [Greaseweazle](https://github.com/keirf/greaseweazle), Keir Fraser's floppy disk flux reader and writer, for macOS, Windows and Linux. Written in Rust.**
+**GUI front end for Greaseweazle, Keir Fraser's floppy disk flux reader and writer, for macOS, Windows and Linux. Written in Rust.**
 
 ![Ferriteweazle](docs/images/intro_demo.gif)
 
