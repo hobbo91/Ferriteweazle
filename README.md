@@ -37,7 +37,9 @@ The decoding is `gw`'s and nothing is guessed: no weak bits from comparing revol
 
 Greaseweazle Tools is a command-line program that runs on Python. The packages include it, unmodified, with its own Python, so the app runs without [`gw`'s installation steps](https://github.com/keirf/greaseweazle/wiki/Software-Installation).
 
-**The bundled copy is optional.** Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): set **Settings > Paths > Greaseweazle Tools (`gw` cli)** to its `gw` or `gw.exe`. Note: The `gw.exe` from `gw`’s own Windows download runs `gw`’s commands, but not Detect, Read passes, Analyse or Image analysis. The bundled `gw` and any `pip`, `pipx` or `uv` install support everything.
+**The bundled copy is optional.** Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): set **Settings > Paths > Greaseweazle Tools (`gw` cli)** to its `gw` or `gw.exe`. 
+
+Note: The `gw.exe` from `gw`’s own Windows download runs `gw`’s commands, but not Detect, Read passes, Analyse or Image analysis. The bundled `gw` and any `pip`, `pipx` or `uv` install support everything.
 
 ## Installing
 
