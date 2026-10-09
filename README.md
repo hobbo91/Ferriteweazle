@@ -17,11 +17,11 @@
 - Log of `gw`'s output, saved to a file on request
 - Shows each action's `gw` command line, and passes extra arguments to `gw`
 - Drag and drop of image files
-- Tooltips on settings and options
+- Helpful tooltips on settings and options
 - Confirmation before destructive actions
 - Releases include [Greaseweazle Tools](https://github.com/keirf/greaseweazle), unmodified, with its Python; any other `gw` or `gw.exe` can be used instead
 
-# YouTube Intro / Tutorial video
+## YouTube Intro / Tutorial video
 [![Ferriteweazle YouTube](https://img.youtube.com/vi/A8q4aFQ7uEo/0.jpg)](https://youtu.be/A8q4aFQ7uEo?si=sAY1lAmCKvnliFJJ&t=1)
 
 ## How does it detect disk formats?
