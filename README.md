@@ -21,6 +21,9 @@
 - Confirmation before destructive actions
 - Releases include [Greaseweazle Tools](https://github.com/keirf/greaseweazle), unmodified, with its Python; any other `gw` or `gw.exe` can be used instead
 
+# YouTube Intro / Demo video
+[![Ferriteweazle YouTube](https://img.youtube.com/vi/A8q4aFQ7uEo/0.jpg)](https://www.youtube.com/watch?v=A8q4aFQ7uEo)
+
 ## How does it detect disk formats?
 
 Greaseweazle Tools has no format detection, so Ferriteweazle uses `gw`'s own codecs. It decodes both sides of cylinder 0 with every format `gw` knows, except the `.scan` ones, and keeps those that find every sector. Many formats pass, so it ranks them by how far each sector lies from where the format places it. Formats within 1% of the best that differ on a track not yet read have that track read, up to four more. Physical cylinder 2 shows whether a 40-track disk needs Step 2. Apple II formats differ only in sector order, so the filesystem decides: ProDOS or DOS 3.3.
