@@ -21,7 +21,7 @@
 - Confirmation before destructive actions
 - Releases include [Greaseweazle Tools](https://github.com/keirf/greaseweazle), unmodified, with its Python; any other `gw` or `gw.exe` can be used instead
 
-# YouTube Intro / Demo video
+# YouTube Intro / Tutorial video
 [![Ferriteweazle YouTube](https://img.youtube.com/vi/A8q4aFQ7uEo/0.jpg)](https://youtu.be/A8q4aFQ7uEo?si=sAY1lAmCKvnliFJJ&t=1)
 
 ## How does it detect disk formats?
