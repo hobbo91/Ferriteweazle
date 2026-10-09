@@ -11,11 +11,11 @@
 - Greaseweazle and Adafruit Feather RP2040 devices
 - Format detection for disks and images
 - Single and batch reads, writes and conversions
-- Further read passes over tracks with sectors still missing after gw's retries
-- Analyse: a map of each side of the disk, each sector coloured by how gw decoded it, or by flux; click a sector to see its bytes
+- Further read passes over tracks with sectors still missing after `gw`'s retries
+- Analyse: a map of each side of the disk, each sector coloured by how `gw` decoded it, or by flux; click a sector to see its bytes
 - Image analysis: the same map for image files
-- Log of gw's output, saved to a file on request
-- Shows each action's gw command line, and passes extra arguments to gw
+- Log of `gw`'s output, saved to a file on request
+- Shows each action's `gw` command line, and passes extra arguments to `gw`
 - Drag and drop of image files
 - Tooltips on settings and options
 - Confirmation before destructive actions
@@ -23,21 +23,21 @@
 
 ## How does it detect disk formats?
 
-Greaseweazle Tools has no format detection, so Ferriteweazle uses gw's own codecs. It decodes both sides of cylinder 0 with every format gw knows, except the `.scan` ones, and keeps those that find every sector. Many formats pass, so it ranks them by how far each sector lies from where the format places it. Formats within 1% of the best that differ on a track not yet read have that track read, up to four more. Physical cylinder 2 shows whether a 40-track disk needs Step 2. Apple II formats differ only in sector order, so the filesystem decides: ProDOS or DOS 3.3.
+Greaseweazle Tools has no format detection, so Ferriteweazle uses `gw`'s own codecs. It decodes both sides of cylinder 0 with every format `gw` knows, except the `.scan` ones, and keeps those that find every sector. Many formats pass, so it ranks them by how far each sector lies from where the format places it. Formats within 1% of the best that differ on a track not yet read have that track read, up to four more. Physical cylinder 2 shows whether a 40-track disk needs Step 2. Apple II formats differ only in sector order, so the filesystem decides: ProDOS or DOS 3.3.
 
 Detection can be wrong: formats and image types are grouped for choosing one by hand.
 
 ## How does disk analysis work?
 
-Greaseweazle Tools prints one line per track, so Ferriteweazle runs gw's own code and has its decoders note what they find, without changing what gw does. For each track gw reads, converts or writes, it records the flux, revolution by revolution from the index, and what gw decoded: each sector's ID, where it lies from the index, its checks and any deleted-data mark, and for IBM-style formats how each revolution read it, including headers and data gw found apart and dropped. Sectors colours each sector by that result, where gw found it; Flux shades each track by the flux gw read along it. A sector's window shows its bytes as gw's image holds them. To scale, tracks sit at the radii the ECMA standards give for 3½", 5¼" and 8" disks. A write shows the track gw writes, then, where gw verifies it, the track read back. Image analysis lays out a sector image as gw does: its tracks in the file's order, the bytes each sector takes, and the filler gw writes for any it lacks.
+Greaseweazle Tools prints one line per track, so Ferriteweazle runs `gw`'s own code and has its decoders note what they find, without changing what `gw` does. For each track `gw` reads, converts or writes, it records the flux, revolution by revolution from the index, and what `gw` decoded: each sector's ID, where it lies from the index, its checks and any deleted-data mark, and for IBM-style formats how each revolution read it, including headers and data `gw` found apart and dropped. Sectors colours each sector by that result, where `gw` found it; Flux shades each track by the flux `gw` read along it. A sector's window shows its bytes as `gw`'s image holds them. To scale, tracks sit at the radii the ECMA standards give for 3½", 5¼" and 8" disks. A write shows the track `gw` writes, then, where `gw` verifies it, the track read back. Image analysis lays out a sector image as `gw` does: its tracks in the file's order, the bytes each sector takes, and the filler `gw` writes for any it lacks.
 
-The decoding is gw's and nothing is guessed: no weak bits from comparing revolutions, no best revolution. Tracks read with `--reverse` or `--fake-index` aren't drawn, since gw doesn't take them round from the index.
+The decoding is `gw`'s and nothing is guessed: no weak bits from comparing revolutions, no best revolution. Tracks read with `--reverse` or `--fake-index` aren't drawn, since `gw` doesn't take them round from the index.
 
 ## Why bundle Greaseweazle Tools in the releases?
 
-Greaseweazle Tools is a command-line program that runs on Python. The packages include it, unmodified, with its own Python, so the app runs without [gw's installation steps](https://github.com/keirf/greaseweazle/wiki/Software-Installation).
+Greaseweazle Tools is a command-line program that runs on Python. The packages include it, unmodified, with its own Python, so the app runs without [`gw`'s installation steps](https://github.com/keirf/greaseweazle/wiki/Software-Installation).
 
-**The bundled copy is optional.** Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): set **Settings > Paths > Greaseweazle Tools (gw cli)** to its `gw` or `gw.exe`.
+**The bundled copy is optional.** Ferriteweazle can [use any installation of Greaseweazle Tools](https://github.com/keirf/greaseweazle/releases): set **Settings > Paths > Greaseweazle Tools (`gw` cli)** to its `gw` or `gw.exe`.
 
 ## Installing
 
@@ -97,7 +97,7 @@ You need [Rust](https://rustup.rs) 1.95 or later.
 ```sh
 git clone https://github.com/hobbo91/Ferriteweazle
 cd Ferriteweazle
-bundle/build.sh     # optional: gw with its own Python
+bundle/build.sh     # optional: `gw` with its own Python
 cargo run --release
 ```
 
